@@ -7,7 +7,16 @@ on:
     branches: [main, develop]
 
 env:
-  GO_VERSION: "1.26"
+  # Pinned to an exact patch, not the "1.26" minor. Two reasons, both learned
+  # from the first CI run:
+  #   * govulncheck reported five standard-library vulnerabilities present in
+  #     go1.26.5 and fixed in go1.26.6, on code paths this project genuinely
+  #     calls (http.Client.Do, CloseIdleConnections).
+  #   * `go mod tidy` output for go.sum differs between patch releases, so a
+  #     floating minor makes the tidiness gate depend on when CI happened to run.
+  # Bumping this is a deliberate, reviewable change; the vulnerability scan is
+  # what will tell us when it is due.
+  GO_VERSION: "1.26.6"
 
 jobs:
   lint:
@@ -65,17 +74,38 @@ jobs:
         # A change that adds an import without tidying leaves go.mod wrong for
         # every consumer that pins this module, and the failure surfaces in
         # THEIR build rather than ours.
+        # go.mod must match `go mod tidy` exactly. go.sum need only be a
+        # SUPERSET of what tidy produces.
+        #
+        # The asymmetry is deliberate and was forced by the first CI run. A
+        # go.sum entry that is missing breaks the build for everyone; an extra
+        # one is inert. Patch releases of Go disagree about which /go.mod hashes
+        # tidy retains — go1.26.4 and go1.26.5 differ on four of them — so
+        # demanding byte equality would fail any contributor whose toolchain
+        # patch differs from CI's, which is a gate that punishes the innocent
+        # and teaches people to ignore it.
         run: |
           cp go.mod go.mod.bak && cp go.sum go.sum.bak
           go mod tidy
-          if ! diff -q go.mod go.mod.bak >/dev/null || ! diff -q go.sum go.sum.bak >/dev/null; then
-            echo "go.mod or go.sum is not tidy — run 'go mod tidy' and commit the result:"
+          rc=0
+
+          if ! diff -q go.mod go.mod.bak >/dev/null; then
+            echo "FAIL: go.mod is not tidy — run 'go mod tidy' and commit the result:"
             diff go.mod.bak go.mod || true
-            diff go.sum.bak go.sum || true
-            exit 1
+            rc=1
           fi
-          rm -f go.mod.bak go.sum.bak
-          echo "OK: go.mod and go.sum are tidy"
+
+          # Lines tidy needs that the committed file does not have.
+          missing=$(comm -13 <(sort go.sum.bak) <(sort go.sum))
+          if [ -n "${missing}" ]; then
+            echo "FAIL: go.sum is missing entries 'go mod tidy' requires:"
+            echo "${missing}"
+            rc=1
+          fi
+
+          mv go.mod.bak go.mod && mv go.sum.bak go.sum
+          [ "${rc}" -eq 0 ] || exit 1
+          echo "OK: go.mod is tidy and go.sum covers it"
 
       - name: Guard — documented names exist
         # This repository carries more documentation than code, and docs drift

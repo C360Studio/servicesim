@@ -18,7 +18,11 @@
 #   * HEALTHCHECK invokes the binary's own --healthcheck mode instead of wget
 #     or curl, which is what lets the runtime stage stay shell-less.
 
-ARG GO_VERSION=1.26
+# Pinned to an exact patch so the published image does not silently inherit a
+# standard library with known vulnerabilities. govulncheck in CI flagged five in
+# go1.26.5 that are fixed here; keep this in step with GO_VERSION in
+# .github/workflows/ci.yml.
+ARG GO_VERSION=1.26.6
 
 # ============================================================================
 # Builder
