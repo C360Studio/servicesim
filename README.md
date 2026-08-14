@@ -21,15 +21,23 @@ implement every field of every vendor — only the *consumed contract*.
 
 ## 60-second quickstart
 
-No account, no credentials, no configuration. Build the image and run it:
+No account, no credentials, no configuration, and nothing to clone:
 
 ```bash
-task image:build && docker run --rm -p 8080-8083:8080-8083 servicesim:dev
+docker run --rm -p 8080-8083:8080-8083 ghcr.io/c360studio/servicesim:v0.1.0
 ```
 
-> **The published image is not out yet.** `ghcr.io/c360studio/servicesim:<tag>` will be the one-line path once the
-> first release is pushed; until then, build locally as above. Anywhere below that shows a `ghcr.io` tag is
-> describing the released form.
+The image is public and multi-architecture (`linux/amd64`, `linux/arm64`). Tags are published in both spellings
+against one digest — `v0.1.0` and `0.1.0`, `v0.1` and `0.1`, `v0` and `0` — plus `latest` and `sha-<commit>`.
+
+For release-critical CI, pin the digest rather than a tag, so a re-publish cannot move under you:
+
+```text
+ghcr.io/c360studio/servicesim@sha256:f63bb8e72f4a6b16f7b4140eaf4408bd01d40fde371bb35c032e12d813bbb5f9
+```
+
+Working on Servicesim itself, or want the tip of `main`? `task image:build` produces `servicesim:dev` locally, and
+every example below works the same with that tag substituted.
 
 In another terminal, ask Exa's listener for a search. Any fake key works:
 
@@ -156,7 +164,7 @@ Same handlers, same scenarios, reachable from any language.
 ```yaml
 services:
   servicesim:
-    image: servicesim:dev # after `task image:build`; a ghcr.io tag once released
+    image: ghcr.io/c360studio/servicesim:v0.1.0
     command: ["--scenario", "builtin:fusion-overlap"]
 
   app-tests:
@@ -173,7 +181,7 @@ services:
 
 [`docker-compose.example.yml`](docker-compose.example.yml) is the fuller version: a read-only scenario mount, a
 healthcheck, and both namespaced base-URL forms described [below](#one-container-many-concurrent-tests). It pins a
-published `ghcr.io` tag, so until the first release exists, swap that line for `image: servicesim:dev`.
+published `ghcr.io` tag; swap in a digest for release-critical CI.
 
 The image runs as a non-root user on a `scratch` base with no shell and no CA bundle — introspection goes through
 the admin listener, not through `exec`.
@@ -312,7 +320,7 @@ repository and is mounted read-only. Changing it does not require a Servicesim r
 ```yaml
 services:
   servicesim:
-    image: servicesim:dev # after `task image:build`; a ghcr.io tag once released
+    image: ghcr.io/c360studio/servicesim:v0.1.0
     command: ["--scenario", "/scenarios/fusion-overlap.yaml"]
     volumes:
       - ./test/fixtures/research:/scenarios:ro

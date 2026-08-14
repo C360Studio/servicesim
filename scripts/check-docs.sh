@@ -274,6 +274,104 @@ done <"$symbol_claims"
 claim_count=$((claim_count + symbols_checked))
 
 # ---------------------------------------------------------------------------
+# Published image references
+# ---------------------------------------------------------------------------
+#
+# Every ghcr.io reference in the docs must actually resolve. This category was
+# added after the failure it catches happened twice in one day: the README
+# pointed at ghcr.io/c360studio/servicesim:v0.1.0 while nothing was published,
+# and later while the publish pipeline had in fact tagged 0.1.0 — metadata-action
+# strips the leading v — so the documented pin returned "manifest unknown" both
+# times. A newcomer's first command failing is the most expensive documentation
+# bug there is.
+#
+# ORDERING NOTE for a release: publish first, then update the docs. A commit
+# that documents a tag before it exists will fail this check, which is the
+# correct order of operations rather than a limitation to work around.
+#
+# Network failure is NOT a documentation failure. If the registry cannot be
+# reached at all this skips loudly rather than failing, because a ghcr outage
+# breaking an unrelated pull request is how a guard earns a reputation for
+# noise and stops being read.
+
+images_checked=0
+images_placeholders=0
+images_skipped=""
+
+image_refs="$tmp/image_refs"
+grep_docs 'ghcr\.io/[a-z0-9._/-]+[:@][A-Za-z0-9._:-]+' | sort -u >"$image_refs" || true
+
+if [ -s "$image_refs" ]; then
+	# One probe first, to tell "registry unreachable" from "tag absent".
+	probe_repo="c360studio/servicesim"
+	probe_token=$(curl -fsS --max-time 20 \
+		"https://ghcr.io/token?scope=repository:${probe_repo}:pull&service=ghcr.io" 2>/dev/null |
+		sed -n 's/.*"token":"\([^"]*\)".*/\1/p') || probe_token=""
+
+	if [ -z "$probe_token" ]; then
+		images_skipped="registry unreachable"
+	else
+		while IFS= read -r hit; do
+			file=${hit%%:*}
+			rest=${hit#*:}
+			line=${rest%%:*}
+			ref=${rest#*:}
+
+			repo=${ref#ghcr.io/}
+			case "$ref" in
+			*@*)
+				repo=${repo%@*}
+				reference=${ref#*@}
+				;;
+			*)
+				repo=$(echo "$repo" | sed 's/:[^:]*$//')
+				reference=${ref##*:}
+				;;
+			esac
+
+			# Documentation placeholders are not references. The plan
+			# document writes ghcr.io/…:sha-<commit>, and the reference
+			# pattern stops at the '<', leaving a stub like "sha-". Counted
+			# rather than dropped, so this cannot quietly become a way for a
+			# real tag to escape the check.
+			case "$reference" in
+			*- | *. | *:)
+				images_placeholders=$((images_placeholders + 1))
+				continue
+				;;
+			esac
+
+			token=$(curl -fsS --max-time 20 \
+				"https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io" 2>/dev/null |
+				sed -n 's/.*"token":"\([^"]*\)".*/\1/p') || token=""
+			[ -n "$token" ] || {
+				images_skipped="registry unreachable"
+				break
+			}
+
+			# NO -f here, deliberately. With -f curl exits non-zero on a 404,
+			# which this loop would then read as a network failure and skip —
+			# turning the one thing the check exists to catch, a documented tag
+			# that was never published, into a silent pass. Without it the HTTP
+			# status is reported and only a genuine transport failure yields 000.
+			code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -I \
+				-H "Authorization: Bearer ${token}" \
+				-H 'Accept: application/vnd.oci.image.index.v1+json' \
+				-H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+				-H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+				"https://ghcr.io/v2/${repo}/manifests/${reference}" 2>/dev/null) || code="000"
+
+			images_checked=$((images_checked + 1))
+			case "$code" in
+			200) ;;
+			000) images_skipped="registry unreachable" ;;
+			*) note "$file" "$line" "image reference '${ref}' does not resolve (HTTP ${code}) — publish it, or fix the tag" ;;
+			esac
+		done <"$image_refs"
+	fi
+fi
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 
@@ -284,8 +382,14 @@ printf '  builtins  %4d claim(s) vs %s in scenarios/protocol/\n' \
 	"$builtins_checked" "$(wc -l <"$known_builtins" | tr -d ' ')"
 printf '  routes    %4d claim(s) vs %s registered pattern(s) (%d method-strict, in tables)\n' \
 	"$routes_checked" "$(wc -l <"$known_routes" | tr -d ' ')" "$routes_strict"
-printf '  symbols   %4d claim(s) vs %s exported name(s)\n\n' \
+printf '  symbols   %4d claim(s) vs %s exported name(s)\n' \
 	"$symbols_checked" "$(wc -l <"$known_symbols" | tr -d ' ')"
+if [ -n "$images_skipped" ]; then
+	printf '  images    SKIPPED (%s) — not a documentation failure\n\n' "$images_skipped"
+else
+	printf '  images    %4d reference(s) resolved against ghcr.io (%d placeholder(s) ignored)\n\n' \
+		"$images_checked" "$images_placeholders"
+fi
 
 # Every category is expected to find claims in this repository's documentation:
 # the README alone names flags, built-ins, routes and testkit symbols. A zero
