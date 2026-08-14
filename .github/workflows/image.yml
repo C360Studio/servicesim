@@ -43,6 +43,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build for this runner and smoke test before publishing
+        # A tag push publishes immediately and does not wait for the CI
+        # workflow, so without this a broken commit that someone tagged would
+        # be published and pinned by consumers. Building single-platform and
+        # loading it locally is cheap (the layers are reused by the multi-arch
+        # build below through the shared gha cache) and turns "CI should pass
+        # before tagging" from a comment into a gate.
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: servicesim:prepublish
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the exact image about to be published
+        run: bash scripts/image-smoke.sh servicesim:prepublish
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -71,6 +90,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Consumers are told to pin a digest for release-critical CI, so give
+          # them something to verify that digest against. Both are free here.
+          provenance: mode=max
+          sbom: true
           build-args: |
             VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.event.workflow_run.head_sha || github.sha }}
             COMMIT_SHA=${{ github.event.workflow_run.head_sha || github.sha }}

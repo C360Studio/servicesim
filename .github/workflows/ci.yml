@@ -61,6 +61,48 @@ jobs:
         # example domains.
         run: bash scripts/lint-no-live-hosts.sh
 
+      - name: Check go.mod and go.sum are tidy
+        # A change that adds an import without tidying leaves go.mod wrong for
+        # every consumer that pins this module, and the failure surfaces in
+        # THEIR build rather than ours.
+        run: |
+          cp go.mod go.mod.bak && cp go.sum go.sum.bak
+          go mod tidy
+          if ! diff -q go.mod go.mod.bak >/dev/null || ! diff -q go.sum go.sum.bak >/dev/null; then
+            echo "go.mod or go.sum is not tidy — run 'go mod tidy' and commit the result:"
+            diff go.mod.bak go.mod || true
+            diff go.sum.bak go.sum || true
+            exit 1
+          fi
+          rm -f go.mod.bak go.sum.bak
+          echo "OK: go.mod and go.sum are tidy"
+
+      - name: Lint markdown
+        # Documentation is a first-class artifact here: consuming repositories
+        # read contracts/ and docs/ to decide what to trust, so it is gated
+        # like code rather than left to drift.
+        run: npx --yes markdownlint-cli2 "**/*.md" "#node_modules"
+
+  vulncheck:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run govulncheck
+        # Servicesim is imported by other repositories' test suites, so a
+        # vulnerable dependency here propagates outward. The dependency set is
+        # deliberately tiny, which makes this both fast and rarely noisy.
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -77,10 +119,18 @@ jobs:
       - name: Run unit tests with race detector
         run: go test -race -count=1 ./...
 
-      - name: Report coverage
+      - name: Check coverage floor
+        # The floor guards against silent erosion, not against a number. It is
+        # set below the current figure so an honest refactor that trades a few
+        # points for clarity is not blocked, while a change that quietly stops
+        # testing a whole surface is.
+        env:
+          COVERAGE_FLOOR: "85.0"
         run: |
           go test -coverprofile=coverage.out -covermode=atomic ./... >/dev/null
-          go tool cover -func=coverage.out | tail -1
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "total coverage: ${total}% (floor ${COVERAGE_FLOOR}%)"
+          awk -v t="$total" -v f="$COVERAGE_FLOOR" 'BEGIN { if (t+0 < f+0) { printf "FAIL: coverage %.1f%% is below the %.1f%% floor\n", t, f; exit 1 } }'
 
   build:
     name: Build
@@ -132,19 +182,48 @@ jobs:
         # fail closed on an unmatched route.
         run: bash scripts/image-smoke.sh servicesim:ci
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Verify the image builds for both published platforms
+        # The smoke test above runs only the runner's architecture. Without
+        # this step an arm64-breaking change is not caught until publish time,
+        # on main, after review — and acceptance criterion 12 requires both
+        # platforms. Build only; the push happens in image.yml.
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   status-check:
     name: CI Status Check
     runs-on: ubuntu-latest
-    needs: [lint, test, build, image]
+    needs: [lint, vulncheck, test, build, image]
+    # This is the single required check for branch protection, and image.yml
+    # keys its publish decision off this workflow's conclusion. It must fail
+    # when any job fails, including a job that was skipped or cancelled —
+    # hence the explicit comparison against "success" rather than a
+    # !contains(failure) shortcut, which treats "skipped" as passing.
     if: always()
     steps:
       - name: Check if all jobs succeeded
         run: |
-          if [[ "${{ needs.lint.result }}" != "success" ]] || \
-             [[ "${{ needs.test.result }}" != "success" ]] || \
-             [[ "${{ needs.build.result }}" != "success" ]] || \
-             [[ "${{ needs.image.result }}" != "success" ]]; then
-            echo "One or more CI jobs failed"
+          failed=0
+          for job in "lint:${{ needs.lint.result }}" \
+                     "vulncheck:${{ needs.vulncheck.result }}" \
+                     "test:${{ needs.test.result }}" \
+                     "build:${{ needs.build.result }}" \
+                     "image:${{ needs.image.result }}"; do
+            name="${job%%:*}"; result="${job##*:}"
+            if [[ "${result}" != "success" ]]; then
+              echo "FAIL: job '${name}' concluded '${result}'"
+              failed=1
+            fi
+          done
+          if [[ "${failed}" -ne 0 ]]; then
             exit 1
           fi
           echo "All CI jobs passed successfully"
