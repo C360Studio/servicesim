@@ -1,0 +1,86 @@
+# One 429 carrying Retry-After, then success.
+#
+# The trailing `- status: 200` attempt is a fault of kind none: it serves the
+# scenario response. That is what makes this scenario assert two things at once
+# — that a consumer backs off and retries, and that the retry is counted rather
+# than restarting the plan.
+version: 1
+name: rate-limited
+description: >-
+  Every surface answers 429 with Retry-After once, then serves its ordinary
+  response, so backoff, retry and attempt counting are all exercised.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+providers:
+
+  exa:
+    fault:
+      attempts:
+        - status: 429
+          retry_after: 1
+          error: Rate limit exceeded.
+          tag: RATE_LIMIT
+        - status: 200
+    results:
+      - source: source-a
+    cost_dollars:
+      total: 0.005
+    answer:
+      # /answer is a separate route with its own attempt budget, so it needs its
+      # own plan; a single block-level fault would leave it healthy.
+      fault:
+        attempts:
+          - status: 429
+            retry_after: 1
+            error: Rate limit exceeded.
+            tag: RATE_LIMIT
+          - status: 200
+      answer: Report A states the finding.
+      citations:
+        - source-a
+
+  tavily:
+    fault:
+      attempts:
+        - status: 429
+          retry_after: 1
+          error: Rate limit exceeded.
+        - status: 200
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+
+  perplexity:
+    fault:
+      attempts:
+        - status: 429
+          retry_after: 1
+          error: Rate limit exceeded.
+        - status: 200
+    answer: A grounded answer citing Report A.
+    finish_reason: stop
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    fault:
+      attempts:
+        - status: 429
+          retry_after: 1
+          error: Rate limit exceeded.
+        - status: 200
+    answer: Report A states the finding.
+    search_results:
+      - source-a

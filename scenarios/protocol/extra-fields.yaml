@@ -1,0 +1,80 @@
+# Additive, undocumented response fields on every surface.
+#
+# Real vendor APIs evolve additively, and a consumer that decodes strictly will
+# start failing on a field it never asked for. Fields are added at two levels —
+# the top-level envelope and the individual result entry — because a decoder
+# often tolerates one and rejects the other.
+version: 1
+name: extra-fields
+description: >-
+  Well-formed 200s carrying additional unknown properties, so a consumer proves
+  its decoder tolerates a vendor adding fields.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    author: A. Author
+    published_at: 2026-05-20T00:00:00Z
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+providers:
+
+  exa:
+    extra_fields:
+      resolvedSearchType: neural
+      experimentalRanking:
+        variant: b
+        weights:
+          - 0.4
+          - 0.6
+    results:
+      - source: source-a
+        extra_fields:
+          relevanceExplanation: An unreleased field describing why this ranked first.
+          verified: true
+    cost_dollars:
+      total: 0.005
+    answer:
+      extra_fields:
+        synthesisModel: an-unreleased-model-name
+      answer: Report A states the finding.
+      citations:
+        - source-a
+
+  tavily:
+    extra_fields:
+      request_region: eu-west
+      experimental_rerank: true
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+        extra_fields:
+          chunk_count: 3
+          experimental_relevance: 0.77
+
+  perplexity:
+    extra_fields:
+      experimental_reasoning_trace: An unreleased field carrying free text.
+      service_tier: default
+    answer: A grounded answer citing Report A.
+    finish_reason: stop
+    citations:
+      - source-a
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    extra_fields:
+      experimental_trace_id: trace-0
+      service_tier: default
+    answer: Report A states the finding.
+    search_results:
+      - source-a

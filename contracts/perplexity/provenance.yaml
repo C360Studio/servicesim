@@ -1,0 +1,210 @@
+# Provenance for the Perplexity golden wire fixtures.
+#
+# Every golden in this directory has exactly one entry here, and
+# contracts/contracts_test.go fails the build if that stops being true.
+#
+# kind:
+#   vendor-documented  the shape AND the values come from the vendor's own
+#                      machine-readable specification.
+#   simulator-chosen   Servicesim picked this shape or these values. The live
+#                      contract canary may correct it from a real response.
+#
+# Unlike Exa and Tavily, this provider's contract was generated directly from
+# https://docs.perplexity.ai/openapi.json rather than from prose pages, so
+# "vendor-documented" here means "named in that specification". README.md in
+# this directory is the authority and must not be edited by fixture work.
+#
+# Sonar is supported only until 2026-09-27; the Agent API is its successor and
+# both surfaces are simulated.
+
+provider: perplexity
+verified: 2026-08-14
+
+goldens:
+  - golden: perplexity-sonar-happy.json
+    endpoint: POST /v1/sonar (alias POST /chat/completions)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: >-
+      Choice carries BOTH message and delta: the specification declares delta
+      required alongside message, so a non-streaming response still emits an
+      (empty) delta. UsageInfo requires cost, which the plan document omits
+      entirely and which a schema-validating consumer would reject the response
+      for missing. created is Scenario.Time.Base.Unix(), never time.Now().
+      citations is emitted for legacy consumers but is deprecated in favour of
+      search_results.
+
+  - golden: perplexity-sonar-empty.json
+    endpoint: POST /v1/sonar (alias POST /chat/completions)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: >-
+      Zero-result success. search_results and citations are optional and are
+      omitted rather than emitted empty; usage.cost stays present because the
+      specification requires it even at zero cost.
+
+  - golden: perplexity-sonar-400.json
+    endpoint: POST /v1/sonar (alias POST /chat/completions)
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: >-
+      The specification declares no body for any non-422 Sonar status. This is
+      FastAPI's default {"detail": "<string>"} and is an inference. Note detail
+      is a STRING here and an ARRAY for 422 - both are legal FastAPI and a
+      consumer must not assume one type. Correcting this from a real response is
+      an explicit job for the live contract canary.
+
+  - golden: perplexity-sonar-401.json
+    endpoint: POST /v1/sonar (alias POST /chat/completions)
+    status: 401
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: Non-422 Sonar body; unverified, see perplexity-sonar-400.json.
+
+  - golden: perplexity-sonar-422.json
+    endpoint: POST /v1/sonar (alias POST /chat/completions)
+    status: 422
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: >-
+      HTTPValidationError, the one error body the specification schematises.
+      loc elements are strings or integers in the same array. Entry order is
+      semantic, which is why findings are totally ordered before rendering -
+      an unsorted findings list would make these bytes differ run to run.
+
+  - golden: perplexity-sonar-429.json
+    endpoint: POST /v1/sonar (alias POST /chat/completions)
+    status: 429
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: Non-422 Sonar body; unverified, see perplexity-sonar-400.json.
+
+  - golden: perplexity-sonar-500.json
+    endpoint: POST /v1/sonar (alias POST /chat/completions)
+    status: 500
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: Non-422 Sonar body; unverified, see perplexity-sonar-400.json.
+
+  - golden: perplexity-404.json
+    endpoint: any unmatched path on the Perplexity listener
+    status: 404
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: >-
+      Fail-closed routing. An unmatched path cannot know which of the two
+      surfaces was intended, so routing errors use the Sonar-shaped
+      {"detail": "<string>"} body rather than the Agent API's ErrorInfo. Both
+      the choice and the message are Servicesim's.
+
+  - golden: perplexity-405.json
+    endpoint: a known Perplexity path with an unsupported method
+    status: 405
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: Served with an Allow header. Shape and message are Servicesim's.
+
+  - golden: perplexity-agent-happy.json
+    endpoint: POST /v1/agent (alias POST /v1/responses)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: >-
+      SearchResult.id is an INTEGER - the one identifier in this repository that
+      is not a string, not a source ID and not a URL. output[] order is fixed at
+      search_results then message, mirroring the execution order the trace
+      represents. Field names are all from the specification; the enum VALUES
+      "output_text" (ContentPartType) and "url_citation" (Annotation.type) are
+      inferred from the OpenAI-compatible naming, as the generated contract does
+      not enumerate those members.
+
+  - golden: perplexity-agent-empty.json
+    endpoint: POST /v1/agent (alias POST /v1/responses)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: >-
+      Zero-result success. results and annotations are emitted as empty arrays
+      rather than omitted so a consumer's array handling is always exercised.
+      Same ContentPartType inference as perplexity-agent-happy.json.
+
+  - golden: perplexity-agent-failed.json
+    endpoint: POST /v1/agent (alias POST /v1/responses)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: >-
+      A terminal failure reported inside a 200 body: status is the Status enum
+      member "failed" and error is the specification's ErrorInfo. This is how a
+      consumer's terminal-state handling is exercised without an HTTP-level
+      fault, and a consumer that only branches on the status code misses it.
+
+  - golden: perplexity-agent-400.json
+    endpoint: POST /v1/agent (alias POST /v1/responses)
+    status: 400
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: >-
+      ErrorInfo is declared on the agent operations, so the {"error": {...}}
+      envelope is the specification's, not an inference. Only message is
+      required. The code and type VALUES are Servicesim's; the specification
+      does not enumerate them.
+
+  - golden: perplexity-agent-401.json
+    endpoint: POST /v1/agent (alias POST /v1/responses)
+    status: 401
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: ErrorInfo envelope; code and type values are Servicesim's.
+
+  - golden: perplexity-agent-403.json
+    endpoint: POST /v1/agent (alias POST /v1/responses)
+    status: 403
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: ErrorInfo envelope; code and type values are Servicesim's.
+
+  - golden: perplexity-agent-422.json
+    endpoint: POST /v1/agent (alias POST /v1/responses)
+    status: 422
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: >-
+      HTTPValidationError, not ErrorInfo. The asymmetry is real and deliberate:
+      422 follows FastAPI's validation convention on both surfaces while the
+      Agent API declares ErrorInfo for every other status. Do not unify them.
+
+  - golden: perplexity-agent-429.json
+    endpoint: POST /v1/agent (alias POST /v1/responses)
+    status: 429
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: ErrorInfo envelope; code and type values are Servicesim's.
+
+  - golden: perplexity-agent-500.json
+    endpoint: POST /v1/agent (alias POST /v1/responses)
+    status: 500
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    verified: 2026-08-14
+    note: ErrorInfo envelope; code and type values are Servicesim's.

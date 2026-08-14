@@ -1,0 +1,57 @@
+# Zero results inside a well-shaped envelope. A consumer must report "no
+# results", not an error, and must not mistake an empty list for a decode
+# failure. The corpus is deliberately empty: nothing can be projected by
+# accident.
+version: 1
+name: empty-results
+description: >-
+  Every surface returns a valid, successful envelope carrying no results at all.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+providers:
+
+  exa:
+    results: []
+    cost_dollars:
+      total: 0.001
+    answer:
+      answer: I found no sources for that query.
+      citations: []
+
+  tavily:
+    # An explicit empty string, not an absent key: absent renders JSON null,
+    # which is the "no answer requested" case rather than the "no answer" case.
+    answer: ""
+    response_time: 0.42
+    results: []
+    usage:
+      credits: 1
+
+  perplexity:
+    answer: I found no sources for that query.
+    finish_reason: stop
+    citations: []
+    search_results: []
+    usage:
+      prompt_tokens: 18
+      completion_tokens: 12
+      total_tokens: 30
+      search_context_size: low
+      cost:
+        input_tokens_cost: 0.0001
+        output_tokens_cost: 0.0001
+        total_cost: 0.0002
+
+  perplexity_agent:
+    answer: I found no sources for that query.
+    # Searched, and found nothing: queries is independent of search_results
+    # precisely so this state can be projected.
+    queries:
+      - report a
+    search_results: []
+    annotations: []
+    usage:
+      input_tokens: 18
+      output_tokens: 12

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "invalid_request",
+    "message": "Bad Request",
+    "type": "invalid_request_error"
+  }
+}

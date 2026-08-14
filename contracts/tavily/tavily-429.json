@@ -1,0 +1,5 @@
+{
+  "detail": {
+    "error": "Your request has been blocked due to excessive requests. Please reduce rate of requests."
+  }
+}

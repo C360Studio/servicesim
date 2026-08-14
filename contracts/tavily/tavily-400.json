@@ -1,0 +1,5 @@
+{
+  "detail": {
+    "error": "Invalid topic. Must be 'general', 'news' or 'finance'."
+  }
+}

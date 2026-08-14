@@ -1,0 +1,72 @@
+{
+  "id": "resp_9f2c1d8b7a6e5f4c3b2a1908f7e6d5c4",
+  "object": "response",
+  "model": "openai/gpt-5",
+  "created_at": 1767225600,
+  "status": "completed",
+  "output": [
+    {
+      "type": "search_results",
+      "queries": [
+        "deterministic simulator adapter tests"
+      ],
+      "results": [
+        {
+          "id": 1,
+          "title": "Report A",
+          "url": "https://example.test/report-a",
+          "snippet": "Report A finds that deterministic simulators remove flakiness from adapter test suites.",
+          "date": "2025-11-16",
+          "last_updated": "2025-12-01",
+          "source": "web"
+        },
+        {
+          "id": 2,
+          "title": "Report B",
+          "url": "https://example.test/report-b",
+          "snippet": "Report B corroborates Report A across a second dataset.",
+          "source": "web"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_4e3d2c1b0a9f8e7d6c5b4a39281706f5",
+      "role": "assistant",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Report A finds that deterministic simulation removes flakiness, and Report B agrees.",
+          "annotations": [
+            {
+              "type": "url_citation",
+              "start_index": 0,
+              "end_index": 8,
+              "title": "Report A",
+              "url": "https://example.test/report-a"
+            },
+            {
+              "type": "url_citation",
+              "start_index": 68,
+              "end_index": 76,
+              "title": "Report B",
+              "url": "https://example.test/report-b"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 42,
+    "output_tokens": 128,
+    "total_tokens": 170,
+    "cost": {
+      "currency": "USD",
+      "input_cost": 0.00021,
+      "output_cost": 0.00128,
+      "total_cost": 0.00149
+    }
+  }
+}

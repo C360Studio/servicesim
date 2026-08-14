@@ -1,0 +1,30 @@
+{
+  "id": "7a2f4b6c-8d0e-5f13-9a2b-4c6d8e0f1a3b",
+  "object": "chat.completion",
+  "model": "sonar",
+  "created": 1767225600,
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": ""
+      },
+      "delta": {
+        "role": "assistant",
+        "content": ""
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 0,
+    "total_tokens": 12,
+    "cost": {
+      "input_tokens_cost": 0,
+      "output_tokens_cost": 0,
+      "total_cost": 0
+    }
+  }
+}

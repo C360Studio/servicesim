@@ -1,0 +1,5 @@
+{
+  "requestId": "67207943fab9832d162b5317f4cca830",
+  "error": "Invalid request body | Validation error: Invalid enum value. Expected 'auto' | 'fast' | 'instant' | 'deep-lite' | 'deep' | 'deep-reasoning', received 'slow' at \"type\"",
+  "tag": "INVALID_REQUEST_BODY"
+}

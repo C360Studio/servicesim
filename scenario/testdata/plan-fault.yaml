@@ -1,0 +1,19 @@
+# Verbatim from docs/architecture-and-implementation-plan.md, "Fault model".
+version: 1
+name: rate-limited
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  tavily:
+    fault:
+      attempts:
+        - status: 429
+          retry_after: 1
+          body:
+            detail:
+              error: Too many requests.
+        - status: 200
+    results:
+      - source: source-a

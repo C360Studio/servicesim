@@ -1,0 +1,32 @@
+version: 1
+name: scripted-loop
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  perplexity:
+    turn_key: ["route", "body_json:model"]
+    auth:
+      mode: required
+    turns:
+      - when:
+          call_index: 0
+        respond:
+          answer: Let me search for that.
+      - when:
+          body_contains: report-a
+        fault:
+          attempts:
+            - status: 429
+              retry_after: 1
+        respond:
+          answer: Report A says ...
+          citations: [source-a]
+      - respond:
+          answer: I don't know.
+  perplexity_agent:
+    kind: perplexity_agent
+    answer: A grounded answer citing Report A.
+    search_results:
+      - source: source-a

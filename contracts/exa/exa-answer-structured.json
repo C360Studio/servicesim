@@ -1,0 +1,19 @@
+{
+  "requestId": "f708192a3b4c5d6e7f80912a3b4c5d6e",
+  "answer": {
+    "finding": "Deterministic simulation removes flakiness from adapter suites.",
+    "confidence": "high"
+  },
+  "citations": [
+    {
+      "title": "Report A",
+      "url": "https://example.test/report-a",
+      "id": "https://example.test/report-a",
+      "publishedDate": "2025-11-16T01:36:32.547Z",
+      "author": "A. Author"
+    }
+  ],
+  "costDollars": {
+    "total": 0.005
+  }
+}
