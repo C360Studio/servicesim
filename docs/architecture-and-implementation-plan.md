@@ -79,8 +79,9 @@ correct vendor request."
 
 ### Be deterministic by default
 
-The same scenario and request must produce the same response, identifiers, ordering, and timing configuration. Generated
-IDs should derive from stable fixture keys rather than random UUIDs unless a scenario explicitly tests nondeterministic IDs.
+The same scenario and request must produce the same response, identifiers, ordering, and timing configuration.
+Generated IDs should derive from stable fixture keys rather than random UUIDs unless a scenario explicitly tests
+nondeterministic IDs.
 
 ### Keep scenario state isolated
 
@@ -95,9 +96,9 @@ shared state between concurrent tests.
 
 ### Preserve provider and source provenance
 
-Provider diversity is not the same as source diversity. Multiple providers can return the same underlying URL or repeat the
-same claim. Fixtures must make source overlap and provider provenance explicit so consuming fusion tests can verify
-deduplication and corroboration behavior.
+Provider diversity is not the same as source diversity. Multiple providers can return the same underlying URL or
+repeat the same claim. Fixtures must make source overlap and provider provenance explicit so consuming fusion tests
+can verify deduplication and corroboration behavior.
 
 ## Proposed repository layout
 
@@ -276,8 +277,8 @@ Initial response fields:
 Contract notes:
 
 - The current REST documentation requires Bearer authentication in the header.
-- `include_answer`, `include_raw_content`, and `max_results` remain explicit because they directly affect response size and
-  credit consumption.
+- `include_answer`, `include_raw_content`, and `max_results` remain explicit because they directly affect response
+  size and credit consumption.
 - Reusable error scenarios should cover at least 400, 401, 429, plan-limit responses, and 500.
 - Source: <https://docs.tavily.com/documentation/api-reference/endpoint/search>
 
@@ -466,8 +467,8 @@ The request journal should expose:
 The journal must never expose API key values. Concurrent fusion tests can use arrival and completion timestamps to prove
 that provider calls overlapped rather than running serially.
 
-`POST /__admin/reset` is useful for local tests but should not be required by parallel CI. Isolated simulator instances are
-the preferred concurrency boundary.
+`POST /__admin/reset` is useful for local tests but should not be required by parallel CI. Isolated simulator
+instances are the preferred concurrency boundary.
 
 ## Testing strategy
 
@@ -527,13 +528,13 @@ Use deterministic scenarios designed around fusion invariants rather than vendor
 11. Providers return additional unknown fields.
 12. Provider calls execute concurrently.
 
-Fusion tests should assert normalized evidence, provenance, deduplication, partial-success policy, and terminal behavior. They
-should not assert that a simulator has reproduced real-world relevance scoring.
+Fusion tests should assert normalized evidence, provenance, deduplication, partial-success policy, and terminal
+behavior. They should not assert that a simulator has reproduced real-world relevance scoring.
 
 ### Layer 5: Live contract canaries
 
-Simulator tests cannot detect vendor drift. A scheduled or manually dispatched workflow should make one bounded request to
-each real provider using repository secrets.
+Simulator tests cannot detect vendor drift. A scheduled or manually dispatched workflow should make one bounded
+request to each real provider using repository secrets.
 
 The workflow should:
 

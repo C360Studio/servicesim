@@ -18,11 +18,11 @@ the live contract canary reports drift.
 
 | Method | Path | Status | Note |
 |---|---|---|---|
-| `POST` | `/search` | canonical | OpenAPI 3.0.3 `paths./search.post`, server `https://api.tavily.com/`. No version prefix (no /v1). Both requested doc URLs resolve to the same reference page; https://docs.tavily.com/api-reference/endpoint/search serves the identical content (docs site accepts the path with and without the /documentation segment). NOTE: the historical `days` request parameter (news recency window) is COMPLETELY ABSENT from the current /search OpenAPI schema — it is not listed among the request properties. Date filtering is now time_range / start_date / end_date. |
+| `POST` | `/search` | canonical | OpenAPI 3.0.3 `paths./search.post`, server `https://api.tavily.com/`. No version prefix (no /v1). Both requested doc URLs resolve to the same reference page; <https://docs.tavily.com/api-reference/endpoint/search> serves the identical content (docs site accepts the path with and without the /documentation segment). NOTE: the historical `days` request parameter (news recency window) is COMPLETELY ABSENT from the current /search OpenAPI schema — it is not listed among the request properties. Date filtering is now time_range / start_date / end_date. |
 
 ## Authentication
 
-- Authorization: Bearer <token> (OpenAPI `security: [{bearerAuth: []}]`; components.securitySchemes.bearerAuth = {type: http, scheme: bearer, bearerFormat: JWT}, described as 'Bearer authentication header in the form Bearer <token>, where <token> is your Tavily API key (e.g., Bearer tvly-YOUR_API_KEY)')
+- Authorization: Bearer `<token>` (OpenAPI `security: [{bearerAuth: []}]`; components.securitySchemes.bearerAuth = {type: http, scheme: bearer, bearerFormat: JWT}, described as 'Bearer authentication header in the form Bearer `<token>`, where `<token>` is your Tavily API key (e.g., Bearer tvly-YOUR_API_KEY)')
 
 ## Request fields
 
@@ -36,8 +36,8 @@ the live contract canary reports drift.
 | `time_range` | `string` | no | `day`, `week`, `month`, `year`, `d`, `w`, `m`, `y` | `null` |
 | `start_date` | `string` | no | — | `null` |
 | `end_date` | `string` | no | — | `null` |
-| `include_answer` | `boolean|string` | no | `true`, `false`, `basic`, `advanced` | `false` |
-| `include_raw_content` | `boolean|string` | no | `true`, `false`, `markdown`, `text` | `false` |
+| `include_answer` | `boolean\|string` | no | `true`, `false`, `basic`, `advanced` | `false` |
+| `include_raw_content` | `boolean\|string` | no | `true`, `false`, `markdown`, `text` | `false` |
 | `include_images` | `boolean` | no | — | `false` |
 | `include_image_descriptions` | `boolean` | no | — | `false` |
 | `include_favicon` | `boolean` | no | — | `false` |
@@ -147,4 +147,3 @@ documentation on 2026-08-14. The verified contract above is authoritative.
   - **Live docs say:** Every documented error (400/401/429/432/433/500) uses the identical envelope `{"detail": {"error": "<string>"}}` — a nested object, not a flat {"error": …}. A simulator must emit this exact shape; the plan gives implementers nothing to build against.
 - **Plan said:** Implicit in the plan's field list: a `days` request parameter and `topic` enum of general|news.
   - **Live docs say:** The plan never names either, but the task asked me to verify them. `days` is entirely ABSENT from the current /search request schema (grep over the full OpenAPI returns zero hits) — recency is now time_range / start_date / end_date. `topic` has THREE values: [general, news, finance], default general. Note the 400 error example text still says "Must be 'general' or 'news'", which is stale relative to the enum.
-

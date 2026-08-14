@@ -18,14 +18,14 @@ the live contract canary reports drift.
 
 | Method | Path | Status | Note |
 |---|---|---|---|
-| `POST` | `/search` | canonical | Base URL https://api.exa.ai. Confirmed on both the OpenAPI-backed reference page and the coding-agents guide. |
-| `POST` | `/answer` | canonical | Separate documented endpoint at https://exa.ai/docs/reference/answer. Same auth. Request: query (string, required), stream, text, outputSchema. Response: answer (string\|object), citations[] (title,url,publishedDate,author,id,image,text), requestId, costDollars. The plan doc does not mention /answer at all. |
+| `POST` | `/search` | canonical | Base URL <https://api.exa.ai>. Confirmed on both the OpenAPI-backed reference page and the coding-agents guide. |
+| `POST` | `/answer` | canonical | Separate documented endpoint at <https://exa.ai/docs/reference/answer>. Same auth. Request: query (string, required), stream, text, outputSchema. Response: answer (string\|object), citations[] (title,url,publishedDate,author,id,image,text), requestId, costDollars. The plan doc does not mention /answer at all. |
 | `POST` | `/contents` | unconfirmed | Referenced indirectly by the error-codes page's `statuses[]` / CRAWL_* tags, which describe a contents-fetch surface. I did not fetch a /contents reference page, so I am not asserting its route shape. |
 
 ## Authentication
 
-- x-api-key: <key>
-- Authorization: Bearer <key>
+- x-api-key: `<key>`
+- Authorization: Bearer `<key>`
 
 ## Request fields
 
@@ -49,19 +49,19 @@ the live contract canary reports drift.
 | `outputSchema` | `object` | no | — | — |
 | `stream` | `boolean` | no | — | `false` |
 | `contents` | `object` | no | — | — |
-| `contents.text` | `boolean|object` | no | — | — |
-| `contents.highlights` | `boolean|object` | no | — | — |
-| `contents.summary` | `boolean|object` | no | — | — |
+| `contents.text` | `boolean\|object` | no | — | — |
+| `contents.highlights` | `boolean\|object` | no | — | — |
+| `contents.summary` | `boolean\|object` | no | — | — |
 | `contents.extras.links` | `integer` | no | — | `0` |
 | `contents.extras.imageLinks` | `integer` | no | — | `0` |
 | `contents.extras.codeBlocks` | `integer` | no | — | `0` |
 | `contents.maxAgeHours` | `integer` | no | — | — |
 | `contents.livecrawlTimeout` | `integer` | no | — | `10000` |
 | `contents.subpages` | `integer` | no | — | `0` |
-| `contents.subpageTarget` | `string|array[string]` | no | — | — |
+| `contents.subpageTarget` | `string\|array[string]` | no | — | — |
 | `useAutoprompt` | `boolean` | no | — | — |
 | `livecrawl` | `string` | no | — | — |
-| `context` | `boolean|object` | no | — | — |
+| `context` | `boolean\|object` | no | — | — |
 
 ## Response fields
 
@@ -73,7 +73,7 @@ the live contract canary reports drift.
 | `results[].url` | `string` | yes | no |
 | `results[].id` | `string` | no | no |
 | `results[].publishedDate` | `string` | no | yes |
-| `results[].author` | `string|null` | no | yes |
+| `results[].author` | `string\|null` | no | yes |
 | `results[].text` | `string` | no | no |
 | `results[].highlights` | `array[string]` | no | no |
 | `results[].highlightScores` | `array[number]` | no | no |
@@ -90,8 +90,8 @@ the live contract canary reports drift.
 | `costDollars.contents` | `object` | no | no |
 | `resolvedSearchType` | `string` | no | no |
 | `context` | `string` | no | no |
-| `output` | `object|null` | no | yes |
-| `output.content` | `string|object` | no | no |
+| `output` | `object\|null` | no | yes |
+| `output.content` | `string\|object` | no | no |
 | `output.grounding` | `array[object]` | no | no |
 | `output.grounding[].field` | `string` | no | no |
 | `output.grounding[].citations` | `array[object]` | no | no |
@@ -158,7 +158,7 @@ documentation on 2026-08-14. The verified contract above is authoritative.
 - **Plan said:** The /search response's top-level fields are `results` and `requestId` (per the plan's response example)
   - **Live docs say:** The response also always carries `costDollars` ({total: float, search:{neural: float}}), plus deprecated `resolvedSearchType` and `context`, and `output` when outputSchema was supplied. costDollars is entirely absent from the plan and is exactly the sort of field a cost-tracking consumer parses.
 - **Plan said:** Result `id` is an opaque slug like "source-1" (plan's example)
-  - **Live docs say:** Docs describe id as "The temporary ID for the document" and their own example uses a URL: "id": "https://arxiv.org/abs/2307.06435". A simulator emitting slug-shaped ids will let consumers build assumptions that break against the real API.
+  - **Live docs say:** Docs describe id as "The temporary ID for the document" and their own example uses a URL: "id": "<https://arxiv.org/abs/2307.06435".> A simulator emitting slug-shaped ids will let consumers build assumptions that break against the real API.
 - **Plan said:** requestId is a readable slug like "exa-request-1" (plan's example)
   - **Live docs say:** Docs example is a 32-char lowercase hex string: "b5947044c4b78efa9552a7c89b306d95" (and "67207943fab9832d162b5317f4cca830" in the error example). Any consumer regex or length assumption trained on the plan's slug would be wrong.
 - **Plan said:** Only the fields listed in the plan need simulating (implicitly: no image, favicon, summary, subpages, extras, entities)
@@ -171,8 +171,6 @@ documentation on 2026-08-14. The verified contract above is authoritative.
   - **Live docs say:** outputSchema (object, max nesting depth 2, max 10 properties) is a first-class request field, and supplying it changes the response oneOf branch by adding the `output` object with content and grounding[]. A simulator without this cannot exercise structured-output consumers.
 - **Plan said:** The plan does not flag startCrawlDate/endCrawlDate or livecrawl as deprecated
   - **Live docs say:** startCrawlDate and endCrawlDate are documented as deprecated with no effect; `livecrawl` is deprecated in favor of contents.maxAgeHours:0; numSentences and highlightsPerUrl are deprecated highlight params. The plan flags only useAutoprompt.
-
-
 
 ## POST /answer
 
@@ -188,7 +186,7 @@ Sources:
 - <https://exa.ai/docs/llms.txt>
 - <https://exa.ai/docs/reference/agent-api/overview.md>
 - <https://exa.ai/docs/.mintlify/skills/build-with-exa/references/agent.md>
-- <https://docs.exa.ai/reference/answer (307 -> exa.ai/docs/reference/answer)>
+- <https://docs.exa.ai/reference/answer> (307 redirect to `exa.ai/docs/reference/answer`)
 
 Exa's synthesis endpoint: same credential and base URL as `/search`, but it returns a written answer plus
 the sources that support it. It is the Exa analogue of Tavily's `include_answer` and of Perplexity's whole
@@ -212,13 +210,13 @@ evidence* — instead of making Exa the one provider that contributes evidence b
 | Field | Type | Always present | Nullable | Notes |
 |---|---|---|---|---|
 | `requestId` | `string` | yes | no | 'Unique identifier for the request.' Same 32-char lowercase hex format as /search — docs example: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6". |
-| `answer` | `string|object` | yes | no | REQUIRED field, and the /answer-only payload. 'string by default, or a structured object matching the provided outputSchema.' This is a true oneOf on the SAME key — unlike /search, which keeps prose o |
+| `answer` | `string\|object` | yes | no | REQUIRED field, and the /answer-only payload. 'string by default, or a structured object matching the provided outputSchema.' This is a true oneOf on the SAME key — unlike /search, which keeps prose o |
 | `citations` | `array[object]` | no | no | Marked optional in the schema (only `answer` is required), but present in every documented example. A simulator should emit it by default and only omit it to exercise a defensive-parsing path. |
 | `citations[].title` | `string` | yes | no | Required within the citation object. |
 | `citations[].url` | `string` | yes | no | Required within the citation object. format: uri. |
 | `citations[].id` | `string` | no | no | 'The temporary ID for the document. Useful for the /contents endpoint.' Same URL-shaped value convention as /search — the docs example uses the article URL as the id, identical to the url field. |
 | `citations[].publishedDate` | `string` | no | yes | format: date-time. 'An estimate of the creation date, from parsing HTML content.' Docs example: "2024-12-11T00:00:00.000Z" — full ISO-8601 with milliseconds and Z. |
-| `citations[].author` | `string|null` | no | yes | Explicitly string OR null in the schema. Docs example: "Dan Milmo". |
+| `citations[].author` | `string\|null` | no | yes | Explicitly string OR null in the schema. Docs example: "Dan Milmo". |
 | `citations[].image` | `string` | no | no | format: uri. 'The URL of an image associated with the search result, if available.' |
 | `citations[].favicon` | `string` | no | no | format: uri. Favicon URL for the domain. Confirmed present on the /answer citation object (both the reference schema and the .md source list it). |
 | `citations[].text` | `string` | no | no | 'The full text content of each source. Only present when text contents are requested.' Gated on request field text: true. |
@@ -229,55 +227,55 @@ evidence* — instead of making Exa the one provider that contributes evidence b
 
 ### Error bodies
 
-**400**
+#### 400 — INVALID_REQUEST_BODY
 
 ```json
 {"requestId":"67207943fab9832d162b5317f4cca830","error":"Invalid request body | Validation error...","tag":"INVALID_REQUEST_BODY"}
 ```
 
-**400**
+#### 400 — INVALID_JSON_SCHEMA
 
 ```json
 {"requestId":"<hex>","error":"<message>","tag":"INVALID_JSON_SCHEMA"}
 ```
 
-**401**
+#### 401
 
 ```json
 {"requestId":"<hex>","error":"<message>","tag":"INVALID_API_KEY"}
 ```
 
-**402**
+#### 402
 
 ```json
 {"requestId":"<hex>","error":"<message>","tag":"NO_MORE_CREDITS"}
 ```
 
-**422**
+#### 422
 
 ```json
 {"requestId":"<hex>","error":"<message>","tag":"INVALID_REQUEST"}
 ```
 
-**429**
+#### 429
 
 ```json
 {"error":"You've exceeded your Exa rate limit of 10 requests per second. If you want this increased, please email hello@exa.ai :)"}
 ```
 
-**500**
+#### 500
 
 ```json
 {"requestId":"<hex>","error":"<message>","tag":"INTERNAL_ERROR"}
 ```
 
-**501**
+#### 501
 
 ```json
 {"requestId":"<hex>","error":"<message>","tag":"UNABLE_TO_GENERATE_RESPONSE"}
 ```
 
-**200**
+#### 200
 
 ```json
 {"tag":"ERROR","payload":{"error":{"code":400,"message":"..."},"requestId":"..."}}
@@ -285,7 +283,7 @@ evidence* — instead of making Exa the one provider that contributes evidence b
 
 ### How /answer differs from /search
 
-Contracted against the recorded /search contract at /Users/coby/Code/c360/servicesim/contracts/exa/README.md. Same host (https://api.exa.ai), same auth headers, same error envelope family — but the request surface is drastically smaller and the response is a different document, not a variant of the /search one.
+Contracted against the recorded /search contract at `contracts/exa/README.md`. Same host (`https://api.exa.ai`), same auth headers, same error envelope family — but the request surface is drastically smaller and the response is a different document, not a variant of the /search one.
 
 REQUEST — REMOVED (present on /search, absent from the /answer AnswerRequest schema, which has exactly four properties): type, numResults, category, moderation, compliance, includeDomains, excludeDomains, startPublishedDate, endPublishedDate, startCrawlDate, endCrawlDate, additionalQueries, contents (and its whole subtree: contents.text/highlights/summary/extras.links/extras.imageLinks/extras.codeBlocks/maxAgeHours/livecrawlTimeout/subpages/subpageTarget), useAutoprompt, livecrawl, context. Also absent from the schema though present on /search AND in the TS SDK's AnswerOptions: systemPrompt, userLocation — plus an SDK-only model:"exa". Those three are the only genuinely ambiguous request fields; everything else is a clean removal.
 REQUEST — SHARED: query (string, required), stream (boolean, default false), outputSchema (object).
@@ -315,7 +313,7 @@ The README's existing one-line /answer row is directionally right but incomplete
 - publishedDate FORMAT IS FULL ISO-8601 WITH MILLISECONDS AND Z ("2024-12-11T00:00:00.000Z"), and author is genuinely string-OR-null, not string-or-absent. Encode the null case explicitly — a simulator that only ever omits author will never exercise the null branch consumers must handle.
 - costDollars IS OPTIONAL ON /answer (required on /search) AND ITS BREAKDOWN IS SPARSE. The documented example is {"total": 0.005} with no `search` sub-object. Default to the sparse form; make the {total, search:{neural}} form an explicit scenario knob.
 - STREAMING IS A SEPARATE RENDER PATH, NOT A CHUNKED VERSION OF THE JSON BODY. stream:true switches Content-Type to text/event-stream. Four documented chunk kinds, in this order: (1) OpenAI-compatible content deltas {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"..."},"finish_reason":null}]}; (2) a citations chunk {"citations":[...]}; (3) a terminal metadata chunk carrying {"costDollars":{...},"requestId":"..."}; (4) an error chunk. requestId and costDollars arrive ONLY in that late chunk — a streaming consumer cannot read them from a header or a first chunk.
-- RAW SSE FRAMING IS UNCONFIRMED. The docs describe the chunk JSON but never show raw wire lines, so the `data: ` line prefix and the presence/absence of a terminating [DONE] sentinel are NOT verified. Pick one framing, mark it clearly as an assumption in the simulator, and put it behind a knob so it can be corrected without touching chunk construction. Do not present it as vendor-confirmed.
+- RAW SSE FRAMING IS UNCONFIRMED. The docs describe the chunk JSON but never show raw wire lines, so the `data:` line prefix and the presence/absence of a terminating [DONE] sentinel are NOT verified. Pick one framing, mark it clearly as an assumption in the simulator, and put it behind a knob so it can be corrected without touching chunk construction. Do not present it as vendor-confirmed.
 - IN-STREAM ERRORS BREAK THE ENVELOPE RULE. A fault injected mid-stream must serialise as {"tag":"ERROR","payload":{"error":{"code":400,"message":"..."},"requestId":"..."}} on an already-200 text/event-stream response — nested error object, numeric code, and `tag` holding the literal "ERROR" rather than a value from the documented tag enum. Reusing the flat {requestId,error,tag} serialiser here is the single most likely simulator bug on this surface.
 - SIMULATE 501 / UNABLE_TO_GENERATE_RESPONSE. It is documented as /answer-only and is the 'model could not answer' path that has no /search analogue. A research product's error handling is incomplete without it, and it must NOT be reachable on /search in the simulator.
 - REQUEST VALIDATION MUST DIVERGE FROM /search. Reject or ignore the /search-only fields — a request with type/numResults/includeDomains/contents against /answer should not be validated by the /search decoder. Treat model, systemPrompt and userLocation as accept-and-ignore (SDK sends them; the OpenAPI schema does not list them), and do not echo them.
@@ -331,4 +329,3 @@ lifecycle needs a different scenario shape than a single request/response projec
 
 A `POST /research` endpoint appears in third-party integration documentation but not in Exa's own docs index.
 Treat it as retired; do not simulate it.
-
