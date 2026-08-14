@@ -1,0 +1,52 @@
+# Consumed contracts
+
+Each provider directory records the subset of its vendor API that Servicesim simulates and that C360 consumers
+parse — the *consumed contract*, not the whole vendor surface. Every file carries the documentation URLs it was
+derived from and the date the shape was verified.
+
+| Provider | Contract | Verified | Base URL simulated |
+|---|---|---|---|
+| Exa | [`exa/README.md`](exa/README.md) | 2026-08-14 | `POST /search` |
+| Tavily | [`tavily/README.md`](tavily/README.md) | 2026-08-14 | `POST /search` |
+| Perplexity | [`perplexity/README.md`](perplexity/README.md) | 2026-08-14 | `POST /v1/sonar`, `POST /chat/completions` |
+
+## Why these files exist
+
+Golden wire fixtures are only trustworthy if a reviewer can tell what they were checked against. When a fixture
+changes, the reviewer's question is "did the vendor change, or did we?" — and that question is unanswerable without
+a dated provenance record. These files are that record.
+
+They are deliberately *not* copies of the vendors' OpenAPI documents. Whether those can be redistributed under their
+respective terms is an open question in the plan's deferred decisions, so this repository keeps only reviewed
+minimal schemas for the fields it actually implements.
+
+## Keeping them honest
+
+Simulator tests cannot detect vendor drift — a simulator agrees with itself by construction. The live contract
+canary (plan Phase 5) makes one bounded request per provider against the real API on a manual or scheduled trigger,
+validates only the consumed fields listed here, and fails on removed or incompatible fields. Additive fields are
+reported without failing, because external APIs evolve additively and consumers are expected to tolerate that.
+
+When the canary reports drift:
+
+1. Update the affected `contracts/<provider>/README.md` and its **Verified** date.
+2. Update the provider handler and its golden fixtures in the same change.
+3. Cut a Servicesim release — provider handler and contract changes are release-worthy; product-specific scenario
+   changes in consuming repositories are not.
+
+## Known upstream deprecations
+
+These were observed during the 2026-08-14 verification and affect what new consumer code should emit or parse.
+
+- **Perplexity Sonar has an announced end date.** Every Sonar documentation page carries "Sonar Chat Completions is
+  now Agent API. Sonar will be supported until September 27, 2026", with `POST /v1/agent` as the successor
+  canonical endpoint and `/v1/responses` as its OpenAI-compatible alias. Simulating Sonar remains correct for
+  existing adapters, but new adapter work should be scoped against the Agent API.
+- **Perplexity `citations` is deprecated** (changelog, May 2025) in favour of `search_results`, which carries
+  titles, URLs and publication dates. Servicesim still emits `citations` so that existing consumers keep working,
+  but adapter contract tests should assert on `search_results`.
+- **Exa `useAutoprompt`, `livecrawl`, `startCrawlDate`, `endCrawlDate`, `numSentences` and `highlightsPerUrl` are
+  deprecated.** Servicesim accepts them and flags them as journal warnings rather than rejecting them, so a consumer
+  can prove its adapter has stopped sending them.
+- **Tavily `days` has been removed** from the `/search` request schema; recency is expressed through `time_range`,
+  `start_date` and `end_date`.
