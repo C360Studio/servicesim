@@ -67,11 +67,23 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Both the bare and the v-prefixed spelling of every semver tag, all
+          # pointing at one digest.
+          #
+          # metadata-action's {{version}} STRIPS the leading v, so tagging
+          # v0.1.0 published 0.1.0 and nothing else — while the plan document,
+          # the README and the release notes all told consumers to pin
+          # :v0.1.0, a tag that did not exist. Publishing both spellings costs
+          # nothing, matches the git tag for anyone reading the releases page,
+          # and keeps the bare form the wider Docker ecosystem expects.
           tags: |
             type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
             type=raw,value=sha-${{ github.event.workflow_run.head_sha || github.sha }}
           labels: |
             org.opencontainers.image.title=Servicesim
