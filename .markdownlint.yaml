@@ -1,0 +1,60 @@
+# Markdownlint configuration for Servicesim
+# See: https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+#
+# Mirrors the sibling c360studio repositories so documentation style is
+# consistent across the workspace.
+
+# Default: all rules enabled
+default: true
+
+# MD013: Line length
+# Relaxed for technical documentation with tables and code blocks
+MD013:
+  line_length: 120
+  heading_line_length: 80
+  code_blocks: false # Don't enforce line length in code blocks
+  tables: false # Don't enforce line length in tables
+
+# MD010: Hard tabs
+# Exempt code blocks. Go source is gofmt-formatted and gofmt indents with tabs,
+# so any document quoting real Go signatures must be allowed to contain them.
+# Prose is still tab-free.
+MD010:
+  code_blocks: false
+
+# MD024: Multiple headings with the same content
+# Provider sections repeat headings like "Contract notes" by design
+MD024:
+  siblings_only: true
+
+# MD033: Inline HTML
+MD033:
+  allowed_elements:
+    - details
+    - summary
+    - br
+
+# MD040: Fenced code blocks should have a language specified
+MD040: true
+
+# MD041: First line in file should be a top-level heading
+MD041: true
+
+# MD060: Table column style
+MD060: false
+
+# MD046: Code block style — prefer fenced over indented
+MD046:
+  style: fenced
+
+# MD048: Code fence style — prefer backticks
+MD048:
+  style: backtick
+
+# MD049: Emphasis style
+MD049:
+  style: asterisk
+
+# MD050: Strong style
+MD050:
+  style: asterisk

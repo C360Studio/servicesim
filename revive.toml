@@ -1,0 +1,40 @@
+# Servicesim Revive Configuration
+#
+# Matches the sibling c360studio Go repositories (semstreams, semsource) so a
+# reviewer moving between repos sees the same rule set and the same failure
+# modes. Kept deliberately close to that baseline — divergence here is a cost
+# paid by every reader, not just this repo.
+
+ignoreGeneratedHeader = false
+severity = "warning"
+confidence = 0.8
+errorCode = 1
+# warningCode = 1 makes revive warnings fail CI. Servicesim is test
+# infrastructure that other repositories pin and trust, so lint debt here
+# propagates outward. Start strict rather than retrofitting strictness later.
+warningCode = 1
+
+[rule.blank-imports]
+[rule.context-as-argument]
+[rule.context-keys-type]
+[rule.dot-imports]
+[rule.error-return]
+[rule.error-strings]
+[rule.error-naming]
+[rule.exported]
+[rule.if-return]
+[rule.increment-decrement]
+[rule.var-naming]
+[rule.var-declaration]
+[rule.package-comments]
+[rule.range]
+[rule.receiver-naming]
+[rule.time-naming]
+[rule.unexported-return]
+[rule.indent-error-flow]
+[rule.errorf]
+[rule.empty-block]
+[rule.superfluous-else]
+[rule.unused-parameter]
+[rule.unreachable-code]
+[rule.redefines-builtin-id]
