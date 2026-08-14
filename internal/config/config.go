@@ -46,6 +46,18 @@ const (
 	// retention.
 	DefaultJournalCapacity = 1000
 
+	// DefaultMaxNamespaces bounds the number of live namespaces. Namespaces are
+	// created implicitly on first use, so they are an unbounded-growth surface
+	// unless something bounds them; total journal retention is
+	// MaxNamespaces × JournalCapacity, and both are configurable.
+	DefaultMaxNamespaces = 1024
+
+	// ScenarioDirDefault is the scenario name in --scenario-dir that serves a
+	// request carrying no /x/<scenario> prefix. See [DefaultScenarioEntry] for
+	// the full rule, which also covers a directory holding one scenario under
+	// any name.
+	ScenarioDirDefault = "default"
+
 	// DefaultMaxRequestBytes bounds a request body at 1 MiB.
 	DefaultMaxRequestBytes int64 = 1 << 20
 
@@ -114,14 +126,33 @@ type Config struct {
 	Perplexity Listener
 
 	// ScenarioPath is the scenario to load. A "builtin:" prefix selects an
-	// embedded protocol scenario, for example "builtin:happy".
+	// embedded protocol scenario, for example "builtin:happy". It is empty in
+	// scenario-directory mode, where there is no single startup scenario;
+	// [Config.ScenarioDirMode] is how a caller tells the two apart.
 	ScenarioPath string
 
 	// ScenarioRoot bounds scenario resolution. Defaults to the directory of
 	// ScenarioPath. Nothing outside it can be opened, symlinks included. It is
 	// empty when ScenarioPath names a built-in, which never touches the file
-	// system.
+	// system, and in scenario-directory mode, where ScenarioDir is its own root.
 	ScenarioRoot string
+
+	// ScenarioDir holds a directory of scenarios, every one of them loaded and
+	// validated at startup and selectable by name through the /x/<scenario>
+	// path prefix. It is empty in the single-scenario mode ScenarioPath
+	// describes, and the two are mutually exclusive.
+	//
+	// The directory is its own containment root: [Config.ScenarioEntries] and
+	// [Config.OpenScenarioEntry] resolve names under it through [os.Root], on
+	// the assumption that a mounted directory of files is untrusted input.
+	ScenarioDir string
+
+	// MaxNamespaces bounds the number of live namespaces. Exceeding it is an
+	// error the request surface reports, never a silent eviction: evicting a
+	// namespace would reset a running test's cursors mid-loop, which is the
+	// worst failure this design can produce. At least 1, because every request
+	// belongs to a namespace even when it names none.
+	MaxNamespaces int
 
 	// JournalCapacity is the maximum number of retained journal entries. Zero
 	// disables retention.
@@ -174,12 +205,14 @@ type binding struct {
 var bindings = []binding{
 	{"scenario", "SERVICESIM_SCENARIO"},
 	{"scenario-root", "SERVICESIM_SCENARIO_ROOT"},
+	{"scenario-dir", "SERVICESIM_SCENARIO_DIR"},
 	{"bind-address", "SERVICESIM_BIND_ADDRESS"},
 	{"admin-port", "SERVICESIM_ADMIN_PORT"},
 	{"exa-port", "SERVICESIM_EXA_PORT"},
 	{"tavily-port", "SERVICESIM_TAVILY_PORT"},
 	{"perplexity-port", "SERVICESIM_PERPLEXITY_PORT"},
 	{"providers", "SERVICESIM_PROVIDERS"},
+	{"max-namespaces", "SERVICESIM_MAX_NAMESPACES"},
 	{"journal-capacity", "SERVICESIM_JOURNAL_CAPACITY"},
 	{"max-request-bytes", "SERVICESIM_MAX_REQUEST_BYTES"},
 	{"max-journal-body-bytes", "SERVICESIM_MAX_JOURNAL_BODY_BYTES"},
@@ -195,12 +228,14 @@ var bindings = []binding{
 type raw struct {
 	scenario            string
 	scenarioRoot        string
+	scenarioDir         string
 	bindAddress         string
 	adminPort           int
 	exaPort             int
 	tavilyPort          int
 	perplexityPort      int
 	providers           string
+	maxNamespaces       int
 	journalCapacity     int
 	maxRequestBytes     int64
 	maxJournalBodyBytes int
@@ -224,6 +259,8 @@ func newFlagSet(r *raw) *flag.FlagSet {
 		`scenario to serve: a file path, or "builtin:<name>" for an embedded protocol scenario`)
 	flags.StringVar(&r.scenarioRoot, "scenario-root", "",
 		"directory scenario resolution is confined to (default: the directory of --scenario)")
+	flags.StringVar(&r.scenarioDir, "scenario-dir", "",
+		"directory of scenarios to load, each selectable as /x/<name> (mutually exclusive with --scenario)")
 	flags.StringVar(&r.bindAddress, "bind-address", DefaultBindAddress,
 		"interface every listener binds")
 	flags.IntVar(&r.adminPort, "admin-port", DefaultAdminPort,
@@ -233,6 +270,8 @@ func newFlagSet(r *raw) *flag.FlagSet {
 	flags.IntVar(&r.perplexityPort, "perplexity-port", DefaultPerplexityPort, "Perplexity listener port")
 	flags.StringVar(&r.providers, "providers", DefaultProviders,
 		"comma-separated providers to serve")
+	flags.IntVar(&r.maxNamespaces, "max-namespaces", DefaultMaxNamespaces,
+		"maximum number of live namespaces")
 	flags.IntVar(&r.journalCapacity, "journal-capacity", DefaultJournalCapacity,
 		"maximum retained journal entries (0 disables retention)")
 	flags.Int64Var(&r.maxRequestBytes, "max-request-bytes", DefaultMaxRequestBytes,
@@ -286,6 +325,11 @@ func Usage() string {
 // default — substituted here rather than left for a caller to interpret, because
 // a zero reaching http.MaxBytesReader fails exactly the way a negative one does.
 //
+// It also settles which of the two scenario modes the process runs. --scenario
+// names one scenario, --scenario-dir loads a directory of them for the
+// /x/<scenario> path prefix to select between, and supplying both is an error
+// rather than a precedence rule nobody would remember.
+//
 // A --help request returns [flag.ErrHelp] unwrapped, so errors.Is identifies it.
 func Load(args []string, lookupEnv func(string) (string, bool)) (Config, error) {
 	if lookupEnv == nil {
@@ -305,11 +349,15 @@ func Load(args []string, lookupEnv func(string) (string, bool)) (Config, error) 
 		return Config{}, fmt.Errorf("unexpected argument %q: servicesim takes flags only", flags.Arg(0))
 	}
 
-	explicit := make(map[string]bool, flags.NFlag())
-	flags.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	// provided records the names the operator supplied by either mechanism,
+	// which is a different question from "differs from the default": mutually
+	// exclusive flags such as --scenario and --scenario-dir have to reject the
+	// combination the operator typed, not the values that survived it.
+	provided := make(map[string]bool, flags.NFlag())
+	flags.Visit(func(f *flag.Flag) { provided[f.Name] = true })
 
 	for _, b := range bindings {
-		if explicit[b.flag] {
+		if provided[b.flag] {
 			continue
 		}
 		value, ok := lookupEnv(b.env)
@@ -321,14 +369,17 @@ func Load(args []string, lookupEnv func(string) (string, bool)) (Config, error) 
 		if err := flags.Set(b.flag, value); err != nil {
 			return Config{}, fmt.Errorf("%s=%q: %w", b.env, value, err)
 		}
+		provided[b.flag] = true
 	}
 
-	return assemble(r)
+	return assemble(r, provided)
 }
 
 // assemble converts parsed values into a validated Config. It is separate from
 // [Load] so the flag plumbing and the semantics can be read one at a time.
-func assemble(r raw) (Config, error) {
+// provided names the flags the operator supplied, by flag or by environment
+// variable; it is empty for a caller that supplied nothing.
+func assemble(r raw, provided map[string]bool) (Config, error) {
 	cfg := Config{
 		BindAddress:         strings.TrimSpace(r.bindAddress),
 		Admin:               Listener{Port: r.adminPort, Enabled: true},
@@ -337,6 +388,8 @@ func assemble(r raw) (Config, error) {
 		Perplexity:          Listener{Port: r.perplexityPort},
 		ScenarioPath:        strings.TrimSpace(r.scenario),
 		ScenarioRoot:        strings.TrimSpace(r.scenarioRoot),
+		ScenarioDir:         strings.TrimSpace(r.scenarioDir),
+		MaxNamespaces:       r.maxNamespaces,
 		JournalCapacity:     r.journalCapacity,
 		MaxRequestBytes:     r.maxRequestBytes,
 		MaxJournalBodyBytes: r.maxJournalBodyBytes,
@@ -354,7 +407,7 @@ func assemble(r raw) (Config, error) {
 	if err := cfg.LogLevel.UnmarshalText([]byte(strings.TrimSpace(r.logLevel))); err != nil {
 		return Config{}, fmt.Errorf("--log-level %q: must be debug, info, warn or error", r.logLevel)
 	}
-	if err := cfg.normalizeScenario(); err != nil {
+	if err := cfg.normalizeScenarioSelection(provided); err != nil {
 		return Config{}, err
 	}
 	if err := cfg.validate(); err != nil {
@@ -390,6 +443,45 @@ func (c *Config) enable(spec string) error {
 		}
 		listener.Enabled = true
 	}
+	return nil
+}
+
+// normalizeScenarioSelection settles which of the two scenario modes this
+// process runs, and rejects a combination that names both.
+//
+// The two are mutually exclusive because they answer the same question
+// differently: --scenario names the one behaviour every request gets, while
+// --scenario-dir loads several and lets /x/<name> choose. Honouring both would
+// mean inventing a precedence rule, and the operator who typed both would
+// discover which one lost by watching responses rather than by reading an error.
+//
+// Exclusivity is decided on what was provided rather than on the resolved
+// values, because --scenario carries a built-in default that is always present.
+// --scenario-root is rejected alongside it for the same reason: in directory
+// mode the directory is its own containment root, so a supplied --scenario-root
+// would be silently ignored, and a silently ignored containment flag is worse
+// than an error.
+func (c *Config) normalizeScenarioSelection(provided map[string]bool) error {
+	if !provided["scenario-dir"] {
+		return c.normalizeScenario()
+	}
+	if c.ScenarioDir == "" {
+		return errors.New("--scenario-dir: must not be empty")
+	}
+	if provided["scenario"] {
+		return errors.New("--scenario and --scenario-dir are mutually exclusive: " +
+			"--scenario-dir serves every scenario in the directory, selected by the /x/<scenario> path prefix")
+	}
+	if provided["scenario-root"] {
+		return errors.New("--scenario-root: has no meaning with --scenario-dir, " +
+			"which is its own containment root")
+	}
+
+	// There is no single startup scenario in directory mode, so ScenarioPath is
+	// cleared rather than left holding the default a caller would then load.
+	c.ScenarioPath = ""
+	c.ScenarioRoot = ""
+	c.ScenarioDir = filepath.Clean(c.ScenarioDir)
 	return nil
 }
 
@@ -435,6 +527,13 @@ func (c Config) validate() error {
 		}
 	}
 
+	// Zero is rejected rather than read as "unlimited" or "the default": every
+	// request belongs to a namespace even when it names none, so a limit of zero
+	// would reject all traffic, and an unbounded namespace map is the growth
+	// surface --max-namespaces exists to close.
+	if c.MaxNamespaces < 1 {
+		return fmt.Errorf("--max-namespaces: must be at least 1, got %d", c.MaxNamespaces)
+	}
 	if c.JournalCapacity < 0 {
 		return fmt.Errorf("--journal-capacity: must not be negative, got %d", c.JournalCapacity)
 	}

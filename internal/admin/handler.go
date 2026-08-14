@@ -32,6 +32,10 @@ type Deps struct {
 	// Faults is the fault engine /__admin/reset zeroes. It must be the same
 	// instance every provider's Deps.Faults holds, or reset would clear counters
 	// no handler consults.
+	//
+	// A scoped reset additionally needs it to isolate attempt counters per
+	// namespace, which provider.Faults does not require — see [namespacedFaults]
+	// for why the capability is optional and what happens without it.
 	Faults provider.Faults
 
 	// Scenario is the loaded, validated, resolved corpus /__admin/scenario
@@ -75,6 +79,27 @@ func (d Deps) normalized() Deps {
 	return d
 }
 
+// namespacedFaults is the optional capability a fault engine declares when its
+// attempt counters — which are also the turn cursors — are isolated per
+// namespace.
+//
+// It is asserted for rather than added to provider.Faults because that
+// interface is exported and consumers implement it (CLAUDE.md house rule 7):
+// every method added there breaks every implementation outside this repository.
+//
+// A fault engine that does not declare it makes a scoped reset impossible to
+// honour, and the handler says so with a 501 instead of resetting half the
+// lane. Clearing a namespace's journal while leaving its cursor mid-plan is the
+// wrong-lane failure this whole feature exists to prevent, arrived at from the
+// administrative side.
+type namespacedFaults interface {
+	provider.Faults
+
+	// ResetIn returns one namespace's attempt counters to zero and leaves every
+	// other namespace untouched.
+	ResetIn(namespace string)
+}
+
 // noopFaults stands in for a nil Deps.Faults. Reset on it is a no-op rather
 // than a nil dereference, and Next never faults, which keeps a zero Deps usable
 // without making the admin surface pretend a fault engine exists.
@@ -85,6 +110,12 @@ func (noopFaults) Next(key string) provider.FaultDecision {
 }
 
 func (noopFaults) Reset() {}
+
+// ResetIn is honestly a no-op: this substitute holds no counter at all, so
+// every namespace's fault state is already zero. Declaring the capability is
+// what lets a zero Deps answer a scoped reset rather than reporting a limitation
+// it does not have.
+func (noopFaults) ResetIn(_ string) {}
 
 // ScenarioResponse is the GET /__admin/scenario body: what was loaded, and every
 // validation warning that did not prevent loading.
@@ -103,6 +134,11 @@ type ScenarioResponse struct {
 type statusResponse struct {
 	Status  string `json:"status"`
 	Version string `json:"version,omitempty"`
+
+	// Namespace names the lane a scoped reset dropped, and is absent when the
+	// reset covered every lane. It is the caller's confirmation that the state
+	// which disappeared is the state it asked about.
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // errorResponse is the admin surface's error body. It is plain rather than
@@ -116,10 +152,10 @@ type errorResponse struct {
 // Handler builds the admin mux.
 //
 // Routes: GET /healthz, GET /readyz, GET /__admin/requests, GET
-// /__admin/scenario, POST /__admin/reset. Everything else is 404
-// {"error":"not found"}, and a known path reached with the wrong method is 405
-// with a sorted Allow header — sorted because Go map iteration must never reach
-// output, not even a header (package-design §3.3).
+// /__admin/namespaces, GET /__admin/scenario, POST /__admin/reset. Everything
+// else is 404 {"error":"not found"}, and a known path reached with the wrong
+// method is 405 with a sorted Allow header — sorted because Go map iteration
+// must never reach output, not even a header (package-design §3.3).
 func Handler(deps Deps) http.Handler {
 	d := deps.normalized()
 
@@ -127,6 +163,7 @@ func Handler(deps Deps) http.Handler {
 	route(mux, "/healthz", map[string]http.HandlerFunc{http.MethodGet: d.handleHealthz})
 	route(mux, "/readyz", map[string]http.HandlerFunc{http.MethodGet: d.handleReadyz})
 	route(mux, "/__admin/requests", map[string]http.HandlerFunc{http.MethodGet: d.handleRequests})
+	route(mux, "/__admin/namespaces", map[string]http.HandlerFunc{http.MethodGet: d.handleNamespaces})
 	route(mux, "/__admin/scenario", map[string]http.HandlerFunc{http.MethodGet: d.handleScenario})
 	route(mux, "/__admin/reset", map[string]http.HandlerFunc{http.MethodPost: d.handleReset})
 	mux.HandleFunc("/", d.handleNotFound)
@@ -202,30 +239,102 @@ func (d Deps) handleScenario(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body, pretty(r.URL.Query()))
 }
 
-// handleReset clears the journal and zeroes every fault counter, and mutates
-// nothing else. It is a local-development convenience: parallel CI isolates by
-// process, and no admin endpoint may reconfigure a running simulator.
+// handleReset drops retained state and mutates nothing else. It clears journal
+// entries and zeroes fault attempt counters — which are also the turn cursors —
+// and it never touches the loaded scenario: an admin API that could reconfigure
+// a running simulator is hidden shared state between concurrent tests (CLAUDE.md
+// house rule 6).
 //
-// A ?namespace= parameter is refused rather than honoured. Per-namespace state
-// lanes are not wired yet, so scoping a reset would silently reset every other
-// namespace's cursors — the single worst failure this surface can produce, and
-// exactly the trap the extended-surfaces addendum names. ?all=true is accepted
-// as the explicit spelling of the full reset the bare form performs.
+// The scope must be stated explicitly. Either ?namespace=<name> drops one lane
+// or ?all=true drops every lane; a bare POST is a 400 that says so.
+//
+// That is a deliberate breaking change to the bare-reset behaviour, and the
+// reason is the deployment this feature exists for. Every sibling e2e suite runs
+// one shared container across many concurrent tests, so a reset that defaulted
+// to "everything" would let one test's cleanup zero a hundred other tests'
+// cursors mid-run. The result is not a failed reset — it is another test
+// receiving the turn scripted for a different call, failing somewhere else
+// entirely and much later. A caller that genuinely wants the whole process
+// cleared still can, by saying so, and the verbosity is the point.
 func (d Deps) handleReset(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Has("namespace") {
-		writeJSON(w, http.StatusNotImplemented, errorResponse{
-			Error: "per-namespace reset is not implemented; omit ?namespace= to reset everything",
-		}, false)
+	q := r.URL.Query()
+
+	namespace, err := namespaceParam(q)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()}, false)
 		return
 	}
+	all := boolParam(q, "all")
 
+	switch {
+	case namespace != "" && all:
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: errResetScopeConflict}, false)
+	case namespace != "":
+		d.resetNamespace(w, namespace)
+	case all:
+		d.resetAll(w)
+	default:
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: errResetScopeRequired}, false)
+	}
+}
+
+// The reset scope errors. None of them quotes anything from the request: a query
+// parameter is one of the places a misconfigured adapter puts its credential
+// (CLAUDE.md house rule 4), so the rule is stated and the value is not echoed.
+const (
+	errResetScopeRequired = "reset requires an explicit scope: either ?namespace=<name> to drop one namespace, " +
+		"or ?all=true to drop every namespace"
+	errResetScopeConflict = "?namespace= and ?all=true are mutually exclusive: reset one namespace or every " +
+		"namespace, not both"
+	errJournalNotScoped = "the wired journal does not isolate namespaces, so nothing was reset; " +
+		"resetting everything requires ?all=true"
+	errFaultsNotScoped = "the wired fault engine does not isolate attempt counters per namespace, so nothing " +
+		"was reset; resetting everything requires ?all=true"
+)
+
+// resetAll drops every namespace: all journal entries and every fault counter.
+func (d Deps) resetAll(w http.ResponseWriter) {
 	d.Journal.Reset()
 	d.Faults.Reset()
 	d.Logger.Info("admin.reset",
 		slog.String("scenario", d.Scenario.Name),
-		slog.String("hint", "the journal and every fault counter were cleared"))
+		slog.String("scope", "all"),
+		slog.String("hint", "every namespace's journal entries and fault counters were cleared"))
 
 	writeJSON(w, http.StatusOK, statusResponse{Status: "reset"}, false)
+}
+
+// resetNamespace drops one namespace's journal entries and fault counters,
+// leaving every other namespace untouched.
+//
+// A surface that can scope only one of the two state stores scopes neither. A
+// half-scoped reset — an empty journal beside a cursor still mid-plan — is worse
+// than a refusal, because the next request in that namespace is served a turn
+// from the wrong position and nothing says so. The order below is what makes
+// that hold: the fault engine is only asked about its capability, and
+// journal.ResetIn drops nothing when it reports it cannot scope.
+func (d Deps) resetNamespace(w http.ResponseWriter, namespace string) {
+	scoped, ok := d.Faults.(namespacedFaults)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, errorResponse{Error: errFaultsNotScoped}, false)
+		return
+	}
+	if !journal.ResetIn(d.Journal, namespace) {
+		writeJSON(w, http.StatusNotImplemented, errorResponse{Error: errJournalNotScoped}, false)
+		return
+	}
+	scoped.ResetIn(namespace)
+
+	// The namespace is safe to log and to echo: it survived ValidNamespace, so it
+	// is at most 64 characters of [A-Za-z0-9_-] with no separator, no control
+	// character and nothing a log parser or a path join can be made to misread.
+	d.Logger.Info("admin.reset",
+		slog.String("scenario", d.Scenario.Name),
+		slog.String("scope", "namespace"),
+		slog.String("namespace", namespace),
+		slog.String("hint", "one namespace's journal entries and fault counters were cleared"))
+
+	writeJSON(w, http.StatusOK, statusResponse{Status: "reset", Namespace: namespace}, false)
 }
 
 // writeJSON encodes v into a buffer before it writes anything, so a marshalling

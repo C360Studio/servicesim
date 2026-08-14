@@ -89,9 +89,14 @@ type Entry struct {
 	Provider string `json:"provider"`
 
 	// Namespace is the state lane the request was served in, "default" when the
-	// request carried no /n/ prefix. Journal entries and sequence numbers are
-	// isolated per namespace, and the admin API scopes on this field, so every
-	// entry carries it.
+	// request carried no /n/ prefix. It is what the admin API scopes on and what
+	// [Ring] indexes retention by, so every entry carries it.
+	//
+	// Seq is isolated per namespace only as far as the caller claimed it that
+	// way: [Namespaced.NextIn] returns a sequence that restarts at 1 in each
+	// namespace, while [Journal.Next] always draws on the default lane's. An
+	// entry's Namespace therefore says which lane RETAINS it, and says nothing on
+	// its own about which counter its Seq came from.
 	Namespace string `json:"namespace,omitempty"`
 
 	Seq    uint64 `json:"seq"`
@@ -177,6 +182,13 @@ type Stats struct {
 }
 
 // Journal is the request journal contract.
+//
+// It is deliberately namespace-free. Consumers implement it — testkit exports it
+// as testkit.Journal and a consumer may wire its own — so every method added
+// here breaks every implementation outside this repository. Namespace isolation
+// is therefore an optional capability, declared by [Namespaced] and reached
+// through [NextIn], [SnapshotIn] and [ResetIn], which degrade honestly for a
+// journal that does not isolate namespaces. [Ring] implements both.
 type Journal interface {
 	// Next claims the next arrival-ordered sequence number. It is called before
 	// the handler runs so sequence reflects arrival, while Snapshot order reflects
@@ -184,6 +196,9 @@ type Journal interface {
 	//
 	// Sequence numbers are one-based: the first call after construction or Reset
 	// returns 1, so a zero Entry.Seq unambiguously means "never journaled".
+	//
+	// On a [Namespaced] journal this is the default namespace's sequence; see
+	// [Namespaced.NextIn] for why every namespace has its own.
 	Next() uint64
 
 	// Append stores a completed entry. Implementations must Redact the entry and
@@ -206,6 +221,87 @@ type Journal interface {
 
 	// Stats reports retention counters.
 	Stats() Stats
+}
+
+// Namespaced is a Journal whose state is isolated per namespace: one process
+// serving many concurrent tests, each with its own sequence, its own entries and
+// its own retention.
+//
+// A namespace is a plain string here, never a provider type. This package sits
+// below the provider seam and must not import it (see [Entry.Provider]).
+//
+// The empty namespace means [DefaultNamespace] in every method, so a journal
+// used by traffic that never carried an /n/ prefix behaves exactly as it did
+// before namespaces existed.
+type Namespaced interface {
+	Journal
+
+	// NextIn claims the next arrival-ordered sequence number in one namespace.
+	//
+	// Sequences are independent, so two concurrent tests each see 1, 2, 3. That
+	// is the point: with one interleaved process-wide sequence, an entry's number
+	// depends on what unrelated tests did, and "was this my request?" — what the
+	// journal is for — stops being answerable.
+	NextIn(namespace string) uint64
+
+	// SnapshotIn returns a deep copy of one namespace's entries, in append order.
+	SnapshotIn(namespace string) []Entry
+
+	// ResetIn drops one namespace's state, leaving every other namespace
+	// untouched.
+	ResetIn(namespace string)
+
+	// StatsIn reports one namespace's retention counters.
+	StatsIn(namespace string) Stats
+}
+
+// NextIn claims the next sequence number in namespace from j.
+//
+// A journal that does not isolate namespaces has one sequence to give, so this
+// falls back to j.Next(). The number is still unique and still arrival-ordered;
+// it is simply shared, which is what a caller wiring its own Journal
+// implementation into a namespaced deployment has chosen.
+func NextIn(j Journal, namespace string) uint64 {
+	if n, ok := j.(Namespaced); ok {
+		return n.NextIn(namespace)
+	}
+	return j.Next()
+}
+
+// SnapshotIn returns the entries j holds for namespace, in append order.
+//
+// A journal that does not isolate namespaces is filtered on Entry.Namespace
+// instead, which is the same answer more slowly: production code stamps the
+// namespace on every entry it appends.
+func SnapshotIn(j Journal, namespace string) []Entry {
+	if n, ok := j.(Namespaced); ok {
+		return n.SnapshotIn(namespace)
+	}
+
+	want := laneKey(namespace)
+	var out []Entry
+	for _, e := range j.Snapshot() {
+		if laneKey(e.Namespace) == want {
+			out = append(out, cloneEntry(e))
+		}
+	}
+	return out
+}
+
+// ResetIn drops namespace's state from j and reports whether it could. False
+// means j does not isolate namespaces and *nothing was reset*.
+//
+// It deliberately does not fall back to j.Reset(). Wiping every concurrent
+// test's journal because the caller asked to drop one namespace is the single
+// worst outcome this surface can produce, and it would be silent; returning
+// false lets the caller say so instead.
+func ResetIn(j Journal, namespace string) bool {
+	n, ok := j.(Namespaced)
+	if !ok {
+		return false
+	}
+	n.ResetIn(namespace)
+	return true
 }
 
 // Redact returns a copy of e with every credential-bearing value masked:

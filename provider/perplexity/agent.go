@@ -312,15 +312,23 @@ func validateAgentModel(x *provider.Exchange) string {
 // cannot reorder it.
 func renderAgent(x *provider.Exchange, p *PerplexityAgent, requestModel string) ([]byte, error) {
 	s := x.Deps.Scenario
-	dec := x.Fault()
 
+	// The attempt index is claimed whether or not the scenario pins the
+	// identifiers, so the journal's attempt number never depends on whether a
+	// fixture happened to declare them.
+	callIndex := x.CallIndex()
+
+	// Both identifiers hang off idParts, so both move with the call index and
+	// neither moves with anything else. The "agent" and "message" discriminators
+	// are what keep resp_ distinct from the Sonar completion id and msg_ distinct
+	// from resp_ within one call.
 	id := p.ResponseID
 	if id == "" {
-		id = "resp_" + ids.Hex32(idParts(s, dec, "agent")...)
+		id = "resp_" + ids.Hex32(idParts(x, callIndex, "agent")...)
 	}
 	messageID := p.MessageID
 	if messageID == "" {
-		messageID = "msg_" + ids.Hex32(idParts(s, dec, "agent", "message")...)
+		messageID = "msg_" + ids.Hex32(idParts(x, callIndex, "agent", "message")...)
 	}
 	created := p.CreatedAt
 	if created == 0 {

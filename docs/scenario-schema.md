@@ -2,7 +2,8 @@
 
 A **scenario** is a single YAML file describing one deterministic corpus of sources plus the per-provider
 projections that render it onto the wire. It is the only input Servicesim takes: the same scenario and the same
-request always produce byte-identical responses.
+request at the same call position always produce byte-identical responses. Derived identifiers move with the call
+position, so two successive calls are distinguishable and a fresh state lane reproduces call 0 exactly.
 
 This is the reference for scenario authors in consuming repositories. `version: 1` is the only schema version this
 build understands.
@@ -97,7 +98,7 @@ healthy, which is how a consumer's migration fallback gets tested.
 
 ### Reserved envelope keys
 
-Inside a provider block, six keys are reserved. **Everything else is that provider's projection body.**
+Inside a provider block, seven keys are reserved. **Everything else is that provider's projection body.**
 
 | Key | Type | Required | Effect |
 |---|---|---|---|
@@ -106,6 +107,7 @@ Inside a provider block, six keys are reserved. **Everything else is that provid
 | `validation` | [ValidationPolicy](#validation) | no | Remaps finding severities for this provider. |
 | `fault` | [Fault](#fault) | no | The deterministic failure plan. In the multi-turn form, `fault` belongs on the turn instead. |
 | `turns` | list of [Turn](#the-multi-turn-form) | no | A conversation script. Mutually exclusive with a projection body at block level. |
+| `turn_key` | list of string | no | What the turn cursor is keyed on. Defaults to `["route"]`. See [`turn_key`](#turn_key--what-the-cursor-counts-per). |
 | `extra_fields` | map | no | Additive properties merged into the rendered response body, to exercise a consumer's tolerance of vendor evolution. |
 
 ### The single-shot form
@@ -164,7 +166,7 @@ everything.
 
 | Key | Type | Required | Matches when |
 |---|---|---|---|
-| `call_index` | integer | no | This is the zero-based count of prior requests to this provider's route in this process. |
+| `call_index` | integer | no | This is the zero-based count of prior requests **in this turn lane** — see [`turn_key`](#turn_key--what-the-cursor-counts-per), whose default of `["route"]` makes the lane the route. |
 | `body_contains` | string | no | The raw request body contains this substring. Deliberately crude — it covers "which tool result came back" without becoming an expression language. |
 | `body_json` | map of string to string | no | Every dotted path matches, for example `{model: sonar, "messages.0.role": system}`. Values compare as strings after JSON scalar formatting. |
 
@@ -178,8 +180,76 @@ predicate that depends on the clock is a flaky test waiting to happen.
 3. When nothing matches and there is no unconditional turn, the request records a `scenario.no_matching_turn`
    finding and receives a provider-shaped not-found error. It is never silently a 200.
 
-`call_index` is drawn from the *same* per-route counter the fault engine uses, so a scenario that rate-limits call
+`call_index` is drawn from the *same* per-lane counter the fault engine uses, so a scenario that rate-limits call
 two and answers differently on call three stays coherent. There are not two counters that can disagree.
+
+### `turn_key` — what the cursor counts per
+
+`turn_key` declares the **lane** a request belongs to. One cursor exists per lane, so `call_index` counts prior
+requests in that lane and nowhere else.
+
+The default is `["route"]`: one sequence per route, which is what a single serial caller wants and what every
+scenario written without this key gets.
+
+```yaml
+providers:
+  perplexity:
+    turn_key: ["route", "body_json:model"]     # one lane per model
+    turns:
+      - when:
+          call_index: 0
+          body_json:
+            model: sonar
+        respond:
+          answer: sonar lane, first call.
+      - when:
+          call_index: 0
+          body_json:
+            model: sonar-pro
+        respond:
+          answer: sonar-pro lane, first call.
+      - respond:                               # fallback, once a lane runs out of script
+          answer: No further scripted turn in this lane.
+```
+
+Extractors are evaluated in the order written and joined into one key:
+
+| Extractor | Resolves to |
+|---|---|
+| `route` | The route's fault key, which is what the default keys on. Aliases of one surface share it, so a retry through `/chat/completions` stays in the lane `/v1/sonar` opened. |
+| `body_json:<dotted.path>` | A scalar from the decoded JSON request body, for example `body_json:model` or `body_json:messages.0.role`. A numeric segment indexes an array. Values are compared as strings after JSON scalar formatting, exactly as `when: {body_json: ...}` formats them. |
+| `header:<name>` | A request header value, for example `header:x-role`. Case-insensitive in the header name, as HTTP is. |
+
+Each contribution carries its own extractor name, so `["header:a", "header:b"]` keeps `a: x` and `b: x` in
+different lanes rather than merging them on the shared value `x`.
+
+**Why this exists.** One LLM-shaped route serving N concurrent callers has, under a route-keyed cursor, exactly one
+sequence: two callers draw call indices 0 and 1 out of it and each receives the turn scripted for the other. The
+response looks coherent, so the test fails somewhere else entirely and much later. Three sibling repositories hit
+this independently and each re-keyed its cursor — per role, per `(scenario, role)`, and per model. The built-in
+[`namespaced`](../scenarios/protocol/namespaced.yaml) scenario is the worked example.
+
+**An unresolvable extractor warns; it never silently merges lanes.** A `body_json:` path the body does not carry, a
+path landing on an object or an array rather than a scalar, a JSON `null`, an absent header, or a value longer than
+128 bytes each contribute nothing and record a `scenario.turn_key_unresolved` warning against that request in the
+journal. The lane is then named by the extractors that *did* resolve, and by the route's fault key when none did.
+The warning is mandatory rather than a convenience: silently sharing a lane is the exact failure `turn_key` exists
+to prevent, so it has to be visible where a consumer already looks.
+
+Three further properties are worth knowing before you write a fixture against this:
+
+- The lane key replaces the route key for **fault attempt counting on that provider as well**, so `fault` and
+  `call_index` cannot disagree about which call a request is.
+- The lane is resolved **once per request, by the listener**, before a handler has chosen which provider entry
+  answers. A listener that serves two entries — Perplexity's Sonar and Agent surfaces do — therefore keys both on
+  the primary entry's `turn_key`, and declaring a second one on the other entry describes a resolution that never
+  happens.
+- An unrecognised extractor form is a **load error**, `scenario.turn_key.invalid`, naming the offending index. A
+  typo here would otherwise present as one silently shared lane.
+
+Namespaces compose with this and need no declaration: a request arriving with a `/n/<namespace>` base-URL prefix
+gets the namespace as the outermost component of its lane key, so two tests running the same scenario through one
+container advance separate cursors. See the [README](../README.md#one-container-many-concurrent-tests).
 
 ## Referring to a source
 

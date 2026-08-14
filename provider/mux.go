@@ -36,18 +36,27 @@ type MuxSpec struct {
 // ServeMux's built-in 405 path is never reached. scripts/image-smoke.sh asserts
 // 405, so an implementation that skips this fails the image smoke test — and,
 // worse, answers a method error with a body no consumer can parse.
+//
+// The returned mux is two muxes: an outer one that strips the optional
+// /x/<scenario> and /n/<namespace> prefixes, and an inner one holding the real
+// routes. Stripping has to happen before pattern matching — that is what makes
+// "/n/t-42/search" match "POST /search" — and a ServeMux cannot rewrite a path
+// before matching itself. Two muxes rather than one mux dispatching back into
+// itself: re-entry would loop on a path like "/n/a/n/b/search", while an inner
+// mux with no prefix patterns answers it from the catch-all, which is the
+// fail-closed behaviour a malformed prefix should get.
 func NewMux(d Deps, p Name, spec MuxSpec) *http.ServeMux {
 	// Normalise once, so every route on this listener shares one journal sequence
 	// counter and one attempt counter. Normalized is idempotent, so Handle's own
 	// call is a no-op.
 	d = d.Normalized()
 
-	m := http.NewServeMux()
+	inner := http.NewServeMux()
 	paths := map[string][]string{} // path -> allowed methods
 
 	for _, rt := range spec.Routes {
 		method, path, _ := strings.Cut(rt.Pattern, " ")
-		m.Handle(rt.Pattern, Handle(d, p, rt, spec.Handlers[rt.Pattern]))
+		inner.Handle(rt.Pattern, Handle(d, p, rt, spec.Handlers[rt.Pattern]))
 		paths[path] = append(paths[path], method)
 	}
 
@@ -57,12 +66,37 @@ func NewMux(d Deps, p Name, spec MuxSpec) *http.ServeMux {
 	for _, path := range slices.Sorted(maps.Keys(paths)) {
 		allow := slices.Sorted(slices.Values(paths[path]))
 		h := methodNotAllowed(spec, allow)
-		m.Handle(path, Handle(d, p, Route{Pattern: path}, h))
+		inner.Handle(path, Handle(d, p, Route{Pattern: path}, h))
 	}
 
 	// A catch-all produces a provider-shaped 404 for every unknown path.
-	m.Handle("/", Handle(d, p, Route{Pattern: "/"}, notFound(spec)))
-	return m
+	inner.Handle("/", Handle(d, p, Route{Pattern: "/"}, notFound(spec)))
+
+	outer := http.NewServeMux()
+	outer.Handle("/", inner)
+	stripper := stripLanePrefix(inner)
+	outer.Handle("/"+scenarioSegment+"/", stripper)
+	outer.Handle("/"+namespaceSegment+"/", stripper)
+	return outer
+}
+
+// stripLanePrefix removes the lane path prefixes and hands the parsed result to
+// the inner mux through the request context, so Handle reads what routing
+// matched on instead of parsing the path a second time.
+//
+// The request is cloned rather than mutated: net/http owns the one it handed us,
+// and a handler that rewrites it in place is a handler that has changed what an
+// outer middleware, a panic dump or a later read of r.URL reports. RawPath is
+// cleared along with Path because ServeMux matches on the escaped path, and a
+// stale RawPath would route the request by the prefix that was just removed.
+func stripLanePrefix(inner http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		route, prefix := splitLanePath(r.URL.Path)
+		r2 := r.Clone(withLanePrefix(r.Context(), prefix))
+		r2.URL.Path = route
+		r2.URL.RawPath = ""
+		inner.ServeHTTP(w, r2)
+	})
 }
 
 // notFound wraps the provider's 404 handler so the route.unmatched finding is

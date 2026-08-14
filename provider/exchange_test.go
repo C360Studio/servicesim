@@ -252,6 +252,9 @@ func TestDepsNormalizedDefaults(t *testing.T) {
 	require.Equal(t, SystemClock{}, d.Clock)
 	require.Equal(t, DefaultMaxRequestBytes, d.MaxRequestBytes)
 	require.Equal(t, DefaultMaxJournalBodyBytes, d.MaxJournalBodyBytes)
+	require.Equal(t, DefaultMaxNamespaces, d.MaxNamespaces)
+	require.Equal(t, 7, Deps{MaxNamespaces: 7}.Normalized().MaxNamespaces,
+		"an explicit bound is never overwritten by the default")
 
 	// Idempotence is what lets NewMux normalise once and share one journal
 	// sequence counter and one attempt counter across every route.

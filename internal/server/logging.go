@@ -35,13 +35,16 @@ func NewLogger(cfg config.Config, w io.Writer) *slog.Logger {
 	return slog.New(h)
 }
 
-// requestLogger returns the logger handed to every provider handler.
+// requestLogger returns the logger handed to every provider handler serving one
+// scenario.
 //
 // The scenario name is attached here rather than at each call site because the
 // per-request event is emitted by provider.Handle, which knows the provider, the
 // route and the journal entry but has no reason to know which scenario is
-// loaded. A consumer reading one CI log stream from a container that served
-// several scenarios needs both to interpret an outcome.
+// loaded. A consumer reading one CI log stream from a container that serves
+// several scenarios to several concurrent tests needs it to interpret an
+// outcome, and it is the field that makes the namespace on the same event
+// meaningful: namespace says which test, scenario says which behaviour.
 func requestLogger(logger *slog.Logger, s *scenario.Scenario) *slog.Logger {
 	name := ""
 	if s != nil {
@@ -58,7 +61,12 @@ func requestLogger(logger *slog.Logger, s *scenario.Scenario) *slog.Logger {
 // that led up to the error as much as the error itself, and a warning that only
 // ever appears on /__admin/scenario is invisible to the person reading a
 // container that refused to start.
-func logFindings(logger *slog.Logger, report scenario.Report, source string) {
+//
+// name and source are both carried because they answer different questions when
+// a directory of scenarios is loaded: name is the /x/<scenario> selector the
+// finding belongs to, and source is the file it was read from. A reader with one
+// of them and a directory of twenty scenarios has to guess.
+func logFindings(logger *slog.Logger, report scenario.Report, name, source string) {
 	for _, f := range report.Findings {
 		level := slog.LevelWarn
 		if f.Severity == scenario.SeverityError {
@@ -68,7 +76,8 @@ func logFindings(logger *slog.Logger, report scenario.Report, source string) {
 			slog.String("severity", string(f.Severity)),
 			slog.String("code", f.Code),
 			slog.String("path", f.Path),
-			slog.String("scenario", source),
+			slog.String("scenario", name),
+			slog.String("source", source),
 			slog.String("message", f.Message))
 	}
 }

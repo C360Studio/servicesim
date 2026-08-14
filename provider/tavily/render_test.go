@@ -374,7 +374,11 @@ func TestUnresolvedReferenceDoesNotPanic(t *testing.T) {
 
 	projection := &Projection{Results: []ResultProjection{{SourceRef: scenario.SourceRef{Ref: "source-z"}}}}
 	body, err := renderSearch(projection, &searchRequest{Query: "a", MaxResults: DefaultMaxResults},
-		renderKeys{Seed: "seed", ID: []string{"seed", Name, FaultKeySearch}})
+		renderKeys{
+			Seed: "seed",
+			ID:   []string{"seed", Name, FaultKeySearch},
+			Call: []string{"seed", Name, FaultKeySearch, "0"},
+		})
 	require.NoError(t, err)
 
 	var decoded SearchResponse
@@ -382,6 +386,62 @@ func TestUnresolvedReferenceDoesNotPanic(t *testing.T) {
 	require.Len(t, decoded.Results, 1)
 	require.Empty(t, decoded.Results[0].Title)
 	require.NotEmpty(t, decoded.Results[0].ID)
+}
+
+// derivedRequestIDScenario has no request_id override and no fault plan, so
+// request_id is entirely derived — which is what the tests below are about.
+const derivedRequestIDScenario = `
+version: 1
+name: tavily-derived-request-id
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  tavily:
+    results:
+      - source: source-a
+`
+
+// tavilyUUIDv5 is the shape Tavily documents for request_id: a UUID, not a
+// readable slug. A consumer regex trained on a slug breaks against the real API.
+var tavilyUUIDv5 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+// TestRequestIDIsDistinctPerCall pins the property a real vendor has and a
+// collapsed identifier destroys: a consumer correlating a log line to a request
+// must be able to tell one call from the next.
+//
+// The route declares no fault plan on purpose. The call index used to enter the
+// identifier tuple only where one did, so every response an unfaulted scenario
+// ever served carried a single request_id.
+func TestRequestIDIsDistinctPerCall(t *testing.T) {
+	t.Parallel()
+
+	handler := newHandler(t, derivedRequestIDScenario, nil)
+	body := `{"query":"report a"}`
+
+	first := decodeRequestID(t, post(t, handler, "/search", body, bearer))
+	second := decodeRequestID(t, post(t, handler, "/search", body, bearer))
+
+	require.Regexp(t, tavilyUUIDv5, first, "request_id keeps Tavily's documented UUID shape")
+	require.Regexp(t, tavilyUUIDv5, second)
+	require.NotEqual(t, first, second, "two successive calls must not share a request_id")
+
+	// A namespace is a fresh state lane, so this is call 0 again and must
+	// reproduce the first identifier exactly. Distinctness drawn from a clock or
+	// from a counter of this package's own would fail here.
+	fresh := decodeRequestID(t, post(t, handler, "/n/lane-b/search", body, bearer))
+	require.Equal(t, first, fresh,
+		"the same call position in a fresh lane must reproduce the same request_id")
+}
+
+// decodeRequestID reads request_id out of a rendered search response.
+func decodeRequestID(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	require.Equal(t, http.StatusOK, rec.Code)
+	var decoded SearchResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &decoded))
+	return decoded.RequestID
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -406,6 +466,7 @@ func render(t *testing.T, src, requestBody string) []byte {
 	body, err := renderSearch(projection, requestFrom(t, requestBody), renderKeys{
 		Seed: loaded.SeedKey(),
 		ID:   []string{loaded.SeedKey(), Name, FaultKeySearch},
+		Call: []string{loaded.SeedKey(), Name, FaultKeySearch, "0"},
 	})
 	require.NoError(t, err)
 	return body

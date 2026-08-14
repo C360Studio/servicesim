@@ -179,6 +179,53 @@ func writeScenario(t *testing.T, src string) []string {
 	return []string{"--scenario", path, "--scenario-root", dir}
 }
 
+// writeScenarioDir writes a directory of scenarios and returns the flags that
+// select it. The keys are file names, because the file's base name is the
+// /x/<scenario> selector a request names.
+func writeScenarioDir(t *testing.T, files map[string]string) []string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, src := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(src), 0o600))
+	}
+	return []string{"--scenario-dir", dir}
+}
+
+// scenarioNamed builds a minimal three-provider scenario whose rendered bodies
+// carry title, so a test can tell which scenario answered a request from the
+// response alone.
+func scenarioNamed(name, title string) string {
+	return `
+version: 1
+name: ` + name + `
+time:
+  base: 2026-01-01T00:00:00Z
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: ` + title + `
+providers:
+  exa:
+    results:
+      - source: source-a
+  tavily:
+    answer: A short synthesis.
+    results:
+      - source: source-a
+        score: 0.98
+`
+}
+
+// postBody sends one authenticated JSON request and returns the status and the
+// response body, which is what a test asserting on a provider-shaped error needs.
+func postBody(t *testing.T, addr, path, body string) (int, string) {
+	t.Helper()
+	resp := post(t, addr, path, body)
+	out, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode, string(out)
+}
+
 // surfaceRequest is one provider call: which listener, which route, what body.
 type surfaceRequest struct {
 	surface string
@@ -372,6 +419,235 @@ func TestSunsetIsSilentWithoutThePerplexityListener(t *testing.T) {
 	start(t, cfg, NewLogger(cfg, &logs))
 
 	require.NotContains(t, logs.String(), "perplexity.sonar.sunset")
+}
+
+// -----------------------------------------------------------------------------
+// Scenario registry and namespaces
+// -----------------------------------------------------------------------------
+
+// TestScenarioPrefixSelectsBehaviourPerRequest is the behaviour half of the
+// shared-container feature: one process holds every scenario in --scenario-dir,
+// and each request says which of them it wants.
+func TestScenarioPrefixSelectsBehaviourPerRequest(t *testing.T) {
+	t.Parallel()
+
+	args := writeScenarioDir(t, map[string]string{
+		"default.yaml": scenarioNamed("default-behaviour", "Default Report"),
+		"alpha.yaml":   scenarioNamed("alpha-behaviour", "Alpha Report"),
+	})
+	h := start(t, testConfig(t, args...), discard())
+	exa := h.Addr(string(provider.Exa))
+
+	require.Equal(t, []string{"alpha", "default"}, h.ScenarioNames(),
+		"the registry is keyed on the file name, in a fixed order")
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "unprefixed serves the default", path: "/search", want: "Default Report"},
+		{name: "prefixed selects by name", path: "/x/alpha/search", want: "Alpha Report"},
+		{name: "the default is selectable by name", path: "/x/default/search", want: "Default Report"},
+		{name: "a namespace does not change behaviour", path: "/x/alpha/n/t-1/search", want: "Alpha Report"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := postBody(t, exa, tc.path, `{"query":"report a"}`)
+			require.Equal(t, http.StatusOK, status)
+			require.Contains(t, body, tc.want)
+		})
+	}
+}
+
+// TestUnknownScenarioFailsClosed is the rule that makes scenario selection safe
+// to rely on. Serving the default for a scenario the URL did not name would hand
+// a consumer coherent-looking behaviour from the wrong fixture, and the test that
+// caught it would fail somewhere else entirely, much later.
+//
+// The answer is provider-shaped, because a consumer's error decoder is written
+// against the vendor's envelope and a simulator-shaped body would make it fail to
+// parse rather than to report.
+func TestUnknownScenarioFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	var logs logBuffer
+	args := writeScenarioDir(t, map[string]string{
+		"default.yaml": scenarioNamed("default-behaviour", "Default Report"),
+		"alpha.yaml":   scenarioNamed("alpha-behaviour", "Alpha Report"),
+	})
+	cfg := testConfig(t, args...)
+	h := start(t, cfg, NewLogger(cfg, &logs))
+
+	for _, tc := range []struct {
+		name    string
+		surface string
+		path    string
+		body    string
+		want    string
+	}{
+		{
+			name: "exa", surface: string(provider.Exa),
+			path: "/x/nope/search", body: `{"query":"report a"}`,
+			want: `"tag":"NOT_FOUND"`,
+		},
+		{
+			name: "tavily", surface: string(provider.Tavily),
+			path: "/x/nope/search", body: `{"query":"report a"}`,
+			want: `{"detail":{"error":"Not Found"}}`,
+		},
+		{
+			name: "perplexity", surface: string(provider.Perplexity),
+			path: "/x/nope/v1/sonar", body: `{"model":"sonar","messages":[{"role":"user","content":"q"}]}`,
+			want: `{"detail":"Not Found"}`,
+		},
+		{
+			name:    "an invalid name is refused, not sanitised into a lookup",
+			surface: string(provider.Exa),
+			path:    "/x/no.pe/search", body: `{"query":"report a"}`,
+			want: `"tag":"NOT_FOUND"`,
+		},
+		{
+			name:    "a namespace does not rescue an unknown scenario",
+			surface: string(provider.Exa),
+			path:    "/x/nope/n/t-1/search", body: `{"query":"report a"}`,
+			want: `"tag":"NOT_FOUND"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := postBody(t, h.Addr(tc.surface), tc.path, tc.body)
+			require.Equal(t, http.StatusNotFound, status)
+			require.Contains(t, body, tc.want, "the body must be the provider's own error shape")
+			require.NotContains(t, body, "Default Report",
+				"an unknown scenario must never fall back to the default")
+			require.NotContains(t, body, "Alpha Report")
+		})
+	}
+
+	// The refusal is journaled and logged, because "my test called /x/typo" is
+	// exactly the question a consumer brings to the journal.
+	status, journalBody := get(t, h.Addr(SurfaceAdmin), "/__admin/requests")
+	require.Equal(t, http.StatusOK, status)
+	require.Contains(t, string(journalBody), CodeScenarioUnknown)
+	require.Contains(t, logs.String(), CodeScenarioUnknown)
+
+	// A rejected name is reported as rejected, never echoed into the field a log
+	// consumer indexes on. The received path is a separate matter: the journal and
+	// the request event record what the client sent, by design.
+	require.Contains(t, logs.String(), `"msg":"scenario.unknown","scenario":"<invalid>"`)
+	require.NotContains(t, logs.String(), `"scenario":"no.pe"`)
+}
+
+// TestUnprefixedRequestFailsClosedWithoutADefaultScenario covers the directory
+// that names no default: several scenarios and no stated default make an
+// unprefixed URL genuinely ambiguous, and picking one would be the same
+// wrong-fixture failure as ignoring an unknown name.
+func TestUnprefixedRequestFailsClosedWithoutADefaultScenario(t *testing.T) {
+	t.Parallel()
+
+	args := writeScenarioDir(t, map[string]string{
+		"alpha.yaml": scenarioNamed("alpha-behaviour", "Alpha Report"),
+		"beta.yaml":  scenarioNamed("beta-behaviour", "Beta Report"),
+	})
+	h := start(t, testConfig(t, args...), discard())
+	exa := h.Addr(string(provider.Exa))
+
+	status, body := postBody(t, exa, "/search", `{"query":"report a"}`)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Contains(t, body, `"tag":"NOT_FOUND"`)
+
+	status, body = postBody(t, exa, "/x/beta/search", `{"query":"report a"}`)
+	require.Equal(t, http.StatusOK, status, "naming a scenario still works")
+	require.Contains(t, body, "Beta Report")
+}
+
+// TestEveryScenarioInTheDirectoryIsValidatedBeforeReady is acceptance criterion 4
+// under a directory: one broken scenario fails the whole process. A container
+// that comes up healthy while silently serving a broken scenario is worse than
+// one that refuses to start.
+//
+// Both broken scenarios are named, because an operator fixing a mounted
+// directory needs to see all of its problems rather than one per restart.
+func TestEveryScenarioInTheDirectoryIsValidatedBeforeReady(t *testing.T) {
+	t.Parallel()
+
+	broken := `
+version: 1
+name: broken
+time:
+  base: 2026-01-01T00:00:00Z
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa:
+    results:
+      - source: source-missing
+`
+	args := writeScenarioDir(t, map[string]string{
+		"default.yaml": scenarioNamed("default-behaviour", "Default Report"),
+		"broken.yaml":  broken,
+		"also-bad.yaml": `
+version: 99
+name: from-the-future
+`,
+	})
+
+	srv, err := New(testConfig(t, args...), discard())
+	require.Error(t, err)
+	require.Nil(t, srv)
+	require.Contains(t, err.Error(), "broken.yaml")
+	require.Contains(t, err.Error(), "source-missing")
+	require.Contains(t, err.Error(), "also-bad.yaml",
+		"every scenario is validated, so a startup failure names all of them")
+}
+
+// TestNamespacesIsolateConcurrentTestsInOneProcess is the isolation half of the
+// feature, and the reason it exists: every sibling e2e suite runs one shared mock
+// container across many concurrent tests.
+//
+// The rate-limited scenario answers 429 once and then serves its ordinary
+// response, so each namespace must see exactly that sequence. With one shared
+// cursor the four calls below draw indices 0..3 and only one of them is faulted,
+// which leaves one namespace with two successes — a failure this test detects
+// however the two goroutines interleave.
+func TestNamespacesIsolateConcurrentTestsInOneProcess(t *testing.T) {
+	t.Parallel()
+
+	h := start(t, testConfig(t, "--scenario", "builtin:rate-limited"), discard())
+	exa := h.Addr(string(provider.Exa))
+
+	namespaces := []string{"t-alpha", "t-beta"}
+	got := make([][]int, len(namespaces))
+
+	var wg sync.WaitGroup
+	for i, ns := range namespaces {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Sequential within a namespace: a test is one caller, and the claim
+			// under test is that another caller's traffic does not move this
+			// caller's cursor.
+			for range 2 {
+				resp := post(t, exa, "/n/"+ns+"/search", `{"query":"report a"}`)
+				got[i] = append(got[i], resp.StatusCode)
+			}
+		}()
+	}
+	wg.Wait()
+
+	for i, ns := range namespaces {
+		require.Equalf(t, []int{http.StatusTooManyRequests, http.StatusOK}, got[i],
+			"namespace %s drew its attempts from another namespace's cursor", ns)
+	}
+
+	// The journal keeps the two apart as well, so a consumer can ask what its own
+	// namespace did without reading another test's traffic.
+	status, body := get(t, h.Addr(SurfaceAdmin), "/__admin/requests")
+	require.Equal(t, http.StatusOK, status)
+	for _, ns := range namespaces {
+		require.Contains(t, string(body), `"namespace":"`+ns+`"`)
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -639,8 +915,11 @@ func TestResetClearsTheCountersTheHandlersConsult(t *testing.T) {
 	require.Equal(t, http.StatusOK,
 		post(t, exa, "/search", `{"query":"report a"}`).StatusCode)
 
+	// The scope is explicit because the admin surface requires it: a bare reset
+	// that silently wiped every concurrent test's cursors is the trap the
+	// namespace design names, so "everything" has to be asked for by name.
 	resetReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		"http://"+h.Addr(SurfaceAdmin)+"/__admin/reset", nil)
+		"http://"+h.Addr(SurfaceAdmin)+"/__admin/reset?all=true", nil)
 	require.NoError(t, err)
 	resetResp, err := http.DefaultClient.Do(resetReq)
 	require.NoError(t, err)

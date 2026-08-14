@@ -38,6 +38,8 @@ func TestLoadDefaults(t *testing.T) {
 		Perplexity:          Listener{Port: 8083, Enabled: true},
 		ScenarioPath:        "builtin:happy",
 		ScenarioRoot:        "",
+		ScenarioDir:         "",
+		MaxNamespaces:       1024,
 		JournalCapacity:     1000,
 		MaxRequestBytes:     1 << 20,
 		MaxJournalBodyBytes: 1 << 16,
@@ -120,6 +122,7 @@ func TestLoadEnvironmentAppliesToEveryBinding(t *testing.T) {
 		"SERVICESIM_TAVILY_PORT":            "9082",
 		"SERVICESIM_PERPLEXITY_PORT":        "9083",
 		"SERVICESIM_PROVIDERS":              "exa",
+		"SERVICESIM_MAX_NAMESPACES":         "64",
 		"SERVICESIM_JOURNAL_CAPACITY":       "7",
 		"SERVICESIM_MAX_REQUEST_BYTES":      "2048",
 		"SERVICESIM_MAX_JOURNAL_BODY_BYTES": "1024",
@@ -130,6 +133,12 @@ func TestLoadEnvironmentAppliesToEveryBinding(t *testing.T) {
 		"SERVICESIM_STRICT_AUTH":            "false",
 	}
 	for _, b := range bindings {
+		// --scenario-dir cannot share an environment with --scenario, which the
+		// rest of this table sets: the two are mutually exclusive by design.
+		// TestLoadScenarioDirFromEnvironment covers its binding instead.
+		if b.flag == "scenario-dir" {
+			continue
+		}
 		_, ok := vars[b.env]
 		assert.Truef(t, ok, "binding %q (--%s) is not covered by this test", b.env, b.flag)
 	}
@@ -145,6 +154,7 @@ func TestLoadEnvironmentAppliesToEveryBinding(t *testing.T) {
 		Perplexity:          Listener{Port: 9083},
 		ScenarioPath:        "/scenarios/custom.yaml",
 		ScenarioRoot:        "/scenarios",
+		MaxNamespaces:       64,
 		JournalCapacity:     7,
 		MaxRequestBytes:     2048,
 		MaxJournalBodyBytes: 1024,
@@ -208,6 +218,210 @@ func TestLoadScenarioRootDefaultsToScenarioDirectory(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantPath, got.ScenarioPath)
 			assert.Equal(t, tc.wantRoot, got.ScenarioRoot)
+		})
+	}
+}
+
+// TestLoadScenarioDir pins the second scenario mode. The interesting part is
+// what it clears: there is no single startup scenario in directory mode, so
+// ScenarioPath must not still be holding the built-in default a caller would
+// otherwise load and serve.
+func TestLoadScenarioDir(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantDir string
+	}{
+		{
+			name:    "an absolute directory",
+			args:    []string{"--scenario-dir", "/scenarios"},
+			wantDir: "/scenarios",
+		},
+		{
+			name:    "a trailing separator is cleaned away",
+			args:    []string{"--scenario-dir", "/scenarios/"},
+			wantDir: "/scenarios",
+		},
+		{
+			name:    "a relative directory",
+			args:    []string{"--scenario-dir", "testdata/scenarios"},
+			wantDir: "testdata/scenarios",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := Load(tc.args, env(nil))
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantDir, got.ScenarioDir)
+			assert.True(t, got.ScenarioDirMode())
+			assert.Empty(t, got.ScenarioPath, "directory mode has no single startup scenario")
+			assert.Empty(t, got.ScenarioRoot, "the directory is its own containment root")
+		})
+	}
+}
+
+// TestLoadScenarioDirFromEnvironment covers the binding
+// TestLoadEnvironmentAppliesToEveryBinding has to skip, because --scenario-dir
+// and --scenario cannot be set in the same environment.
+func TestLoadScenarioDirFromEnvironment(t *testing.T) {
+	t.Parallel()
+
+	got, err := Load(nil, env(map[string]string{"SERVICESIM_SCENARIO_DIR": "/scenarios"}))
+	require.NoError(t, err)
+	assert.Equal(t, "/scenarios", got.ScenarioDir)
+	assert.True(t, got.ScenarioDirMode())
+	assert.Empty(t, got.ScenarioPath)
+}
+
+// TestLoadSingleScenarioIsUnchangedByDirectoryMode states the compatibility
+// property directly: every existing invocation, including the image's CMD, must
+// keep resolving exactly as it did before --scenario-dir existed.
+func TestLoadSingleScenarioIsUnchangedByDirectoryMode(t *testing.T) {
+	t.Parallel()
+
+	got, err := Load([]string{"--scenario", "/scenarios/fusion-overlap.yaml"}, env(nil))
+	require.NoError(t, err)
+	assert.Equal(t, "/scenarios/fusion-overlap.yaml", got.ScenarioPath)
+	assert.Equal(t, "/scenarios", got.ScenarioRoot)
+	assert.Empty(t, got.ScenarioDir)
+	assert.False(t, got.ScenarioDirMode())
+
+	builtin, err := Load(nil, env(nil))
+	require.NoError(t, err)
+	assert.Equal(t, DefaultScenario, builtin.ScenarioPath)
+	assert.False(t, builtin.ScenarioDirMode())
+}
+
+// TestLoadScenarioModesAreMutuallyExclusive checks the combination from both
+// mechanisms, because the operator who typed both must not have to discover
+// which one won by watching responses.
+func TestLoadScenarioModesAreMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		args     []string
+		vars     map[string]string
+		wantErrs []string
+	}{
+		{
+			name:     "both flags",
+			args:     []string{"--scenario", "/scenarios/a.yaml", "--scenario-dir", "/scenarios"},
+			wantErrs: []string{"--scenario", "--scenario-dir", "mutually exclusive"},
+		},
+		{
+			name:     "the scenario from the environment and the directory from a flag",
+			args:     []string{"--scenario-dir", "/scenarios"},
+			vars:     map[string]string{"SERVICESIM_SCENARIO": "/scenarios/a.yaml"},
+			wantErrs: []string{"mutually exclusive"},
+		},
+		{
+			name:     "the directory from the environment and the scenario from a flag",
+			args:     []string{"--scenario", "/scenarios/a.yaml"},
+			vars:     map[string]string{"SERVICESIM_SCENARIO_DIR": "/scenarios"},
+			wantErrs: []string{"mutually exclusive"},
+		},
+		{
+			name:     "both from the environment",
+			vars:     map[string]string{"SERVICESIM_SCENARIO": "a.yaml", "SERVICESIM_SCENARIO_DIR": "/scenarios"},
+			wantErrs: []string{"mutually exclusive"},
+		},
+		{
+			name: "a scenario root would be silently ignored, so it is rejected",
+			args: []string{"--scenario-dir", "/scenarios", "--scenario-root", "/elsewhere"},
+			wantErrs: []string{
+				"--scenario-root", "--scenario-dir", "containment root",
+			},
+		},
+		{
+			name:     "an empty directory value",
+			args:     []string{"--scenario-dir", ""},
+			wantErrs: []string{"--scenario-dir", "empty"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := Load(tc.args, env(tc.vars))
+			require.Error(t, err)
+			for _, want := range tc.wantErrs {
+				assert.Containsf(t, err.Error(), want, "error %q should mention %q", err, want)
+			}
+		})
+	}
+}
+
+// TestLoadMaxNamespaces covers the bound on a surface that grows implicitly:
+// namespaces are created on first use, so nothing else limits them.
+func TestLoadMaxNamespaces(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		args    []string
+		vars    map[string]string
+		want    int
+		wantErr []string
+	}{
+		{
+			name: "the default bounds a shared container",
+			want: DefaultMaxNamespaces,
+		},
+		{
+			name: "an explicit flag",
+			args: []string{"--max-namespaces", "4"},
+			want: 4,
+		},
+		{
+			name: "one namespace is a legitimate bound",
+			args: []string{"--max-namespaces", "1"},
+			want: 1,
+		},
+		{
+			name: "the environment binding",
+			vars: map[string]string{"SERVICESIM_MAX_NAMESPACES": "16"},
+			want: 16,
+		},
+		{
+			// Zero is not "unlimited" and not "the default": every request
+			// belongs to a namespace, so zero would reject all traffic.
+			name:    "zero",
+			args:    []string{"--max-namespaces", "0"},
+			wantErr: []string{"--max-namespaces", "at least 1"},
+		},
+		{
+			name:    "negative",
+			args:    []string{"--max-namespaces", "-1"},
+			wantErr: []string{"--max-namespaces", "at least 1"},
+		},
+		{
+			name:    "a negative environment value is validated like a flag value",
+			vars:    map[string]string{"SERVICESIM_MAX_NAMESPACES": "-1"},
+			wantErr: []string{"--max-namespaces", "at least 1"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := Load(tc.args, env(tc.vars))
+			if len(tc.wantErr) > 0 {
+				require.Error(t, err)
+				for _, want := range tc.wantErr {
+					assert.Containsf(t, err.Error(), want, "error %q should mention %q", err, want)
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got.MaxNamespaces)
 		})
 	}
 }
@@ -464,7 +678,9 @@ func TestLoadWritesNothing(t *testing.T) {
 	t.Parallel()
 
 	usage := Usage()
-	for _, want := range []string{"-scenario", "-bind-address", "-healthcheck", "-version"} {
+	for _, want := range []string{
+		"-scenario", "-scenario-dir", "-max-namespaces", "-bind-address", "-healthcheck", "-version",
+	} {
 		assert.Contains(t, usage, want)
 	}
 }

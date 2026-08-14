@@ -227,6 +227,12 @@ func validateProvider(r *Report, e *ProviderEntry) {
 	}
 }
 
+// validateTurnKey checks the form of each extractor and nothing else.
+//
+// In particular a turn_key that names no "route" is legal and needs no finding:
+// the route is always part of the lane, so turn_key adds discriminators to it and
+// cannot remove it. An explicit "route" is equally legal and is de-duplicated
+// where the lane key is composed, which is why both spellings validate the same.
 func validateTurnKey(r *Report, base string, k TurnKey) {
 	for i, extractor := range k {
 		path := fmt.Sprintf("%s.turn_key[%d]", base, i)

@@ -183,6 +183,15 @@ func classifyCode(code, message string) (int, string, string) {
 	case provider.CodeNoHandler, codeProjectionInvalid, codeRenderFailed:
 		return http.StatusInternalServerError, TagInternalError, messageInternalError
 
+	case provider.CodeNamespaceLimit:
+		// 503 rather than 500: the simulator is refusing to take on more state,
+		// not reporting a broken scenario, and the operator's fix is to raise
+		// --max-namespaces. The finding's own message carries that instruction,
+		// so it is passed through rather than flattened to a generic string —
+		// this is a Servicesim configuration problem and the consumer needs to
+		// be told which knob, not handed a plausible-looking vendor error.
+		return http.StatusServiceUnavailable, TagInternalError, message
+
 	case codeOutputSchemaDepth, codeOutputSchemaProperties:
 		return http.StatusBadRequest, TagInvalidJSONSchema, messageInvalidJSONSchema
 

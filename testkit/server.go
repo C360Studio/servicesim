@@ -1,6 +1,7 @@
 package testkit
 
 import (
+	"cmp"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -246,6 +247,13 @@ type Sim struct {
 	handlers map[provider.Name]http.Handler
 	servers  map[provider.Name]*httptest.Server
 
+	// derived maps a namespace name [Sim.NamespaceFor] produced to the test name
+	// it was produced from, so two tests whose names sanitise to one namespace
+	// fail loudly instead of silently sharing a lane. It is a sync.Map because
+	// the whole point of the shared-container pattern is that parallel subtests
+	// claim namespaces concurrently.
+	derived sync.Map // string -> string
+
 	client    *http.Client
 	closeOnce sync.Once
 }
@@ -471,7 +479,9 @@ func (s *Sim) Client() *http.Client {
 	return s.client
 }
 
-// Journal returns every recorded entry, in completion order.
+// Journal returns every recorded entry, in completion order. Entries from every
+// namespace are included and interleave exactly as they were recorded;
+// [Sim.Namespace] returns a view scoped to one of them.
 func (s *Sim) Journal() []Entry {
 	return s.journal.Snapshot()
 }
@@ -482,22 +492,20 @@ func (s *Sim) Journal() []Entry {
 // instead: the client returns while the server goroutine is still completing the
 // entry, and reading here is a race.
 func (s *Sim) Requests(p provider.Name) []Entry {
+	return requestsOf(s.journal.Snapshot(), p)
+}
+
+// requestsOf filters entries to one provider and orders them by arrival
+// sequence. The sort is stable, so entries a journal handed back in completion
+// order keep that order among themselves if two ever shared a sequence number.
+func requestsOf(entries []Entry, p provider.Name) []Entry {
 	var out []Entry
-	for _, e := range s.journal.Snapshot() {
+	for _, e := range entries {
 		if e.Provider == string(p) {
 			out = append(out, e)
 		}
 	}
-	slices.SortStableFunc(out, func(a, b Entry) int {
-		switch {
-		case a.Seq < b.Seq:
-			return -1
-		case a.Seq > b.Seq:
-			return 1
-		default:
-			return 0
-		}
-	})
+	slices.SortStableFunc(out, func(a, b Entry) int { return cmp.Compare(a.Seq, b.Seq) })
 	return out
 }
 
@@ -510,16 +518,29 @@ func (s *Sim) Requests(p provider.Name) []Entry {
 // slow machine and fails on a fast one.
 func (s *Sim) AwaitRequests(tb testing.TB, p provider.Name, n int) []Entry {
 	tb.Helper()
+	return await(tb, p, n, "", s.Requests)
+}
+
+// await polls read until it reports at least n entries, or fails tb. scope names
+// the namespace in the failure message and is empty for a whole-Sim wait, so the
+// message says which lane came up short instead of leaving the reader to guess.
+func await(tb testing.TB, p provider.Name, n int, scope string, read func(provider.Name) []Entry) []Entry {
+	tb.Helper()
+
+	in := ""
+	if scope != "" {
+		in = " in namespace " + scope
+	}
 
 	deadline := time.Now().Add(awaitTimeout)
 	for {
-		got := s.Requests(p)
+		got := read(p)
 		if len(got) >= n {
 			return got
 		}
 		if time.Now().After(deadline) {
-			tb.Fatalf("testkit: %s recorded %d requests, want %d, after waiting %s",
-				p, len(got), n, awaitTimeout)
+			tb.Fatalf("testkit: %s recorded %d requests%s, want %d, after waiting %s",
+				p, len(got), in, n, awaitTimeout)
 			return got
 		}
 		time.Sleep(awaitPoll)
@@ -554,6 +575,187 @@ func (s *Sim) Close() {
 		}
 		s.client.CloseIdleConnections()
 	})
+}
+
+// Namespace returns a view of s scoped to name: base URLs that already carry the
+// /n/<name> prefix, and a journal already filtered to that namespace. It fails
+// tb when name is not a usable namespace, which is where the mistake was made —
+// a name the seam rejects would otherwise surface as a provider-shaped error on
+// the first request, several frames away from the typo.
+//
+// The namespace is created by the first request that names it; this call
+// allocates nothing on the server. Two handles to one name are two views of one
+// lane, which is what lets a helper take a name and a test take a handle.
+//
+// [Sim.NamespaceFor] is the one-liner for the common case; use this when the
+// namespace name has to be a value the test chose, for example one shared with a
+// subprocess through an environment variable.
+func (s *Sim) Namespace(tb testing.TB, name string) *Namespace {
+	tb.Helper()
+
+	if !provider.ValidNamespace(name) {
+		tb.Fatalf("testkit: %q cannot be a namespace: 1 to %d characters of [A-Za-z0-9_-]. "+
+			"Sim.NamespaceFor(t) derives a valid one from the test's own name.",
+			name, provider.MaxNamespaceNameLen)
+		return nil
+	}
+	return &Namespace{sim: s, name: name}
+}
+
+// NamespaceFor returns a view of s scoped to a namespace derived from tb.Name(),
+// which is the whole shared-container pattern in one line:
+//
+//	ns := sim.NamespaceFor(t)
+//
+// A test name is not a legal namespace — t.Name() carries '/' for a subtest and
+// '#' for a duplicate — so every byte outside [A-Za-z0-9_-] becomes '-'. A name
+// longer than the seam's bound keeps its last MaxNamespaceNameLen bytes, because
+// sibling subtests differ at the end and truncating the front would collide them.
+//
+// Two tests whose names derive one namespace fail tb rather than sharing a lane.
+// Silently merging two tests' cursors is precisely the failure namespaces exist
+// to prevent, and it would present as one test receiving the other's scripted
+// turn — the failure that is hardest to trace back to here. Calling it twice for
+// one test is fine and returns an equivalent handle.
+func (s *Sim) NamespaceFor(tb testing.TB) *Namespace {
+	tb.Helper()
+
+	test := tb.Name()
+	name := namespaceForTest(test)
+	if !provider.ValidNamespace(name) {
+		tb.Fatalf("testkit: the test name %q yields no usable namespace; "+
+			"pass one explicitly with Sim.Namespace", test)
+		return nil
+	}
+	if prior, loaded := s.derived.LoadOrStore(name, test); loaded && prior.(string) != test {
+		tb.Fatalf("testkit: tests %q and %q both derive the namespace %q, so they would share "+
+			"one set of cursors; name one of them explicitly with Sim.Namespace",
+			prior.(string), test, name)
+		return nil
+	}
+	return &Namespace{sim: s, name: name}
+}
+
+// namespaceForTest maps a test name onto the namespace grammar the seam accepts:
+// every byte outside [A-Za-z0-9_-] becomes '-', and an over-long name keeps its
+// tail. It is a pure function of the name, so a test that reruns addresses the
+// same namespace.
+func namespaceForTest(test string) string {
+	out := []byte(test)
+	for i, c := range out {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '-', c == '_':
+		default:
+			out[i] = '-'
+		}
+	}
+	if len(out) > provider.MaxNamespaceNameLen {
+		out = out[len(out)-provider.MaxNamespaceNameLen:]
+	}
+	return string(out)
+}
+
+// Namespace is a state-isolated view of a [Sim]: one simulator, many concurrent
+// tests. It is what makes the shared-container pattern every sibling repository
+// already uses safe, rather than what makes it the recommended one — process
+// isolation is still the default.
+//
+// A namespace isolates state, not behaviour. Fault attempt counters, turn
+// cursors and journal entries are per namespace; the scenario, the routes and
+// the listeners are shared. So two tests can run the same scenario concurrently
+// and each see attempt 0 first, which is the property that lets a retry test and
+// a fan-out test share one Sim:
+//
+//	sim := testkit.Start(t, testkit.WithBuiltin("rate-limited"))
+//	t.Run("adapter retries", func(t *testing.T) {
+//	    t.Parallel()
+//	    ns := sim.NamespaceFor(t)
+//	    adapter := myrepo.New(ns.URL(provider.Exa), "test-key")
+//	    ...
+//	    testkit.AssertNoErrors(t, ns.Requests(provider.Exa)[0])
+//	})
+//
+// There is deliberately no per-namespace Reset. The journal can be dropped per
+// namespace but the fault and turn cursors cannot, and a journal that restarted
+// at 1 while the cursors kept counting is exactly the "two counters that
+// disagree" state this feature exists to prevent. A test that wants fresh state
+// names a fresh namespace, which costs nothing because namespaces are created on
+// first use.
+type Namespace struct {
+	sim  *Sim
+	name string
+}
+
+// Name returns the namespace this view is scoped to.
+func (ns *Namespace) Name() string {
+	return ns.name
+}
+
+// URL returns the provider's base URL with this namespace's /n/ prefix already
+// appended, so an adapter configured with it needs no code change to be
+// isolated. It is empty for a provider this Sim does not serve.
+//
+// The path prefix is the documented mechanism because a base URL is something
+// every SDK accepts. For an SDK that pins the path, send the namespace in the
+// provider.NamespaceHeader header instead; [Namespace.Name] is the value.
+func (ns *Namespace) URL(p provider.Name) string {
+	base := ns.sim.URL(p)
+	if base == "" {
+		return ""
+	}
+	return base + "/n/" + ns.name
+}
+
+// BaseURLs returns the environment-variable-shaped base URLs, each carrying this
+// namespace's prefix, so a test configures a consumer exactly as Compose would
+// and gets isolation from the same line.
+func (ns *Namespace) BaseURLs() map[string]string {
+	out := make(map[string]string, len(ns.sim.names))
+	for _, name := range ns.sim.names {
+		if url := ns.URL(name); url != "" {
+			out[strings.ToUpper(string(name))+"_BASE_URL"] = url
+		}
+	}
+	return out
+}
+
+// Client returns the Sim's client, which is shared: a client holds no namespace
+// state, and keep-alives are already disabled so an abort fault is observed
+// rather than absorbed.
+func (ns *Namespace) Client() *http.Client {
+	return ns.sim.Client()
+}
+
+// Journal returns this namespace's entries, in completion order. Entries from
+// every other namespace are already filtered out, so a parallel subtest asserts
+// on its own traffic without knowing what else the process is serving.
+func (ns *Namespace) Journal() []Entry {
+	return ns.sim.journal.SnapshotIn(ns.name)
+}
+
+// Requests returns this namespace's entries for one provider, in
+// arrival-sequence order.
+//
+// After a request that ended at the transport level, call
+// [Namespace.AwaitRequests] instead, for the reason [Sim.Requests] gives.
+func (ns *Namespace) Requests(p provider.Name) []Entry {
+	return requestsOf(ns.Journal(), p)
+}
+
+// AwaitRequests blocks until p has recorded n entries in this namespace, or
+// fails tb. It is [Sim.AwaitRequests] scoped to the namespace, and mandatory
+// before asserting on a request that ended at the transport level.
+func (ns *Namespace) AwaitRequests(tb testing.TB, p provider.Name, n int) []Entry {
+	tb.Helper()
+	return await(tb, p, n, ns.name, ns.Requests)
+}
+
+// dropped reports how many entries this namespace's journal evicted. An
+// assertion that reasons about gaps in a sequence has to know, because eviction
+// makes a gap that means nothing.
+func (ns *Namespace) dropped() uint64 {
+	return ns.sim.journal.StatsIn(ns.name).Dropped
 }
 
 // newClient builds the Sim's client. Transport.Proxy is left nil deliberately:

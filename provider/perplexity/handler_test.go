@@ -496,9 +496,14 @@ func TestDeterminism(t *testing.T) {
 	}
 }
 
-// TestDerivedIdentifiersAreStable pins §3.1: with no fault plan the completion
-// id must not move between calls, or the same request sent twice against one
-// simulator would render two different bodies.
+// TestDerivedIdentifiersAreStable pins §3.1 in its precise form: an identifier
+// is stable AT A CALL POSITION, not across calls.
+//
+// The completion id folds in the lane's call index, because a real vendor issues
+// a distinct id per call, so two consecutive calls differ by design — see
+// TestDerivedIdentifiersAreDistinctPerCall in render_test.go. What must not move
+// is call 0 of one lane against call 0 of another: a namespace is a fresh state
+// lane, and a new process or an admin reset puts a request there just the same.
 func TestDerivedIdentifiersAreStable(t *testing.T) {
 	t.Parallel()
 	s := newSim(t, mustScenario(t, `
@@ -512,8 +517,9 @@ providers:
 `))
 
 	_, first := s.do(t, http.MethodPost, "/v1/sonar", sonarRequest)
-	_, second := s.do(t, http.MethodPost, "/v1/sonar", sonarRequest)
-	require.Equal(t, string(first), string(second))
+	_, fresh := s.do(t, http.MethodPost, "/n/second-lane/v1/sonar", sonarRequest)
+	require.Equal(t, string(first), string(fresh),
+		"call 0 of a fresh lane must reproduce call 0 byte for byte")
 
 	var sonar CompletionResponse
 	require.NoError(t, json.Unmarshal(first, &sonar))

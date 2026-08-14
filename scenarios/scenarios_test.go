@@ -1,6 +1,9 @@
 package scenarios_test
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
 	"regexp"
 	"strings"
 	"testing"
@@ -9,8 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 	"github.com/c360studio/servicesim/scenarios"
+	"github.com/c360studio/servicesim/testkit"
 )
 
 // builtins is the set this build ships. Naming them here rather than deriving
@@ -24,6 +29,7 @@ var builtins = []string{
 	"fusion-overlap",
 	"happy",
 	"malformed-json",
+	"namespaced",
 	"rate-limited",
 	"server-error",
 	"unauthorized",
@@ -334,6 +340,105 @@ func TestConversation_ScriptsAnAgenticLoop(t *testing.T) {
 		require.Lenf(t, entry.Turns, 1, "%s must stay single-shot", provider)
 		assert.True(t, entry.Turns[0].When.IsEmpty())
 	}
+}
+
+// TestNamespaced_DeclaresOneLanePerModel pins the shape of the file: the two
+// scripted lanes must be keyed on something the request carries, and they must
+// script the same call indices as each other. Two lanes whose call indices did
+// not overlap would pass whether or not the cursor was shared, which would make
+// the end-to-end test below prove nothing.
+func TestNamespaced_DeclaresOneLanePerModel(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "namespaced")
+
+	entry := s.Provider("perplexity")
+	require.NotNil(t, entry)
+	assert.Equal(t, []string{"route", "body_json:model"}, entry.TurnKey.Extractors(),
+		"the lane must be keyed on a request field, not on the route alone")
+
+	// Collect (model, call_index) per scripted turn. Every turn but the trailing
+	// fallback names both, because a lane predicate that omits the model would
+	// match in the other lane too.
+	scripted := map[string][]int{}
+	for i := 0; i < len(entry.Turns)-1; i++ {
+		when := entry.Turns[i].When
+		require.NotNilf(t, when, "turn %d must be conditional", i)
+		require.NotNilf(t, when.CallIndex, "turn %d must name a call index", i)
+		model, ok := when.BodyJSON["model"]
+		require.Truef(t, ok, "turn %d must name the model whose lane it belongs to", i)
+		scripted[model] = append(scripted[model], *when.CallIndex)
+	}
+
+	require.Len(t, scripted, 2, "the file demonstrates lanes, so it needs exactly two")
+	assert.Equal(t, []int{0, 1}, scripted["sonar"])
+	assert.Equal(t, []int{0, 1}, scripted["sonar-pro"],
+		"both lanes must script the same indices, or a shared cursor would be indistinguishable")
+
+	fallback := entry.Turns[len(entry.Turns)-1]
+	assert.True(t, fallback.When.IsEmpty(), "a lane that runs off the end of its script must terminate")
+}
+
+// TestNamespaced_EachLaneAdvancesItsOwnCursor is the regression test for the
+// failure this scenario exists to demonstrate, and it runs the real listener
+// rather than reasoning about the file: one route, two callers, interleaved.
+//
+// Under a route-keyed cursor the three requests below are calls 0, 1 and 2 of one
+// sequence, so the second request — the first in the sonar-pro lane — would be
+// call 1 and would draw the turn scripted for sonar's second call. Under a
+// lane-keyed cursor it is call 0 of its own sequence. The two outcomes differ in
+// the response body, which is what this asserts on.
+func TestNamespaced_EachLaneAdvancesItsOwnCursor(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("namespaced"),
+		testkit.WithProviders(provider.Perplexity))
+
+	// Interleaved deliberately: sonar, sonar-pro, sonar. A shared cursor is
+	// invisible when each caller runs to completion before the next one starts.
+	want := []struct {
+		model  string
+		answer string
+	}{
+		{"sonar", "sonar lane, call 0 — searching for Report A."},
+		{"sonar-pro", "sonar-pro lane, call 0 — searching for Report B."},
+		{"sonar", "sonar lane, call 1 — Report A states the finding."},
+	}
+	for i, step := range want {
+		assert.Equalf(t, step.answer, sonarAnswer(t, sim, step.model), "request %d (model %q)", i, step.model)
+	}
+}
+
+// sonarAnswer posts one well-formed Sonar request and returns the assistant
+// message content the scenario answered with.
+func sonarAnswer(t *testing.T, sim *testkit.Sim, model string) string {
+	t.Helper()
+
+	body := `{"model":"` + model + `","messages":[{"role":"user","content":"report"}]}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		sim.URL(provider.Perplexity)+"/v1/sonar", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-perplexity-key")
+
+	resp, err := sim.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &decoded))
+	require.NotEmpty(t, decoded.Choices, "a Sonar response must carry a choice")
+	return decoded.Choices[0].Message.Content
 }
 
 // TestUnknownProvider_LoadsWithTheImplementedProvidersIntact is the promise a

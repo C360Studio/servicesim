@@ -191,10 +191,19 @@ type renderKeys struct {
 
 	// ID is the identifier tuple from §3.1 of the package design: the seed, the
 	// provider, the fault key, and the attempt index only when the route
-	// actually declares a fault plan. It keys request_id, so a retried request
-	// is distinguishable in the journal exactly where a real API would make it
-	// so, and identical where no fault plan exists.
+	// actually declares a fault plan. It keys response_time, which is a property
+	// of the scenario rather than of the call that read it.
 	ID []string
+
+	// Call is ID with the zero-based index of this call within its lane appended
+	// unconditionally. It keys request_id, and nothing else: a real vendor
+	// returns a distinct request_id per call, and one value repeated for every
+	// call collapses a consumer's log correlation to a single point.
+	//
+	// Determinism is sharpened rather than weakened. Two consecutive calls
+	// differ; call 0 of a fresh lane — a new namespace, a new process, a reset —
+	// reproduces call 0 exactly.
+	Call []string
 }
 
 // renderSearch projects p through req and returns the response bytes.
@@ -385,13 +394,17 @@ func renderResponseTime(p *Projection, keys renderKeys) float64 {
 }
 
 // renderRequestID returns the scenario's override or a version 5 UUID derived
-// from the identifier tuple, matching the UUID shape Tavily documents rather
-// than a readable slug.
+// from the per-call identifier tuple, matching the UUID shape Tavily documents
+// rather than a readable slug.
+//
+// It is keyed on Call rather than ID: successive calls must not share a
+// request_id, or a consumer correlating a log line to a request finds every
+// request in the run pointing at the same one.
 func renderRequestID(p *Projection, keys renderKeys) string {
 	if p.RequestID != "" {
 		return p.RequestID
 	}
-	return ids.UUIDv5(keys.ID...)
+	return ids.UUIDv5(keys.Call...)
 }
 
 // renderUsage emits the credit object only when the request asked for it,

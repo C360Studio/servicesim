@@ -201,6 +201,33 @@ func TestValidate_FailsClosed(t *testing.T) {
 	}
 }
 
+// TestValidate_TurnKeyNeedNotNameTheRoute records the decision that the route is
+// always part of the lane. A turn_key declares discriminators additional to the
+// route, so omitting "route" is not an authoring mistake and must raise nothing —
+// and restating it, or restating it twice, must not either, because the lane key
+// de-duplicates it rather than doubling it.
+func TestValidate_TurnKeyNeedNotNameTheRoute(t *testing.T) {
+	t.Parallel()
+
+	for _, turnKey := range []string{
+		`["body_json:model"]`,
+		`["header:x-role"]`,
+		`["route"]`,
+		`["route", "route"]`,
+		`["body_json:model", "route"]`,
+	} {
+		src := "version: 1\nname: n\nproviders:\n  exa:\n    turn_key: " + turnKey +
+			"\n    turns:\n      - respond: {answer: only}\n"
+		_, report, err := Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("turn_key %s must load: %v (%+v)", turnKey, err, report.Findings)
+		}
+		if len(report.Findings) != 0 {
+			t.Errorf("turn_key %s produced findings %+v", turnKey, report.Findings)
+		}
+	}
+}
+
 func TestValidate_UnsupportedVersionOnAnInMemoryScenario(t *testing.T) {
 	t.Parallel()
 

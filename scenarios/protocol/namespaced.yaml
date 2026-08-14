@@ -1,0 +1,154 @@
+# Two concurrent callers on one route, kept in separate turn lanes.
+#
+# This is the scenario for the shared-container pattern: one Servicesim process
+# answering many tests at once. Two mechanisms make that safe and they are
+# independent of one another.
+#
+#   1. `turn_key` (this file). One route serving N concurrent callers has N
+#      cursors instead of one. Without it, two callers draw call indices 0 and 1
+#      out of a single sequence and each receives the turn scripted for the
+#      other — a coherent-looking response from the wrong lane, which fails
+#      somewhere else entirely and much later.
+#
+#   2. The `/n/<namespace>` base-URL prefix (nothing to declare here). It is a
+#      state boundary rather than a behaviour one, so it is chosen by the
+#      consumer's base URL, not by the scenario. Two tests running this same
+#      file under different namespaces get independent cursors, independent
+#      fault attempt counters and independently scoped journal entries.
+#
+# The lane below is keyed on the request's `model`, which is the arrangement
+# `semspec` arrived at. A suite that fans one route out across agent roles keys
+# on the role instead — `turn_key: ["route", "header:x-role"]` — and the shape of
+# the script is identical.
+#
+# `turn_key` is declared on the `perplexity` entry and governs the whole
+# Perplexity listener, the Agent surface included: the lane is resolved once, by
+# the listener, before a handler has chosen which entry answers.
+version: 1
+name: namespaced
+description: >-
+  One Sonar route serving two concurrent callers, keyed by request model, so
+  each lane advances its own turn cursor instead of sharing one sequence.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    author: A. Author
+    published_at: 2026-05-20T00:00:00Z
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+  - id: source-b
+    url: https://example.test/report-b
+    title: Report B
+    author: B. Author
+    published_at: 2026-05-21T00:00:00Z
+    text: Full source text of Report B.
+    snippets:
+      - A relevant excerpt from Report B.
+
+providers:
+
+  exa:
+    results:
+      - source: source-a
+      - source: source-b
+    cost_dollars:
+      total: 0.005
+    answer:
+      answer: Report A and Report B agree on the finding.
+      citations:
+        - source-a
+        - source-b
+
+  tavily:
+    answer: A short synthesis of Report A and Report B.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+      - source: source-b
+        score: 0.71
+
+  perplexity:
+
+    # One lane per (route, model). The "route" extractor contributes
+    # Route.FaultKey, so the two Sonar aliases stay in one lane and a retry
+    # through the alias still draws on the same budget.
+    turn_key: ["route", "body_json:model"]
+
+    turns:
+
+      # The sonar lane. Its call indices are its own: a request in the sonar-pro
+      # lane arriving between these two does not advance this cursor.
+      - when:
+          call_index: 0
+          body_json:
+            model: sonar
+        respond:
+          answer: sonar lane, call 0 — searching for Report A.
+          finish_reason: stop
+          search_results:
+            - source-a
+
+      - when:
+          call_index: 1
+          body_json:
+            model: sonar
+        respond:
+          answer: sonar lane, call 1 — Report A states the finding.
+          finish_reason: stop
+          citations:
+            - source-a
+          search_results:
+            - source-a
+
+      # The sonar-pro lane, scripted with the same call indices. If the cursor
+      # were keyed on the route alone these two turns would be unreachable: the
+      # first sonar-pro request would already be call 2.
+      - when:
+          call_index: 0
+          body_json:
+            model: sonar-pro
+        respond:
+          answer: sonar-pro lane, call 0 — searching for Report B.
+          finish_reason: stop
+          search_results:
+            - source-b
+
+      - when:
+          call_index: 1
+          body_json:
+            model: sonar-pro
+        respond:
+          answer: sonar-pro lane, call 1 — Report B states the finding.
+          finish_reason: stop
+          citations:
+            - source-b
+          search_results:
+            - source-b
+
+      # No `when`, so it matches anything: a third call in either lane, or a
+      # model neither lane is scripted for. A lane that runs off the end of its
+      # script must terminate, not dead-end on a 404-equivalent.
+      - respond:
+          answer: No further scripted turn in this lane.
+          finish_reason: stop
+
+  # Single-shot, and deliberately so. The Agent surface shares the Perplexity
+  # listener, so it is already served in whatever lane the `perplexity` entry's
+  # turn_key named; a second turn_key here would describe a second resolution
+  # that never happens.
+  perplexity_agent:
+    answer: Report A and Report B agree on the finding.
+    queries:
+      - report a
+      - report b
+    search_results:
+      - source-a
+      - source-b

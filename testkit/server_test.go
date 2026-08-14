@@ -540,3 +540,281 @@ func TestJournalAliasIsImplementable(t *testing.T) {
 	assert.Equal(t, testkit.OutcomeFault, entries[0].Outcome.Kind)
 	assert.Equal(t, 1, own.Stats().Stored)
 }
+
+// searchIn issues the vendor request an adapter would issue against a base URL
+// the caller chose. A namespaced call differs from an unprefixed one only in that
+// base URL, which is the property the whole feature rests on: a consumer changes
+// an environment variable and changes nothing else.
+func searchIn(tb testing.TB, sim *testkit.Sim, base string, p provider.Name, body string) *http.Response {
+	tb.Helper()
+
+	resp, err := sim.Client().Do(newRequest(context.Background(), tb, base+"/search", p, body))
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// fatalTB extends stubTB with the two methods the namespace constructors use:
+// Name, which NamespaceFor derives a namespace from, and Fatalf, which both
+// constructors reject a name through. Recording the Fatalf rather than exiting
+// lets a test read the rejection message and check the constructor returned nil,
+// which is what a real testing.TB would never let it observe.
+type fatalTB struct {
+	*stubTB
+	name string
+}
+
+// Name returns the test name this stub stands in for.
+func (f *fatalTB) Name() string { return f.name }
+
+// Fatalf records the message. The constructors return nil immediately after
+// calling it, so control returning here matches what they expect.
+func (f *fatalTB) Fatalf(format string, args ...any) { f.Errorf(format, args...) }
+
+// newFatalTB builds a stub standing in for a test of the given name.
+func newFatalTB(name string) *fatalTB {
+	return &fatalTB{stubTB: &stubTB{}, name: name}
+}
+
+// TestNamespaceIsolatesFaultCursors is the failure this feature exists to fix.
+// The scenario answers 429 once and then 200. Two namespaces sharing one Sim must
+// each see the 429 first: a cursor keyed on the route alone would hand beta the
+// success scripted for alpha's second call.
+func TestNamespaceIsolatesFaultCursors(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithScenarioYAML(retryScenario), testkit.WithProviders(provider.Exa))
+	alpha := sim.Namespace(t, "alpha")
+	beta := sim.Namespace(t, "beta")
+
+	first := searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	require.Equal(t, http.StatusTooManyRequests, first.StatusCode)
+
+	// beta's first call is beta's first call.
+	betaFirst := searchIn(t, sim, beta.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	assert.Equal(t, http.StatusTooManyRequests, betaFirst.StatusCode,
+		"a second namespace must start the fault plan from its first attempt")
+
+	// alpha's own cursor advanced, and only alpha's.
+	second := searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	assert.Equal(t, http.StatusOK, second.StatusCode)
+
+	betaSecond := searchIn(t, sim, beta.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	assert.Equal(t, http.StatusOK, betaSecond.StatusCode)
+
+	testkit.AssertNamespacesIsolated(t, alpha, beta)
+}
+
+// TestNamespaceScopesTheJournal proves a parallel subtest can assert on its own
+// traffic without knowing what else the process is serving.
+func TestNamespaceScopesTheJournal(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	alpha := sim.Namespace(t, "alpha")
+	beta := sim.Namespace(t, "beta")
+
+	searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	searchIn(t, sim, beta.URL(provider.Exa), provider.Exa, `{"query":"report b"}`)
+	searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report c"}`)
+	search(t, sim, provider.Exa, "/search", `{"query":"unprefixed"}`)
+
+	assert.Len(t, alpha.Journal(), 2)
+	assert.Len(t, beta.Journal(), 1)
+	assert.Len(t, sim.Journal(), 4, "the Sim still sees every namespace")
+
+	entries := alpha.Requests(provider.Exa)
+	require.Len(t, entries, 2)
+	for _, e := range entries {
+		assert.Equal(t, "alpha", e.Namespace)
+		testkit.AssertNoErrors(t, e)
+	}
+	assert.Equal(t, "beta", beta.Requests(provider.Exa)[0].Namespace)
+
+	// The provider filter still applies inside a namespace.
+	assert.Empty(t, alpha.Requests(provider.Tavily))
+}
+
+// TestNamespaceBaseURLsCarryThePrefix is the one-line adoption path: the same
+// environment-shaped map the unprefixed Sim hands out, with isolation attached.
+func TestNamespaceBaseURLsCarryThePrefix(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	ns := sim.Namespace(t, "t-42")
+
+	base := sim.BaseURLs()
+	scoped := ns.BaseURLs()
+	require.Len(t, scoped, len(base))
+	for name, url := range base {
+		assert.Equal(t, url+"/n/t-42", scoped[name], "%s must carry the namespace prefix", name)
+	}
+	assert.Equal(t, sim.URL(provider.Exa)+"/n/t-42", ns.URL(provider.Exa))
+	assert.Equal(t, "t-42", ns.Name())
+	assert.Same(t, sim.Client(), ns.Client())
+}
+
+// TestNamespaceURLIsEmptyWithoutAServer keeps the namespace view honest about a
+// provider the Sim does not serve, exactly as Sim.URL is.
+func TestNamespaceURLIsEmptyWithoutAServer(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	ns := sim.Namespace(t, "t-42")
+
+	assert.Empty(t, ns.URL(provider.Tavily))
+	assert.NotContains(t, ns.BaseURLs(), "TAVILY_BASE_URL")
+}
+
+// TestNamespaceChangesStateNotBehaviour pins the design's central claim: a
+// namespace is a state boundary, so the response bytes are unchanged by it.
+func TestNamespaceChangesStateNotBehaviour(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+
+	plain := search(t, sim, provider.Exa, "/search", `{"query":"report a"}`)
+	plainBody, err := io.ReadAll(plain.Body)
+	require.NoError(t, err)
+
+	scoped := searchIn(t, sim, sim.Namespace(t, "t-42").URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	scopedBody, err := io.ReadAll(scoped.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, plain.StatusCode, scoped.StatusCode)
+	assert.JSONEq(t, string(plainBody), string(scopedBody))
+}
+
+// TestNamespaceForIsOneLinePerSubtest is the consumer's test, written the way a
+// consumer sharing one simulator across parallel subtests would write it. Each
+// subtest sees the scenario from its first attempt because each has its own lane.
+func TestNamespaceForIsOneLinePerSubtest(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithScenarioYAML(retryScenario), testkit.WithProviders(provider.Exa))
+
+	for _, name := range []string{"first caller", "second caller", "third caller", "fourth caller"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ns := sim.NamespaceFor(t)
+
+			rateLimited := searchIn(t, sim, ns.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+			require.Equal(t, http.StatusTooManyRequests, rateLimited.StatusCode)
+
+			retried := searchIn(t, sim, ns.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+			require.Equal(t, http.StatusOK, retried.StatusCode)
+
+			entries := ns.Requests(provider.Exa)
+			require.Len(t, entries, 2, "the namespace sees its own two requests and no others")
+			assert.Equal(t, 0, entries[0].Outcome.AttemptIndex)
+			assert.Equal(t, 1, entries[1].Outcome.AttemptIndex)
+		})
+	}
+}
+
+// TestNamespaceForSanitisesTheTestName covers the reason NamespaceFor exists: a
+// test name is not a legal namespace.
+func TestNamespaceForSanitisesTheTestName(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+
+	t.Run("a name with slashes, spaces and a dot.", func(t *testing.T) {
+		t.Parallel()
+
+		ns := sim.NamespaceFor(t)
+		require.True(t, provider.ValidNamespace(ns.Name()), "derived %q", ns.Name())
+		assert.NotContains(t, ns.Name(), "/")
+		assert.Equal(t, ns.Name(), sim.NamespaceFor(t).Name(), "deriving twice for one test is stable")
+
+		searchIn(t, sim, ns.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+		require.Len(t, ns.Requests(provider.Exa), 1)
+		assert.Equal(t, ns.Name(), ns.Requests(provider.Exa)[0].Namespace)
+	})
+}
+
+// TestNamespaceForKeepsTheTailOfALongName pins the truncation direction. Sibling
+// subtests share a prefix and differ at the end, so keeping the front would put
+// two tests in one lane.
+func TestNamespaceForKeepsTheTailOfALongName(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	shared := strings.Repeat("Long", 30)
+
+	first := sim.NamespaceFor(newFatalTB(shared + "/case-one"))
+	second := sim.NamespaceFor(newFatalTB(shared + "/case-two"))
+
+	require.NotNil(t, first)
+	require.NotNil(t, second)
+	assert.LessOrEqual(t, len(first.Name()), provider.MaxNamespaceNameLen)
+	assert.NotEqual(t, first.Name(), second.Name())
+	assert.True(t, provider.ValidNamespace(first.Name()))
+}
+
+// TestNamespaceForRejectsCollidingTestNames proves the collision fails loudly.
+// Silently merging two tests' cursors is the failure namespaces exist to prevent.
+func TestNamespaceForRejectsCollidingTestNames(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+
+	first := newFatalTB("TestCollide/case a")
+	require.NotNil(t, sim.NamespaceFor(first))
+	require.False(t, first.Failed())
+
+	second := newFatalTB("TestCollide#case-a")
+	assert.Nil(t, sim.NamespaceFor(second), "a colliding derivation must not hand back a lane")
+	assert.Contains(t, second.Message(), "TestCollide/case a")
+	assert.Contains(t, second.Message(), "TestCollide#case-a")
+}
+
+// TestNamespaceForRejectsANamelessTest covers the one test name that yields
+// nothing to derive from. A caller in that position is told to name the namespace
+// itself rather than handed the default lane, which every other test shares.
+func TestNamespaceForRejectsANamelessTest(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+
+	stub := newFatalTB("")
+	assert.Nil(t, sim.NamespaceFor(stub))
+	assert.Contains(t, stub.Message(), "no usable namespace")
+}
+
+// TestNamespaceRejectsAnUnusableName fails at the line that made the mistake,
+// rather than as a provider-shaped error on the first request.
+func TestNamespaceRejectsAnUnusableName(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+
+	for _, name := range []string{"", "has/slash", "has space", strings.Repeat("a", provider.MaxNamespaceNameLen+1)} {
+		stub := newFatalTB("TestNamespaceRejectsAnUnusableName")
+		assert.Nil(t, sim.Namespace(stub, name), "%q must be refused", name)
+		assert.Contains(t, stub.Message(), "cannot be a namespace")
+	}
+}
+
+// TestNamespaceAwaitRequestsAfterAbortingFault is Sim.AwaitRequests scoped to a
+// lane: the entry is completed by a goroutine the client is no longer waiting on,
+// so reading the namespace journal directly would be a race.
+func TestNamespaceAwaitRequestsAfterAbortingFault(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithScenarioYAML(abortScenario), testkit.WithProviders(provider.Exa))
+	ns := sim.Namespace(t, "t-42")
+
+	req := newRequest(context.Background(), t, ns.URL(provider.Exa)+"/search", provider.Exa, `{"query":"report a"}`)
+	resp, err := sim.Client().Do(req) //nolint:bodyclose // the connection was closed before any header
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("the request returned %d, want a transport error", resp.StatusCode)
+	}
+
+	entries := ns.AwaitRequests(t, provider.Exa, 1)
+	require.Len(t, entries, 1)
+	assert.True(t, entries[0].Outcome.Aborted)
+	assert.Equal(t, "t-42", entries[0].Namespace)
+}

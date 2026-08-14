@@ -6,8 +6,9 @@ one listener per provider.
 It exists so that a repository with a research adapter can test that adapter *fast, offline, and for free* — and,
 more importantly, can prove the adapter sent the **correct vendor request**, not merely that it got a response back.
 
-- **Deterministic.** The same scenario and the same request produce byte-identical responses, identifiers and
-  ordering. No clocks, no randomness, no UUIDs on a response path.
+- **Deterministic.** The same scenario and the same request at the same call position produce byte-identical
+  responses, identifiers and ordering. No clocks, no randomness, no UUIDs on a response path. Identifiers move with
+  the call position, the way a real vendor's do, and a fresh state lane starts at call 0 again.
 - **Strict about requests, tolerant about responses.** Method, route, content type, credential placement, required
   fields, field types and enum values are all validated, and every finding lands in a redacted request journal.
 - **Fails closed.** An unmatched method, path, provider or scenario returns a provider-shaped error. Servicesim
@@ -102,6 +103,10 @@ services:
       PERPLEXITY_API_KEY: test-perplexity-key
 ```
 
+[`docker-compose.example.yml`](docker-compose.example.yml) is the fuller version of that file: a pinned image tag,
+a read-only scenario mount, a healthcheck, and the namespaced base-URL forms described
+[below](#one-container-many-concurrent-tests).
+
 The image runs as a non-root user on a `scratch` base with no shell and no CA bundle — introspection goes through
 the admin listener, not through `exec`.
 
@@ -131,9 +136,68 @@ To inspect what a consumer actually sent, read the journal:
 curl -s 'http://localhost:8080/__admin/requests?provider=exa&pretty=1'
 ```
 
+## One container, many concurrent tests
+
+**Process isolation is still the recommended default.** A separate process or container per parallel suite is the
+simplest thing that works, and nothing below changes that. Namespaces exist because a survey of the sibling
+repositories found every e2e suite already sharing *one* mock container across many tests — so the choice was not
+between two patterns but between the shared pattern being safe and it being silently wrong. Namespaces make it
+safe; they do not make it the norm.
+
+Two optional path prefixes are stripped before route matching, so a prefixed request reaches exactly the same
+handler as a plain one:
+
+```text
+http://servicesim:8081/x/<scenario>/n/<namespace>/search
+                       └─ selects behaviour   └─ isolates state
+```
+
+Both are optional and their order is fixed. `/search` on its own still means "the startup scenario, namespace
+`default`", so nothing that works today changes.
+
+```bash
+EXA_BASE_URL=http://servicesim:8081/n/${TEST_ID}
+```
+
+That one line is the entire integration. **It is a path prefix rather than a header on purpose:** consumers already
+inject base URLs — that is how they are pointed at Servicesim at all — and every SDK supports a base URL carrying a
+path, whereas many LLM SDKs make a per-request header awkward or impossible, and those are exactly the consumers
+this is for. `X-Servicesim-Namespace` is accepted for an SDK that pins the path, but the base URL is the documented
+mechanism because it needs no consumer code change at all.
+
+A namespace is a **state** boundary, not a behaviour one:
+
+| Isolated per namespace | Shared process-wide |
+|---|---|
+| Fault attempt counters | The loaded, validated scenarios |
+| Turn cursors | Route tables and handlers |
+| Journal entries and their scoping | Configuration and listeners |
+
+Behaviour is the separate `/x/<scenario>` dimension, served from `--scenario-dir`, because the common case is two
+tests wanting the *same* behaviour with *independent* state — which a scenario-only mechanism cannot express. Every
+scenario in that directory is loaded and validated at startup, so readiness still means "every scenario is valid"
+and nothing is loaded lazily.
+
+The rest of it, briefly:
+
+- Namespaces are created on first use. There is no registration call, because a setup call in every consumer test
+  is the friction this removes. `--max-namespaces` (default 1024) bounds them, and exceeding the bound is a loud
+  provider-shaped error rather than a silent eviction — evicting would reset a running test's turn cursor mid-loop.
+- `GET /__admin/requests?namespace=<name>` scopes the journal; without the parameter every namespace is returned
+  and each entry names its own.
+- `POST /__admin/reset?namespace=<name>` drops one namespace. Resetting everything needs an explicit `?all=true`,
+  because a bare reset that silently wiped a hundred concurrent tests' cursors is a trap.
+- Concurrency *within* one namespace is a separate problem with a separate answer: when one route serves several
+  callers at once, key the turn cursor on something that tells them apart with
+  [`turn_key`](docs/scenario-schema.md#turn_key--what-the-cursor-counts-per). The built-in `namespaced` scenario is
+  the worked example.
+
+[`docker-compose.example.yml`](docker-compose.example.yml) shows both base-URL forms alongside a pinned image, a
+read-only scenario mount and a healthcheck.
+
 ## Built-in protocol scenarios
 
-Eight scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
+Eleven scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
 `testkit.WithBuiltin("<name>")`. They cover *protocol* behaviour, which is the same for every consumer;
 product-specific corpora belong in the consuming repository.
 
@@ -147,6 +211,9 @@ product-specific corpora belong in the consuming repository.
 | `malformed-json` | A body that is not valid JSON fails cleanly instead of panicking or returning zero values. |
 | `extra-fields` | Unknown additive response fields do not break the decoder — vendors evolve additively. |
 | `fusion-overlap` | One canonical source rendered through all three providers, with a claim repeated across sources: deduplication by URL and corroboration counting are exercised deliberately, not by accident. |
+| `conversation` | A scripted agentic loop: successive calls to one route get successive turns, matched by call index and by body substring, with an unconditional fallback last. |
+| `namespaced` | One route serving two concurrent callers, kept in separate turn lanes by `turn_key`, so neither draws the turn scripted for the other. |
+| `unknown-provider` | A provider this build has no handler for warns and is ignored, so a scenario file shared across repositories does not break the moment one consumer pins an older Servicesim. |
 
 ## Mounting a product-specific scenario
 

@@ -2,9 +2,12 @@ package admin_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/internal/admin"
+	// Aliased because several tests below name a local fake "faults"; the real
+	// engine appears here only to prove the shipped wiring answers a scoped reset.
+	faultengine "github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
@@ -32,17 +38,51 @@ var baseTime = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 // fakeFaults records that reset reached the fault engine. The admin surface must
 // zero the counters the handlers actually consult, so "reset cleared the
-// journal" is only half the assertion. The counter is atomic because the
+// journal" is only half the assertion. The counters are synchronised because the
 // concurrency test resets from several goroutines at once, which is what a
 // developer curling the admin surface while a suite runs does to the real
 // engine.
-type fakeFaults struct{ resets atomic.Int64 }
+//
+// It isolates counters per namespace, as the wired engine must: a fault attempt
+// counter is also the turn cursor, so an engine that could not scope a reset
+// would leave a namespace's cursor mid-plan behind an emptied journal.
+type fakeFaults struct {
+	resets atomic.Int64
+
+	mu     sync.Mutex
+	scoped []string
+}
 
 func (f *fakeFaults) Next(key string) provider.FaultDecision {
 	return provider.FaultDecision{Index: -1, Key: key}
 }
 
 func (f *fakeFaults) Reset() { f.resets.Add(1) }
+
+func (f *fakeFaults) ResetIn(namespace string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scoped = append(f.scoped, namespace)
+}
+
+// scopedResets returns the namespaces a scoped reset reached, in call order.
+func (f *fakeFaults) scopedResets() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.scoped...)
+}
+
+// unscopedFaults is a fault engine that cannot isolate a namespace — a consumer
+// implementation of provider.Faults, which is the whole interface it has to
+// satisfy. The admin surface must refuse a scoped reset against it rather than
+// clear the journal and leave the cursors it cannot reach.
+type unscopedFaults struct{ resets atomic.Int64 }
+
+func (f *unscopedFaults) Next(key string) provider.FaultDecision {
+	return provider.FaultDecision{Index: -1, Key: key}
+}
+
+func (f *unscopedFaults) Reset() { f.resets.Add(1) }
 
 // rawJournal is a journal.Journal that retains entries verbatim, without the
 // redaction Ring.Append performs. It exists to prove the admin surface redacts
@@ -61,6 +101,12 @@ func (j *rawJournal) Stats() journal.Stats      { return journal.Stats{Stored: l
 
 // entryOpt mutates an entry a test is building.
 type entryOpt func(*journal.Entry)
+
+// inNamespace files an entry in one state lane, the way provider.Handle does for
+// a request that arrived with an /n/ prefix.
+func inNamespace(name string) entryOpt {
+	return func(e *journal.Entry) { e.Namespace = name }
+}
 
 // newEntry builds a plausible journaled request. Only the fields a test asserts
 // on are worth setting, so everything else is a fixed, boring value.
@@ -98,6 +144,14 @@ func serve(t *testing.T, h http.Handler, method, target string) *httptest.Respon
 func decodeRequests(t *testing.T, rec *httptest.ResponseRecorder) admin.RequestsResponse {
 	t.Helper()
 	var got admin.RequestsResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got), "body: %s", rec.Body.String())
+	return got
+}
+
+// decodeNamespaces decodes a /__admin/namespaces body.
+func decodeNamespaces(t *testing.T, rec *httptest.ResponseRecorder) admin.NamespacesResponse {
+	t.Helper()
+	var got admin.NamespacesResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got), "body: %s", rec.Body.String())
 	return got
 }
@@ -460,37 +514,313 @@ func TestHandler_RequestsWithAnEmptyJournalServesAnEmptyArray(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"entries":[]`)
 }
 
-func TestHandler_Reset(t *testing.T) {
+// TestHandler_ResetAllClearsEverything covers the explicit whole-process reset.
+// ?all=true is the only spelling that clears state a caller did not name.
+func TestHandler_ResetAllClearsEverything(t *testing.T) {
 	ring := journal.NewRing(8, 4096)
 	ring.Append(newEntry(1, "exa"))
+	ring.Append(newEntry(2, "tavily", inNamespace("t-1")))
 	faults := &fakeFaults{}
 	h := admin.Handler(admin.Deps{Journal: ring, Faults: faults})
 
-	rec := serve(t, h, http.MethodPost, "/__admin/reset")
+	rec := serve(t, h, http.MethodPost, "/__admin/reset?all=true")
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Empty(t, ring.Snapshot(), "reset must clear the journal")
+	assert.Empty(t, ring.Snapshot(), "reset must clear every namespace's journal")
 	assert.Equal(t, int64(1), faults.resets.Load(), "reset must zero the counters the handlers consult")
+	assert.Empty(t, faults.scopedResets(), "an all reset is not a scoped one")
 
 	got := decodeRequests(t, serve(t, h, http.MethodGet, "/__admin/requests"))
 	assert.Empty(t, got.Entries)
 }
 
-// TestHandler_ResetRefusesAScopedReset records the one thing a reset must never
-// do: silently wipe state a caller did not ask about. Per-namespace lanes are
-// not wired yet, so a ?namespace= reset is refused rather than quietly resetting
-// every namespace.
-func TestHandler_ResetRefusesAScopedReset(t *testing.T) {
+// TestHandler_ResetRequiresAnExplicitScope is the deliberate breaking change,
+// and the reason for it: the sibling e2e suites run one shared container across
+// many concurrent tests, so a bare reset that defaulted to "everything" would
+// let one test's cleanup zero a hundred other tests' cursors mid-run. The
+// failure that produces is not a failed reset — it is another test being served
+// the turn scripted for a different call, much later and somewhere else.
+func TestHandler_ResetRequiresAnExplicitScope(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{name: "bare reset", target: "/__admin/reset"},
+		{name: "all is off", target: "/__admin/reset?all=false"},
+		{name: "all is zero", target: "/__admin/reset?all=0"},
+		{name: "empty namespace names no lane", target: "/__admin/reset?namespace="},
+		{name: "both scopes at once", target: "/__admin/reset?namespace=t-1&all=true"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ring := journal.NewRing(8, 4096)
+			ring.Append(newEntry(1, "exa"))
+			faults := &fakeFaults{}
+
+			rec := serve(t, admin.Handler(admin.Deps{Journal: ring, Faults: faults}), http.MethodPost, tc.target)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			var got map[string]string
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+			assert.Contains(t, got["error"], "?all=true", "the error must name the spelling that does reset everything")
+
+			assert.Len(t, ring.Snapshot(), 1, "a refused reset must not clear anything")
+			assert.Zero(t, faults.resets.Load())
+			assert.Empty(t, faults.scopedResets())
+		})
+	}
+}
+
+// TestHandler_ResetNamespaceDropsOneLane is the shared-container case: one test
+// finishing must clear its own state and nothing else.
+func TestHandler_ResetNamespaceDropsOneLane(t *testing.T) {
 	ring := journal.NewRing(8, 4096)
 	ring.Append(newEntry(1, "exa"))
+	ring.Append(newEntry(2, "exa", inNamespace("t-1")))
+	ring.Append(newEntry(3, "tavily", inNamespace("t-2")))
 	faults := &fakeFaults{}
 	h := admin.Handler(admin.Deps{Journal: ring, Faults: faults})
 
-	rec := serve(t, h, http.MethodPost, "/__admin/reset?namespace=t-42")
+	rec := serve(t, h, http.MethodPost, "/__admin/reset?namespace=t-1")
 
-	require.Equal(t, http.StatusNotImplemented, rec.Code)
-	assert.Len(t, ring.Snapshot(), 1, "a refused reset must not clear anything")
-	assert.Zero(t, faults.resets.Load())
+	require.Equal(t, http.StatusOK, rec.Code)
+	var status map[string]string
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &status))
+	assert.Equal(t, "reset", status["status"])
+	assert.Equal(t, "t-1", status["namespace"], "the caller is told which lane disappeared")
+
+	assert.Equal(t, []string{"t-1"}, faults.scopedResets(),
+		"the cursor is the fault counter; a scoped reset that skipped it would leave the lane mid-plan")
+	assert.Zero(t, faults.resets.Load(), "a scoped reset must never fall back to the whole-process one")
+
+	seqs := make([]uint64, 0, 2)
+	for _, e := range decodeRequests(t, serve(t, h, http.MethodGet, "/__admin/requests")).Entries {
+		seqs = append(seqs, e.Seq)
+	}
+	assert.Equal(t, []uint64{1, 3}, seqs, "every other namespace must survive untouched")
+}
+
+// TestHandler_ResetNamespaceRejectsANameTheSimulatorCannotHave keeps a reset from
+// addressing state under a name nothing validated. The grammar is the seam's, so
+// a name rejected here is one no /n/ prefix could ever have created.
+func TestHandler_ResetNamespaceRejectsANameTheSimulatorCannotHave(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "path traversal", value: "../etc"},
+		{name: "separator", value: "t-1/lane"},
+		{name: "dot", value: "t.1"},
+		{name: "control character", value: "t-\x071"},
+		{name: "too long", value: strings.Repeat("t", provider.MaxNamespaceNameLen+1)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ring := journal.NewRing(8, 4096)
+			ring.Append(newEntry(1, "exa"))
+			faults := &fakeFaults{}
+			h := admin.Handler(admin.Deps{Journal: ring, Faults: faults})
+
+			target := "/__admin/reset?namespace=" + url.QueryEscape(tc.value)
+			rec := serve(t, h, http.MethodPost, target)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			// The rejected value is never echoed: a query parameter is one of the
+			// places a misconfigured adapter puts its credential.
+			assert.NotContains(t, rec.Body.String(), tc.value)
+			assert.Len(t, ring.Snapshot(), 1, "a rejected reset must not clear anything")
+			assert.Zero(t, faults.resets.Load())
+			assert.Empty(t, faults.scopedResets())
+		})
+	}
+}
+
+// TestHandler_ResetNamespaceRefusesWhenStateIsNotIsolated is the honesty
+// assertion. A surface that can scope only one of the two state stores must
+// scope neither: an emptied journal beside a cursor still mid-plan serves the
+// next request in that namespace a turn from the wrong position, and nothing
+// anywhere says so.
+func TestHandler_ResetNamespaceRefusesWhenStateIsNotIsolated(t *testing.T) {
+	t.Run("journal does not isolate namespaces", func(t *testing.T) {
+		j := &rawJournal{}
+		j.Append(newEntry(1, "exa", inNamespace("t-1")))
+		faults := &fakeFaults{}
+
+		rec := serve(t, admin.Handler(admin.Deps{Journal: j, Faults: faults}), http.MethodPost,
+			"/__admin/reset?namespace=t-1")
+
+		require.Equal(t, http.StatusNotImplemented, rec.Code)
+		assert.Len(t, j.Snapshot(), 1, "a refused reset must not clear anything")
+		assert.Empty(t, faults.scopedResets(), "the fault counters must not be scoped without the journal")
+		assert.Zero(t, faults.resets.Load())
+	})
+
+	t.Run("fault engine does not isolate namespaces", func(t *testing.T) {
+		ring := journal.NewRing(8, 4096)
+		ring.Append(newEntry(1, "exa", inNamespace("t-1")))
+		faults := &unscopedFaults{}
+
+		rec := serve(t, admin.Handler(admin.Deps{Journal: ring, Faults: faults}), http.MethodPost,
+			"/__admin/reset?namespace=t-1")
+
+		require.Equal(t, http.StatusNotImplemented, rec.Code)
+		assert.Len(t, ring.Snapshot(), 1, "the journal must not be cleared when the cursors cannot be")
+		assert.Zero(t, faults.resets.Load())
+	})
+}
+
+// TestHandler_ResetNamespaceWithTheShippedEngine wires the two implementations
+// the binary actually runs — journal.Ring and faults.Engine — instead of the
+// fakes the tests above use.
+//
+// The capability the handler asserts for is unexported and satisfied
+// structurally, so a real engine that never grew ResetIn would compile, pass
+// every test above against the fake that has it, and answer 501 in the shipped
+// container. That is precisely the gap this test exists to keep closed, and it
+// is invisible from either side on its own.
+func TestHandler_ResetNamespaceWithTheShippedEngine(t *testing.T) {
+	ring := journal.NewRing(8, 4096)
+	ring.Append(newEntry(1, "exa"))
+	ring.Append(newEntry(2, "exa", inNamespace("t-1")))
+	ring.Append(newEntry(3, "tavily", inNamespace("t-2")))
+
+	rateLimited := &scenario.Fault{Attempts: []scenario.FaultAttempt{{Status: 429}}}
+	engine := faultengine.New(nil, []provider.Route{{
+		Pattern:  "POST /search",
+		FaultKey: "exa:search",
+		Fault:    func(*scenario.Scenario) *scenario.Fault { return rateLimited },
+	}})
+
+	// Both namespaces spend their single 429, so a cursor that failed to reset is
+	// indistinguishable from one that reset and a cursor that reset is
+	// indistinguishable from one that never ran.
+	require.Equal(t, 429, engine.Next("t-1/exa:search").Attempt.Status)
+	require.Nil(t, engine.Next("t-1/exa:search").Attempt)
+	require.Equal(t, 429, engine.Next("t-2/exa:search").Attempt.Status)
+
+	h := admin.Handler(admin.Deps{Journal: ring, Faults: engine})
+	rec := serve(t, h, http.MethodPost, "/__admin/reset?namespace=t-1")
+
+	require.Equal(t, http.StatusOK, rec.Code,
+		"the shipped fault engine must isolate attempt counters per namespace, or every scoped reset is a 501")
+
+	require.NotNil(t, engine.Next("t-1/exa:search").Attempt,
+		"t-1 replays its plan from attempt zero")
+	assert.Nil(t, engine.Next("t-2/exa:search").Attempt,
+		"t-2's cursor stayed where it was: its 429 was already spent")
+
+	seqs := make([]uint64, 0, 2)
+	for _, e := range decodeRequests(t, serve(t, h, http.MethodGet, "/__admin/requests")).Entries {
+		seqs = append(seqs, e.Seq)
+	}
+	assert.Equal(t, []uint64{1, 3}, seqs, "only t-1's journal entries were dropped")
+}
+
+// TestHandler_Namespaces is the endpoint a developer debugging a shared
+// container reaches for first: which lanes are alive in there, and how much has
+// each of them recorded.
+func TestHandler_Namespaces(t *testing.T) {
+	ring := journal.NewRing(8, 4096)
+	ring.Append(newEntry(1, "exa"))
+	ring.Append(newEntry(2, "tavily"))
+	ring.Append(newEntry(3, "exa", inNamespace("t-2")))
+	ring.Append(newEntry(4, "exa", inNamespace("t-1")))
+	ring.Append(newEntry(5, "perplexity", inNamespace("t-1")))
+	h := admin.Handler(admin.Deps{Journal: ring})
+
+	rec := serve(t, h, http.MethodGet, "/__admin/namespaces")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	got := decodeNamespaces(t, rec)
+	assert.Equal(t, []admin.NamespaceSummary{
+		{Namespace: "default", Entries: 2},
+		{Namespace: "t-1", Entries: 2},
+		{Namespace: "t-2", Entries: 1},
+	}, got.Namespaces, "lanes are sorted by name, and unset means the default lane")
+
+	// Sorted output is a determinism property, not an implementation accident.
+	first := rec.Body.String()
+	for range 20 {
+		assert.Equal(t, first, serve(t, h, http.MethodGet, "/__admin/namespaces").Body.String())
+	}
+}
+
+// TestHandler_NamespacesFallsBackToTheEntries covers a Deps wired with a journal
+// that cannot enumerate its lanes. The listing is still answerable from what the
+// entries say, which is what a consumer's own journal implementation gets.
+func TestHandler_NamespacesFallsBackToTheEntries(t *testing.T) {
+	j := &rawJournal{}
+	j.Append(newEntry(1, "exa"))
+	j.Append(newEntry(2, "exa", inNamespace("t-1")))
+
+	rec := serve(t, admin.Handler(admin.Deps{Journal: j}), http.MethodGet, "/__admin/namespaces")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, []admin.NamespaceSummary{
+		{Namespace: "default", Entries: 1},
+		{Namespace: "t-1", Entries: 1},
+	}, decodeNamespaces(t, rec).Namespaces)
+}
+
+func TestHandler_NamespacesWithNoTrafficServesAnEmptyArray(t *testing.T) {
+	rec := serve(t, admin.Handler(admin.Deps{Journal: &rawJournal{}}), http.MethodGet, "/__admin/namespaces")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	// Not "namespaces":null — a consumer decoding into a typed list should not
+	// have to distinguish "no lanes" from "no field".
+	assert.Contains(t, rec.Body.String(), `"namespaces":[]`)
+}
+
+// TestHandler_RequestsNamesTheLaneOnEveryEntry is the promise the addendum makes
+// about an unscoped read: every entry carries its namespace, so a reader of a
+// shared container's journal never has to infer which test a request belonged
+// to. The journal stores an entry's namespace exactly as appended, so naming the
+// default lane is this surface's job.
+func TestHandler_RequestsNamesTheLaneOnEveryEntry(t *testing.T) {
+	ring := journal.NewRing(8, 4096)
+	ring.Append(newEntry(1, "exa"))
+	ring.Append(newEntry(2, "exa", inNamespace("t-1")))
+
+	rec := serve(t, admin.Handler(admin.Deps{Journal: ring}), http.MethodGet, "/__admin/requests")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	got := decodeRequests(t, rec)
+	require.Len(t, got.Entries, 2)
+	assert.Equal(t, "default", got.Entries[0].Namespace)
+	assert.Equal(t, "t-1", got.Entries[1].Namespace)
+}
+
+// TestHandler_DefaultNamespaceAgreesAcrossPackages guards a duplication the
+// import graph forces: journal sits below the provider seam and must not import
+// it, so both declare the default lane's name. Two spellings of it would mean
+// entries filed under a lane the admin filter cannot address.
+func TestHandler_DefaultNamespaceAgreesAcrossPackages(t *testing.T) {
+	assert.Equal(t, provider.DefaultNamespace, journal.DefaultNamespace)
+}
+
+func TestHandler_RequestsRejectsANamespaceTheSimulatorCannotHave(t *testing.T) {
+	ring := journal.NewRing(8, 4096)
+	ring.Append(newEntry(1, "exa"))
+
+	rec := serve(t, admin.Handler(admin.Deps{Journal: ring}), http.MethodGet, "/__admin/requests?namespace=t.1")
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "t.1", "the rejected value is never echoed")
+}
+
+// TestHandler_RequestsNamespaceFilterIsCaseSensitive pins the one place this
+// surface is deliberately stricter than the provider filter. A namespace is a
+// caller-chosen map key, so "t-1" and "T-1" are two lanes; folding them would
+// report one concurrent test's requests to another.
+func TestHandler_RequestsNamespaceFilterIsCaseSensitive(t *testing.T) {
+	ring := journal.NewRing(8, 4096)
+	ring.Append(newEntry(1, "exa", inNamespace("t-1")))
+	h := admin.Handler(admin.Deps{Journal: ring})
+
+	assert.Len(t, decodeRequests(t, serve(t, h, http.MethodGet, "/__admin/requests?namespace=t-1")).Entries, 1)
+	assert.Empty(t, decodeRequests(t, serve(t, h, http.MethodGet, "/__admin/requests?namespace=T-1")).Entries)
 }
 
 func TestHandler_Scenario(t *testing.T) {
@@ -528,6 +858,7 @@ func TestHandler_FailsClosed(t *testing.T) {
 		target string
 	}{
 		{name: "unknown path", method: http.MethodGet, target: "/nope"},
+		{name: "namespaces route is exact", method: http.MethodGet, target: "/__admin/namespaces/t-1"},
 		{name: "provider path is not registered here", method: http.MethodPost, target: "/search"},
 		{name: "perplexity path is not registered here", method: http.MethodPost, target: "/chat/completions"},
 		{name: "admin prefix without a route", method: http.MethodGet, target: "/__admin/"},
@@ -560,6 +891,7 @@ func TestHandler_WrongMethodIsMethodNotAllowed(t *testing.T) {
 		{name: "post to a read endpoint", method: http.MethodPost, target: "/healthz", wantAllow: "GET, HEAD"},
 		{name: "post to readyz", method: http.MethodPost, target: "/readyz", wantAllow: "GET, HEAD"},
 		{name: "delete the journal", method: http.MethodDelete, target: "/__admin/requests", wantAllow: "GET, HEAD"},
+		{name: "post to the namespace listing", method: http.MethodPost, target: "/__admin/namespaces", wantAllow: "GET, HEAD"},
 		{name: "get the reset endpoint", method: http.MethodGet, target: "/__admin/reset", wantAllow: "POST"},
 	}
 
@@ -587,8 +919,15 @@ func TestHandler_ZeroDepsAnswersEveryRoute(t *testing.T) {
 		{method: http.MethodGet, target: "/healthz", want: http.StatusOK},
 		{method: http.MethodGet, target: "/readyz", want: http.StatusServiceUnavailable},
 		{method: http.MethodGet, target: "/__admin/requests", want: http.StatusOK},
+		{method: http.MethodGet, target: "/__admin/namespaces", want: http.StatusOK},
 		{method: http.MethodGet, target: "/__admin/scenario", want: http.StatusOK},
-		{method: http.MethodPost, target: "/__admin/reset", want: http.StatusOK},
+		// A bare reset states no scope, and that is a 400 whatever is wired.
+		{method: http.MethodPost, target: "/__admin/reset", want: http.StatusBadRequest},
+		{method: http.MethodPost, target: "/__admin/reset?all=true", want: http.StatusOK},
+		// The substitute fault engine holds no counters, so it can honestly scope a
+		// reset: a zero Deps answers the namespaced form rather than reporting a
+		// limitation it does not have.
+		{method: http.MethodPost, target: "/__admin/reset?namespace=t-1", want: http.StatusOK},
 	}
 
 	for _, tc := range tests {
@@ -613,14 +952,21 @@ func TestHandler_IsSafeUnderConcurrentReadsAndResets(t *testing.T) {
 	}
 
 	done := make(chan struct{})
-	for range 4 {
+	for worker := range 4 {
+		namespace := fmt.Sprintf("t-%d", worker)
 		go func() {
 			defer func() { done <- struct{}{} }()
 			for i := range 50 {
-				ring.Append(newEntry(uint64(i+1), "exa"))
-				call(http.MethodGet, "/__admin/requests")
-				if i%10 == 0 {
-					call(http.MethodPost, "/__admin/reset")
+				ring.Append(newEntry(uint64(i+1), "exa", inNamespace(namespace)))
+				call(http.MethodGet, "/__admin/requests?namespace="+namespace)
+				call(http.MethodGet, "/__admin/namespaces")
+				switch {
+				case i%10 == 0:
+					// Each worker drops its own lane while the others keep serving,
+					// which is what a shared container's suite does at test teardown.
+					call(http.MethodPost, "/__admin/reset?namespace="+namespace)
+				case i%25 == 0:
+					call(http.MethodPost, "/__admin/reset?all=true")
 				}
 			}
 		}()

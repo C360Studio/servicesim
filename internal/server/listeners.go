@@ -5,9 +5,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/c360studio/servicesim/internal/admin"
 	"github.com/c360studio/servicesim/internal/config"
+	"github.com/c360studio/servicesim/internal/ids"
+	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/provider/exa"
 	"github.com/c360studio/servicesim/provider/perplexity"
@@ -18,6 +21,38 @@ import (
 // The provider listeners are named by their provider.Name — "exa", "tavily",
 // "perplexity" — so one lookup covers every surface.
 const SurfaceAdmin = "admin"
+
+// CodeScenarioUnknown is the finding recorded for a request whose /x/<scenario>
+// prefix names a scenario this process does not serve, and for one that names
+// none where there is no default to fall back to.
+//
+// It is an error and the request is answered with a provider-shaped 404. Serving
+// the default instead would be the failure this whole feature exists to prevent:
+// a consumer would receive coherent-looking behaviour from a scenario it did not
+// ask for, and the test would fail somewhere else entirely, much later.
+const CodeScenarioUnknown = "scenario.unknown"
+
+// scenarioSegment is the path segment carrying the /x/<scenario> selector. It
+// mirrors the grammar provider.NewMux strips before route matching; this package
+// only reads it, and the authoritative strip still happens there.
+const scenarioSegment = "x"
+
+// namespaceSegment is the path segment carrying the /n/<namespace> selector.
+// This package reads it for its log events only — namespace isolation itself is
+// the journal's and the fault engine's, keyed on the lane the provider seam
+// resolves.
+const namespaceSegment = "n"
+
+// unmatchedPattern is the route a refused request is journaled under. It is the
+// catch-all's pattern because that is what the request effectively hit: no route
+// of a served scenario matched it.
+const unmatchedPattern = "/"
+
+// redactedName stands in for a scenario or namespace name that failed
+// validation. The offending text is never logged: it arrives from the request
+// path, and a log line is the surface most likely to be shipped somewhere with
+// weaker access control.
+const redactedName = "<invalid>"
 
 // surface is one bound HTTP listener.
 //
@@ -55,34 +90,280 @@ type surface struct {
 // A provider whose listener is disabled is not constructed at all, which is what
 // lets the image serve a subset. Its scenario entry is left alone; it simply has
 // nothing bound in front of it.
-func (s *Server) newSurfaces(deps provider.Deps, adminDeps admin.Deps) []*surface {
+func (s *Server) newSurfaces(adminDeps admin.Deps) []*surface {
 	out := make([]*surface, 0, 1+len(s.cfg.Enabled()))
 	out = append(out, s.newSurface(SurfaceAdmin, s.cfg.Admin, admin.Handler(adminDeps)))
 
 	for _, name := range s.cfg.Enabled() {
-		var (
-			listener config.Listener
-			handler  http.Handler
-		)
+		var listener config.Listener
 		switch name {
 		case provider.Exa:
-			listener, handler = s.cfg.Exa, exa.New(deps)
+			listener = s.cfg.Exa
 		case provider.Tavily:
-			listener, handler = s.cfg.Tavily, tavily.New(deps)
+			listener = s.cfg.Tavily
 		case provider.Perplexity:
-			// perplexity.New announces the Sonar sunset date once, here at
-			// construction, through deps.Logger. It is a property of the
-			// simulated API rather than of any request, so it belongs in the
-			// startup log and not in per-request noise.
-			listener, handler = s.cfg.Perplexity, perplexity.New(deps)
+			listener = s.cfg.Perplexity
 		default:
 			// Unreachable: config.Enabled only reports providers it has a
 			// listener for. Skipping beats binding a port with no handler.
 			continue
 		}
-		out = append(out, s.newSurface(string(name), listener, handler))
+		out = append(out, s.newSurface(string(name), listener, s.providerHandler(name)))
 	}
 	return out
+}
+
+// providerHandler builds one handler stack per loaded scenario and fronts them
+// with the router that resolves which one a request asked for.
+//
+// One stack per scenario rather than one stack consulting a scenario per request
+// is what keeps the provider packages ignorant that several scenarios exist: a
+// handler is constructed with the Deps of exactly one scenario, exactly as it
+// was before this feature, and selection happens in front of it.
+func (s *Server) providerHandler(name provider.Name) http.Handler {
+	r := &scenarioRouter{
+		byName:      make(map[string]http.Handler, len(s.scenarios)),
+		names:       s.ScenarioNames(),
+		logger:      s.logger,
+		unknown:     s.refusalHandler(name, "the /x/<scenario> prefix names a scenario this process does not serve"),
+		undefaulted: s.refusalHandler(name, "this process serves no default scenario; select one with the /x/<scenario> path prefix"),
+	}
+	for _, ls := range s.scenarios {
+		h := newProviderHandler(name, ls.deps)
+		r.byName[ls.name] = h
+		if ls == s.def {
+			r.def = h
+		}
+	}
+	return r
+}
+
+// newProviderHandler constructs one provider's listener handler from the Deps of
+// one scenario.
+//
+// perplexity.New announces the Sonar sunset date once, here at construction,
+// through deps.Logger. It is a property of the simulated API rather than of any
+// request, so it belongs in the startup log and not in per-request noise. A
+// process serving several scenarios announces it once per scenario, each line
+// carrying that scenario's name, because each scenario is a distinct simulated
+// API and one line would be silent about the rest.
+func newProviderHandler(name provider.Name, deps provider.Deps) http.Handler {
+	switch name {
+	case provider.Exa:
+		return exa.New(deps)
+	case provider.Tavily:
+		return tavily.New(deps)
+	case provider.Perplexity:
+		return perplexity.New(deps)
+	default:
+		// Unreachable: newSurfaces builds a surface only for the three names
+		// above. A 404 beats a nil handler if that ever stops being true.
+		return http.NotFoundHandler()
+	}
+}
+
+// scenarioRouter dispatches a request to the handler stack of the scenario its
+// /x/<scenario> prefix names, and fails closed when there is none.
+//
+// It is fixed at construction and never mutated, so it needs no lock: scenarios
+// are loaded and validated at startup, and nothing pushes new behaviour into a
+// running process (CLAUDE.md house rule 6).
+type scenarioRouter struct {
+	byName map[string]http.Handler
+
+	// def serves a request carrying no /x/ prefix. It is nil when the
+	// configuration supplies no default scenario, and such a request is then
+	// refused rather than served by an arbitrary one.
+	def http.Handler
+
+	// unknown and undefaulted are the two fail-closed answers, kept apart so the
+	// journal says which of the two happened.
+	unknown     http.Handler
+	undefaulted http.Handler
+
+	// names is the loaded scenarios in registry order, for the refusal event.
+	names []string
+
+	logger *slog.Logger
+}
+
+// ServeHTTP resolves the scenario and hands the request on unchanged.
+//
+// The path is read, never rewritten: provider.NewMux strips the prefixes itself
+// before route matching, and the journal records the path as the client sent it.
+// Rewriting here would make the two disagree about what was requested.
+func (r *scenarioRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	name, namespace := lanePrefixes(req.URL.Path)
+
+	if name == "" {
+		if r.def != nil {
+			r.def.ServeHTTP(w, req)
+			return
+		}
+		r.refuse(w, req, r.undefaulted, name, namespace)
+		return
+	}
+	if h, ok := r.byName[name]; ok {
+		h.ServeHTTP(w, req)
+		return
+	}
+	r.refuse(w, req, r.unknown, name, namespace)
+}
+
+// refuse logs the refusal and serves the provider-shaped error.
+//
+// The event carries the namespace and the scenario, as every structured event on
+// this path does, and carries a name only once it has passed validation:
+// everything here arrives from the request path, and an unvalidated value must
+// not reach a log line.
+func (r *scenarioRouter) refuse(w http.ResponseWriter, req *http.Request, h http.Handler, name, namespace string) {
+	r.logger.Warn("scenario.unknown",
+		slog.String("scenario", logName(name)),
+		slog.String("namespace", logNamespace(namespace)),
+		slog.String("served", strings.Join(r.names, ",")))
+	h.ServeHTTP(w, req)
+}
+
+// refusalHandler builds the fail-closed answer for one provider surface.
+//
+// It goes through provider.Handle rather than writing the response directly, so
+// a refused request is journaled, logged and finding-carrying exactly like any
+// other. "My test called /x/typo/search" is the question the journal has to be
+// able to answer, and it cannot answer it about a request that never reached it.
+//
+// The Deps hold no scenario, which is the truth: none was selected. They do hold
+// the process journal, so the entry lands in the caller's namespace alongside its
+// other requests.
+func (s *Server) refusalHandler(name provider.Name, reason string) http.Handler {
+	deps := provider.Deps{
+		Journal:             s.journal,
+		Clock:               provider.SystemClock{},
+		Logger:              s.logger,
+		MaxRequestBytes:     s.cfg.MaxRequestBytes,
+		MaxJournalBodyBytes: s.cfg.MaxJournalBodyBytes,
+		MaxNamespaces:       s.cfg.MaxNamespaces,
+	}
+	body := scenarioNotFoundBody(name)
+	served := strings.Join(s.ScenarioNames(), ", ")
+
+	return provider.Handle(deps, name, provider.Route{Pattern: unmatchedPattern},
+		func(x *provider.Exchange) provider.Response {
+			x.Fail(CodeScenarioUnknown, "scenario", "%s; loaded scenarios: %s", reason, served)
+			return provider.Response{
+				Status: http.StatusNotFound,
+				Body:   body,
+				Label:  string(name) + "." + CodeScenarioUnknown,
+			}
+		})
+}
+
+// scenarioNotFoundBody renders the body a refused request receives, in the shape
+// that provider's own 404 uses.
+//
+// It is provider-shaped and carries no simulator detail, exactly like the
+// routing 404 each provider package produces: a consumer decoding this response
+// runs the same error path it runs against the real vendor. Why the request was
+// refused is in the journal entry's findings and in the log, which is where a
+// person looks and a consumer's error decoder does not.
+func scenarioNotFoundBody(name provider.Name) []byte {
+	switch name {
+	case provider.Tavily:
+		body, err := wire.Render(tavily.ErrorResponse{
+			Detail: tavily.ErrorDetail{Error: tavily.MessageNotFound},
+		}, nil)
+		if err != nil {
+			return []byte(`{"detail":{"error":"Not Found"}}`)
+		}
+		return body
+
+	case provider.Perplexity:
+		// Sonar's shape: the /x/ prefix is stripped before route matching, so a
+		// refused request has not been resolved to the Sonar or the Agent surface
+		// and the documented Sonar envelope is the one both routes share a client
+		// for.
+		return perplexity.ErrorBody(perplexity.SurfaceSonar, http.StatusNotFound, "")
+
+	case provider.Exa:
+		body, err := wire.Render(exa.ErrorResponse{
+			// Derived, never random: the same refusal renders the same bytes on
+			// every run, which is what determinism means here (CLAUDE.md house
+			// rule 2). There is no scenario to seed it with, so the tuple is this
+			// surface and this refusal.
+			RequestID: ids.Hex32(string(name), CodeScenarioUnknown),
+			Error:     http.StatusText(http.StatusNotFound),
+			Tag:       exa.TagNotFound,
+		}, nil)
+		if err != nil {
+			return []byte(`{"requestId":"","error":"Not Found","tag":"NOT_FOUND"}`)
+		}
+		return body
+
+	default:
+		// Unreachable: newSurfaces builds a surface only for the three names
+		// above. An empty body beats inventing a vendor's error shape.
+		return nil
+	}
+}
+
+// lanePrefixes reads the optional /x/<scenario> and /n/<namespace> path
+// prefixes. Either is empty when absent.
+//
+// It reads the same fixed grammar provider.NewMux strips — x before n, both
+// optional — and deliberately only reads it: the request is passed on untouched
+// and the provider seam performs the authoritative strip, so routing and lane
+// resolution cannot end up disagreeing about what the client asked for.
+//
+// A value that is not a valid selector is returned as it was found rather than
+// discarded. The router refuses it either way, and the caller decides what may be
+// logged.
+func lanePrefixes(path string) (scenarioName, namespace string) {
+	scenarioName, rest := cutLaneSegment(path, scenarioSegment)
+	namespace, _ = cutLaneSegment(rest, namespaceSegment)
+	return scenarioName, namespace
+}
+
+// cutLaneSegment removes a leading "/<segment>/<value>" from path, returning the
+// value and the remainder. An empty value ("/n//search") is a present segment
+// with an empty value, which is an authoring mistake and must not read as "no
+// prefix"; it is returned as the empty string and refused downstream by the same
+// validation every other malformed value meets.
+func cutLaneSegment(path, segment string) (value, rest string) {
+	prefix := "/" + segment + "/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", path
+	}
+	rest = path[len(prefix):]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[:i], rest[i:]
+	}
+	return rest, ""
+}
+
+// logName renders a scenario selector for a log line: the name when it is a
+// valid selector, a fixed placeholder when it is not, and empty when the request
+// carried none.
+func logName(name string) string {
+	switch {
+	case name == "":
+		return ""
+	case provider.ValidNamespace(name):
+		return name
+	default:
+		return redactedName
+	}
+}
+
+// logNamespace renders a namespace for a log line. An absent namespace is the
+// default one, because that is the lane the request is actually served in.
+func logNamespace(namespace string) string {
+	switch {
+	case namespace == "":
+		return provider.DefaultNamespace
+	case provider.ValidNamespace(namespace):
+		return namespace
+	default:
+		return redactedName
+	}
 }
 
 // newSurface wraps one handler in an http.Server carrying the configured

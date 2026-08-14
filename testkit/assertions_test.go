@@ -289,3 +289,93 @@ func TestAssertOverlappedRejectsAdjacentRequests(t *testing.T) {
 	overlapping := testkit.Entry{Seq: 3, ArrivedAt: instant.Add(500 * time.Millisecond), CompletedAt: instant.Add(2 * time.Second)}
 	testkit.AssertOverlapped(t, first, overlapping)
 }
+
+// TestAssertNamespacesIsolated is the property the namespace feature exists to
+// provide, asserted directly: two lanes of one Sim, each seeing the scenario from
+// its own first attempt.
+func TestAssertNamespacesIsolated(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithScenarioYAML(retryScenario), testkit.WithProviders(provider.Exa))
+	alpha := sim.Namespace(t, "alpha")
+	beta := sim.Namespace(t, "beta")
+
+	for range 2 {
+		searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+		searchIn(t, sim, beta.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	}
+
+	stub := &stubTB{}
+	testkit.AssertNamespacesIsolated(stub, alpha, beta)
+	assert.False(t, stub.Failed(), "two independent lanes are isolated: %s", stub.Message())
+}
+
+// TestAssertNamespacesIsolatedRefusesAVacuousComparison covers the ways the
+// assertion can be asked a question it cannot answer. Each one passes silently if
+// it is not checked, which is worse than failing: a consumer would read a green
+// test as evidence of isolation it never established.
+func TestAssertNamespacesIsolatedRefusesAVacuousComparison(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	used := sim.Namespace(t, "used")
+	searchIn(t, sim, used.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+
+	otherSim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	elsewhere := otherSim.Namespace(t, "elsewhere")
+	searchIn(t, otherSim, elsewhere.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+
+	tests := []struct {
+		name    string
+		a, b    *testkit.Namespace
+		wantMsg string
+	}{
+		{name: "a nil handle", a: used, b: nil, wantMsg: "nil"},
+		{name: "two Sims", a: used, b: elsewhere, wantMsg: "different Sims"},
+		{name: "one namespace with itself", a: used, b: sim.Namespace(t, "used"), wantMsg: "with itself"},
+		{name: "a namespace nothing was sent to", a: used, b: sim.Namespace(t, "unused"), wantMsg: "vacuously"},
+		{name: "the unused namespace given first", a: sim.Namespace(t, "unused-first"), b: used, wantMsg: "vacuously"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			stub := &stubTB{}
+			testkit.AssertNamespacesIsolated(stub, tc.a, tc.b)
+			assert.True(t, stub.Failed(), "the comparison proves nothing and must say so")
+			assert.Contains(t, stub.Message(), tc.wantMsg)
+		})
+	}
+}
+
+// TestAssertNamespacesIsolatedReportsABrokenCursor drives the detector that
+// matters: a namespace whose claimed attempt indices are not 0, 1, 2 … has had a
+// call served somewhere else.
+//
+// Eviction is used to produce the gap, because a lane that skipped an index
+// without one would be the bug itself. Both facts are reported: the eviction,
+// which explains why the journal can no longer answer the question, and the gap
+// it left.
+func TestAssertNamespacesIsolatedReportsABrokenCursor(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithScenarioYAML(retryScenario),
+		testkit.WithProviders(provider.Exa),
+		testkit.WithJournalCapacity(1))
+	alpha := sim.Namespace(t, "alpha")
+	beta := sim.Namespace(t, "beta")
+
+	for range 2 {
+		searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	}
+	searchIn(t, sim, beta.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+
+	require.Len(t, alpha.Journal(), 1, "capacity 1 retains only the second call")
+
+	stub := &stubTB{}
+	testkit.AssertNamespacesIsolated(stub, alpha, beta)
+	require.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), "evicted 1 entries")
+	assert.Contains(t, stub.Message(), "consecutive from 0")
+}

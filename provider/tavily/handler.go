@@ -3,6 +3,7 @@ package tavily
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -238,19 +239,25 @@ func projectionPath(entry *scenario.ProviderEntry, index int) string {
 
 // keysFor assembles the stable inputs every derived value hangs off.
 //
-// The attempt index enters the identifier tuple only when the route actually
-// declares a fault plan. Where a plan exists, a retried request gets a
-// different request_id — what a real API does, and what lets a test tell the
-// retry apart from the original in the journal. Where no plan exists, the
-// identifier must not move, or the same request sent twice against one
-// simulator would render two different bodies.
+// Two tuples come out of it because two different questions are being asked.
+// renderKeys.Call carries the lane's call index unconditionally and keys
+// request_id, so that successive calls are distinguishable the way a real
+// vendor's are. renderKeys.ID keys response_time, which is a scenario constant
+// rather than a measurement and therefore takes the attempt index only where a
+// fault plan actually declares one — the §3.1 rule, unchanged.
+//
+// Both are derived from the one counter turn selection and fault selection
+// share, never from a clock, a random source or a counter of this package's own.
 func keysFor(x *provider.Exchange) renderKeys {
 	decision := x.Fault()
 	seed := x.Deps.Scenario.SeedKey()
 
-	parts := []string{seed, string(x.Provider), x.Route.FaultKey}
+	base := []string{seed, string(x.Provider), x.Route.FaultKey}
+	planned := append(slices.Clone(base), strconv.Itoa(decision.Index))
+
+	keys := renderKeys{Seed: seed, ID: base, Call: planned}
 	if decision.Planned {
-		parts = append(parts, strconv.Itoa(decision.Index))
+		keys.ID = planned
 	}
-	return renderKeys{Seed: seed, ID: parts}
+	return keys
 }

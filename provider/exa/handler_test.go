@@ -422,19 +422,116 @@ providers:
 
 // --- determinism ------------------------------------------------------------
 
-func TestSearch_IsByteIdenticalAcrossRepeatedRequests(t *testing.T) {
+// TestSearch_IsByteIdenticalAtTheSameCallPosition is house rule 2 in its precise
+// form: the same scenario and the same request AT THE SAME CALL POSITION render
+// the same bytes.
+//
+// The call position is what a lane cursor measures, and a namespace is a fresh
+// lane, so the second request below is call 0 all over again — a new process or
+// an admin reset would put it there just the same. Comparing two CONSECUTIVE
+// calls instead would be asserting that requestId never moves, which is the bug
+// this file's sibling test exists to prevent.
+func TestSearch_IsByteIdenticalAtTheSameCallPosition(t *testing.T) {
 	t.Parallel()
 
 	s := newSim(t, minimalScenario)
 	first := s.search(`{"query":"report a"}`).Body.Bytes()
-	second := s.search(`{"query":"report a"}`).Body.Bytes()
+	fresh := s.do(request{path: "/n/second-lane/search", body: `{"query":"report a"}`}).Body.Bytes()
 
-	assert.Equal(t, string(first), string(second),
-		"a route with no fault plan must not vary its identifiers per attempt")
+	assert.Equal(t, string(first), string(fresh),
+		"call 0 of a fresh lane must reproduce call 0 byte for byte")
 	assert.Regexp(t, hex32, requestIDOf(t, first))
 }
 
-func TestSearch_RequestIDMovesPerAttemptOnlyWhereAPlanExists(t *testing.T) {
+// TestSearch_RequestIDIsDistinctPerCall pins the property a real vendor has and
+// a collapsed identifier destroys: a consumer correlating a log line to a
+// request must be able to tell one call from the next.
+//
+// The route here declares no fault plan on purpose. The call index used to enter
+// the tuple only where one did, which meant every response an unfaulted scenario
+// ever served — the 200, the 401 beside it, the next 200 — carried one requestId.
+func TestSearch_RequestIDIsDistinctPerCall(t *testing.T) {
+	t.Parallel()
+
+	s := newSim(t, minimalScenario)
+	first := requestIDOf(t, s.search(`{"query":"report a"}`).Body.Bytes())
+	second := requestIDOf(t, s.search(`{"query":"report a"}`).Body.Bytes())
+
+	assert.Regexp(t, hex32, first, "requestId keeps Exa's 32 lowercase hex shape")
+	assert.Regexp(t, hex32, second)
+	assert.NotEqual(t, first, second, "two successive calls must not share a requestId")
+
+	// A namespace is a fresh state lane, so this is call 0 again and must
+	// reproduce the first identifier exactly. Distinctness that came from a clock
+	// or a counter of the handler's own would fail here.
+	fresh := requestIDOf(t, s.do(request{path: "/n/lane-b/search", body: `{"query":"report a"}`}).Body.Bytes())
+	assert.Equal(t, first, fresh, "the same call position in a fresh lane must reproduce the same requestId")
+}
+
+// TestAnswer_RequestIDIsDistinctPerCall covers the second Exa route. It draws on
+// its own budget key, so its identifiers must move independently of /search's.
+func TestAnswer_RequestIDIsDistinctPerCall(t *testing.T) {
+	t.Parallel()
+
+	// No request_id override: the derived identifier is the thing under test, and
+	// an override would pin it to a constant and prove nothing.
+	s := newSim(t, `
+version: 1
+name: exa-answer-derived
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa:
+    results:
+      - source: source-a
+    answer:
+      answer: Report A argues for deterministic simulation.
+      citations:
+        - source-a
+`)
+	first := requestIDOf(t, s.answer(`{"query":"report a"}`).Body.Bytes())
+	second := requestIDOf(t, s.answer(`{"query":"report a"}`).Body.Bytes())
+
+	assert.Regexp(t, hex32, first)
+	assert.NotEqual(t, first, second, "two successive /answer calls must not share a requestId")
+
+	fresh := requestIDOf(t, s.do(request{path: "/n/lane-b/answer", body: `{"query":"report a"}`}).Body.Bytes())
+	assert.Equal(t, first, fresh)
+
+	// /search at the same call position sits on a different fault key, so it
+	// cannot collide with /answer.
+	search := requestIDOf(t, s.do(request{path: "/n/lane-b/search", body: `{"query":"report a"}`}).Body.Bytes())
+	assert.NotEqual(t, first, search, "the two routes derive from different budget keys")
+}
+
+// TestSearch_RejectedRequestsCarryTheUnclaimedRequestID records the one place the
+// per-call property deliberately stops.
+//
+// A request rejected by authentication or validation must not consume a fault
+// attempt (§4.4), and claiming the call index is what consuming one means, so a
+// rejected request has no call position to derive from. Its requestId is
+// therefore the tuple with no index at all: distinguishable from every served
+// response, and shared with the other rejections in its lane. That is a cost of
+// the attempt rule rather than a property worth having, and it is written down
+// here so the next reader does not mistake it for one.
+func TestSearch_RejectedRequestsCarryTheUnclaimedRequestID(t *testing.T) {
+	t.Parallel()
+
+	s := newSim(t, minimalScenario)
+	served := requestIDOf(t, s.search(`{"query":"report a"}`).Body.Bytes())
+
+	rec := s.do(request{path: "/search", body: `{"query":"report a"}`, noAuth: true})
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	rejected := requestIDOf(t, rec.Body.Bytes())
+
+	assert.Regexp(t, hex32, rejected)
+	assert.NotEqual(t, served, rejected,
+		"a 401 must not carry the same requestId as the 200 beside it")
+}
+
+func TestSearch_RequestIDMovesPerAttemptUnderAFaultPlan(t *testing.T) {
 	t.Parallel()
 
 	s := newSim(t, `
@@ -457,7 +554,7 @@ providers:
 	second := requestIDOf(t, s.search(`{"query":"report a"}`).Body.Bytes())
 
 	assert.NotEqual(t, first, second,
-		"where a fault plan exists the attempt index joins the identifier tuple, so a retry is distinguishable")
+		"the attempt index joins the identifier tuple, so a retry is distinguishable from the original")
 	assert.Regexp(t, hex32, first)
 	assert.Regexp(t, hex32, second)
 }

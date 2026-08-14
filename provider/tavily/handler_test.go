@@ -3,6 +3,7 @@ package tavily
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -381,14 +382,21 @@ providers:
 	require.JSONEq(t, `{"detail":{"error":"`+MessageNoMatchingTurn+`"}}`, rec.Body.String())
 }
 
-// TestIdenticalRequestsRenderIdenticalBytes is determinism stated as a test.
-// A simulator whose bodies move between two identical calls makes every
-// consumer's suite flaky, and they will blame their own code first.
+// TestIdenticalRequestsRenderIdenticalBytes is determinism stated as a test, in
+// its precise form: the same scenario and the same request AT THE SAME CALL
+// POSITION render the same bytes. A simulator whose bodies move between two
+// runs of one test makes every consumer's suite flaky, and they will blame
+// their own code first.
+//
+// request_id folds in the lane's call index, because a real vendor issues a
+// distinct one per call, so two CONSECUTIVE calls differ by design. A namespace
+// is a fresh state lane, which is what puts each request below at call 0 again —
+// as a new process or an admin reset would.
 func TestIdenticalRequestsRenderIdenticalBytes(t *testing.T) {
 	t.Parallel()
 
 	// No request_id override and no fault plan, so every identifier in the body
-	// is derived and must still be stable across calls.
+	// is derived and must still reproduce exactly at the same call position.
 	src := `
 version: 1
 name: derived
@@ -405,8 +413,9 @@ providers:
 	body := `{"query":"report a"}`
 
 	first := post(t, handler, "/search", body, bearer).Body.String()
-	for range 5 {
-		require.Equal(t, first, post(t, handler, "/search", body, bearer).Body.String())
+	for i := range 5 {
+		path := fmt.Sprintf("/n/lane-%d/search", i)
+		require.Equal(t, first, post(t, handler, path, body, bearer).Body.String())
 	}
 }
 

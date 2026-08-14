@@ -18,6 +18,10 @@ const (
 	// DefaultMaxJournalBodyBytes bounds the body stored per journal entry when
 	// Deps leaves MaxJournalBodyBytes zero.
 	DefaultMaxJournalBodyBytes int = 64 << 10 // 64 KiB
+
+	// DefaultMaxNamespaces bounds live namespaces when Deps leaves MaxNamespaces
+	// zero.
+	DefaultMaxNamespaces int = 1024
 )
 
 // FaultDecision is the outcome of asking the fault engine what this attempt gets.
@@ -35,10 +39,18 @@ type FaultDecision struct {
 	// Key is the fault budget this decision was drawn from.
 	Key string
 
-	// Planned reports whether Key has a non-empty expanded fault plan. It is what
-	// keeps derived identifiers stable: the attempt index enters the identifier
-	// tuple only for a route that actually declares a fault plan, so two identical
-	// happy-path requests against one Sim render byte-identical bodies. See §3.1.
+	// Planned reports whether Key has a non-empty expanded fault plan.
+	//
+	// Derived IDENTIFIERS no longer gate on it. A requestId, request_id or
+	// completion id folds Index in unconditionally, because a real vendor issues
+	// a distinct identifier per call and a simulator that repeated one value
+	// collapses a consumer's log correlation to a single point. Determinism is
+	// preserved in its precise form: the same request at the same call position
+	// renders the same bytes, and a fresh lane starts at call 0 again.
+	//
+	// What still gates on it is a derived value that is a property of the
+	// SCENARIO rather than of the call — Tavily's response_time is the one that
+	// exists. See §3.1.
 	Planned bool
 
 	// Unknown reports that the engine holds no plan for Key at all — a route whose
@@ -63,6 +75,26 @@ type Faults interface {
 	Reset()
 }
 
+// NamespaceAdmitter is implemented by a Faults engine that bounds how many
+// namespaces may hold state. [Handle] type-asserts for it, so an implementation
+// that does not bound anything simply does not implement it and nothing is
+// refused.
+//
+// It exists as a separate interface rather than a third field on
+// [FaultDecision] because the question has to be asked at a different TIME than
+// a fault decision is made. A decision is claimed after the handler has produced
+// its response; admission has to be settled before, or a refusal cannot be
+// rendered as the provider's own error and the client receives a 200.
+type NamespaceAdmitter interface {
+	// AdmitNamespace reports whether ns may hold state in this process.
+	//
+	// It must be idempotent for an already-admitted namespace — every request in
+	// a namespace asks, not just the first — and it must reserve on first
+	// admission, so two concurrent first requests naming new namespaces cannot
+	// both be admitted past the bound.
+	AdmitNamespace(ns string) bool
+}
+
 // noopFaults applies no fault while still claiming a per-key attempt index.
 //
 // It counts deliberately, and this is a documented amendment to §2.2, which
@@ -71,8 +103,9 @@ type Faults interface {
 // of a zero-Deps handler to call index -1 and make `when: {call_index: 0}`
 // unmatchable — the exact "two counters that disagree" bug class the addendum
 // exists to prevent, arrived at from the other direction. Counting is free of
-// determinism cost because Planned stays false, so the index never enters a
-// derived identifier (§3.1).
+// determinism cost even though a derived identifier folds the index in: the
+// index is a position within a lane rather than a clock reading, so the same
+// request at the same call position still renders the same bytes (§3.1).
 type noopFaults struct {
 	counters sync.Map // string -> *atomic.Int64
 }
@@ -144,6 +177,34 @@ type Deps struct {
 	// the storage boundary where redaction happens, not by the request path: a
 	// body clipped before redaction is a body redaction can no longer parse.
 	MaxJournalBodyBytes int
+
+	// MaxNamespaces is the bound on live namespaces this process was configured
+	// with. Zero means DefaultMaxNamespaces.
+	//
+	// Namespaces are created implicitly on first use — requiring registration
+	// would put a setup call in every consumer test, which is the friction the
+	// feature exists to remove — so they are an unbounded-growth surface and need
+	// a ceiling. Total journal retention is bounded by MaxNamespaces × the
+	// per-journal capacity, and both are configurable.
+	//
+	// The seam does not enforce it. Lane resolution only NAMES a namespace, and
+	// naming one must stay free; the bound belongs where namespace state is
+	// actually created, which is the two stores wired into the fields above. The
+	// journal's Ring refuses a lane beyond its Limits.MaxNamespaces, and the fault
+	// engine refuses one beyond its own. internal/server builds both from the same
+	// --max-namespaces value it puts here, so this field records the number those
+	// stores are holding rather than imposing a third, separate ceiling.
+	//
+	// Neither store ever evicts. Silently dropping a namespace would reset a
+	// running test's cursor mid-loop, which is the single worst failure this
+	// design can produce, so a refusal is loud instead: the fault engine logs
+	// faults.namespace_limit at error level naming the namespace and the bound,
+	// the request's entry carries a CodeUnknownFaultKey warning because the engine
+	// holds no budget that lane may draw on, and the journal retains nothing for
+	// it while counting the append in its dropped total. The request is still
+	// served — the seam has no refusal path of its own today, and inventing a
+	// silent one would be worse than the noise.
+	MaxNamespaces int
 }
 
 // Normalized returns a copy of d with every nil and zero field replaced by its
@@ -175,6 +236,9 @@ func (d Deps) Normalized() Deps {
 	}
 	if d.MaxJournalBodyBytes <= 0 {
 		d.MaxJournalBodyBytes = DefaultMaxJournalBodyBytes
+	}
+	if d.MaxNamespaces <= 0 {
+		d.MaxNamespaces = DefaultMaxNamespaces
 	}
 	if d.Faults == nil {
 		if d.Scenario.HasFaults() {

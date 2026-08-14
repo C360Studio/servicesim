@@ -213,6 +213,162 @@ func AssertOverlapped(tb testing.TB, a, b Entry) {
 		b.Seq, b.ArrivedAt.Format(stampLayout), b.CompletedAt.Format(stampLayout))
 }
 
+// AssertNamespacesIsolated asserts two namespaces of one [Sim] did not interfere:
+// the property namespaces exist to provide, stated directly rather than left for
+// a consumer to infer from a response that looks plausible.
+//
+// It checks four things, and each one is a failure mode that has actually
+// happened:
+//
+//   - Every entry a namespace's journal returned belongs to that namespace, so a
+//     test reading its own lane cannot be reading another's traffic.
+//   - Neither namespace is empty. Two namespaces nothing was sent to are trivially
+//     isolated, and a typo in a namespace name would otherwise pass silently.
+//   - No cursor key appears in both namespaces. A cursor key that two namespaces
+//     share is one counter serving both, which is the route-keyed cursor bug: two
+//     concurrent callers draw attempt indices 0 and 1 from one sequence and each
+//     receives the call scripted for the other.
+//   - Within each namespace, the attempt indices claimed against one cursor key
+//     are 0, 1, 2 … with no duplicate and no gap. A gap is the fingerprint of the
+//     bug above even when the keys look distinct, because the missing index went
+//     to somebody else.
+//
+// Call it after both namespaces' traffic has completed. An index gap is also what
+// a request still in flight looks like, so a suite that asserts while a goroutine
+// is mid-request should call [Namespace.AwaitRequests] first.
+func AssertNamespacesIsolated(tb testing.TB, a, b *Namespace) {
+	tb.Helper()
+
+	if a == nil || b == nil {
+		tb.Errorf("cannot compare namespaces: one of the handles is nil")
+		return
+	}
+	if a.sim != b.sim {
+		tb.Errorf("namespaces %q and %q belong to different Sims, which share no state to interfere over",
+			a.name, b.name)
+		return
+	}
+	if a.name == b.name {
+		tb.Errorf("namespace %q was compared with itself, which proves nothing", a.name)
+		return
+	}
+
+	entries := map[*Namespace][]Entry{a: a.Journal(), b: b.Journal()}
+	for _, ns := range []*Namespace{a, b} {
+		if len(entries[ns]) == 0 {
+			tb.Errorf("namespace %q recorded no requests, so isolation from %q holds vacuously",
+				ns.name, other(ns, a, b).name)
+			continue
+		}
+		if n := ns.dropped(); n > 0 {
+			tb.Errorf("namespace %q evicted %d entries, so its journal can no longer show whether "+
+				"a cursor skipped a call; raise testkit.WithJournalCapacity", ns.name, n)
+		}
+		assertEntriesInNamespace(tb, ns, entries[ns])
+		assertAttemptsUnbroken(tb, ns, entries[ns])
+	}
+	assertCursorKeysDisjoint(tb, a, entries[a], b, entries[b])
+}
+
+// other returns whichever of a and b is not ns, for a message that names the
+// namespace the reader is comparing against.
+func other(ns, a, b *Namespace) *Namespace {
+	if ns == a {
+		return b
+	}
+	return a
+}
+
+// assertEntriesInNamespace asserts every entry the namespace's journal returned
+// was recorded in that namespace. An entry recorded before the request named a
+// namespace carries none, which is the default lane.
+func assertEntriesInNamespace(tb testing.TB, ns *Namespace, entries []Entry) {
+	tb.Helper()
+
+	for _, e := range entries {
+		if got := laneOf(e); got != ns.name {
+			tb.Errorf("namespace %q returned seq %d (%s %s), which was recorded in namespace %q",
+				ns.name, e.Seq, e.Method, e.Path, got)
+		}
+	}
+}
+
+// assertAttemptsUnbroken asserts that, per cursor key, this namespace claimed the
+// attempt indices 0..n-1 exactly once each.
+//
+// Entries that never claimed an attempt carry index -1 and are skipped: a request
+// rejected by routing, authentication or validation draws on no budget and so can
+// leave no gap.
+func assertAttemptsUnbroken(tb testing.TB, ns *Namespace, entries []Entry) {
+	tb.Helper()
+
+	claimed := map[string]map[int]uint64{}
+	for _, e := range entries {
+		if e.Outcome.AttemptIndex < 0 || e.Outcome.FaultKey == "" {
+			continue
+		}
+		key := e.Outcome.FaultKey
+		if claimed[key] == nil {
+			claimed[key] = map[int]uint64{}
+		}
+		if prior, taken := claimed[key][e.Outcome.AttemptIndex]; taken {
+			tb.Errorf("namespace %q claimed attempt %d of %q twice, at seq %d and seq %d",
+				ns.name, e.Outcome.AttemptIndex, key, prior, e.Seq)
+			continue
+		}
+		claimed[key][e.Outcome.AttemptIndex] = e.Seq
+	}
+
+	// Sorted, not map order: a failure must name the same key on every run.
+	for _, key := range slices.Sorted(maps.Keys(claimed)) {
+		indices := slices.Sorted(maps.Keys(claimed[key]))
+		for want, got := range indices {
+			if got == want {
+				continue
+			}
+			tb.Errorf("namespace %q claimed attempts %v of %q, want %d consecutive from 0: "+
+				"the missing index went to another lane, or a request is still in flight",
+				ns.name, indices, key, len(indices))
+			break
+		}
+	}
+}
+
+// assertCursorKeysDisjoint asserts the two namespaces drew on no common cursor
+// key. Sharing one is sharing one counter, whatever the indices happen to look
+// like on the run that observed it.
+func assertCursorKeysDisjoint(tb testing.TB, a *Namespace, aEntries []Entry, b *Namespace, bEntries []Entry) {
+	tb.Helper()
+
+	inA := cursorKeys(aEntries)
+	for _, key := range cursorKeys(bEntries) {
+		if slices.Contains(inA, key) {
+			tb.Errorf("namespaces %q and %q both drew on the cursor key %q, so one counter served both",
+				a.name, b.name, key)
+		}
+	}
+}
+
+// cursorKeys returns the distinct, sorted cursor keys the entries drew on.
+func cursorKeys(entries []Entry) []string {
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if e.Outcome.FaultKey != "" {
+			seen[e.Outcome.FaultKey] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
+// laneOf returns the namespace an entry was recorded in, reading an empty one as
+// the default namespace — the lane every request that named none is served in.
+func laneOf(e Entry) string {
+	if e.Namespace == "" {
+		return provider.DefaultNamespace
+	}
+	return e.Namespace
+}
+
 // stampLayout renders journal instants at microsecond resolution, which is the
 // scale an overlap failure is argued at. Second resolution would print two
 // identical timestamps and explain nothing.

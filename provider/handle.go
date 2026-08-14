@@ -34,6 +34,18 @@ const (
 	// route's key, which means a route was added without being registered.
 	CodeUnknownFaultKey = "fault.unknown_key"
 
+	// CodeNamespaceLimit is raised when a request names a namespace that would
+	// put the process over MaxNamespaces.
+	//
+	// It is an ERROR, not a warning, and the request is refused. Reporting it any
+	// more gently was tried and is worse: the engine logged the refusal loudly
+	// and served a 200 anyway, so a test in the refused namespace saw success,
+	// collected no journal entries, and failed later on an assertion counting
+	// requests that were never recorded. The cause was visible only in the
+	// simulator's own stderr, which is the one place a consumer's test output
+	// does not reach.
+	CodeNamespaceLimit = "namespace.limit_exceeded"
+
 	// CodeUnmatched is raised by the catch-all handler for an unknown path.
 	CodeUnmatched = "route.unmatched"
 
@@ -53,8 +65,18 @@ const (
 // Handle wraps h with the shared lifecycle and returns an http.HandlerFunc:
 // sequence claim, arrival stamp, bounded body read through httpx.ReadBody, JSON
 // decode through httpx.DecodeObject, credential observation through
-// httpx.Observe, handler call, fault selection through Deps.Faults, fault
-// execution, journal append and one structured log event.
+// httpx.Observe, lane resolution, handler call, fault selection through
+// Deps.Faults, fault execution, journal append and one structured log event.
+//
+// Lane resolution happens once, before the handler runs, and is what fault
+// selection and turn selection both key on. It is placed after the body read
+// because a body_json turn-key extractor needs the body, and before the handler
+// because the handler may claim an attempt on the first line it executes.
+//
+// Its namespace half is settled earlier still, before the sequence claim, since
+// the sequence must be drawn from the counter of the lane that will retain the
+// entry. That needs only the path prefix and one header, so nothing waits on the
+// body for it.
 //
 // Four properties of the body below are load-bearing and are not stylistic; see
 // §2.2 of the package design:
@@ -80,18 +102,40 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The prefix is parsed before anything else because the journal records the
+		// path as received, not the stripped path routing matched on.
+		prefix := requestLanePrefix(r)
+
+		// The namespace is settled before the sequence is claimed, because the
+		// sequence has to come from the counter of the lane that will retain the
+		// entry. Namespaces are a state boundary and journal sequence numbers are
+		// part of that state, so two tests sharing one container each see 1, 2, 3
+		// rather than halves of one interleaved sequence.
+		//
+		// Only the namespace can be settled this early. The rest of the lane — the
+		// route key and any body_json turn-key extractor — needs the body and is
+		// resolved by resolveLane below. The rejection finding is raised there too,
+		// where the exchange exists to carry it.
+		namespace, _ := requestNamespace(r, prefix)
+
 		x := &Exchange{
 			Deps: d, Provider: p, Route: route, Request: r,
-			Seq: d.Journal.Next(), ArrivedAt: d.Clock.Now(),
+			Seq: journal.NextIn(d.Journal, namespace), ArrivedAt: d.Clock.Now(),
 			decision: FaultDecision{Index: -1, Key: route.FaultKey},
+			// resolveLane fills in the rest of the lane below. Seeding the namespace
+			// with the value the sequence was drawn from means a request that never
+			// reaches resolveLane still journals the lane it was counted in, rather
+			// than an empty string a reader would have to interpret.
+			lane: Lane{Namespace: namespace},
 		}
 
 		entry := journal.Entry{
 			Provider: string(p), Seq: x.Seq, Method: r.Method,
-			// Path is r.URL.Path and Query is r.URL.RawQuery — never the raw request
+			// Path is the received path — r.URL.Path before the mux stripped any
+			// /x/ or /n/ prefix — and Query is r.URL.RawQuery. Never the raw request
 			// target and never r.URL.String(), both of which render userinfo
 			// verbatim for an absolute-form target. journal.Redact masks the query.
-			Path: r.URL.Path, Query: r.URL.RawQuery,
+			Path: prefix.path, Query: r.URL.RawQuery,
 			Route: route.Pattern, RemoteAddr: r.RemoteAddr, ArrivedAt: x.ArrivedAt,
 		}
 
@@ -102,6 +146,7 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 			}
 			appended = true
 			entry.CompletedAt = d.Clock.Now()
+			entry.Namespace = x.lane.Namespace
 			entry.Findings = x.Findings()
 			entry.Headers = r.Header
 			entry.Body = json.RawMessage(x.Raw)
@@ -127,6 +172,24 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 		readRequest(x, &entry)
 		if creds := httpx.ExtractCredentials(r); len(creds) > 0 {
 			x.Auth = httpx.Observe(creds[0], true)
+		}
+
+		// One resolution, here, after the body is readable and before the handler
+		// runs. Fault selection and turn selection both read x.Lane(); neither may
+		// derive it, because two derivations are two chances to disagree about
+		// which lane — and therefore which call — this request is.
+		resolveLane(x, prefix)
+
+		// Admission is asked HERE, before the handler runs, because a refusal has
+		// to become the provider's own error envelope. Asking at fault-claim time
+		// is too late: the handler has already produced a body by then, and the
+		// only reachable outcome is a 200 the client cannot distinguish from a
+		// served response.
+		if admitter, ok := d.Faults.(NamespaceAdmitter); ok {
+			if ns := x.Lane().Namespace; !admitter.AdmitNamespace(ns) {
+				x.Fail(CodeNamespaceLimit, "",
+					"namespace %q cannot be served: the process is at its --max-namespaces bound", ns)
+			}
 		}
 
 		resp := h(x)

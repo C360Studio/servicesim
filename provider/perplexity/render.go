@@ -160,17 +160,33 @@ const SourceTypeWeb = "web"
 var FinishReasons = []string{"stop", "length"}
 
 // idParts is the tuple every derived identifier hangs off, per §3.1 of the
-// package design.
+// package design: the scenario seed, the provider, the route's fault key, and
+// the zero-based index of this call within its lane.
 //
-// The attempt index enters the tuple only when the route actually declares a
-// fault plan. Where a plan exists a retried request gets a different identifier,
-// which is what a real API does and what lets a test tell the retry apart from
-// the original. Where no plan exists the identifier must not move, or the same
-// request sent twice against one simulator would render two different bodies.
-func idParts(s *scenario.Scenario, dec provider.FaultDecision, extra ...string) []string {
-	parts := []string{s.SeedKey(), string(provider.Perplexity), dec.Key}
-	if dec.Planned {
-		parts = append(parts, strconv.Itoa(dec.Index))
+// The call index is folded in unconditionally, not only where the route declares
+// a fault plan. A real vendor issues a distinct id per call; one value repeated
+// for every call means a consumer correlating a log line to a request finds the
+// whole run pointing at a single id, which is the failure this tuple exists to
+// prevent rather than to cause.
+//
+// Determinism is sharpened rather than weakened. The property house rule 2 states
+// is that the same scenario and the same request render byte-identical bytes; its
+// precise form is "at the same call position", which is what callIndex measures.
+// Two consecutive calls differ; call 0 of a fresh lane — a new namespace, a new
+// process, a reset — reproduces call 0 exactly. Nothing here reads a clock or a
+// random source, and callIndex comes from the single counter turn selection and
+// fault selection share rather than from a second one of this package's own.
+//
+// The key is Route.FaultKey rather than the lane's cursor key on purpose, and it
+// is what keeps the fresh-lane half of that property true. A namespace is a state
+// boundary, not a behaviour boundary: two tests sharing one container must get
+// independent cursors, not different response bytes at the same call position.
+func idParts(x *provider.Exchange, callIndex int, extra ...string) []string {
+	parts := []string{
+		x.Deps.Scenario.SeedKey(),
+		string(provider.Perplexity),
+		x.Route.FaultKey,
+		strconv.Itoa(callIndex),
 	}
 	return append(parts, extra...)
 }
@@ -179,11 +195,15 @@ func idParts(s *scenario.Scenario, dec provider.FaultDecision, extra ...string) 
 // bytes, extras already merged.
 func renderSonar(x *provider.Exchange, p *PerplexityProjection, requestModel string) ([]byte, error) {
 	s := x.Deps.Scenario
-	dec := x.Fault()
+
+	// The attempt index is claimed whether or not the scenario pins the
+	// completion id, so the journal's attempt number never depends on whether a
+	// fixture happened to declare one.
+	callIndex := x.CallIndex()
 
 	id := p.CompletionID
 	if id == "" {
-		id = ids.UUIDv5(idParts(s, dec)...)
+		id = ids.UUIDv5(idParts(x, callIndex)...)
 	}
 	created := p.Created
 	if created == 0 {

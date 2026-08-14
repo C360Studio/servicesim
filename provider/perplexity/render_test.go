@@ -1,8 +1,10 @@
 package perplexity
 
 import (
+	"encoding/json"
 	"net/http"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -385,4 +387,114 @@ func TestValidatorsCoverBothSurfaces(t *testing.T) {
 	require.Contains(t, v, NameSonar)
 	require.Contains(t, v, NameAgent)
 	require.Len(t, v, 2)
+}
+
+// derivedIDScenario declares neither a completion_id/response_id override nor a
+// fault plan, so every identifier in a rendered body is derived — which is what
+// the tests below are about.
+const derivedIDScenario = `
+version: 1
+name: perplexity-derived-ids
+providers:
+  perplexity:
+    answer: hello
+  perplexity_agent:
+    answer: hello
+`
+
+// Identifier shapes contracts/perplexity/README.md pins: an unprefixed version 5
+// UUID for the Sonar completion, resp_ and msg_ over 32 lowercase hex for the
+// Agent surface.
+var (
+	sonarIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	respIDPattern  = regexp.MustCompile(`^resp_[0-9a-f]{32}$`)
+	msgIDPattern   = regexp.MustCompile(`^msg_[0-9a-f]{32}$`)
+)
+
+// TestDerivedIdentifiersAreDistinctPerCall pins the property a real vendor has
+// and a collapsed identifier destroys: a consumer correlating a log line to a
+// request must be able to tell one call from the next.
+//
+// Neither surface declares a fault plan here on purpose. The call index used to
+// enter the identifier tuple only where one did, so every response an unfaulted
+// scenario ever served carried a single id.
+func TestDerivedIdentifiersAreDistinctPerCall(t *testing.T) {
+	t.Parallel()
+	s := newSim(t, mustScenario(t, derivedIDScenario))
+
+	t.Run("sonar", func(t *testing.T) {
+		first := sonarIDOf(t, s, "/v1/sonar")
+		second := sonarIDOf(t, s, "/v1/sonar")
+
+		require.Regexp(t, sonarIDPattern, first, "the completion id is an unprefixed UUID")
+		require.NotEqual(t, first, second, "two successive calls must not share a completion id")
+
+		// A namespace is a fresh state lane, so this is call 0 again. An id made
+		// distinct by a clock or by a counter of this package's own would fail here.
+		require.Equal(t, first, sonarIDOf(t, s, "/n/lane-b/v1/sonar"),
+			"the same call position in a fresh lane must reproduce the same id")
+	})
+
+	t.Run("agent", func(t *testing.T) {
+		firstResp, firstMsg := agentIDsOf(t, s, "/v1/agent")
+		secondResp, secondMsg := agentIDsOf(t, s, "/v1/agent")
+
+		require.Regexp(t, respIDPattern, firstResp)
+		require.Regexp(t, msgIDPattern, firstMsg)
+		require.NotEqual(t, firstResp, secondResp, "two successive calls must not share a response id")
+		require.NotEqual(t, firstMsg, secondMsg, "two successive calls must not share a message id")
+		require.NotEqual(t, strings.TrimPrefix(firstResp, "resp_"), strings.TrimPrefix(firstMsg, "msg_"),
+			"the two identifiers of one response must not be the same digest under two prefixes")
+
+		freshResp, freshMsg := agentIDsOf(t, s, "/n/lane-b/v1/agent")
+		require.Equal(t, firstResp, freshResp)
+		require.Equal(t, firstMsg, freshMsg)
+	})
+}
+
+// TestSonarAndAgentIdentifiersDoNotCollide guards the surface discriminator. The
+// two surfaces count on separate budget keys, and the Agent tuple carries an
+// extra "agent" part, so call 0 of one cannot derive call 0 of the other.
+func TestSonarAndAgentIdentifiersDoNotCollide(t *testing.T) {
+	t.Parallel()
+	s := newSim(t, mustScenario(t, derivedIDScenario))
+
+	sonarID := sonarIDOf(t, s, "/v1/sonar")
+	respID, _ := agentIDsOf(t, s, "/v1/agent")
+	require.NotEqual(t, sonarID, strings.TrimPrefix(respID, "resp_"))
+}
+
+// sonarIDOf posts the standard Sonar request to path and returns the completion
+// id it rendered.
+func sonarIDOf(t *testing.T, s *sim, path string) string {
+	t.Helper()
+	resp, body := s.do(t, http.MethodPost, path, sonarRequest)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var decoded CompletionResponse
+	require.NoError(t, json.Unmarshal(body, &decoded))
+	return decoded.ID
+}
+
+// agentIDsOf posts the standard Agent request to path and returns the response
+// id and the message item's id.
+//
+// ResponsesResponse.Output is a closed interface, so the envelope is read back
+// through a decode target of its own rather than through the render type.
+func agentIDsOf(t *testing.T, s *sim, path string) (responseID, messageID string) {
+	t.Helper()
+	resp, body := s.do(t, http.MethodPost, path, agentRequest)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var decoded struct {
+		ID     string `json:"id"`
+		Output []struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		} `json:"output"`
+	}
+	require.NoError(t, json.Unmarshal(body, &decoded))
+	require.Len(t, decoded.Output, 1)
+	require.Equal(t, OutputTypeMessage, decoded.Output[0].Type)
+	return decoded.ID, decoded.Output[0].ID
 }

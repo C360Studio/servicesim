@@ -367,6 +367,7 @@ func validateEnum(x *provider.Exchange, key, code string, members []string) {
 func errorStatus(findings []journal.Finding) int {
 	authFailed := false
 	tooLarge := false
+	namespaceRefused := false
 	for _, f := range findings {
 		if f.Severity != journal.SeverityError {
 			continue
@@ -376,6 +377,8 @@ func errorStatus(findings []journal.Finding) int {
 			authFailed = true
 		case provider.CodeBodyTooLarge:
 			tooLarge = true
+		case provider.CodeNamespaceLimit:
+			namespaceRefused = true
 		}
 	}
 	switch {
@@ -383,6 +386,12 @@ func errorStatus(findings []journal.Finding) int {
 		return http.StatusUnauthorized
 	case tooLarge:
 		return http.StatusRequestEntityTooLarge
+	case namespaceRefused:
+		// 503, ahead of the 422 default: the simulator is refusing to take on
+		// more state rather than rejecting the request's content, and a 422
+		// would send the consumer looking at their own payload for a fault that
+		// is in the simulator's configuration.
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusUnprocessableEntity
 	}

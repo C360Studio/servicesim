@@ -41,10 +41,23 @@ type Exchange struct {
 
 	findings []journal.Finding
 
+	// lane is resolved once by Handle, before the handler runs. It is unexported
+	// so nothing downstream can re-key a request mid-flight: one request, one lane,
+	// decided in one place.
+	lane Lane
+
 	// decision and claimed memoise the single attempt claim this request makes.
 	decision FaultDecision
 	claimed  bool
 }
+
+// Lane returns the state lane this request was resolved into: its namespace, the
+// scenario selected for it, and the turn-key lane its cursor is drawn from.
+// Handle resolves it once, before the handler runs; a handler reads it and never
+// recomputes it.
+//
+// It is the zero Lane on an Exchange built by hand rather than by Handle.
+func (x *Exchange) Lane() Lane { return x.lane }
 
 // Warn records a warning finding. Warnings are journal-only: the request still
 // receives its scenario response.
@@ -126,7 +139,10 @@ func (x *Exchange) Findings() []journal.Finding {
 }
 
 // Fault returns this request's fault decision, claiming an attempt index from
-// Deps.Faults on the first call and memoising it for every later one.
+// Deps.Faults on the first call and memoising it for every later one. The
+// attempt is claimed on the resolved lane's cursor key, not on Route.FaultKey:
+// one route serving N concurrent callers is N lanes, and counting them as one
+// hands each caller the attempt scripted for another.
 //
 // It is lazy for a reason that is a rule, not an optimisation: only a request
 // that survived routing, authentication and validation may consume an attempt
@@ -140,13 +156,26 @@ func (x *Exchange) Findings() []journal.Finding {
 func (x *Exchange) Fault() FaultDecision {
 	if !x.claimed {
 		x.claimed = true
-		x.decision = x.Deps.Faults.Next(x.Route.FaultKey)
+		x.decision = x.Deps.Faults.Next(x.cursorKey())
 	}
 	return x.decision
 }
 
-// CallIndex returns the zero-based number of this call within its fault key,
-// claiming an attempt if one has not been claimed yet. It is what a turn's
+// cursorKey is the counter key this request's attempts and turns are drawn from.
+//
+// An Exchange that Handle did not build — a provider package's unit test
+// constructing one directly — has no resolved lane, and falls back to
+// Route.FaultKey, which is exactly what the whole request path used before lanes
+// existed.
+func (x *Exchange) cursorKey() string {
+	if x.lane.Key == "" {
+		return x.Route.FaultKey
+	}
+	return x.lane.CursorKey()
+}
+
+// CallIndex returns the zero-based number of this call within its lane, claiming
+// an attempt if one has not been claimed yet. It is what a turn's
 // `when: {call_index: N}` matches against.
 func (x *Exchange) CallIndex() int {
 	return x.Fault().Index

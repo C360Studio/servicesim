@@ -114,14 +114,25 @@ simulator per test or a distinct namespace.
 — a bare reset is refused because, on a shared container, silently clearing every lane would destroy other tests
 that are mid-run.
 
-## Every response has the same `requestId`
+## Two responses have the same `requestId`
 
-Identifiers derive from stable fixture keys rather than a clock or a random source, so the same scenario and request
-always produce the same bytes. This is what makes golden-file assertions possible.
+Identifiers derive from stable fixture keys rather than a clock or a random source, and the tuple they hang off
+includes the call's position within its state lane. So two successive calls get different identifiers, the way a
+real vendor's do, while the same request at the same call position always renders the same bytes — which is what
+makes golden-file assertions possible. A fresh lane (a new namespace, a new process, `POST /__admin/reset`) starts
+at call 0 again and reproduces the first identifier exactly.
 
-If your adapter genuinely needs distinct identifiers per call — for example to prove it correlates a log line to a
-request — assert on something else, or open an issue: making identifiers vary per call position while staying
-deterministic is a small change and a reasonable request.
+Two cases legitimately repeat an identifier:
+
+- **The scenario pins it.** `request_id:`, `completion_id:`, `response_id:` and `message_id:` override the derived
+  value, so every call carrying that projection renders the pinned string. Remove the key to get derived ones.
+- **The responses are rejections.** A request refused by routing, authentication or validation must not consume a
+  fault attempt, and claiming the call index is what consuming one means — so a rejected request has no call
+  position to derive from. Its identifier is the tuple with no index, which is distinct from every served response
+  and shared with the other rejections in its lane.
+
+Golden helpers already account for this: `testkit.AssertGoldenJSON` ignores `requestId`, `request_id` and the
+top-level `id` unless you pass `testkit.GoldenExactIDs()`.
 
 ## `task check` fails on revive but the code looks fine
 

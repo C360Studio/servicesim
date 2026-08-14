@@ -18,7 +18,7 @@ var ErrNoMatchingTurn = errors.New("provider: no turn matches this request")
 // records a scenario.no_matching_turn finding and answers with a provider-shaped
 // error — never a panic and never an empty 200.
 //
-// callIndex comes from the same per-FaultKey counter the fault engine uses, so a
+// callIndex comes from the same per-lane counter the fault engine uses, so a
 // scenario that rate-limits call 2 and answers differently on call 3 stays
 // coherent. Pass Exchange.CallIndex, never a counter of your own.
 //
@@ -44,10 +44,19 @@ func SelectTurn(e *scenario.ProviderEntry, callIndex int, body []byte) (*scenari
 }
 
 // SelectTurnFor selects the turn serving x from e, claiming the call index from
-// the single per-FaultKey counter that fault selection also draws on. It records
-// the scenario.no_matching_turn error finding and returns a nil turn when the
-// script cannot answer, leaving the caller to render its own provider-shaped
-// error body.
+// the single per-lane counter that fault selection also draws on. It records the
+// scenario.no_matching_turn error finding and returns a nil turn when the script
+// cannot answer, leaving the caller to render its own provider-shaped error body.
+//
+// The counter is keyed on Exchange.Lane, not on Route.FaultKey. That distinction
+// is the whole point of the lane: one LLM route serving N concurrent agent roles
+// is N cursors, and a route-keyed counter would hand two concurrent callers
+// indices 0 and 1 out of one sequence, so each would receive the turn scripted
+// for the other. A wrong status code fails loudly; a coherent-looking response
+// from the wrong lane fails somewhere else entirely, much later.
+//
+// The lane is resolved once, by Handle, before this runs. Never derive one here:
+// two derivations are two chances to disagree about which call this is.
 //
 // Call it only once the request has passed validation: it claims an attempt, and
 // a rejected request must not consume one (§4.4).
@@ -69,10 +78,10 @@ func SelectTurnFor(x *Exchange, e *scenario.ProviderEntry) (*scenario.Turn, int)
 //
 // A single-shot provider block normalises into exactly one turn, so for the
 // common case this is simply that block's `fault:`. For a multi-turn script the
-// engine is handed one plan per fault key and cannot yet select a different plan
-// per turn; the first declared plan is what that key expands. A script that needs
-// per-turn plans is the turn-lane work the addendum defers, not something a
-// caller can express today.
+// engine is handed one plan per route key and cannot yet select a different plan
+// per turn; the first declared plan is what that key expands, and every lane
+// drawn from that route expands the same plan. A script that needs per-turn or
+// per-lane plans is deferred work, not something a caller can express today.
 func TurnFault(s *scenario.Scenario, name string) *scenario.Fault {
 	e := s.Provider(name)
 	if e == nil {

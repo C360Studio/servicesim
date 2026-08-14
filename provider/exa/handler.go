@@ -263,13 +263,19 @@ func streamPolicy(e *scenario.ProviderEntry) scenario.StreamPolicy {
 
 // renderedRequestID returns the requestId a successful response carries: the
 // scenario's override, or thirty-two lowercase hex characters derived from the
-// scenario seed, the provider and the fault key.
+// scenario seed, the provider, the fault key and the call index.
 //
-// The attempt index joins the tuple only where the route actually declares a
-// fault plan (§3.1). Where one exists, a retry gets a different requestId, which
-// is what a real API does and what lets a test tell the retry from the original.
-// Where none exists, the identifier must not move, or the same request sent
-// twice would render two different bodies.
+// The call index joins the tuple unconditionally, not only where the route
+// declares a fault plan. A real vendor returns a distinct identifier per call,
+// and a simulator that returned one value for every call collapses a consumer's
+// log correlation to a single point — the /search 200, the retry after it and
+// the /answer beside it all carrying one requestId.
+//
+// Determinism is not weakened by this, it is sharpened. The property house rule
+// 2 states is that the same scenario and the same request produce byte-identical
+// bytes; the precise form of it is "at the same call position", which is what a
+// lane cursor measures. Two consecutive calls differ; call 0 of a fresh lane —
+// a new namespace, a new process, a reset — reproduces call 0 exactly.
 //
 // It must be called only after an attempt has been claimed, which selectProjection
 // has done by the time a caller has a projection to render.
@@ -277,20 +283,32 @@ func renderedRequestID(x *provider.Exchange, override string) string {
 	if override != "" {
 		return override
 	}
-	parts := identityParts(x)
-	if dec := x.Fault(); dec.Planned {
-		parts = append(parts, strconv.Itoa(dec.Index))
-	}
-	return ids.Hex32(parts...)
+	return ids.Hex32(callParts(x)...)
 }
 
 // unclaimedRequestID returns the requestId an error body carries. It never
 // consults the fault decision, because asking for one claims an attempt and a
-// rejected request must not consume one.
+// rejected request must not consume one (§4.4).
+//
+// The consequence is deliberate and is the one place the per-call property above
+// does not hold: two requests rejected by routing, authentication or validation
+// in the same lane carry the same requestId, because neither advanced the lane's
+// cursor and there is no other per-call quantity a rejected request may read. A
+// rejected request is still distinguishable from the served ones — its tuple is
+// the one with no call index at all.
 func unclaimedRequestID(x *provider.Exchange) string {
 	return ids.Hex32(identityParts(x)...)
 }
 
+// identityParts is the part of the tuple that does not depend on which call this
+// is: the scenario seed, the provider and the route's fault key.
 func identityParts(x *provider.Exchange) []string {
 	return []string{x.Deps.Scenario.SeedKey(), providerName, x.Route.FaultKey}
+}
+
+// callParts is identityParts plus the zero-based index of this call within its
+// lane. It claims the attempt if the caller has not already; see
+// Exchange.CallIndex.
+func callParts(x *provider.Exchange) []string {
+	return append(identityParts(x), strconv.Itoa(x.CallIndex()))
 }

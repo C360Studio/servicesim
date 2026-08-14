@@ -108,6 +108,11 @@ func errorResponse(x *provider.Exchange) provider.Response {
 		status, message = http.StatusNotFound, MessageNoMatchingTurn
 	case containsAny(errs, []string{CodeProjectionInvalid}):
 		status, message = http.StatusInternalServerError, MessageInternalServerError
+	case containsAny(errs, []string{provider.CodeNamespaceLimit}):
+		// 503, and the finding's own message rather than a constant: this is a
+		// Servicesim configuration problem, and the consumer needs to be told
+		// which knob to turn, not handed a plausible-looking vendor error.
+		status, message = http.StatusServiceUnavailable, errs[0].Message
 	case len(errs) > 0:
 		// The first error in Findings order. That order is total — severity,
 		// then field, then code — so a request with two problems reports the

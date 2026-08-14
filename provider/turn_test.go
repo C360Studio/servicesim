@@ -290,3 +290,50 @@ providers:
 	require.Empty(t, findings, "one implementation serves both instances")
 	require.Equal(t, []string{"openai", "openai_fallback"}, v.seen)
 }
+
+// TestSelectTurnForIsKeyedOnTheLaneNotTheRoute is the survey's failure (a) at the
+// seam: one route, several lanes, and every lane walks the script from its own
+// call 0. Keyed on Route.FaultKey, the second lane's first request would draw
+// index 1 and receive the turn written for the first lane's second call.
+func TestSelectTurnForIsKeyedOnTheLaneNotTheRoute(t *testing.T) {
+	t.Parallel()
+
+	entry := mustScenario(t, scriptedYAML).Provider("exa")
+	d := Deps{}.Normalized() // the substitute engine counts, per key
+
+	call := func(lane Lane, raw string) int {
+		x := &Exchange{
+			Deps: d, Provider: Exa, Route: testRoute,
+			Raw: []byte(raw), lane: lane,
+			decision: FaultDecision{Index: -1},
+		}
+		_, index := SelectTurnFor(x, entry)
+		return index
+	}
+
+	var (
+		planner = Lane{Namespace: "t-1", Key: testRoute.FaultKey + "|body_json:role=planner"}
+		critic  = Lane{Namespace: "t-1", Key: testRoute.FaultKey + "|body_json:role=critic"}
+		other   = Lane{Namespace: "t-2", Key: planner.Key} // same role, another test
+	)
+
+	require.Equal(t, 0, call(planner, `{"q":"anything"}`))
+	require.Equal(t, 0, call(critic, `{"q":"anything"}`), "a second role starts its own script")
+	require.Equal(t, 0, call(other, `{"q":"anything"}`), "a second namespace starts its own script")
+	require.Equal(t, 1, call(planner, `{"q":"report-a"}`), "and the first role has advanced by exactly one")
+}
+
+// TestExchangeCursorKeyFallsBackToTheRoute pins the compatibility rule the lane
+// rests on: an Exchange nobody resolved a lane for — a provider package's unit
+// test building one directly — still counts on Route.FaultKey.
+func TestExchangeCursorKeyFallsBackToTheRoute(t *testing.T) {
+	t.Parallel()
+
+	x := &Exchange{Deps: Deps{}.Normalized(), Provider: Exa, Route: testRoute}
+	require.Equal(t, testRoute.FaultKey, x.cursorKey())
+	require.Equal(t, testRoute.FaultKey, x.Fault().Key)
+
+	x.lane = Lane{Namespace: DefaultNamespace, Key: testRoute.FaultKey}
+	require.Equal(t, testRoute.FaultKey, x.cursorKey(),
+		"the default namespace keys exactly as the pre-lane code did")
+}
