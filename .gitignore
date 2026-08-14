@@ -11,6 +11,13 @@
 # Test binary, built with `go test -c`
 *.test
 
+# Build output (`task build`)
+/bin/
+
+# A bare `go build ./cmd/servicesim` in the repo root drops an 11 MB binary
+# next to the source, where `git add -A` would happily commit it.
+/servicesim
+
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*

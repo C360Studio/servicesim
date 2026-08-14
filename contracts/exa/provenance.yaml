@@ -1,0 +1,195 @@
+# Provenance for the Exa golden wire fixtures.
+#
+# Every golden in this directory has exactly one entry here, and
+# contracts/contracts_test.go fails the build if that stops being true. The
+# question a reviewer asks when a golden changes is "did the vendor change, or
+# did we?", and it is unanswerable without a dated record of what the shape was
+# checked against.
+#
+# kind:
+#   vendor-documented  the shape AND the values come from the vendor's own
+#                      documentation, quoted or directly derived from it.
+#   simulator-chosen   Servicesim picked this shape or these values. The live
+#                      contract canary may correct it from a real response.
+#
+# The field names in every golden are governed by README.md in this directory,
+# which is the authority and must not be edited by fixture work.
+
+provider: exa
+verified: 2026-08-14
+
+goldens:
+  - golden: exa-search-happy.json
+    endpoint: POST /search
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://exa.ai/docs/reference/search
+    verified: 2026-08-14
+    note: >-
+      Full result object. There is deliberately no score key: Exa's result
+      schema has none and the only score-like field is highlightScores.
+      costDollars is always present. Identifier values are Servicesim's derived
+      ones; testkit.AssertGoldenJSON ignores requestId by default.
+
+  - golden: exa-search-empty.json
+    endpoint: POST /search
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://exa.ai/docs/reference/search
+    verified: 2026-08-14
+    note: >-
+      Zero-result success. results stays an empty array rather than null, and
+      costDollars stays present, because both are required by the schema.
+
+  - golden: exa-search-structured.json
+    endpoint: POST /search
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/search
+    verified: 2026-08-14
+    note: >-
+      The outputSchema branch. output.content, output.grounding[].field,
+      .citations and .confidence are documented field names, but the vendor
+      does not enumerate the object shape inside grounding[].citations, so the
+      {title, url, id} triple used here is Servicesim's choice.
+      resolvedSearchType and context are documented but deprecated.
+
+  - golden: exa-search-400.json
+    endpoint: POST /search
+    status: 400
+    kind: vendor-documented
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-14
+    note: >-
+      Reproduced verbatim from the documentation. It doubles as proof of the
+      exact type enum and of the flat {requestId, error, tag} envelope, which is
+      not a nested {error: {code, message}}.
+
+  - golden: exa-search-401.json
+    endpoint: POST /search
+    status: 401
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-14
+    note: >-
+      Envelope and tag are documented; the message text is reconstructed. No
+      verbatim 401 body appears in the vendor documentation.
+
+  - golden: exa-search-402.json
+    endpoint: POST /search
+    status: 402
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-14
+    note: >-
+      402 Payment Required is the only error status enumerated in the /search
+      OpenAPI reference and it carries no body schema. NO_MORE_CREDITS is a
+      documented tag; the message text is reconstructed.
+
+  - golden: exa-search-422.json
+    endpoint: POST /search
+    status: 422
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/search-api-guide-for-coding-agents
+    verified: 2026-08-14
+    note: >-
+      422 is listed as a documented status by the coding-agents guide; the body
+      is not quoted anywhere, so the message text is reconstructed.
+
+  - golden: exa-search-429.json
+    endpoint: POST /search
+    status: 429
+    kind: vendor-documented
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-14
+    note: >-
+      Reproduced verbatim. Rate-limit responses use a REDUCED shape carrying
+      error only, with no requestId and no tag. A simulator that always emitted
+      the three-key envelope would be wrong for exactly the status retry logic
+      depends on.
+
+  - golden: exa-search-500.json
+    endpoint: POST /search
+    status: 500
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-14
+    note: >-
+      INTERNAL_ERROR is a documented tag; the body is not quoted, so the message
+      text is reconstructed.
+
+  - golden: exa-search-404.json
+    endpoint: any unmatched path on the Exa listener
+    status: 404
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-14
+    note: >-
+      Fail-closed routing. The envelope is the documented one; the NOT_FOUND tag
+      value and the message are Servicesim's, so a consumer's error decoder does
+      not have to special-case the simulator.
+
+  - golden: exa-search-405.json
+    endpoint: a known Exa path with an unsupported method
+    status: 405
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-14
+    note: >-
+      Served with an Allow header. The METHOD_NOT_ALLOWED tag value is
+      Servicesim's; the envelope is the documented one.
+
+  - golden: exa-answer-happy.json
+    endpoint: POST /answer
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://exa.ai/docs/reference/answer
+    verified: 2026-08-14
+    note: >-
+      A distinct envelope, not a variant of /search: there is no results key,
+      and the citation object is a strict subset of the search result (no
+      highlights, highlightScores, summary, subpages, extras or entities, and no
+      score anywhere). costDollars is optional here and its documented example
+      carries total only, so the sparse form is the default.
+
+  - golden: exa-answer-empty.json
+    endpoint: POST /answer
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/answer
+    verified: 2026-08-14
+    note: >-
+      The "no answer projected" case. Only answer is required by the schema;
+      emitting citations as an empty array rather than omitting it is
+      Servicesim's choice, so a consumer's array handling is always exercised.
+
+  - golden: exa-answer-structured.json
+    endpoint: POST /answer
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://exa.ai/docs/reference/answer
+    verified: 2026-08-14
+    note: >-
+      outputSchema supplied. The answer key is a oneOf on itself and becomes an
+      object; unlike /search there is no output object and no grounding array,
+      so field-level provenance does not exist on this route.
+
+  - golden: exa-answer-400-invalid-json-schema.json
+    endpoint: POST /answer
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/answer
+    verified: 2026-08-14
+    note: >-
+      INVALID_JSON_SCHEMA is a documented tag for a malformed outputSchema; the
+      message text is reconstructed.
+
+  - golden: exa-answer-501.json
+    endpoint: POST /answer
+    status: 501
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/answer
+    verified: 2026-08-14
+    note: >-
+      UNABLE_TO_GENERATE_RESPONSE is documented as /answer-only and must not be
+      reachable on /search. The message text is reconstructed.

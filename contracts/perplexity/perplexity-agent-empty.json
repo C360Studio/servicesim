@@ -1,0 +1,40 @@
+{
+  "id": "resp_1a2b3c4d5e6f708192a3b4c5d6e7f809",
+  "object": "response",
+  "model": "openai/gpt-5",
+  "created_at": 1767225600,
+  "status": "completed",
+  "output": [
+    {
+      "type": "search_results",
+      "queries": [
+        "deterministic simulator adapter tests"
+      ],
+      "results": []
+    },
+    {
+      "type": "message",
+      "id": "msg_809f7e6d5c4b3a2918070605040302f1",
+      "role": "assistant",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "",
+          "annotations": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 0,
+    "total_tokens": 12,
+    "cost": {
+      "currency": "USD",
+      "input_cost": 0,
+      "output_cost": 0,
+      "total_cost": 0
+    }
+  }
+}

@@ -1,0 +1,132 @@
+# Provenance for the Tavily golden wire fixtures.
+#
+# Every golden in this directory has exactly one entry here, and
+# contracts/contracts_test.go fails the build if that stops being true.
+#
+# kind:
+#   vendor-documented  the shape AND the values come from the vendor's own
+#                      documentation, quoted or directly derived from it.
+#   simulator-chosen   Servicesim picked this shape or these values. The live
+#                      contract canary may correct it from a real response.
+#
+# The field names in every golden are governed by README.md in this directory,
+# which is the authority and must not be edited by fixture work.
+
+provider: tavily
+verified: 2026-08-14
+
+goldens:
+  - golden: tavily-search-happy.json
+    endpoint: POST /search
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
+    verified: 2026-08-14
+    note: >-
+      response_time is a JSON NUMBER. The schema declares type number, format
+      float; the quoted YAML example scalar '1.67' is what makes implementers
+      encode it as a string, and a string breaks every typed consumer. answer,
+      images, results and response_time are all required, so all four keys are
+      present even when unrequested.
+
+  - golden: tavily-search-empty.json
+    endpoint: POST /search
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
+    verified: 2026-08-14
+    note: >-
+      Zero-result success. answer is an explicit null rather than an absent key:
+      the schema requires it while its description says it appears only when
+      include_answer was requested, and a present null breaks fewer consumers
+      than a sometimes-missing required key.
+
+  - golden: tavily-search-news.json
+    endpoint: POST /search
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/best-practices/best-practices-search.md
+    verified: 2026-08-14
+    note: >-
+      topic=news with every optional field populated: published_date (documented
+      in prose for topic=news only, not in the response schema), favicon,
+      per-result images, raw_content as a string, auto_parameters and the
+      include_usage credits object. images items are OBJECTS with url and
+      description, never bare URL strings.
+
+  - golden: tavily-400.json
+    endpoint: POST /search
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
+    verified: 2026-08-14
+    note: >-
+      The {detail: {error}} envelope is documented and exact. The message is
+      Servicesim's: the documented example text still says "Must be 'general' or
+      'news'", which is stale against the current three-value topic enum, so it
+      is not reproduced verbatim.
+
+  - golden: tavily-401.json
+    endpoint: POST /search
+    status: 401
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
+    verified: 2026-08-14
+    note: Reproduced verbatim from the documented 401 example.
+
+  - golden: tavily-429.json
+    endpoint: POST /search
+    status: 429
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
+    verified: 2026-08-14
+    note: >-
+      Reproduced verbatim. No Retry-After header is documented, so none is
+      emitted.
+
+  - golden: tavily-432.json
+    endpoint: POST /search
+    status: 432
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
+    verified: 2026-08-14
+    note: >-
+      Non-standard 432, documented as "Key limit or Plan Limit exceeded". Text
+      taken from the documented example with its angle-bracket placeholder
+      removed.
+
+  - golden: tavily-433.json
+    endpoint: POST /search
+    status: 433
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
+    verified: 2026-08-14
+    note: >-
+      A second non-standard status, "PayGo limit exceeded". Reproduced verbatim.
+
+  - golden: tavily-500.json
+    endpoint: POST /search
+    status: 500
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
+    verified: 2026-08-14
+    note: Reproduced verbatim from the documented 500 example.
+
+  - golden: tavily-404.json
+    endpoint: any unmatched path on the Tavily listener
+    status: 404
+    kind: simulator-chosen
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
+    verified: 2026-08-14
+    note: >-
+      Fail-closed routing. The envelope is the documented one and is the only
+      one of the three providers' routing envelopes that is vendor-verified; the
+      message text is Servicesim's.
+
+  - golden: tavily-405.json
+    endpoint: a known Tavily path with an unsupported method
+    status: 405
+    kind: simulator-chosen
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
+    verified: 2026-08-14
+    note: Served with an Allow header. The message text is Servicesim's.

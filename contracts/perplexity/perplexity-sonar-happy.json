@@ -1,0 +1,56 @@
+{
+  "id": "3c90c3cc-0d44-4b50-8888-8dd25736052a",
+  "object": "chat.completion",
+  "model": "sonar-pro",
+  "created": 1767225600,
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "Both reports agree that deterministic simulation removes flakiness from adapter suites."
+      },
+      "delta": {
+        "role": "assistant",
+        "content": ""
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 128,
+    "total_tokens": 170,
+    "search_context_size": "medium",
+    "citation_tokens": 64,
+    "num_search_queries": 2,
+    "cost": {
+      "input_tokens_cost": 0.00021,
+      "output_tokens_cost": 0.00128,
+      "request_cost": 0.005,
+      "total_cost": 0.00649
+    }
+  },
+  "search_results": [
+    {
+      "title": "Report A",
+      "url": "https://example.test/report-a",
+      "snippet": "Report A finds that deterministic simulators remove flakiness from adapter test suites.",
+      "date": "2025-11-16",
+      "last_updated": "2025-12-01",
+      "source": "web"
+    },
+    {
+      "title": "Report B",
+      "url": "https://example.test/report-b",
+      "snippet": "Report B corroborates Report A across a second dataset.",
+      "date": null,
+      "last_updated": null,
+      "source": "web"
+    }
+  ],
+  "citations": [
+    "https://example.test/report-a",
+    "https://example.test/report-b"
+  ]
+}

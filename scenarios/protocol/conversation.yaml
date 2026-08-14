@@ -1,0 +1,105 @@
+# A scripted agentic loop on the Perplexity Agent surface.
+#
+# This is the multi-turn form. Turns are matched in declaration order and the
+# first whose `when` matches wins, so the unconditional fallback must come last.
+# Nothing here is generated: every response is scripted, and the predicate only
+# ever reads the request and the call counter.
+#
+# The other three providers use the single-shot form, which is the same thing
+# normalised into one unconditional turn — one --scenario flag still configures
+# every listener coherently.
+#
+# `turn_key` is left at its default of ["route"], which is one sequence per
+# route and is correct for a single serial caller. A suite that fans one route
+# out across concurrent agent roles must set it — for example
+# `turn_key: ["route", "header:x-role"]` — or two roles will draw call indices
+# from the same sequence and each receive the other's turn.
+version: 1
+name: conversation
+description: >-
+  Three scripted turns on POST /v1/agent — search, answer once the tool result
+  comes back, then a fallback — matched by call index, by body substring and
+  unconditionally.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    author: A. Author
+    published_at: 2026-05-20T00:00:00Z
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+providers:
+
+  exa:
+    results:
+      - source: source-a
+    cost_dollars:
+      total: 0.005
+    answer:
+      answer: Report A states the finding.
+      citations:
+        - source-a
+
+  tavily:
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+
+  perplexity:
+    answer: A grounded answer citing Report A.
+    finish_reason: stop
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    auth:
+      mode: required
+    turns:
+
+      # Call 0: the agent has nothing yet, so it reports the search it ran and
+      # returns no results. Matched by call index rather than by prompt text,
+      # which is what makes it survive a reworded prompt.
+      - when:
+          call_index: 0
+        respond:
+          answer: Searching for Report A.
+          queries:
+            - report a
+          search_results: []
+
+      # The follow-up call carries the tool result, which names the document.
+      # BodyContains is crude on purpose: it answers "which tool result came
+      # back" without becoming an expression language.
+      - when:
+          body_contains: report-a
+        respond:
+          answer: Report A states the finding.
+          queries:
+            - report a
+          search_results:
+            - source-a
+          annotations:
+            - source: source-a
+              start_index: 0
+              end_index: 8
+          usage:
+            input_tokens: 48
+            output_tokens: 64
+            cost:
+              input_cost: 0.0002
+              output_cost: 0.0003
+
+      # No `when`, so it matches anything. An unmatched request is never
+      # silently a 200 elsewhere; this turn is what makes the loop terminate
+      # rather than dead-end.
+      - respond:
+          status: incomplete
+          answer: No further information.

@@ -1,0 +1,99 @@
+# Servicesim under Compose: copy this file, rename it, and point your test
+# service's base URLs at it.
+#
+#   docker compose -f docker-compose.example.yml up -d
+#   curl -s localhost:8080/readyz
+#
+# Two things in here are deliberate and are explained where they appear: the
+# image is pinned to a tag rather than floating on :latest, and the scenario
+# mount is read-only.
+
+services:
+
+  servicesim:
+    # Pin the tag. Servicesim's contract is its wire output, so an image that
+    # moves underneath a test suite moves the fixtures the suite asserts on.
+    # Renovate or Dependabot can bump this line; :latest cannot be reviewed.
+    image: ghcr.io/c360studio/servicesim:v0.1.0
+
+    # --scenario-dir serves every scenario in the directory at once, each
+    # selected per request by the /x/<scenario> base-URL prefix below. For a
+    # single fixed scenario use the mutually exclusive
+    # --scenario /scenarios/research.yaml instead, or --scenario builtin:happy
+    # to serve one of the scenarios embedded in the image and mount nothing.
+    command:
+      - --scenario-dir=/scenarios
+      # Bounds how many namespaces may be created implicitly. Exceeding it is a
+      # loud provider-shaped error, never a silent eviction: evicting would
+      # reset a running test's turn cursor mid-loop.
+      - --max-namespaces=1024
+
+    volumes:
+      # Read-only, because Servicesim never writes here and a simulator that
+      # could rewrite its own fixtures would not be reproducible. Scenario
+      # changes need no Servicesim release — they are your repository's files.
+      #
+      # A flat directory of <name>.yaml; /x/<name> selects one. Mounting over
+      # /scenarios hides the copies that ship in the image, which costs nothing:
+      # the built-ins are embedded in the binary and --scenario builtin:<name>
+      # still reaches them.
+      - ./test/fixtures/research:/scenarios:ro
+
+    ports:
+      - "8080:8080" # admin: /healthz, /readyz, /__admin/requests, /__admin/scenario, /__admin/reset
+      - "8081:8081" # exa:        POST /search, POST /answer
+      - "8082:8082" # tavily:     POST /search
+      - "8083:8083" # perplexity: POST /v1/sonar, /chat/completions, /v1/agent, /v1/responses
+
+    healthcheck:
+      # The image is `scratch` — no shell, no curl, no wget. The binary answers
+      # its own health check, which is what lets the runtime stage stay empty.
+      test: ["CMD", "/servicesim", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      start_period: 2s
+      retries: 3
+
+  app-tests:
+    build: .
+    depends_on:
+      servicesim:
+        condition: service_healthy
+
+    environment:
+      # --- The plain form -------------------------------------------------
+      # One base URL per listener. This is the whole integration: the adapter's
+      # own transport, retry and decode paths stay in the test.
+      EXA_BASE_URL: http://servicesim:8081
+      TAVILY_BASE_URL: http://servicesim:8082
+      PERPLEXITY_BASE_URL: http://servicesim:8083
+
+      # --- The namespaced form --------------------------------------------
+      # Two optional path prefixes, stripped before route matching, so a
+      # prefixed request reaches exactly the same handler as a plain one:
+      #
+      #   /x/<scenario>   selects behaviour — one of the files in /scenarios
+      #   /n/<namespace>  isolates state — turn cursors, fault attempt
+      #                   counters and journal scoping
+      #
+      # Use them when one container serves several tests concurrently. Give
+      # each test a namespace of its own; the name is 1-64 characters of
+      # [A-Za-z0-9_-] and is created on first use, with no registration call.
+      #
+      # EXA_BASE_URL: http://servicesim:8081/n/${TEST_ID}
+      # TAVILY_BASE_URL: http://servicesim:8082/n/${TEST_ID}
+      # PERPLEXITY_BASE_URL: http://servicesim:8083/n/${TEST_ID}
+      #
+      # Both prefixes together, scenario first — same behaviour, independent
+      # state, which is the case a scenario-only mechanism cannot express:
+      #
+      # EXA_BASE_URL: http://servicesim:8081/x/fusion-overlap/n/${TEST_ID}
+      # TAVILY_BASE_URL: http://servicesim:8082/x/fusion-overlap/n/${TEST_ID}
+      # PERPLEXITY_BASE_URL: http://servicesim:8083/x/fusion-overlap/n/${TEST_ID}
+
+      # Credentials are still required by default — the point is to prove the
+      # adapter sends one, in the right placement. Any fake value works;
+      # Servicesim retains only a fingerprint, never the value.
+      EXA_API_KEY: test-exa-key
+      TAVILY_API_KEY: test-tavily-key
+      PERPLEXITY_API_KEY: test-perplexity-key

@@ -1,0 +1,61 @@
+# Every provider rejects the presented credential with its own 401 envelope.
+#
+# The projections below are never rendered: auth runs before projection. They
+# are declared anyway so that flipping one `mode: reject` to `required` turns
+# this file into a working scenario, which is what makes it useful for testing
+# the transition from a failed auth to a successful one.
+version: 1
+name: unauthorized
+description: >-
+  A 401 in each vendor's own error envelope, so a consumer surfaces an auth
+  failure and does not retry it.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    text: Full source text of Report A.
+
+providers:
+
+  exa:
+    auth:
+      mode: reject
+    results:
+      - source: source-a
+    cost_dollars:
+      total: 0.005
+    answer:
+      answer: Report A states the finding.
+      citations:
+        - source-a
+
+  tavily:
+    auth:
+      mode: reject
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+
+  perplexity:
+    auth:
+      mode: reject
+    answer: A grounded answer citing Report A.
+    finish_reason: stop
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    # Keyed independently of Sonar: a consumer's migration fallback is tested by
+    # rejecting one surface while the other stays healthy, and that is only
+    # expressible because the two are separate provider entries.
+    auth:
+      mode: reject
+    answer: Report A states the finding.
+    search_results:
+      - source-a

@@ -1,0 +1,37 @@
+{
+  "query": "deterministic simulator adapter tests",
+  "answer": "Report A is the most recent coverage of deterministic simulation.",
+  "images": [
+    {
+      "url": "https://example.test/report-a/cover.png",
+      "description": "Cover image of Report A"
+    }
+  ],
+  "results": [
+    {
+      "title": "Report A",
+      "url": "https://example.test/report-a",
+      "content": "Report A finds that deterministic simulators remove flakiness from adapter test suites.",
+      "score": 0.93,
+      "raw_content": "Report A finds that deterministic simulators remove flakiness from adapter test suites. Full text follows.",
+      "favicon": "https://example.test/favicon.ico",
+      "images": [
+        {
+          "url": "https://example.test/report-a/figure-1.png",
+          "description": "Figure 1 of Report A"
+        }
+      ],
+      "id": "a3f9c2-01",
+      "published_date": "2025-11-16T01:36:32.547Z"
+    }
+  ],
+  "response_time": 2.03,
+  "request_id": "5c2a0b4d-3e6f-5b8c-ad1e-2f3a4b5c6d7e",
+  "auto_parameters": {
+    "search_depth": "advanced",
+    "topic": "news"
+  },
+  "usage": {
+    "credits": 2
+  }
+}

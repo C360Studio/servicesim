@@ -1,0 +1,118 @@
+# The default scenario. The image's CMD points at this file, so a container
+# started with no arguments serves a well-formed 200 on every simulated surface.
+#
+# One canonical corpus is projected through Exa /search, Exa /answer, Tavily
+# /search, Perplexity Sonar and the Perplexity Agent API. A consumer that parses
+# all five against this scenario has proved its adapters agree on one document.
+version: 1
+name: happy
+description: >-
+  A well-formed 200 from every provider surface, projecting the same two
+  canonical sources, so an adapter's decoder is exercised end to end.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    author: A. Author
+    published_at: 2026-05-20T00:00:00Z
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+    image: https://example.test/report-a.png
+    favicon: https://example.test/favicon.ico
+    claims:
+      - id: claim-1
+        text: A normalised claim represented by this source.
+
+  - id: source-b
+    url: https://example.test/report-b
+    title: Report B
+    author: B. Author
+    published_at: 2026-05-21T00:00:00Z
+    text: Full source text of Report B.
+    snippets:
+      - A relevant excerpt from Report B.
+    favicon: https://example.test/favicon.ico
+    claims:
+      - id: claim-2
+        text: A second normalised claim, asserted by one source only.
+
+providers:
+
+  exa:
+    results:
+      - source: source-a
+        highlights:
+          - A relevant excerpt from Report A.
+        highlight_scores:
+          - 0.82
+        summary: Report A summarised in one sentence.
+      - source: source-b
+    cost_dollars:
+      total: 0.005
+      neural: 0.005
+    # POST /answer is its own route on the same listener; without this block it
+    # would answer with an empty synthesis and no citations.
+    answer:
+      answer: Report A and Report B agree on the finding.
+      citations:
+        - source-a
+        - source-b
+      cost_dollars:
+        total: 0.01
+
+  tavily:
+    answer: A short synthesis of Report A and Report B.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+        raw_content: null
+      - source: source-b
+        score: 0.71
+    usage:
+      credits: 1
+
+  perplexity:
+    answer: A grounded answer citing Report A and Report B.
+    finish_reason: stop
+    citations:
+      - source-a
+      - source-b
+    search_results:
+      - source-a
+      - source: source-b
+        snippet: An overridden snippet for Report B.
+    usage:
+      prompt_tokens: 24
+      completion_tokens: 96
+      total_tokens: 120
+      search_context_size: low
+      cost:
+        input_tokens_cost: 0.0001
+        output_tokens_cost: 0.0004
+        total_cost: 0.0005
+
+  perplexity_agent:
+    model: openai/gpt-5
+    answer: Report A states the finding, and Report B corroborates it.
+    queries:
+      - report a
+      - report b
+    search_results:
+      - source-a
+      - source-b
+    annotations:
+      - source: source-a
+        start_index: 0
+        end_index: 8
+    usage:
+      input_tokens: 24
+      output_tokens: 96
+      cost:
+        input_cost: 0.0001
+        output_cost: 0.0004

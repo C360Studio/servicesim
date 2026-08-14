@@ -1,0 +1,270 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  # Pinned to an exact patch, not the "1.26" minor. Two reasons, both learned
+  # from the first CI run:
+  #   * govulncheck reported five standard-library vulnerabilities present in
+  #     go1.26.5 and fixed in go1.26.6, on code paths this project genuinely
+  #     calls (http.Client.Do, CloseIdleConnections).
+  #   * `go mod tidy` output for go.sum differs between patch releases, so a
+  #     floating minor makes the tidiness gate depend on when CI happened to run.
+  # Bumping this is a deliberate, reviewable change; the vulnerability scan is
+  # what will tell us when it is due.
+  GO_VERSION: "1.26.6"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Check formatting
+        run: |
+          fmt_output=$(gofmt -l .)
+          if [ -n "$fmt_output" ]; then
+            echo "The following files need formatting:"
+            echo "$fmt_output"
+            exit 1
+          fi
+
+      - name: Sanity-check revive version matches go.mod pin
+        # revive is pinned through go.mod's `tool` directive (Go 1.24+), so a
+        # new upstream release cannot surprise CI with new ruleset warnings.
+        # This step catches the case where setup-go's module cache serves a
+        # binary that does not match the current pin, turning silent drift into
+        # a loud failure.
+        run: |
+          expected=$(awk '/github.com\/mgechev\/revive v/ {print $2}' go.mod | head -1)
+          actual_raw=$(go tool revive --version 2>&1 | head -1 | awk '{print $NF}')
+          expected="${expected#v}"
+          actual="${actual_raw#v}"
+          if [ "$expected" != "$actual" ]; then
+            echo "FAIL: revive version mismatch — go.mod pin: $expected, go tool raw: $actual_raw (normalized: $actual)"
+            exit 1
+          fi
+          echo "OK: revive $actual matches go.mod pin"
+
+      - name: Run revive (warnings fail)
+        run: go tool revive -config revive.toml -formatter friendly ./...
+
+      - name: Guard — no real provider hostnames in fixtures or scenarios
+        # Servicesim must never be one typo away from sending a test's traffic
+        # to a paid API. Scenario and fixture data may only reference reserved
+        # example domains.
+        run: bash scripts/lint-no-live-hosts.sh
+
+      - name: Check go.mod and go.sum are tidy
+        # A change that adds an import without tidying leaves go.mod wrong for
+        # every consumer that pins this module, and the failure surfaces in
+        # THEIR build rather than ours.
+        # go.mod must match `go mod tidy` exactly. go.sum need only be a
+        # SUPERSET of what tidy produces.
+        #
+        # The asymmetry is deliberate and was forced by the first CI run. A
+        # go.sum entry that is missing breaks the build for everyone; an extra
+        # one is inert. Patch releases of Go disagree about which /go.mod hashes
+        # tidy retains — go1.26.4 and go1.26.5 differ on four of them — so
+        # demanding byte equality would fail any contributor whose toolchain
+        # patch differs from CI's, which is a gate that punishes the innocent
+        # and teaches people to ignore it.
+        run: |
+          cp go.mod go.mod.bak && cp go.sum go.sum.bak
+          go mod tidy
+          rc=0
+
+          if ! diff -q go.mod go.mod.bak >/dev/null; then
+            echo "FAIL: go.mod is not tidy — run 'go mod tidy' and commit the result:"
+            diff go.mod.bak go.mod || true
+            rc=1
+          fi
+
+          # Lines tidy needs that the committed file does not have.
+          missing=$(comm -13 <(sort go.sum.bak) <(sort go.sum))
+          if [ -n "${missing}" ]; then
+            echo "FAIL: go.sum is missing entries 'go mod tidy' requires:"
+            echo "${missing}"
+            rc=1
+          fi
+
+          mv go.mod.bak go.mod && mv go.sum.bak go.sum
+          [ "${rc}" -eq 0 ] || exit 1
+          echo "OK: go.mod is tidy and go.sum covers it"
+
+      - name: Guard — documented names exist
+        # This repository carries more documentation than code, and docs drift
+        # silently: a flag that was renamed, a scenario that was deleted, a
+        # testkit helper that never existed. The guard checks every --flag,
+        # builtin:<name>, route and testkit symbol named in the docs against the
+        # real binary, scenarios directory and go doc output.
+        #
+        # It proves names, not sentences. Behaviour and defaults are still on
+        # the reviewer.
+        run: bash scripts/check-docs.sh
+
+      - name: Lint markdown
+        # Documentation is a first-class artifact here: consuming repositories
+        # read contracts/ and docs/ to decide what to trust, so it is gated
+        # like code rather than left to drift.
+        run: npx --yes markdownlint-cli2 "**/*.md" "#node_modules"
+
+  vulncheck:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run govulncheck
+        # Servicesim is imported by other repositories' test suites, so a
+        # vulnerable dependency here propagates outward. The dependency set is
+        # deliberately tiny, which makes this both fast and rarely noisy.
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run unit tests with race detector
+        run: go test -race -count=1 ./...
+
+      - name: Check coverage floor
+        # The floor guards against silent erosion, not against a number. It is
+        # set below the current figure so an honest refactor that trades a few
+        # points for clarity is not blocked, while a change that quietly stops
+        # testing a whole surface is.
+        env:
+          COVERAGE_FLOOR: "85.0"
+        run: |
+          go test -coverprofile=coverage.out -covermode=atomic ./... >/dev/null
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "total coverage: ${total}% (floor ${COVERAGE_FLOOR}%)"
+          awk -v t="$total" -v f="$COVERAGE_FLOOR" 'BEGIN { if (t+0 < f+0) { printf "FAIL: coverage %.1f%% is below the %.1f%% floor\n", t, f; exit 1 } }'
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-w -s -X main.Version=${{ github.sha }}" \
+            -o servicesim-linux-amd64 \
+            ./cmd/servicesim
+
+      - name: Verify binary reports its version
+        run: ./servicesim-linux-amd64 --version
+
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: servicesim:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test — non-root, healthy, all listeners answer
+        # Acceptance criteria 2, 10 and 12 are asserted here rather than
+        # claimed in a document: the image must run as a non-root user, report
+        # healthy on the admin port, serve each provider on its own port, and
+        # fail closed on an unmatched route.
+        run: bash scripts/image-smoke.sh servicesim:ci
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Verify the image builds for both published platforms
+        # The smoke test above runs only the runner's architecture. Without
+        # this step an arm64-breaking change is not caught until publish time,
+        # on main, after review — and acceptance criterion 12 requires both
+        # platforms. Build only; the push happens in image.yml.
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  status-check:
+    name: CI Status Check
+    runs-on: ubuntu-latest
+    needs: [lint, vulncheck, test, build, image]
+    # This is the single required check for branch protection, and image.yml
+    # keys its publish decision off this workflow's conclusion. It must fail
+    # when any job fails, including a job that was skipped or cancelled —
+    # hence the explicit comparison against "success" rather than a
+    # !contains(failure) shortcut, which treats "skipped" as passing.
+    if: always()
+    steps:
+      - name: Check if all jobs succeeded
+        run: |
+          failed=0
+          for job in "lint:${{ needs.lint.result }}" \
+                     "vulncheck:${{ needs.vulncheck.result }}" \
+                     "test:${{ needs.test.result }}" \
+                     "build:${{ needs.build.result }}" \
+                     "image:${{ needs.image.result }}"; do
+            name="${job%%:*}"; result="${job##*:}"
+            if [[ "${result}" != "success" ]]; then
+              echo "FAIL: job '${name}' concluded '${result}'"
+              failed=1
+            fi
+          done
+          if [[ "${failed}" -ne 0 ]]; then
+            exit 1
+          fi
+          echo "All CI jobs passed successfully"

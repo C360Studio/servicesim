@@ -1,0 +1,137 @@
+# Deliberately overlapping sources, for testing a fusion layer.
+#
+# Three things are arranged on purpose here, and each one fails a different way
+# if the consumer gets it wrong:
+#
+#  1. source-a is returned by Exa, Tavily, Sonar and the Agent surface. A
+#     consumer that does not deduplicate by canonical URL reports four documents
+#     where there is one.
+#  2. source-a-variant carries the SAME canonical URL as source-a with tracking
+#     parameters and a fragment appended. A consumer that deduplicates on the
+#     raw URL string rather than the canonicalised one still reports two.
+#  3. claim-1 is asserted by source-a, source-a-variant and source-b. Only two
+#     of those are distinct documents, so a consumer that counts corroboration
+#     before canonicalising reports three supporting sources where there are
+#     two — the failure that looks like strong evidence and is not.
+version: 1
+name: fusion-overlap
+description: >-
+  One canonical source returned by every provider, plus a URL variant of it and
+  a genuinely independent source asserting the same claim.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    author: A. Author
+    published_at: 2026-05-20T00:00:00Z
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+    favicon: https://example.test/favicon.ico
+    claims:
+      - id: claim-1
+        text: A normalised claim represented by this source.
+
+  # The same document reached through a newsletter link. Canonicalising the URL
+  # collapses it onto source-a; not canonicalising it does not.
+  - id: source-a-variant
+    url: https://example.test/report-a?utm_source=newsletter&utm_medium=email#summary
+    title: Report A
+    author: A. Author
+    published_at: 2026-05-20T00:00:00Z
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+    claims:
+      - id: claim-1
+        text: A normalised claim represented by this source.
+
+  # A genuinely different document asserting the same claim: this one is real
+  # corroboration, and the only real corroboration in the file.
+  - id: source-b
+    url: https://example.test/report-b
+    title: Report B
+    author: B. Author
+    published_at: 2026-05-21T00:00:00Z
+    text: Full source text of Report B.
+    snippets:
+      - A relevant excerpt from Report B.
+    claims:
+      - id: claim-1
+        text: A normalised claim represented by this source.
+      - id: claim-2
+        text: A second claim, asserted by Report B alone.
+
+providers:
+
+  exa:
+    results:
+      - source: source-a
+        highlights:
+          - A relevant excerpt from Report A.
+      - source: source-b
+    cost_dollars:
+      total: 0.005
+    answer:
+      answer: Report A and Report B agree on the finding.
+      citations:
+        - source-a
+        - source-a-variant
+        - source-b
+
+  tavily:
+    answer: A short synthesis of Report A and Report B.
+    response_time: 1.15
+    results:
+      # The variant arrives first, so a consumer that keeps the first URL it saw
+      # rather than the canonical one is visibly wrong downstream.
+      - source: source-a-variant
+        score: 0.99
+        raw_content: null
+      - source: source-a
+        score: 0.98
+      - source: source-b
+        score: 0.71
+
+  perplexity:
+    answer: A grounded answer citing Report A and Report B.
+    finish_reason: stop
+    citations:
+      - source-a
+      - source-b
+    search_results:
+      - source-a
+      - source: source-b
+        snippet: An overridden snippet for Report B.
+    usage:
+      prompt_tokens: 32
+      completion_tokens: 128
+      total_tokens: 160
+      search_context_size: medium
+      cost:
+        input_tokens_cost: 0.0002
+        output_tokens_cost: 0.0006
+        total_cost: 0.0008
+
+  perplexity_agent:
+    answer: Report A states the finding, and Report B corroborates it.
+    queries:
+      - report a
+      - report b
+    search_results:
+      - source-a-variant
+      - source-b
+    annotations:
+      - source: source-a-variant
+        start_index: 0
+        end_index: 8
+    usage:
+      input_tokens: 32
+      output_tokens: 128
+      cost:
+        input_cost: 0.0002
+        output_cost: 0.0006

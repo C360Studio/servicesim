@@ -1,0 +1,179 @@
+version: "3"
+
+# Servicesim is small enough that a single Taskfile stays readable; the
+# sibling repos' taskfiles/ include tree exists to tame a dozen namespaces and
+# would be overhead here. The repository layout in
+# docs/architecture-and-implementation-plan.md specifies a root Taskfile.yml.
+
+vars:
+  BINARY: servicesim
+  IMAGE: servicesim
+  TAG: dev
+  # Injected into the binary so `--version` and the container label agree.
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  COMMIT_SHA:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # --------------------------------------------------------------------------
+  # Build
+  # --------------------------------------------------------------------------
+
+  build:
+    desc: Build the servicesim binary into bin/
+    cmds:
+      - mkdir -p bin
+      - >-
+        CGO_ENABLED=0 go build
+        -ldflags="-w -s -X main.Version={{.VERSION}} -X main.GitCommit={{.COMMIT_SHA}}"
+        -o bin/{{.BINARY}} ./cmd/{{.BINARY}}
+
+  run:
+    desc: Run servicesim locally with the built-in happy-path scenario
+    deps: [build]
+    cmds:
+      - ./bin/{{.BINARY}} --scenario scenarios/protocol/happy.yaml
+
+  # --------------------------------------------------------------------------
+  # Test
+  # --------------------------------------------------------------------------
+
+  test:
+    desc: Run unit tests with the race detector
+    cmds:
+      - go test -race -count=1 ./...
+
+  test:verbose:
+    desc: Run unit tests with the race detector, verbose
+    cmds:
+      - go test -race -count=1 -v ./...
+
+  test:cover:
+    desc: Run tests with coverage and print the per-function summary
+    cmds:
+      - go test -coverprofile=coverage.out -covermode=atomic ./...
+      - go tool cover -func=coverage.out | tail -20
+
+  test:cover:html:
+    desc: Open the HTML coverage report
+    deps: [test:cover]
+    cmds:
+      - go tool cover -html=coverage.out
+
+  # --------------------------------------------------------------------------
+  # Lint
+  # --------------------------------------------------------------------------
+
+  lint:
+    desc: Run all checks CI runs (vet, fmt, revive, guards)
+    cmds:
+      - task: lint:vet
+      - task: lint:fmt
+      - task: lint:revive
+      - task: lint:hosts
+      - task: lint:docs
+
+  lint:vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  lint:fmt:
+    desc: Fail if any file needs gofmt
+    cmds:
+      - |
+        out=$(gofmt -l .)
+        if [ -n "$out" ]; then echo "needs gofmt:"; echo "$out"; exit 1; fi
+        echo "gofmt clean"
+
+  fmt:
+    desc: Format all Go files in place
+    cmds:
+      - gofmt -w .
+
+  lint:revive:
+    desc: Run revive at the version pinned by go.mod's tool directive
+    cmds:
+      - go tool revive -config revive.toml -formatter friendly ./...
+
+  lint:hosts:
+    desc: Guard against real provider hostnames in scenarios and fixtures
+    cmds:
+      - bash scripts/lint-no-live-hosts.sh
+
+  lint:docs:
+    desc: Guard that every flag, scenario, route and symbol named in the docs exists
+    cmds:
+      - bash scripts/check-docs.sh
+
+  lint:md:
+    desc: Lint markdown (requires markdownlint-cli2)
+    cmds:
+      - npx --yes markdownlint-cli2 "**/*.md" "#node_modules"
+
+  # --------------------------------------------------------------------------
+  # Container
+  # --------------------------------------------------------------------------
+
+  image:build:
+    desc: Build the container image for the local platform
+    cmds:
+      - >-
+        docker build
+        --build-arg VERSION={{.VERSION}}
+        --build-arg COMMIT_SHA={{.COMMIT_SHA}}
+        -t {{.IMAGE}}:{{.TAG}} .
+
+  image:smoke:
+    desc: Build the image and assert non-root, healthy, and all listeners answer
+    deps: [image:build]
+    cmds:
+      - bash scripts/image-smoke.sh {{.IMAGE}}:{{.TAG}}
+
+  image:multiarch:
+    desc: Verify the image builds for both published platforms (no push)
+    cmds:
+      - >-
+        docker buildx build --platform linux/amd64,linux/arm64
+        --build-arg VERSION={{.VERSION}}
+        --build-arg COMMIT_SHA={{.COMMIT_SHA}}
+        -t {{.IMAGE}}:{{.TAG}} .
+
+  compose:up:
+    desc: Start the example compose stack
+    cmds:
+      - docker compose -f docker-compose.example.yml up -d
+
+  compose:down:
+    desc: Stop the example compose stack
+    cmds:
+      - docker compose -f docker-compose.example.yml down -v
+
+  # --------------------------------------------------------------------------
+  # Composite
+  # --------------------------------------------------------------------------
+
+  check:
+    desc: Everything CI gates on — lint, race tests, build, image smoke test
+    cmds:
+      - task: lint
+      - task: test
+      - task: build
+      - task: image:smoke
+
+  tidy:
+    desc: Tidy go.mod and verify it is unchanged afterwards
+    cmds:
+      - go mod tidy
+      - go mod verify
+
+  clean:
+    desc: Remove build and coverage artifacts
+    cmds:
+      - rm -rf bin coverage.out coverage.html

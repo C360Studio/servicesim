@@ -1,0 +1,5 @@
+{
+  "detail": {
+    "error": "This request exceeds the pay-as-you-go limit. You can increase your limit on the Tavily dashboard."
+  }
+}

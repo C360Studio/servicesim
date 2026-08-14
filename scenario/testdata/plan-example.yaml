@@ -1,0 +1,35 @@
+# Verbatim from docs/architecture-and-implementation-plan.md, "Scenario model".
+# This file exists to prove the plan's original single-shot YAML still loads
+# unchanged under the open provider registry and the turn model.
+version: 1
+name: fusion-overlap
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    author: Example Author
+    published_at: 2026-05-20T00:00:00Z
+    text: Full source text.
+    snippets:
+      - A relevant excerpt.
+    claims:
+      - id: claim-1
+        text: A normalized claim represented by this source.
+
+providers:
+  exa:
+    results:
+      - source: source-a
+        score: 0.95
+  tavily:
+    answer: A short synthesis.
+    results:
+      - source: source-a
+        score: 0.98
+  perplexity:
+    answer: A grounded answer citing Report A.
+    citations:
+      - source-a
+    search_results:
+      - source-a

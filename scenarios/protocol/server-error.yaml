@@ -1,0 +1,72 @@
+# A permanent 500 on every surface.
+#
+# `after: repeat_last` is the point: the failure never heals, so a consumer that
+# retries forever hangs its own test rather than accidentally passing on the
+# second attempt. A 500 must be surfaced as an upstream failure, never mistaken
+# for an empty result set.
+version: 1
+name: server-error
+description: >-
+  Every surface answers 500 in its own error envelope, permanently.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    text: Full source text of Report A.
+
+providers:
+
+  exa:
+    fault:
+      after: repeat_last
+      attempts:
+        - status: 500
+          error: Internal server error.
+          tag: INTERNAL
+    results:
+      - source: source-a
+    answer:
+      fault:
+        after: repeat_last
+        attempts:
+          - status: 500
+            error: Internal server error.
+            tag: INTERNAL
+      answer: Report A states the finding.
+      citations:
+        - source-a
+
+  tavily:
+    fault:
+      after: repeat_last
+      attempts:
+        - status: 500
+          error: Internal server error.
+    answer: A short synthesis of Report A.
+    results:
+      - source: source-a
+        score: 0.98
+
+  perplexity:
+    fault:
+      after: repeat_last
+      attempts:
+        - status: 500
+          error: Internal server error.
+    answer: A grounded answer citing Report A.
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    fault:
+      after: repeat_last
+      attempts:
+        - status: 500
+          error: Internal server error.
+    answer: Report A states the finding.
+    search_results:
+      - source-a

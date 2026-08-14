@@ -1,0 +1,81 @@
+# A provider this build has no handler for, declared alongside four it does.
+#
+# Loading and validating this file MUST succeed. The `openai` block yields a
+# warning naming the unimplemented provider and is otherwise ignored, while the
+# implemented providers serve normally. That policy exists for one concrete
+# reason: a scenario file shared across repositories must not break the moment
+# one consumer pins an older Servicesim that has not learned the new provider
+# yet. One team's upgrade breaking another team's suite costs far more than
+# ignoring a block nobody can serve.
+#
+# The block is written in the multi-turn form on purpose. It is what an LLM
+# script looks like, so this file also documents the shape a future provider
+# would arrive in — no schema change required.
+version: 1
+name: unknown-provider
+description: >-
+  Four implemented providers plus an unimplemented one, proving that an
+  unrecognised provider name is a warning and never a load failure.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    author: A. Author
+    published_at: 2026-05-20T00:00:00Z
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+providers:
+
+  exa:
+    results:
+      - source: source-a
+    cost_dollars:
+      total: 0.005
+    answer:
+      answer: Report A states the finding.
+      citations:
+        - source-a
+
+  tavily:
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+
+  perplexity:
+    answer: A grounded answer citing Report A.
+    finish_reason: stop
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    answer: Report A states the finding.
+    search_results:
+      - source-a
+
+  # No handler in this build. The body is never decoded — the scenario package
+  # leaves every projection undecoded, and no provider package claims this name.
+  openai:
+    turns:
+      - when:
+          call_index: 0
+        respond:
+          tool_calls:
+            - name: search
+              arguments:
+                query: report a
+      - when:
+          body_contains: report-a
+        respond:
+          content: Report A states the finding.
+          citations:
+            - source-a
+      - respond:
+          content: I don't know.

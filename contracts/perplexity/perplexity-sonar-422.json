@@ -1,0 +1,22 @@
+{
+  "detail": [
+    {
+      "loc": [
+        "body",
+        "model"
+      ],
+      "msg": "Field required",
+      "type": "missing"
+    },
+    {
+      "loc": [
+        "body",
+        "messages",
+        0,
+        "role"
+      ],
+      "msg": "Input should be 'system', 'user' or 'assistant'",
+      "type": "enum"
+    }
+  ]
+}

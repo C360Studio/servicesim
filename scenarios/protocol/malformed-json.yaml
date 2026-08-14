@@ -1,0 +1,76 @@
+# A 200 whose body is not valid JSON.
+#
+# The bytes are a truncated object rather than random noise: a decoder that
+# reads the prefix optimistically and returns zero values on the error is the
+# failure this scenario is looking for, and a body that fails at the first byte
+# would not find it. `after: repeat_last` keeps every retry malformed too.
+version: 1
+name: malformed-json
+description: >-
+  Every surface answers 200 with a body that is not valid JSON, so a consumer
+  fails cleanly instead of panicking or silently returning zero values.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    text: Full source text of Report A.
+
+providers:
+
+  exa:
+    fault:
+      after: repeat_last
+      attempts:
+        - kind: invalid_json
+          status: 200
+          raw_body: '{"requestId":"00000000000000000000000000000000","results":[{"title":"Report A",'
+    results:
+      - source: source-a
+    answer:
+      fault:
+        after: repeat_last
+        attempts:
+          - kind: invalid_json
+            status: 200
+            raw_body: '{"answer":"Report A states the finding","citations":['
+      answer: Report A states the finding.
+      citations:
+        - source-a
+
+  tavily:
+    fault:
+      after: repeat_last
+      attempts:
+        - kind: invalid_json
+          status: 200
+          raw_body: '{"query":"report a","results":[{"title":"Report A",'
+    answer: A short synthesis of Report A.
+    results:
+      - source: source-a
+        score: 0.98
+
+  perplexity:
+    fault:
+      after: repeat_last
+      attempts:
+        - kind: invalid_json
+          status: 200
+          raw_body: '{"id":"cmpl-0","choices":[{"index":0,"message":{'
+    answer: A grounded answer citing Report A.
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    fault:
+      after: repeat_last
+      attempts:
+        - kind: invalid_json
+          status: 200
+          raw_body: '{"id":"resp_0","object":"response","output":[{"type":"message",'
+    answer: Report A states the finding.
+    search_results:
+      - source-a
