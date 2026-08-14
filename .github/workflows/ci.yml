@@ -77,6 +77,17 @@ jobs:
           rm -f go.mod.bak go.sum.bak
           echo "OK: go.mod and go.sum are tidy"
 
+      - name: Guard — documented names exist
+        # This repository carries more documentation than code, and docs drift
+        # silently: a flag that was renamed, a scenario that was deleted, a
+        # testkit helper that never existed. The guard checks every --flag,
+        # builtin:<name>, route and testkit symbol named in the docs against the
+        # real binary, scenarios directory and go doc output.
+        #
+        # It proves names, not sentences. Behaviour and defaults are still on
+        # the reviewer.
+        run: bash scripts/check-docs.sh
+
       - name: Lint markdown
         # Documentation is a first-class artifact here: consuming repositories
         # read contracts/ and docs/ to decide what to trust, so it is gated
