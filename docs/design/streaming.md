@@ -1124,7 +1124,7 @@ All are load-time unless marked, so a bad streaming fixture fails at readiness r
 | `stream.abort_unreachable` | error (per request) | the same, caught at request time for a hand-built entry that skipped validation |
 | `perplexity.stream.done_ignored` | warning | `terminal.omit_done` declared on the typed grammar, which has no sentinel |
 
-#### `stream_mismatch` keys on the entry's effective policy, never on key presence
+### `stream_mismatch` keys on the effective policy, not key presence
 
 This is the correction that matters most for compatibility, and an earlier draft got it wrong in a way that would
 have surfaced in consumer repositories on upgrade day.
@@ -1208,7 +1208,7 @@ The minimum is the only bound that is correct for every turn the plan can reach.
 `after_chunk` that would have been fine for the turn actually answering — and that is the right direction, because
 the alternative is a scenario whose meaning depends on which turn a fault happens to land on.
 
-#### Why an entry-level policy makes `stream_mismatch` sufficient
+### Why an entry-level policy makes `stream_mismatch` sufficient
 
 With the policy per entry, a `stream_*` fault can no longer land on a non-streaming turn: either the entry's policy
 is `stream` and every turn streams, or it is not and none do. The per-route plan and the per-entry policy are

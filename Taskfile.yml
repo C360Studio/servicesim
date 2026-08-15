@@ -71,13 +71,20 @@ tasks:
   # --------------------------------------------------------------------------
 
   lint:
-    desc: Run all checks CI runs (vet, fmt, revive, guards)
+    desc: Run all checks CI runs (vet, fmt, revive, guards, markdown)
+    # lint:md is here because CI runs it and this task claims to be what
+    # CI runs. It was missing, so `task check` passed on a tree CI then failed —
+    # which is the one thing a pre-push gate must never do. It needs npx, and it
+    # is deliberately NOT made conditional on npx being present: a gate that
+    # silently skips a check is worse than one that fails loudly, because the
+    # skip is invisible exactly when it matters.
     cmds:
       - task: lint:vet
       - task: lint:fmt
       - task: lint:revive
       - task: lint:hosts
       - task: lint:docs
+      - task: lint:md
 
   lint:vet:
     desc: Run go vet

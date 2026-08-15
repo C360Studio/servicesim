@@ -143,7 +143,7 @@ adopter's ability to author scenario YAML in Tier-1 that survives the rest of th
   aliases Phase 0 added — months of that being invisible ended the first time the check ran. Both directions were
   verified to fail on a deliberately broken table before being trusted.
 
-### Phase 2 — Revise the two design documents against the challenge findings — ROUND 2 IN PROGRESS
+### Phase 2 — Revise the two design documents — ROUND 2 IN PROGRESS
 
 > **Round 1 did not pass its re-review.** Tally: 4 answered, 3 partly answered, 2 restated, 3 newly broken. The
 > open findings live at the top of each document; do not re-derive them from here.

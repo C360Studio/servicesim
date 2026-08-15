@@ -1096,7 +1096,7 @@ Fixing the accessor rather than one caller is strictly cheaper and strictly safe
 handlers (`provider/exa/handler.go:116,147`, `provider/tavily/handler.go:179`). Patching only `entryTurnKey` would
 leave **three** ways to resolve an entry and fix one of them.
 
-#### This is a behaviour change for `perplexity_agent`, and it is not optional to say so
+#### A behaviour change for `perplexity_agent`, stated rather than implied
 
 An earlier draft claimed "behaviour for shipped code is identical" and then, in the next sentence, applied
 `Route.Entry` to `perplexity_agent`. Both cannot be true. **`perplexity_agent` is shipped**
@@ -1352,7 +1352,7 @@ That converts the one reachable symptom into its own diagnosis at the moment it 
 [§8](#8-multi-replica-the-consequence-stated-explicitly)'s `job.foreign_id` does for the multi-replica case. No race
 test is required for a race that is out of contract; the sequential reset test asserts the slots come back.
 
-#### `testkit.Sim.Reset()` must drop jobs, and the out-of-contract argument does not reach it
+#### `testkit.Sim.Reset()` must drop jobs too
 
 The argument above covers the *concurrent* window. There is a **sequential** path to the same collision that is
 squarely in contract, and it is the one most consumers will actually take.
