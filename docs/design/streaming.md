@@ -1,16 +1,26 @@
 # SSE streaming
 
-> ## ⚠ DRAFT — DO NOT IMPLEMENT FROM THIS YET
+> ## REVISED — pending re-review
 >
-> An adversarial review returned **needs-revision** on 2026-08-15 with one blocker and one major:
+> An adversarial review returned **needs-revision** on 2026-08-15 with one blocker and one major. Both were answered
+> in Phase 2 of the adopter plan:
 >
-> - **Blocker:** §9 raises `scenario.fault.stream_mismatch` on the *presence* of a `stream:` key, which would fire
->   against Exa's already-shipped projection. The check must key on the effective policy, not on key presence.
-> - Stream suppression is decided inside `execute` against its own copy of the response, so `Handle` journals an
->   entry advertising a stream that never happens.
+> - ~~**Blocker:** §9 raises `scenario.fault.stream_mismatch` on the *presence* of a `stream:` key, which would fire
+>   against Exa's already-shipped projection.~~ **Answered.** Both directions now key on the **effective policy**:
+>   `warn` and `reject` declare a policy and produce no stream, so `truncate_body` stays valid with them. §9 carries
+>   the shipped-fixture case that would have broken, and requires it as a regression fixture. §4.4 was restating the
+>   presence rule and is corrected too.
+> - ~~Stream suppression is decided inside `execute` against its own copy of the response.~~ **Answered.**
+>   Suppression is now decided once, where `Handle` builds the entry and before the append; a suppressed stream
+>   journals `Outcome.Stream = nil` rather than a fully-specified stream that never happens. See §4.4.
 >
-> Revising this is Phase 2 of the adopter plan and gates implementation. Until then treat it as a considered
-> starting point, not a specification.
+> Also revised in the same pass: §8's reason 1 argued from a strict-equality version gate that **Phase 1 has since
+> widened to a range**, so that reason is now weaker and says so; and §9 records that
+> `perplexity.agent.stream.unsupported` is misnamed against every other `perplexity.stream.*` code.
+>
+> **Still a design, not an instruction to start.** The plan's own verification step for Phase 2 is to re-run the
+> adversarial review against the revised text and confirm the findings are *answered* rather than *restated*. That
+> has not been done yet. Implementation is Phase 5 and is gated on it.
 
 An addendum to [`package-design.md`](package-design.md) and
 [`extended-surfaces.md`](extended-surfaces.md). Where the three disagree, this file is newest and wins for streaming
@@ -599,10 +609,39 @@ served by today's code path against `Response.Body` and `Response.FaultBody`.
 (`provider/fault_exec.go:186–190`), so `text/event-stream` would otherwise leak onto a JSON error body — a fidelity
 bug that would teach a consumer to parse the wrong thing.
 
-`truncate_body` is the one non-streaming kind that is **rejected at load** on a streaming turn
-(`scenario.fault.stream_mismatch`), naming `stream_truncate_chunk` as the streaming spelling. Silently reinterpreting
-it would be the wrong kind of helpful. The mirror check applies too: a `stream_*` kind on a turn that declares no
-`stream:` block is a load-time error.
+`truncate_body` is the one non-streaming kind that is **rejected at load** on a turn whose effective policy is
+`stream` (`scenario.fault.stream_mismatch`), naming `stream_truncate_chunk` as the streaming spelling. Silently
+reinterpreting it would be the wrong kind of helpful. The mirror check applies too: a `stream_*` kind on a turn whose
+effective policy is *not* `stream` is a load-time error.
+
+Both checks key on the **effective policy**, never on the presence of a `stream:` key — `warn` and `reject` declare a
+policy and produce no stream, so `truncate_body` remains valid with them. See
+[§9](#9-validation-findings-this-adds) for why that distinction is load-bearing and for the fixture that guards it.
+
+#### Suppression is decided once, before the entry is journaled
+
+An earlier draft decided suppression inside `execute`, against `execute`'s own copy of the response. That is too
+late, and it produces a journal that lies.
+
+[§5](#5-the-journal) appends the entry **before the first byte**, carrying every planned field — chunk count, bytes,
+pace, event names, usage, cost. If suppression is decided after that, a scripted `status: 429` on a streaming turn
+journals a fully-specified stream that is never written, and then stamps a state (`client_gone`) implying the client
+caused it. A consumer reading `outcome.stream.usage` for spend attribution would read the cost of a response that
+never existed.
+
+The rule, matching how this repository already treats the lane and the fault claim: **one decision, made once, at the
+point the outcome is computed.**
+
+- `suppressesStream(kind)` is evaluated where `Handle` builds the entry, immediately after the attempt is claimed
+  and before the append — the fault decision is already known there.
+- When it is true, `Outcome.Stream` is **nil** and the entry is an ordinary non-streaming one. There is no partial
+  stream outcome, no `open` state to reconcile, and nothing for the close to amend.
+- `execute` does not re-derive it. It reads the decision that was already made, exactly as a handler reads
+  `x.Lane()` rather than recomputing it. Two derivations are two chances to disagree, and here the disagreement is
+  invisible until someone audits a cost report.
+
+`Response.Stream` being non-nil therefore means "this exchange **will** stream", not "this turn declares a stream".
+The suppressed case never reaches the streaming path at all.
 
 ---
 
@@ -872,11 +911,16 @@ Two consequences worth stating because they are the places a shared mechanism co
 **Additive to version 1. Not version 2.** `extended-surfaces.md` proposed the bump; that proposal is withdrawn here,
 for four reasons, the second of which is decisive.
 
-**1. A bump breaks every existing fixture, in every consuming repository, on upgrade day.** The gate is strict
-equality (`scenario/load.go:70`): a `version: 1` file loaded by a `version: 2` build fails with "scenario declares
-version 1, but this build of Servicesim understands only version 2". `extended-surfaces.md`'s own argument for landing
-the turn model early — that a schema break "is an N-repository event, not a one-repository event", and that the
-migration cost lands as YAML someone else has to rewrite — applies against the bump it proposed. N is no longer zero.
+**1. A bump used to break every existing fixture in every consuming repository — that specific harm is now fixed, and
+this reason is correspondingly weaker.** When this section was written the gate was strict equality, so a `version: 1`
+file loaded by a `version: 2` build failed outright. **Phase 1 of the adopter plan widened it to a range**
+(`1 <= v <= SchemaVersion`), so a v1 file now loads on a v2 build and a bump no longer strands anybody's fixtures.
+
+The honest consequence: this reason no longer *forbids* a bump, it only makes one unnecessary. `extended-surfaces.md`'s
+argument for landing the turn model early — that a schema break "is an N-repository event, not a one-repository
+event" — still applies to any change that reinterprets a key, because widening the gate fixes *loading*, not
+*meaning*. A v1 file that loads on a v2 build and then means something different is a worse failure than one that
+refuses to load, and no version gate can catch it. Reason 2 below is the decisive one and is untouched by this.
 
 **2. The premise is obsolete.** The note says streaming "means adding an event-sequence projection, and that is a
 scenario-schema version bump". That was written when `Providers` was a closed struct in `scenario` and every
@@ -906,8 +950,12 @@ express "streaming yes, MCP not yet".
 
 **What would earn version 2**, recorded so the next author has a test rather than a precedent: a change that
 *reinterprets* an existing envelope key — repurposing `when`, changing `turn_key`'s default lane, altering what
-`fault.after: success` means. Streaming makes none of those. When that day comes, the gate should widen to accept a
-range in the same change, so a v2 build can still load v1 files and the break is one-directional.
+`fault.after: success` means. Streaming makes none of those.
+
+The prerequisite that used to accompany this test — "when that day comes, widen the gate to a range in the same
+change" — **shipped in Phase 1 and is no longer a condition on anyone**. A v2 build already loads v1 files. What
+remains is the harder half: a reinterpreting change must still be announced some other way, because a file that
+loads and then means something different cannot be caught by a version gate at all.
 
 ---
 
@@ -921,16 +969,77 @@ All are load-time unless marked, so a bad streaming fixture fails at readiness r
 | `scenario.stream.deltas_empty` | error | policy is `stream` and `deltas` is empty |
 | `scenario.stream.answer_mismatch` | warning | concatenated `deltas` do not equal the projection's `answer` |
 | `scenario.fault.after_chunk.not_streaming` | error | `after_chunk` set on a kind that is not `stream_*` |
-| `scenario.fault.stream_mismatch` | error | a `stream_*` kind on a turn with no `stream:` block, or `truncate_body` on one that has |
+| `scenario.fault.stream_mismatch` | error | a `stream_*` kind on a turn whose **effective policy is not `stream`**, or `truncate_body` on one whose **effective policy is `stream`** |
 | `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` exceeds the chunk count the provider's grammar will produce |
 | `stream.abort_unreachable` | error (per request) | the same, caught at request time for a hand-built entry that skipped validation |
 | `perplexity.stream.done_ignored` | warning | `terminal.omit_done` declared on the typed grammar, which has no sentinel |
+
+#### `stream_mismatch` keys on the effective policy, never on key presence
+
+This is the correction that matters most for compatibility, and an earlier draft got it wrong in a way that would
+have surfaced in consumer repositories on upgrade day.
+
+That draft raised the error on the **presence** of a `stream:` key. But `stream:` is not a new key — Exa's shipped
+projection already carries it on every turn that uses it (`provider/exa/render.go:49`), and so does Perplexity's
+(`provider/perplexity/render.go:58`). Under presence-keying, this **already-valid v1 fixture** stops loading:
+
+```yaml
+providers:
+  exa:
+    stream: warn                 # shipped since v0.1.0 — journal a warning, serve ordinary JSON
+    fault:
+      attempts:
+        - kind: truncate_body    # perfectly valid: the body IS ordinary JSON
+          bytes: 40
+```
+
+Nothing about that scenario streams. `warn` and `reject` both produce an ordinary JSON body — that is their entire
+definition — so truncating its bytes is exactly as meaningful as it was before this design existed. Rejecting it
+would break §8's central promise that nothing existing changes meaning, in every adopting repository at once, for a
+fixture whose author did nothing wrong.
+
+**The distinction is declared-policy versus produced-outcome:**
+
+| Effective policy | Produces | `stream_*` kinds | `truncate_body` |
+|---|---|---|---|
+| absent (default `warn`) | JSON body | error — nothing to cut | **valid** |
+| `warn` | JSON body | error — nothing to cut | **valid** |
+| `reject` | provider-shaped 4xx | error — nothing to cut | **valid** |
+| `stream` | SSE transcript | **valid** | error — see below |
+
+`truncate_body` is rejected only under `stream`, and for a real reason rather than tidiness: `provider/fault_exec.go`
+sets the full `Content-Length` before writing the prefix, which is correct for JSON and invalid for SSE, and a
+byte-offset cut lands mid-frame and produces a half-written `data:` line. That tests the consumer's *parser* rather
+than their *reconnect* logic. The SSE-aware equivalent is `stream_truncate` with `after_chunk`, which counts frames.
+
+**Required regression fixture.** The scenario above ships as a loadable test case, asserting it still loads with no
+findings. The compatibility claim in §8 is otherwise only an intention, and the failure it guards against is
+invisible in this repository — it appears in someone else's test suite, after they upgrade.
 
 `scenario.stream.policy.unknown` **replaces** the per-provider codes this build already raises for the scalar form —
 `perplexity.stream.policy.unknown` (`provider/perplexity/handler.go`) and Exa's `exa.stream.policy.unknown`
 (`provider/exa/render.go`). Once `StreamScript` lives in `scenario` and owns the enum, one envelope-level code is
 the right home; until then the per-provider codes are the shipped behaviour, and a scenario asserting on them keeps
 working. Retiring them is part of landing this design, not a separate cleanup.
+
+**One provider code is misnamed and should be corrected in the same pass.** Every Perplexity stream finding is
+`perplexity.stream.*` except one:
+
+| Shipped code | Where | Should be |
+|---|---|---|
+| `perplexity.stream.unimplemented` | `provider/perplexity/request.go:74` | unchanged |
+| `perplexity.stream.policy.unknown` | `provider/perplexity/handler.go:295` | unchanged |
+| `perplexity.stream.policy.ignored` | `provider/perplexity/handler.go:301` | unchanged |
+| `perplexity.agent.stream.unsupported` | `provider/perplexity/agent.go:31` | `perplexity.stream.agent_unsupported` |
+
+The odd one splits on the surface (`agent`) before the subject (`stream`), so a consumer filtering its journal for
+`perplexity.stream.` misses exactly the finding that says their Agent request could not stream. Exa's
+`exa.stream.policy.unknown` is the pattern to mirror: subject first, qualifier after.
+
+This is a **breaking change to a finding code** and must land with the rest of this design rather than on its own —
+a consumer asserting on the old spelling gets no deprecation window from a rename, and there is no reason to spend
+two of those on one surface. It is worth doing at all only because every streaming code is being revisited here
+anyway; renaming it in isolation would be churn.
 
 `scenario.fault.after_chunk.out_of_range` is a load-time check because the chunk count is computable there: the
 grammar is fixed by the provider entry and the frame count is `1 + len(deltas) + 1 + terminal frames`. The provider

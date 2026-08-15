@@ -4,7 +4,10 @@ The first adopter reviewed Servicesim against their target architecture and retu
 their own client code. This document is the durable record of that backlog, the evidence-based status of each item,
 the phased plan, and the decisions already taken. It exists so the work can be picked up cold.
 
-Recorded 2026-08-15, against **v0.1.1**. Phases 0 and 1 are shipped; everything from Phase 2 on is open.
+Recorded 2026-08-15, against **v0.1.1**. Phases 0, 1 and 2 are done; everything from Phase 3 on is open.
+
+Phase 2 was document work: both design documents now answer their review findings and are marked
+**REVISED — pending re-review**. The re-review is the gate on Phase 3 and Phase 5 starting.
 
 ## Decisions already taken
 
@@ -136,7 +139,23 @@ adopter's ability to author scenario YAML in Tier-1 that survives the rest of th
   aliases Phase 0 added — months of that being invisible ended the first time the check ran. Both directions were
   verified to fail on a deliberately broken table before being trusted.
 
-### Phase 2 — Revise the two design documents against the challenge findings
+### Phase 2 — Revise the two design documents against the challenge findings — DONE, pending re-review
+
+> All ten items answered. Both documents now read **REVISED — pending re-review** instead of
+> **DRAFT — DO NOT IMPLEMENT**. Three findings from this pass are worth carrying forward:
+>
+> - **`turn_key` resolving against the listener's primary entry is a live bug on shipped code**, not an async-only
+>   one — `perplexity_agent`'s `turn_key:` is ignored today. Fixed by `Route.Entry`, which also fixes the
+>   `Exchange.policy()` asymmetry §12 recorded. Both land in Phase 3's A2.
+> - **Two design decisions were reversed on evidence**, and each reversal is recorded with its reason: `HEAD` on a
+>   poll route answers 405 rather than being advertised in `Allow` (a poll is a cursor advance, not a stateless
+>   read), and the job bound refuses rather than evicting (an evicted job record costs correctness, where an
+>   evicted journal entry costs only observability).
+> - **`diagnoseForeignID` was unbuildable for two independent reasons** — the `Faults` seam offers only a claiming
+>   `Next()`, and a poll cannot reconstruct the create lane. Replaced with a shape check needing neither.
+>
+> Phase 1 also made two statements in `streaming.md` §8 stale, since its argument rested on the strict-equality
+> version gate; §8 now records that the gate was widened and that its reason 1 is correspondingly weaker.
 
 docs/design/async-jobs.md and docs/design/streaming.md are both untracked, both came back needs-revision, and both are
 the specifications Phases 3 and 5 will be implemented from. Two blockers are internal contradictions where the
