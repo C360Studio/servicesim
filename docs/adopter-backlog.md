@@ -6,34 +6,56 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-15, against **v0.1.1** plus unreleased work on `main`.
+Recorded 2026-08-15 (evening), against **v0.1.1** plus unreleased work on `main`.
 
 | Phase | State |
 |---|---|
 | 0 — stop rejecting valid traffic | **shipped** in v0.1.1 |
 | 1 — schema-envelope changes | **shipped**, unreleased |
 | 2 — revise the two design documents | **round 3**, conceptual findings answered; Go blocks demoted to illustrative |
-| 3 — the async job machine | **A1–A4 done**, unreleased. **A5, A6, A7 open — this is where to start** |
-| 4 onward | open |
+| 3 — the async job machine | **A1–A7 done**, unreleased. Phase 3 is complete. |
+| 4 onward | open — **the release decision comes first; then Phase 4's contract verification, or Phase 5** |
 
-`main` is green and pushed: 20 Go packages under `-race`, `task check` clean (lint now includes markdownlint,
-which it did not before today). Nothing since v0.1.1 has been released or tagged.
+`main` is green: `task check` clean on every commit, 20 Go packages under `-race`, image smoke creates a job on
+both async listeners. **Nothing since v0.1.1 has been released or tagged**, and that is now the decision to take
+before more code: Phase 1 + Phase 3 is a substantial body of work sitting unversioned, and it carries one Go API
+break (`provider.SelectTurn` gained a `route` parameter) and one behaviour change to the shipped `perplexity_agent`
+surface (`Route.Entry` — its own `turn_key` is honoured now, where before it silently inherited the primary
+entry's). A drafted v0.2.0 tag message exists in the session that closed Phase 3; the release procedure is
+CONTRIBUTING.md's — publish the image, confirm the tag resolves, THEN update the version pins.
 
 ### Start here
 
-**A5** is next in order and carries one known defect: **`POST /__admin/reset` does not drop job records.**
-`testkit.Sim.Reset()` does; the admin endpoint does not, so a reset through the API rewinds the fault cursors while
-leaving records live, and the next create re-mints a live identifier and 500s with `job.id_collision`. No adopter can
-reach it today — the async surfaces are unreleased — which is why it was left in phase order rather than hot-fixed.
-Fix it first in A5, and note §7.3 of the async design: every surface that resets fault counters must reset jobs in
-the same call, and the capability checks all run before anything is dropped.
+1. **Decide the release.** Recommended: tag **v0.2.0** from `main` as it stands. Everything Phase 3 needed is in,
+   including the units that were still open this morning (A5–A7) and four fixes review turned up on the way
+   (below). Holding it back buys nothing: the adopter is not yet on any of this, and the alternative — releasing
+   the async surface later with more unreleased change stacked on it — only makes the release note longer.
+2. **Then Phase 4 or Phase 5.** Phase 4's prerequisite is contract verification of Exa `/contents`, `/findSimilar`
+   and Tavily `/extract` (decision D7 — re-verify against vendor docs first), which is a reading task with no code
+   dependency. Phase 5 (SSE) is the adopter's MUST-HAVE and its blocker is Phase 2's `streaming.md` revision, which
+   is at round 3 like `async-jobs.md`; the lesson of Phase 3 — build A2 and let the compiler answer what prose could
+   not — applies directly, so the recommendation is to start Phase 5 with its "Response can express a stream"
+   provider-core unit rather than a fourth prose round.
 
-Then **A6** (testkit `Job`/`Jobs` aliases, `Sim.Jobs()`, a poll-sequence assertion, the `examples/adapter` alias
-guard) and **A7** (built-in `async-job.yaml`, the `docs/scenario-schema.md` async section, the multi-replica text in
-README and troubleshooting).
+### What closed today, beyond A5–A7
 
-**`docs/scenario-schema.md` is currently incomplete rather than wrong**: `create.fault` and the async entry shapes
-are live in the loader and documented nowhere. That is A7's job and it is the largest remaining doc debt.
+Four things review found while building the planned units, each committed separately with the reasoning in the
+commit body:
+
+- **A credential could reach the journal, admin API and log through a `turn_key` extractor** —
+  `header:authorization` or `body_json:api_key` composed its raw value into the lane key, which is
+  `outcome.fault_key`, and `journal.Redact` never touched it. Present since v0.1.0. Credential-named or
+  credential-shaped extractor values are now fingerprinted at composition, so "route by which key was presented"
+  still works and the raw value never reaches a retained structure; `testkit.AssertNoCredentialLeak` scans
+  `outcome.fault_key` too.
+- **`job.foreign_id` was specified (async design §8) and never built** — and `runNotFound`'s comment claimed it
+  was. Built at the seam, WARN not ERROR, with the condition and the three causes in the finding text.
+- **A create refused at the job bound rendered as the vendor's 400 "invalid request body"** — a configuration wall
+  is now the 503/500 the namespace-limit precedent set, on both providers.
+- **The design's own YAML anchor pattern (`respond: &pending` / `*pending` across turns) was rejected by the
+  loader**, because retained provider nodes were re-marshalled one at a time for strict decoding. Aliases are now
+  resolved into deep copies where the nodes are retained. (If this line is here and the fix is not on `main`, the
+  fix's workflow did not land — check `git log` for `scenario` before trusting it.)
 
 ### What changed about how this work is being done
 
@@ -58,6 +80,15 @@ the start because the contract recorded that an endpoint existed and nothing abo
 things no plan had: a seven-value `effort` enum on Exa with one value beta-gated, `stopReason` and its own enum, and
 for Tavily a poll whose **HTTP status varies with task state** plus a required field named `input` rather than
 `query`. A4's verification also **disproved the async design's stated reason** for per-route credentials.
+
+**Every unit's review found something the unit's own spec did not ask for, and none of it was style.** A5–A7 and
+the two small units between them each ran implement → three review lenses → fix → independent verify, and the
+review lenses — not the implementer's green `task check` — produced the four fixes listed under "What closed
+today" plus a signature change to `AssertPollSequence` before it could ship. The lens that paid most was the one
+told to attack a house rule directly ("get a credential into a served structure by any path the fix did not
+close"), which found the array-index body path and the credential-shaped-value path a first, careful fix had
+missed. Budget for the review round as part of the unit, not as a gate after it, and give at least one reviewer a
+house rule to break rather than a diff to read.
 
 ## Decisions already taken
 
@@ -271,9 +302,9 @@ majors are answered rather than restated.
   internal/admin/handler.go:187 rather than writing a second copy of allowHeader; and delete the §5.2 golden-ignore
   item, which testkit/golden.go:60 already does.
 
-### Phase 3 — The async job machine — A1–A4 DONE, A5–A7 OPEN
+### Phase 3 — The async job machine — DONE (A1–A7), unreleased
 
-> **Delivered so far** (all on `main`, unreleased):
+> **Delivered** (all on `main`, unreleased):
 >
 > - **A1 `internal/jobs`** — `Job`, `Store`, `Registry`, `Limits`, `Stats`, race tests. 100% statement coverage.
 >   Two decisions are load-bearing and argued in the source: the bound **refuses rather than evicts** (an evicted
@@ -288,6 +319,16 @@ majors are answered rather than restated.
 >   `costDollars.total` from the first release.
 > - **A4 Tavily** — `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}`. The poll's HTTP
 >   status varies with task state (202 running, 200 terminal) and that is the easiest thing on this surface to lose.
+> - **A5 admin/config** — `POST /__admin/reset` drops job records with the cursors (the defect this morning's header
+>   named); `GET /__admin/jobs` (id, namespace, entry, create_index, created_at — no lane key, on house-rule-4
+>   grounds; no turn index, because the cursor is not readable without claiming); `--max-jobs` /
+>   `SERVICESIM_MAX_JOBS`; the unconditional `servicesim.single_replica_required` startup line.
+> - **A6 testkit** — `Job`, `Jobs`, `JobStats`, `NewJobs`, `Sim.Jobs`, `Namespace.Jobs`, `AssertPollSequence`
+>   (takes `[]Entry`, so `ns.Requests(p)` scopes it — job ids repeat across namespaces by design, and reading the
+>   whole Sim when an id is live in two is refused as ambiguous rather than merged), the examples alias guard.
+> - **A7 scenarios and docs** — every built-in declares `exa_agent_runs` and `tavily_research`; `async-failed` and
+>   `async-stuck` are new; the `docs/scenario-schema.md` async section; the multi-replica job row in README and
+>   troubleshooting; the image smoke creates a job on both listeners.
 >
 > **Corrections this work forced into other documents**, so nobody re-derives them:
 >
@@ -303,8 +344,16 @@ majors are answered rather than restated.
 >   IS written. It is the set of kinds that still deliver the rendered body.
 > - Source refs must be resolved **at request time**, not only in the validator. Both A3 and A4 had this latent;
 >   A3's was invisible because its test asserted `output.text` and never a citation URL.
->
-> **A5, A6 and A7 remain exactly as written below.** Start with A5's admin reset — see "Start here" at the top.
+> - The design's `output.content/citations` is stale: the shipped Exa projection is `output.text` +
+>   `output.grounding[]`. The design's Tavily route row named `{id}`; the real wildcard is `{request_id}`.
+> - Tavily's terminal poll must carry `created_at` (contract), and Exa's non-terminal poll renders `stopReason` as
+>   an explicit `null` (contract `string|null`) — both were wrong on the wire until A7's doc pass read the contract
+>   files instead of the design.
+> - **A kind-none attempt that names a `status` pins the wire status.** Invisible on a 200 route; on a 201 create or
+>   a pending 202 Tavily poll it is wrong. The success attempt is `- {}` there. Documented in the schema.
+> - **`GET /__admin/jobs` and the fingerprinted lane key resolve one open question the design left**: whether a
+>   lane key can be served. It cannot, even now that credential-named extractor values are fingerprinted, because
+>   a served field is a compatibility obligation nothing currently needs.
 
 ### Phase 3 — The async job machine
 
