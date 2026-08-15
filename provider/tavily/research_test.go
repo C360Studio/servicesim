@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/internal/jobs"
+	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -53,6 +54,17 @@ func researchCreate(t *testing.T, h http.Handler, body string) string {
 	assert.Equal(t, "research this", out["input"])
 	assert.NotEmpty(t, out["model"], "model is documented as required in the create response")
 	return id
+}
+
+// getResearch issues a bare GET against path, for a poll whose response is not
+// necessarily a research snapshot — an unknown identifier's 404 in particular.
+func getResearch(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", bearer)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
 }
 
 func researchPoll(t *testing.T, h http.Handler, id string) (*httptest.ResponseRecorder, map[string]any) {
@@ -280,6 +292,55 @@ func TestResearchHeadDoesNotConsumeAPoll(t *testing.T) {
 
 	_, out := researchPoll(t, h, id)
 	assert.Equal(t, StatusPending, out["status"], "a HEAD consumed a poll")
+}
+
+// TestResearchPollForeignIDDiagnostic is design §8's diagnostic, end to end: a
+// poll for an identifier that is SHAPED like one this process mints, but that
+// this process never minted, is still the vendor's ordinary 404 — the response
+// is byte-identical either way — but in a namespace that has minted a real
+// task it additionally raises provider.CodeJobForeignID as a WARNING, never an
+// error, so testkit.AssertNoErrors would still pass it.
+func TestResearchPollForeignIDDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	ring := journal.NewRing(64, 1<<16)
+	h := newHandler(t, researchScenario, ring)
+	// Well-formed (a bare UUID, the shape researchIDPrefix produces), never
+	// minted by this process.
+	const foreignID = "00000000-0000-0000-0000-000000000000"
+
+	// X: the default namespace has minted a real task.
+	researchCreate(t, h, `{"input":"research this"}`)
+
+	pollX := getResearch(t, h, "/research/"+foreignID)
+	require.Equal(t, http.StatusNotFound, pollX.Code)
+	codesX := findingCodes(t, ring)
+	assert.Contains(t, codesX, CodeResearchNotFound, "the vendor-shaped 404 finding still fires")
+	require.Contains(t, codesX, provider.CodeJobForeignID, "a minted namespace must raise the diagnostic on a miss")
+
+	entriesX := ring.Snapshot()
+	entryX := entriesX[len(entriesX)-1]
+	require.Equal(t, journal.SeverityWarning, findingByCode(t, entryX, provider.CodeJobForeignID).Severity,
+		"a typo'd fixture id in a one-process suite must not read as an error")
+	require.Empty(t, entryX.Errors(), "testkit.AssertNoErrors must still pass a request that only warned")
+
+	// Y: a namespace that has minted nothing at all.
+	pollY := getResearch(t, h, "/n/foreign-empty/research/"+foreignID)
+	assert.Equal(t, http.StatusNotFound, pollY.Code)
+	assert.NotContains(t, findingCodes(t, ring), provider.CodeJobForeignID,
+		"an empty namespace has minted nothing, so a miss there is a typo, not a divergence")
+
+	assert.Equal(t, pollX.Body.Bytes(), pollY.Body.Bytes(),
+		"the diagnostic must not change the vendor-shaped response body")
+
+	// HEAD asks the same question as GET — does this task exist here — and gets
+	// the same diagnostic.
+	headReq := httptest.NewRequest(http.MethodHead, "/research/"+foreignID, nil)
+	headReq.Header.Set("Authorization", bearer)
+	head := httptest.NewRecorder()
+	h.ServeHTTP(head, headReq)
+	assert.Equal(t, http.StatusNotFound, head.Code)
+	assert.Contains(t, findingCodes(t, ring), provider.CodeJobForeignID, "HEAD raises the same diagnostic as GET")
 }
 
 // There is no cancelled status on this surface, unlike Exa's agent runs.

@@ -187,6 +187,28 @@ Reset drops all three stores in one call, which leaves one way to reach it: `POS
 traffic in the same namespace. Reset is a local-development convenience, not a concurrency mechanism (house rule
 6). Use one process, or one namespace per parallel test.
 
+## A poll returns 404 for a job the create just returned
+
+Also known as "polls 404 intermittently." A well-formed identifier — shaped like this process's own scheme —
+that resolves to nothing, in a namespace that has minted at least one job, raises a `job.foreign_id` **warning**
+and logs `servicesim.job_foreign`. The response itself is unchanged: still the vendor's ordinary 404.
+
+The finding cannot tell which of three things happened, and names all three rather than picking one: another
+replica minted the job and this process never saw the create (run one replica, or route stickily on
+`/n/<namespace>`); a reset dropped the record without dropping the client's copy of the identifier
+(`POST /__admin/reset` drops a namespace's jobs along with its fault cursors); or the client sent an identifier
+this process never minted at all — stale between tests, or hand-written into a fixture. In a suite that runs one
+process — every supported configuration — the third is by far the likeliest cause, which is also why this is a
+warning and not an error.
+
+A poll in a namespace that has minted nothing raises no finding at all: that miss is a typo, not a divergence.
+See ["Counts and cursors differ per run"](#counts-and-cursors-differ-per-run-or-a-fault-fires-twice) for the
+multi-replica case this diagnostic exists to name.
+
+Like every warning, `validation.strict` or a `validation.promote` entry for `job.foreign_id` turns it into an
+error — which fails `AssertNoErrors`, even though the response is still the vendor's unchanged 404. A suite that
+runs strict and also polls `HEAD`/`GET` for ids it knows are absent should demote `job.foreign_id` instead.
+
 ## `POST /__admin/reset` came back 400
 
 Reset requires an **explicit scope**. A bare reset is refused:

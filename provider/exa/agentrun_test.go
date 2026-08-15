@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/internal/jobs"
+	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 )
 
@@ -248,6 +249,51 @@ func TestAgentRunHeadDoesNotConsumeAPoll(t *testing.T) {
 
 	// Three HEADs and a miss consumed nothing: the first GET is still poll 0.
 	assert.Equal(t, StatusRunning, pollRun(t, s, id)["status"])
+}
+
+// TestAgentRunPollForeignIDDiagnostic is design §8's diagnostic, end to end: a
+// poll for an identifier that is SHAPED like one this process mints, but that
+// this process never minted, is still the vendor's ordinary 404 — the response
+// is byte-identical either way — but in a namespace that has minted a real run
+// it additionally raises provider.CodeJobForeignID as a WARNING, never an
+// error, so testkit.AssertNoErrors would still pass it.
+func TestAgentRunPollForeignIDDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	s := asyncSim(t, asyncScenario)
+	// Well-formed for Exa's own scheme (runIDPrefix + 32 hex), never minted by
+	// this process.
+	const foreignID = "run_deadbeefdeadbeefdeadbeefdeadbeef"
+
+	// X: the default namespace has minted a real run.
+	createRun(t, s, `{"query":"seed X"}`)
+
+	pollX := s.do(request{method: http.MethodGet, path: "/agent/runs/" + foreignID})
+	require.Equal(t, http.StatusNotFound, pollX.Code)
+	assert.True(t, s.hasFinding(codeAgentRunNotFound), "the vendor-shaped 404 finding still fires")
+	require.True(t, s.hasFinding(provider.CodeJobForeignID), "a minted namespace must raise the diagnostic on a miss")
+	assert.Equal(t, journal.SeverityWarning, s.findingSeverity(provider.CodeJobForeignID),
+		"a typo'd fixture id in a one-process suite must not read as an error")
+
+	entries := s.journal.Snapshot()
+	require.NotEmpty(t, entries)
+	require.Empty(t, entries[len(entries)-1].Errors(),
+		"testkit.AssertNoErrors must still pass a request that only warned")
+
+	// Y: a namespace that has minted nothing at all.
+	pollY := s.do(request{method: http.MethodGet, path: "/n/foreign-empty/agent/runs/" + foreignID})
+	assert.Equal(t, http.StatusNotFound, pollY.Code)
+	assert.False(t, s.hasFinding(provider.CodeJobForeignID),
+		"an empty namespace has minted nothing, so a miss there is a typo, not a divergence")
+
+	assert.Equal(t, pollX.Body.Bytes(), pollY.Body.Bytes(),
+		"the diagnostic must not change the vendor-shaped response body")
+
+	// HEAD asks the same question as GET — does this run exist here — and gets
+	// the same diagnostic.
+	head := s.do(request{method: http.MethodHead, path: "/agent/runs/" + foreignID})
+	assert.Equal(t, http.StatusNotFound, head.Code)
+	assert.True(t, s.hasFinding(provider.CodeJobForeignID), "HEAD raises the same diagnostic as GET")
 }
 
 // A create is rejected before it mints anything, so a bad request cannot consume

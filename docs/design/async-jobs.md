@@ -1484,10 +1484,17 @@ For that reason the log line is `WARN`, not `ERROR`. The multi-replica case it w
 not the most common way to reach this code path in a suite that runs one process — which is every supported
 configuration.
 
-A hit raises `job.foreign_id` on the journal entry and logs `servicesim.job_foreign` at error level with the hint
-above. It is a diagnostic, not a correctness mechanism — the response is unchanged — and it is what converts a silent
-intermittent 404 into a message naming the replica count. **Shared job state is explicitly out of scope**: it means a
-network dependency in a simulator whose value proposition is being fast, offline and hermetic.
+A hit raises `job.foreign_id` on the journal entry and logs `servicesim.job_foreign` at **WARN** — matching the
+paragraph above; an earlier draft of this sentence said "error level" here, which contradicted it, and was a
+drafting slip rather than a second decision. It is a diagnostic, not a correctness mechanism — the response is
+unchanged — and it is what converts a silent intermittent 404 into a message naming the replica count. **Shared
+job state is explicitly out of scope**: it means a network dependency in a simulator whose value proposition is
+being fast, offline and hermetic.
+
+**Shipped, 2026-08-15.** Built as specified, with one difference from the illustrative code above: it lives
+directly in `provider.ResolveJob` rather than a separate `diagnoseForeignID` helper, so one seam serves both
+providers and both `GET` and `HEAD` rather than each caller wiring its own. `CodeJobForeignID` is the finding
+code; `servicesim.job_foreign` is the log event, at WARN.
 
 ---
 

@@ -167,7 +167,10 @@ const (
 	CodeResearchInputMissing = "tavily.research.input.missing"
 
 	// CodeResearchNotFound is journaled when a poll names a task this process
-	// does not hold.
+	// does not hold. It carries no diagnosis of why: a well-formed identifier in
+	// a namespace that has minted something already raised provider.ResolveJob's
+	// job.foreign_id before handleResearchPoll reaches this branch, and that
+	// finding — not this one — names the possible causes.
 	CodeResearchNotFound = "tavily.research.not_found"
 
 	// CodeResearchModelInvalid warns about a model outside the documented enum.

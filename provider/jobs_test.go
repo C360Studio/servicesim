@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/c360studio/servicesim/internal/jobs"
+	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -320,22 +321,38 @@ func TestResolveJob(t *testing.T) {
 		t.Fatalf("MintJob: %+v", x.Findings())
 	}
 
-	poll := mintExchange(t, store, nil)
-
-	got, found := ResolveJob(poll, job.ID)
-	if !found || got.ID != job.ID {
-		t.Errorf("ResolveJob = (%+v, %v), want the minted job", got, found)
+	// A resolved job records no finding of its own.
+	found := mintExchange(t, store, nil)
+	got, ok := ResolveJob(found, job.ID)
+	if !ok || got.ID != job.ID {
+		t.Errorf("ResolveJob = (%+v, %v), want the minted job", got, ok)
 	}
-	if _, found := ResolveJob(poll, "run_unknown"); found {
+	if f := found.Findings(); len(f) != 0 {
+		t.Errorf("a resolved job must record no findings of its own: %+v", f)
+	}
+
+	// An unknown but well-formed identifier, polled in a namespace that has
+	// minted something, is exactly the foreign-id case: it does not resolve,
+	// and it raises CodeJobForeignID. TestResolveJobForeignID covers the full
+	// table; this only pins that the basic miss path still reaches it.
+	unknown := mintExchange(t, store, nil)
+	if _, ok := ResolveJob(unknown, "run_unknown"); ok {
 		t.Error("an unknown identifier must not resolve")
 	}
+	if f := unknown.Findings(); len(f) != 1 || f[0].Code != CodeJobForeignID {
+		t.Errorf("findings = %+v, want exactly one %s", f, CodeJobForeignID)
+	}
+
 	// A malformed identifier is refused before it reaches the store, so it can
-	// never be used to probe another namespace's lane key.
-	if _, found := ResolveJob(poll, "run/../other"); found {
+	// never be used to probe another namespace's lane key, and it never raises
+	// the foreign-id finding either: it was never shaped like one of this
+	// process's own identifiers to begin with.
+	malformed := mintExchange(t, store, nil)
+	if _, ok := ResolveJob(malformed, "run/../other"); ok {
 		t.Error("a malformed identifier must not resolve")
 	}
-	if f := poll.Findings(); len(f) != 0 {
-		t.Errorf("ResolveJob must record no findings of its own: %+v", f)
+	if f := malformed.Findings(); len(f) != 0 {
+		t.Errorf("a malformed identifier must record no findings: %+v", f)
 	}
 }
 
@@ -402,5 +419,124 @@ func TestValidJobIDRejectsEverySeparator(t *testing.T) {
 		if ValidJobID(id) {
 			t.Errorf("ValidJobID(%q) = true; a separator in an identifier lets a lane key be re-split", id)
 		}
+	}
+}
+
+// --- ResolveJob and the foreign-id diagnostic (design §8) -------------------
+
+// resolveExchange builds an Exchange shaped like a poll: no attempt claimed
+// (ResolveJob claims none), an explicit namespace so a test can control
+// StatsIn's count independently of the id under test, and a captured logger so
+// a test can assert on servicesim.job_foreign.
+func resolveExchange(store jobs.Store, namespace string, capture *capturingLogger) *Exchange {
+	return &Exchange{
+		Deps:     Deps{Jobs: store, Logger: capture.logger}.Normalized(),
+		Provider: Exa,
+		Route:    Route{Pattern: "GET /agent/runs/{id}", FaultKey: "exa:agent_runs.poll"},
+		lane:     Lane{Namespace: namespace, Key: "exa:agent_runs.poll"},
+	}
+}
+
+// TestResolveJobForeignID is the table §8 specifies: the finding and the log
+// line fire on exactly one combination — a well-formed id, missing, in a
+// namespace that has minted at least one job — and nowhere else. A malformed
+// id never triggers it regardless of the namespace's count, because it can
+// never be one of this process's own identifiers in the first place.
+func TestResolveJobForeignID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		id      string
+		seeded  bool // whether the polled namespace has minted a job of its own
+		wantHit bool
+	}{
+		{name: "valid id, namespace has minted a job", id: "run_deadbeef", seeded: true, wantHit: true},
+		{name: "valid id, namespace has minted nothing", id: "run_deadbeef", seeded: false, wantHit: false},
+		{name: "invalid id, namespace has minted a job", id: "run/deadbeef", seeded: true, wantHit: false},
+		{name: "invalid id, namespace has minted nothing", id: "run/deadbeef", seeded: false, wantHit: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := jobs.NewRegistry(jobs.Limits{})
+			namespace := "ns-" + strings.ReplaceAll(tc.name, " ", "-")
+			if tc.seeded {
+				if _, err := store.Create(jobs.Job{ID: "seed", Namespace: namespace}); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+			}
+
+			capture := newCapturingLogger()
+			x := resolveExchange(store, namespace, capture)
+
+			if _, found := ResolveJob(x, tc.id); found {
+				t.Fatalf("an id nothing minted must never resolve")
+			}
+
+			findings := x.Findings()
+			logged := capture.String()
+
+			if !tc.wantHit {
+				if len(findings) != 0 {
+					t.Errorf("findings = %+v, want none", findings)
+				}
+				if strings.Contains(logged, "servicesim.job_foreign") {
+					t.Errorf("log output = %q, want no servicesim.job_foreign line", logged)
+				}
+				return
+			}
+
+			if len(findings) != 1 || findings[0].Code != CodeJobForeignID {
+				t.Fatalf("findings = %+v, want exactly one %s", findings, CodeJobForeignID)
+			}
+			if findings[0].Severity != journal.SeverityWarning {
+				t.Errorf("severity = %v, want %v — a typo'd fixture id must not read as a deployment problem",
+					findings[0].Severity, journal.SeverityWarning)
+			}
+			for _, want := range []string{"another replica", "reset", "fixture"} {
+				if !strings.Contains(findings[0].Message, want) {
+					t.Errorf("message %q does not name the cause %q", findings[0].Message, want)
+				}
+			}
+
+			if !strings.Contains(logged, "servicesim.job_foreign") {
+				t.Errorf("log output = %q, want the servicesim.job_foreign event", logged)
+			}
+			for _, want := range []string{"provider=exa", "namespace=" + namespace, "id=" + tc.id} {
+				if !strings.Contains(logged, want) {
+					t.Errorf("log output = %q, want it to contain %q", logged, want)
+				}
+			}
+		})
+	}
+}
+
+// A resolved job records no finding and logs nothing extra, however full its
+// namespace is — the diagnostic is for a MISS, never for a hit.
+func TestResolveJobFoundRecordsNoForeignIDFinding(t *testing.T) {
+	t.Parallel()
+
+	store := jobs.NewRegistry(jobs.Limits{})
+	x := mintExchange(t, store, nil)
+	job, ok := MintJob(x, "exa_agent_runs", "run_", stubEncode)
+	if !ok {
+		t.Fatalf("MintJob: %+v", x.Findings())
+	}
+
+	capture := newCapturingLogger()
+	poll := resolveExchange(store, job.Namespace, capture)
+
+	got, found := ResolveJob(poll, job.ID)
+	if !found || got.ID != job.ID {
+		t.Fatalf("ResolveJob = (%+v, %v), want the minted job", got, found)
+	}
+	if f := poll.Findings(); len(f) != 0 {
+		t.Errorf("a resolved job must record no finding: %+v", f)
+	}
+	if logged := capture.String(); strings.Contains(logged, "servicesim.job_foreign") {
+		t.Errorf("a resolved job must not log servicesim.job_foreign: %q", logged)
 	}
 }

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"log/slog"
 	"strconv"
 
 	"github.com/c360studio/servicesim/internal/jobs"
@@ -67,7 +68,41 @@ const (
 	// identifier that index derives. Every surface that resets cursors must
 	// reset jobs in the same call.
 	CodeJobIDCollision = "job.id_collision"
+
+	// CodeJobForeignID is raised by [ResolveJob] on a poll whose identifier is
+	// SHAPED like one this process mints ([ValidJobID] holds) but resolves to
+	// no record, in a namespace that has minted at least one job. The response
+	// is unchanged — the vendor's ordinary 404 — this only adds a finding and a
+	// log line so an intermittent miss carries a hint instead of looking like a
+	// consumer bug.
+	//
+	// It CANNOT tell apart the three ways that happens, and the finding's
+	// message must not pretend to: another replica minted the job and this
+	// process never saw the create (docs/design/async-jobs.md §8), a reset
+	// dropped the record without dropping the client's copy of the identifier,
+	// or the identifier is one this process never minted at all — stale between
+	// tests, or hand-written into a fixture. In a one-process test suite, which
+	// is every supported configuration, the third is the likeliest cause; that
+	// is also why this is a warning, not an error.
+	//
+	// Like every warning, scenario validation.strict or a validation.promote
+	// entry for this code turns it into an error, which fails Exchange.Failed
+	// and AssertNoErrors for that request even though the response body is
+	// still the vendor's ordinary 404. A suite that polls HEAD or GET for ids
+	// it knows are absent should demote this code rather than run strict.
+	CodeJobForeignID = "job.foreign_id"
 )
+
+// foreignIDMessage is the [CodeJobForeignID] finding text, split at its
+// semicolons so a future edit to one clause shows as one line in a diff
+// rather than rewriting a single ~560-character literal.
+const foreignIDMessage = "no job %q exists in namespace %q, but this namespace has minted %d job(s); " +
+	"this identifier is well-formed for this process's own scheme, so the likeliest causes are: " +
+	"another replica minted it and this process never saw the create (run one replica, or route stickily " +
+	"on /n/<namespace>); a reset dropped the record without dropping the client's copy of the identifier " +
+	"(POST /__admin/reset drops a namespace's jobs along with its fault cursors); or the client sent an " +
+	"identifier this process never minted at all — stale between tests, or hand-written into a fixture " +
+	"— check the fixture id"
 
 // ValidJobID reports whether id is safe to use as a job identifier and as a
 // component of a lane key: one to [MaxJobIDLen] characters of ASCII letters,
@@ -256,11 +291,31 @@ func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (
 // exists. A poll that means to consume one calls SelectTurnFor separately, after
 // this has confirmed the job is real.
 //
-// It records no finding for an unknown identifier: whether that is a 404, a
-// diagnostic, or both is the provider's decision, and the vendors differ.
+// It records exactly one finding, on exactly one condition: a miss whose
+// identifier is shaped like one this provider mints, in a namespace that has
+// minted at least one job — [CodeJobForeignID], logged once at WARN as
+// servicesim.job_foreign. Every other miss records nothing: a malformed
+// identifier is never this process's own, and a miss in a namespace that has
+// minted nothing is a typo, not a divergence. Whether the 404 itself carries
+// anything beyond this is the provider's decision, and the vendors differ.
 func ResolveJob(x *Exchange, id string) (jobs.Job, bool) {
 	if x.Deps.Jobs == nil || !ValidJobID(id) {
 		return jobs.Job{}, false
 	}
-	return x.Deps.Jobs.Lookup(x.Lane().Namespace, id)
+
+	namespace := x.Lane().Namespace
+	job, found := x.Deps.Jobs.Lookup(namespace, id)
+	if found {
+		return job, true
+	}
+
+	if stats := x.Deps.Jobs.StatsIn(namespace); stats.Count > 0 {
+		x.Warn(CodeJobForeignID, "id", foreignIDMessage, id, namespace, stats.Count)
+		x.Deps.Logger.Warn("servicesim.job_foreign",
+			slog.String("provider", string(x.Provider)),
+			slog.String("namespace", namespace),
+			slog.String("id", id))
+	}
+
+	return jobs.Job{}, false
 }

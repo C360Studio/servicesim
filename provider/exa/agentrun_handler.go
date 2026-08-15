@@ -185,10 +185,12 @@ func handleAgentRunHead(x *provider.Exchange) provider.Response {
 
 // runNotFound is the vendor's 404 for an identifier this process does not hold.
 //
-// It also carries the diagnostic for the multi-replica case: an identifier that
-// is well-formed for this scheme, in a namespace that has minted something, is
-// the signature of a run created on another replica — or of a reset that dropped
-// the records. It changes nothing about the response.
+// The multi-replica diagnostic is NOT carried here: provider.ResolveJob has
+// already raised it, as a job.foreign_id finding plus a servicesim.job_foreign
+// log line, before this function ever runs — handleAgentRunPoll and
+// handleAgentRunHead call it to decide whether to reach this branch at all.
+// This function only renders the vendor-shaped body; it changes nothing about
+// the response either way.
 func runNotFound(x *provider.Exchange, id string) provider.Response {
 	x.Warn(codeAgentRunNotFound, "id", "no agent run %q exists in this namespace", id)
 	status := http.StatusNotFound
