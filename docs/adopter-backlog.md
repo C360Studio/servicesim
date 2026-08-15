@@ -6,41 +6,37 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-15 (evening), against **v0.1.1** plus unreleased work on `main`.
+Recorded 2026-08-15 (evening), against **v0.2.0**, tagged and published from `main` the same evening.
 
 | Phase | State |
 |---|---|
 | 0 — stop rejecting valid traffic | **shipped** in v0.1.1 |
-| 1 — schema-envelope changes | **shipped**, unreleased |
+| 1 — schema-envelope changes | **shipped** in v0.2.0 |
 | 2 — revise the two design documents | **round 3**, conceptual findings answered; Go blocks demoted to illustrative |
-| 3 — the async job machine | **A1–A7 done**, unreleased. Phase 3 is complete. |
-| 4 onward | open — **the release decision comes first; then Phase 4's contract verification, or Phase 5** |
+| 3 — the async job machine | **shipped** in v0.2.0 (A1–A7 complete) |
+| 4 onward | open — **Phase 4's contract verification, or Phase 5, is next** |
 
-`main` is green: `task check` clean on every commit, 20 Go packages under `-race`, image smoke creates a job on
-both async listeners. **Nothing since v0.1.1 has been released or tagged**, and that is now the decision to take
-before more code: Phase 1 + Phase 3 is a substantial body of work sitting unversioned, and it carries one Go API
-break (`provider.SelectTurn` gained a `route` parameter) and one behaviour change to the shipped `perplexity_agent`
+`main` is green and pushed; `v0.2.0` resolves on ghcr.io in both spellings against one digest
+(`sha256:f1248516…`), and the README and Compose pins point at it. The tag's annotated message is the release
+note (there is no CHANGELOG file and no GitHub Release object, matching v0.1.1); it calls out the one Go API break
+(`provider.SelectTurn` gained a `route` parameter) and the one behaviour change to the shipped `perplexity_agent`
 surface (`Route.Entry` — its own `turn_key` is honoured now, where before it silently inherited the primary
-entry's). A drafted v0.2.0 tag message exists in the session that closed Phase 3; the release procedure is
-CONTRIBUTING.md's — publish the image, confirm the tag resolves, THEN update the version pins.
+entry's).
 
 ### Start here
 
-1. **Decide the release.** Recommended: tag **v0.2.0** from `main` as it stands. Everything Phase 3 needed is in,
-   including the units that were still open this morning (A5–A7) and four fixes review turned up on the way
-   (below). Holding it back buys nothing: the adopter is not yet on any of this, and the alternative — releasing
-   the async surface later with more unreleased change stacked on it — only makes the release note longer.
-2. **Then Phase 4 or Phase 5.** Phase 4's prerequisite is contract verification of Exa `/contents`, `/findSimilar`
-   and Tavily `/extract` (decision D7 — re-verify against vendor docs first), which is a reading task with no code
-   dependency. Phase 5 (SSE) is the adopter's MUST-HAVE and its blocker is Phase 2's `streaming.md` revision, which
-   is at round 3 like `async-jobs.md`; the lesson of Phase 3 — build A2 and let the compiler answer what prose could
-   not — applies directly, so the recommendation is to start Phase 5 with its "Response can express a stream"
-   provider-core unit rather than a fourth prose round.
+**Phase 4 or Phase 5.** Phase 4's prerequisite is contract verification of Exa `/contents`, `/findSimilar` and
+Tavily `/extract` (decision D7 — re-verify against vendor docs first), which is a reading task with no code
+dependency. Phase 5 (SSE) is the adopter's MUST-HAVE and its blocker is Phase 2's `streaming.md` revision, which is
+at round 3 like `async-jobs.md`; the lesson of Phase 3 — build A2 and let the compiler answer what prose could not
+— applies directly, so the recommendation is to start Phase 5 with its "Response can express a stream"
+provider-core unit rather than a fourth prose round. Whichever is chosen, tell the adopter v0.2.0 exists first: the
+open questions for them (below) are still open, and their Tier-1 async paths are now simulable.
 
 ### What closed today, beyond A5–A7
 
 Four things review found while building the planned units, each committed separately with the reasoning in the
-commit body:
+commit body, all in v0.2.0:
 
 - **A credential could reach the journal, admin API and log through a `turn_key` extractor** —
   `header:authorization` or `body_json:api_key` composed its raw value into the lane key, which is
@@ -54,8 +50,7 @@ commit body:
   is now the 503/500 the namespace-limit precedent set, on both providers.
 - **The design's own YAML anchor pattern (`respond: &pending` / `*pending` across turns) was rejected by the
   loader**, because retained provider nodes were re-marshalled one at a time for strict decoding. Aliases are now
-  resolved into deep copies where the nodes are retained. (If this line is here and the fix is not on `main`, the
-  fix's workflow did not land — check `git log` for `scenario` before trusting it.)
+  resolved into deep copies where the nodes are retained (`scenario/alias.go`).
 
 ### What changed about how this work is being done
 
@@ -164,9 +159,9 @@ contracts/ as a trustworthy fidelity record before the adopter reads it to plan 
 
 ### Phase 1 — Schema-envelope changes, before anyone writes a scenario file — SHIPPED
 
-> Shipped after v0.1.1. All six items landed; what each turned into is recorded under the item.
+> Shipped in v0.2.0. All six items landed; what each turned into is recorded under the item.
 >
-> One API break to note in the release: `provider.SelectTurn` takes a `route string` before `body`.
+> The one API break, noted in the v0.2.0 tag message: `provider.SelectTurn` takes a `route string` before `body`.
 > The scenario-file surface is additive only — `when.route:` is a new optional key, so every existing
 > scenario file loads unchanged.
 
@@ -302,9 +297,9 @@ majors are answered rather than restated.
   internal/admin/handler.go:187 rather than writing a second copy of allowHeader; and delete the §5.2 golden-ignore
   item, which testkit/golden.go:60 already does.
 
-### Phase 3 — The async job machine — DONE (A1–A7), unreleased
+### Phase 3 — The async job machine — SHIPPED in v0.2.0 (A1–A7)
 
-> **Delivered** (all on `main`, unreleased):
+> **Delivered** (all in v0.2.0):
 >
 > - **A1 `internal/jobs`** — `Job`, `Store`, `Registry`, `Limits`, `Stats`, race tests. 100% statement coverage.
 >   Two decisions are load-bearing and argued in the source: the bound **refuses rather than evicts** (an evicted
