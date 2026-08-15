@@ -1,5 +1,13 @@
 package provider
 
+import (
+	"errors"
+	"strconv"
+
+	"github.com/c360studio/servicesim/internal/jobs"
+	"github.com/c360studio/servicesim/scenario"
+)
+
 // Job identifier bounds.
 const (
 	// MaxJobIDLen bounds a job identifier taken from a request path.
@@ -38,6 +46,27 @@ const (
 	// path wildcard's own name, which is the part of the request the client
 	// actually got wrong.
 	CodeJobIDInvalid = "job.id_invalid"
+
+	// CodeJobLimitNear warns that a create took its namespace past
+	// jobs.HighWaterPercent of the bound. It fires while creates still succeed,
+	// which is the entire point: without it the first signal is the create that
+	// fails, and by then the request that filled the namespace is already gone.
+	CodeJobLimitNear = "job.limit_near"
+
+	// CodeJobLimitReached is raised when a create is refused because its
+	// namespace is at the bound. Nothing is evicted to make room; see
+	// internal/jobs for why refusing beats evicting here.
+	CodeJobLimitReached = "job.limit_reached"
+
+	// CodeJobIDCollision is raised when a create mints an identifier that is
+	// already live in its namespace.
+	//
+	// In practice this has one cause worth naming, and the message names it:
+	// something reset the fault cursors without dropping the job records, so the
+	// next create claimed an index it had already used and re-minted the
+	// identifier that index derives. Every surface that resets cursors must
+	// reset jobs in the same call.
+	CodeJobIDCollision = "job.id_collision"
 )
 
 // ValidJobID reports whether id is safe to use as a job identifier and as a
@@ -71,4 +100,167 @@ func ValidJobID(id string) bool {
 		}
 	}
 	return true
+}
+
+// deliversBody reports whether the response this attempt produces still carries
+// the handler's rendered body — which, for a create, is the body carrying the
+// job identifier.
+//
+// It is the predicate MintJob commits on, and getting it wrong is expensive in
+// both directions. Committing when the body is replaced leaves a phantom job:
+// a record consuming a slot that no client has an identifier for. NOT committing
+// when the body IS delivered is worse — the client holds a real identifier that
+// no record backs, so every poll returns the vendor's 404 for a job the create
+// said it made.
+//
+// FaultDecision.Faulted() is the obvious reach and is wrong here: it is true
+// whenever Delay > 0, and a pure delay writes the body after sleeping. The
+// question is not "was this request faulted" but "does the client still receive
+// what the handler rendered", and only EffectiveKind answers that.
+//
+// The set is read directly off execute's switch (provider/fault_exec.go): three
+// kinds are handled explicitly and everything else falls through to
+// writeResponse with faultBody, which returns resp.Body unless the provider's
+// FaultBody overrides it — and that override only fires at status >= 400.
+//
+//	FaultNone             body written (a pure delay, or an explicit 2xx/3xx)
+//	FaultExtraFields      body written, with the extra fields merged in
+//	FaultWrongContentType body written, under a wrong Content-Type header
+//	---
+//	FaultStatus (>= 400)  the provider's error envelope replaces it
+//	FaultInvalidJSON      raw non-JSON bytes replace it
+//	FaultEmptyBody        nothing is written
+//	FaultTruncateBody     a prefix, then an abort
+//	FaultCloseBeforeHeaders nothing reaches the client at all
+func deliversBody(dec FaultDecision) bool {
+	if dec.Attempt == nil {
+		return true
+	}
+	switch dec.Attempt.EffectiveKind() {
+	case scenario.FaultNone, scenario.FaultExtraFields, scenario.FaultWrongContentType:
+		return true
+	default:
+		return false
+	}
+}
+
+// MintJob claims this request's call index and records a job derived from it,
+// returning the job and whether the request may proceed.
+//
+// False means the request was refused and a finding says why; the caller renders
+// its own provider-shaped error. True means the handler should render normally —
+// including when the record was deliberately not written, because a scripted
+// fault is about to replace the response anyway.
+//
+// # The claim always happens; the record does not
+//
+// The call index is claimed unconditionally, so a fault plan advances exactly as
+// scripted and the retry after a faulted create draws attempt 1. The RECORD is
+// written only when the response will actually carry the identifier to the
+// client ([deliversBody]).
+//
+// Faults are applied by Handle AFTER the handler returns, so a create that
+// committed unconditionally would leave a record behind on every faulted
+// attempt: a plan with one retry would burn two slots per usable job, and a
+// bound of 256 would become an effective 128 — reached sooner than any author
+// computed, reporting a number that does not match the jobs they can see.
+//
+// Identifiers are therefore not dense across a faulted create: a plan that
+// faults the first attempt produces a first live job whose identifier derives
+// from index 1. That is correct, for the same reason every other faulted route's
+// derived identifier moves with the attempt, and it is why goldens ignore
+// derived identifiers.
+//
+// One honest limit: a client whose own deadline fires during a scripted delay
+// receives nothing, yet the record is committed — the decision said this attempt
+// would serve, and that was true when it was made. No predicate evaluated before
+// the write can know otherwise.
+func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (jobs.Job, bool) {
+	lane := x.Lane()
+	index := x.CallIndex()
+
+	job := jobs.Job{
+		ID: prefix + encode(
+			x.Deps.Scenario.SeedKey(),
+			entry,
+			lane.Key,
+			"job",
+			strconv.Itoa(index),
+		),
+		Namespace:   lane.Namespace,
+		Entry:       entry,
+		LaneKey:     lane.Key,
+		CreateIndex: index,
+		CreatedAt:   x.Deps.Clock.Now(),
+	}
+
+	// A derived identifier that is not a valid job identifier would record fine
+	// and never resolve: ResolveJob rejects it before reaching the store, so
+	// every poll would 404 on a job the create reported making. That is a
+	// programming error in the caller's prefix or encoder rather than anything a
+	// request did, and it is caught here because the alternative is discovering
+	// it as an unexplained 404 in a consumer's suite.
+	if !ValidJobID(job.ID) {
+		x.Fail(CodeJobIDInvalid, "",
+			"provider %q derived the job identifier %q, which is not a valid identifier; a poll could never resolve it",
+			entry, job.ID)
+		return jobs.Job{}, false
+	}
+
+	if !deliversBody(x.Fault()) {
+		// The claim stands, the record does not. The handler still renders a body
+		// so the response has a shape; Handle replaces it with the fault before
+		// any of it reaches the client.
+		return job, true
+	}
+
+	store := x.Deps.Jobs
+	if store == nil {
+		// A zero Deps serves without job state at all, matching how a nil Faults
+		// serves without faults. The identifier is still derived and returned, so
+		// a create answers normally; only the poll that follows cannot resolve it.
+		return job, true
+	}
+
+	stats, err := store.Create(job)
+	switch {
+	case errors.Is(err, jobs.ErrDuplicate):
+		x.Fail(CodeJobIDCollision, "",
+			"job %q is already live in namespace %q; the usual cause is a reset that dropped the fault cursors without dropping the job records, so this create re-minted an identifier it had already used",
+			job.ID, job.Namespace)
+		return jobs.Job{}, false
+
+	case errors.Is(err, jobs.ErrLimit):
+		x.Fail(CodeJobLimitReached, "",
+			"namespace %q holds its maximum of %d jobs; reset it with POST /__admin/reset, give each test its own namespace, or raise the bound",
+			job.Namespace, stats.Bound)
+		return jobs.Job{}, false
+
+	case err != nil:
+		x.Fail(CodeJobLimitReached, "", "recording the job failed: %v", err)
+		return jobs.Job{}, false
+	}
+
+	if stats.Near() {
+		x.Warn(CodeJobLimitNear, "",
+			"namespace %q holds %d of %d jobs; creates still succeed, but reset it or use per-test namespaces before it fills",
+			job.Namespace, stats.Count, stats.Bound)
+	}
+	return job, true
+}
+
+// ResolveJob returns the job an identifier names in this request's namespace.
+//
+// It CLAIMS NO ATTEMPT and advances no cursor, which is what makes it usable
+// from a request that must not consume a poll — a HEAD asking only whether a run
+// exists. A poll that means to consume one calls SelectTurnFor separately, after
+// this has confirmed the job is real.
+//
+// It records no finding for an unknown identifier: whether that is a 404, a
+// diagnostic, or both is the provider's decision, and the vendors differ.
+func ResolveJob(x *Exchange, id string) (jobs.Job, bool) {
+	if x.Deps.Jobs == nil || !ValidJobID(id) {
+		return jobs.Job{}, false
+	}
+	return x.Deps.Jobs.Lookup(x.Lane().Namespace, id)
 }

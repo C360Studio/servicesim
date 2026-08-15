@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -156,6 +157,26 @@ type Deps struct {
 	// indices, because the turn cursor reads them, and never returns an attempt.
 	Faults Faults
 
+	// Jobs holds the create-then-poll records the async surfaces mint and
+	// resolve. nil means no job state at all: a create still derives and returns
+	// an identifier, and the poll that follows simply cannot resolve it.
+	//
+	// That is the same shape as a nil Faults — usable, and wrong for a test that
+	// meant to exercise the feature — rather than a nil-check in every handler.
+	// Normalized does NOT substitute a registry, deliberately: a store created
+	// per Deps would be invisible shared state for anyone who built two Deps
+	// expecting one process, and the async surfaces are opt-in. internal/server
+	// and testkit wire it explicitly.
+	Jobs jobs.Store
+
+	// MaxJobs is the per-namespace job bound this process was configured with.
+	// Zero means jobs.DefaultMaxJobs.
+	//
+	// Like MaxNamespaces, the seam records the number rather than imposing it:
+	// the bound belongs to the store that actually holds the records, and
+	// internal/server builds the registry from this same value.
+	MaxJobs int
+
 	// Clock stamps journal timestamps and nothing else. nil means SystemClock{}.
 	Clock Clock
 
@@ -239,6 +260,9 @@ func (d Deps) Normalized() Deps {
 	}
 	if d.MaxNamespaces <= 0 {
 		d.MaxNamespaces = DefaultMaxNamespaces
+	}
+	if d.MaxJobs <= 0 {
+		d.MaxJobs = jobs.DefaultMaxJobs
 	}
 	if d.Faults == nil {
 		if d.Scenario.HasFaults() {
