@@ -24,7 +24,7 @@ implement every field of every vendor — only the *consumed contract*.
 No account, no credentials, no configuration, and nothing to clone:
 
 ```bash
-docker run --rm -p 8080-8083:8080-8083 ghcr.io/c360studio/servicesim:v0.1.1
+docker run --rm -p 8080-8083:8080-8083 ghcr.io/c360studio/servicesim:v0.2.0
 ```
 
 The image is public and multi-architecture (`linux/amd64`, `linux/arm64`). Tags are published in both spellings
@@ -33,7 +33,7 @@ against one digest — `v0.1.0` and `0.1.0`, `v0.1` and `0.1`, `v0` and `0` — 
 For release-critical CI, pin the digest rather than a tag, so a re-publish cannot move under you:
 
 ```text
-ghcr.io/c360studio/servicesim@sha256:8fdd3898448558bc97de73a59c4957a480304b27a19abd1eedb6f0b168f65458
+ghcr.io/c360studio/servicesim@sha256:f1248516b3a2fe8769461eda07028e0280d4bf548b5e22b518a71fe9f89b25c9
 ```
 
 Working on Servicesim itself, or want the tip of `main`? `task image:build` produces `servicesim:dev` locally, and
@@ -172,7 +172,7 @@ Same handlers, same scenarios, reachable from any language.
 ```yaml
 services:
   servicesim:
-    image: ghcr.io/c360studio/servicesim:v0.1.1
+    image: ghcr.io/c360studio/servicesim:v0.2.0
     command: ["--scenario", "builtin:fusion-overlap"]
 
   app-tests:
@@ -372,7 +372,7 @@ repository and is mounted read-only. Changing it does not require a Servicesim r
 ```yaml
 services:
   servicesim:
-    image: ghcr.io/c360studio/servicesim:v0.1.1
+    image: ghcr.io/c360studio/servicesim:v0.2.0
     command: ["--scenario", "/scenarios/fusion-overlap.yaml"]
     volumes:
       - ./test/fixtures/research:/scenarios:ro
