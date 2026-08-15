@@ -25,9 +25,33 @@
 >   non-claiming resolution "exists nowhere else", which §4.2's own `ResolveJob` contradicts. `HEAD` is now served
 >   properly, on its own fault key, and the divergence from `allowHeader` disappears with it.
 >
-> **Still a design, not an instruction to start.** Round 2 has not itself been re-reviewed. Given round 1 shipped two
-> restated findings and two new defects while claiming to be complete, that step is not optional. Implementation is
-> Phase 3 and is gated on it.
+> ### The Go blocks below are ILLUSTRATIVE, not normative
+>
+> This is the one structural change round 3 makes, and it is a correction to how this document was written rather
+> than to what it says.
+>
+> **Normative:** the decisions, the reasoning behind them, the finding codes and severities, the ordering
+> constraints, and the invariants. Those are what a reviewer should hold this to and what an implementer must
+> honour.
+>
+> **Illustrative:** every `go` block. Signatures, arities, receiver types, exported-ness and registration details in
+> them are sketches. They have been wrong repeatedly in exactly those dimensions — an unregistered fault key, a
+> `StatsIn` arity that did not match its own seam two sections earlier, a predicate missing two enum values, a helper
+> borrowed from a package that does not export it — and each round of prose review has caught some and introduced
+> more.
+>
+> The reason is structural: **prose cannot be type-checked.** Two adversarial review rounds produced a flat rate of
+> mechanical defects in these blocks while the conceptual layer converged and stayed converged. Continuing to review
+> Go-in-markdown for compilability is the wrong instrument. The compiler is the right one, and it runs in seconds.
+>
+> So: read the blocks for *shape and intent*. Do not treat a signature here as a contract. Where a block and the
+> surrounding prose disagree, **the prose wins** — and where the code, once written, disagrees with a block, the code
+> wins and the block should be deleted rather than patched.
+>
+> **Still a design, not an instruction to start on the phase as a whole.** Round 2 was re-reviewed and returned two
+> blockers and four majors; round 3 answers the conceptual ones and demotes the rest. Unit **A1** (`internal/jobs`)
+> is unblocked and being built, because it depends on none of the open items. **A2 onward remains gated** — it
+> touches the mux, `Route.Entry` and the scenario schema, which is where the remaining questions bite.
 >
 > <details><summary>Round-1 findings, all now addressed above</summary>
 >
@@ -1070,16 +1094,41 @@ func (x *Exchange) Entry() *scenario.ProviderEntry {
 Fixing the accessor rather than one caller is strictly cheaper and strictly safer. `Entry()` has five callers —
 `Exchange.policy()` (`provider/exchange.go:272`), `entryTurnKey` (`provider/lane.go:496`), and three provider
 handlers (`provider/exa/handler.go:116,147`, `provider/tavily/handler.go:179`). Patching only `entryTurnKey` would
-leave **three** ways to resolve an entry and fix one of them, and the three handler call sites would keep the old
-behaviour for no stated reason. Nothing bites there today only because no route that would set `Route.Entry` has a
-handler calling `x.Entry()` — a coincidence of the current route table, not an invariant anyone is maintaining.
+leave **three** ways to resolve an entry and fix one of them.
 
-Behaviour for shipped code is identical: every existing route leaves `Route.Entry` empty and takes the same branch it
-takes now. `exa_agent_runs`, `tavily_research` and `perplexity_agent` declare theirs.
+#### This is a behaviour change for `perplexity_agent`, and it is not optional to say so
 
-This fixes the `Exchange.policy()` asymmetry recorded in
-[§12](#12-companion-corrections-this-design-depends-on) as a side effect rather than as separate work, and it lets
-the async handlers call `x.Entry()` instead of hardcoding `Provider(NameAgentRuns)`.
+An earlier draft claimed "behaviour for shipped code is identical" and then, in the next sentence, applied
+`Route.Entry` to `perplexity_agent`. Both cannot be true. **`perplexity_agent` is shipped**
+(`provider/perplexity/handler.go:23`), its three routes sit on the `perplexity` listener, and today they resolve
+their entry by listener name — behaviour `provider/lane.go:404-408` documents deliberately:
+
+> The entry is the one named for this listener's provider. A listener serving a second scenario entry — Perplexity's
+> Agent surface is one — keys its lanes on the primary entry's `turn_key`.
+
+So a `turn_key:` written on the `perplexity` block currently subdivides the **agent** lane too. Giving the agent
+routes `Route.Entry = NameAgent` stops that. For a scenario that declares `turn_key` on `perplexity` *and* exercises
+the Agent surface, the lane key changes, and with it the call indices, the turn selected for a given call, every
+derived identifier, and `outcome.fault_key`. `Exchange.policy()` moves in the same step: the agent surface stops
+inheriting `perplexity`'s `validation:` block and reads its own.
+
+**Ship it anyway, and own it.** The current behaviour is not a feature — it is an entry's own `turn_key:` being
+silently ignored, which is the silent-wrong-behaviour class this repository exists to eliminate. A consumer relying
+on it is relying on a bug, and the longer it ships the more expensive it is to correct. But §9's compatibility test
+must stop claiming what it cannot:
+
+- §9's "every existing lane key is unchanged" line is amended to name this exception explicitly.
+- A regression fixture pins the **new** agent lane key, so the change is asserted rather than discovered.
+- The release notes name it as a behaviour change, not as a fix, because that is what a consumer experiences.
+
+The narrowness of the affected combination — `turn_key` on `perplexity`, plus use of the Agent surface — is a reason
+to be confident it is safe to ship, not a reason to leave it undocumented.
+
+Every other existing route leaves `Route.Entry` empty and takes the branch it takes today.
+
+This also fixes the `Exchange.policy()` asymmetry recorded in
+[§12](#12-companion-corrections-this-design-depends-on) rather than leaving it as separate work, and it lets the
+async handlers call `x.Entry()` instead of hardcoding `Provider(NameAgentRuns)`.
 
 ### 5.2 Replay
 
@@ -1291,6 +1340,35 @@ That converts the one reachable symptom into its own diagnosis at the moment it 
 [§8](#8-multi-replica-the-consequence-stated-explicitly)'s `job.foreign_id` does for the multi-replica case. No race
 test is required for a race that is out of contract; the sequential reset test asserts the slots come back.
 
+#### `testkit.Sim.Reset()` must drop jobs, and the out-of-contract argument does not reach it
+
+The argument above covers the *concurrent* window. There is a **sequential** path to the same collision that is
+squarely in contract, and it is the one most consumers will actually take.
+
+`testkit/server.go:561-564`:
+
+```go
+func (s *Sim) Reset() {
+	s.journal.Reset()
+	s.faults.Reset()
+}
+```
+
+Its own godoc calls it "a convenience for a test that reuses one `Sim` across phases" — one process, sequential, no
+race anywhere. Resetting the fault counters rewinds the turn cursor. If jobs are not reset with them, the next create
+claims index 0, re-mints the identifier it minted before the reset, and collides with a record that is still live.
+
+That is §7.3's own opening failure mode, reached **deterministically, on the documented happy path**. "Reset is not a
+concurrency mechanism" is a true statement that says nothing about it, because nothing here is concurrent.
+
+So `Sim.Reset()` resets all three stores, and its godoc's existing warning about racing an in-flight request stays as
+it is. This belongs in [§11](#11-implementation-fan-out)'s **A6** alongside the other `testkit` work — an earlier
+draft listed only the aliases, `Sim.Jobs()` and the poll-sequence assertion, and would have shipped a testkit whose
+`Reset` left the process in exactly the state this section forbids.
+
+The general rule, worth stating once: **every surface that resets fault counters must reset jobs in the same call.**
+There are two such surfaces — the admin endpoint and `Sim.Reset()` — and a third would inherit the same obligation.
+
 `Registry.ResetIn` returns the namespace's slots to the `MaxJobs` budget, for the same reason
 `faults.Engine.ResetIn` and `journal.Ring.ResetIn` return theirs: a suite that runs more tests than the bound
 depends on teardown handing slots back.
@@ -1412,12 +1490,25 @@ Check it clause by clause against what this design actually changes:
 | `Route.LaneFrom` and the `path:` extractor | **Go**, on `provider.Route` | none; the lane key changes only for routes that declare it, and every such route is new |
 | `Deps.Jobs`, `Deps.MaxJobs` | **Go**, with working defaults from `Normalized` | none |
 | explicit `HEAD` handler on poll paths | **Go**, in `NewMux` | none; no existing listener serves a GET route |
+| `Route.Entry` on `perplexity_agent` | **Go**, on `provider.Route` | **NOT none — see below** |
 
-The last row of the third column is the one that actually matters for regression risk, so state it as a check to run
-rather than a claim to believe: **no existing lane key changes, therefore no existing call index changes, therefore
-no existing derived identifier changes, therefore every existing golden still passes.** `hasDiscriminator` returning
-`false` for an empty `LaneFrom` is what makes that true, and it is why that one line is called out explicitly in
-[§3.2](#32-routelanefrom).
+The third column is what actually matters for regression risk, so state it as a check to run rather than a claim to
+believe: **for every row but the last, no existing lane key changes, therefore no existing call index changes,
+therefore no existing derived identifier changes, therefore every existing golden still passes.**
+`hasDiscriminator` returning `false` for an empty `LaneFrom` is what makes that true, and it is why that one line is
+called out explicitly in [§3.2](#32-routelanefrom).
+
+**The last row is a real exception and must not be folded into that sentence.** `perplexity_agent` is shipped, and
+giving its routes an `Entry` stops them resolving their entry by listener name. A scenario that declares `turn_key`
+on the `perplexity` block **and** exercises the Agent surface currently has that key subdivide the agent lane; after
+this change it does not. The lane key, call indices, derived identifiers, `outcome.fault_key` and the effective
+`validation:` block all move for that combination.
+
+It ships regardless — the current behaviour is an entry's own `turn_key` being silently ignored, which is a bug, not
+a contract — but it ships **named**: a regression fixture pins the new agent lane key, and the release notes call it
+a behaviour change rather than a fix. See [§5.1](#51-identifier-derivation) for the reasoning. A compatibility claim
+with one unstated exception is worth less than one with a stated exception, because the reader cannot tell which
+kind they are holding.
 
 **The one change that would have forced version 2 is deliberately kept out of the schema.** Adding `path:` to the
 `turn_key` extractor allow-list is tempting and is refused: `scenario.Validate` rejects an unrecognised extractor as
@@ -1465,11 +1556,11 @@ None of those are in this design.
 | Unit | Owns | Depends on |
 |---|---|---|
 | **A1** | `internal/jobs`: `Job`, `Store`, `Registry`, `Limits`, bounds, `ResetIn`, race tests | — |
-| **A2** | `provider`: `Deps.Jobs`, `Deps.MaxJobs`, `Route.Entry`, `Route.LaneFrom`, `LaneFromPath`, `ValidJobID`, `MintJob`, `ResolveJob`, `turnLaneKey` and `hasDiscriminator` changes, the explicit `HEAD` → 405 registration, mux table rows | A1 |
+| **A2** | `provider`: `Deps.Jobs`, `Deps.MaxJobs`, `Route.Entry` (incl. the `perplexity_agent` break, [§5.1](#51-identifier-derivation)), `Route.LaneFrom`, `LaneFromPath`, `ValidJobID`, `MintJob`, `ResolveJob`, `turnLaneKey` and `hasDiscriminator` changes, the served-`HEAD` route and its own fault key ([§6](#6-get-routes-on-a-post-shaped-mux)), mux table rows | A1 |
 | **A3** | `provider/exa`: routes, request validation, `RunProjection`, render, error envelopes, validator findings | A2 |
 | **A4** | `provider/tavily`: the same, plus per-route credential placement (see §12) | A2 |
 | **A5** | `internal/admin` scoped reset across three stores, optional `GET /__admin/jobs`; `internal/server` `--max-jobs` wiring and the single-replica startup log | A1, A2 |
-| **A6** | `testkit`: `Job`/`Jobs` aliases, `Sim.Jobs()`, a poll-sequence assertion, `examples/adapter` alias guard | A1–A5 |
+| **A6** | `testkit`: `Job`/`Jobs` aliases, `Sim.Jobs()`, a poll-sequence assertion, **`Sim.Reset()` dropping jobs with the cursors** ([§7.3](#73-reset-must-drop-cursors-and-jobs-together)), `examples/adapter` alias guard | A1–A5 |
 | **A7** | `scenarios/protocol/async-job.yaml` (completed / failed / stuck), `docs/scenario-schema.md` async section, `contracts/exa/README.md` correction, README + troubleshooting multi-replica sections | A3, A4 |
 
 A1 and A2 are the critical path; A3 and A4 are independent of each other.

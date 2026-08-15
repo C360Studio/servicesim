@@ -20,8 +20,20 @@
 >   `decodeRefOrMapping` corrected to `(*SourceRef).UnmarshalYAML` (`scenario/model.go:407`); `DecodeStrict` line
 >   reference corrected to `:824`.
 >
-> **Still a design, not an instruction to start.** Round 2 has not itself been re-reviewed, and round 1 shipped a
-> restated finding while claiming completion. Implementation is Phase 5 and is gated on that step.
+> ### The Go blocks below are ILLUSTRATIVE, not normative
+>
+> **Normative:** the decisions, their reasoning, the finding codes and severities, the ordering constraints, and the
+> invariants — in particular that suppression is decided once before the append, and that policy is per entry while
+> content is per turn.
+>
+> **Illustrative:** every `go` block. Signatures, arities and registration details in them are sketches, and have
+> been wrong repeatedly in exactly those dimensions. Prose cannot be type-checked; two adversarial review rounds
+> produced a flat rate of mechanical defects in these blocks while the conceptual layer converged. Read them for
+> shape and intent. Where a block and the prose disagree, **the prose wins**; where the code, once written,
+> disagrees with a block, the code wins and the block should be deleted rather than patched.
+>
+> **Still a design, not an instruction to start.** Round 2 was re-reviewed and its conceptual findings are answered
+> in round 3. Implementation is Phase 5, which is gated behind Phase 3 in any case.
 >
 > <details><summary>Round-1 findings, all now addressed above</summary>
 >
@@ -221,9 +233,26 @@ Rules that make this shape work:
 - **A scalar is still accepted.** `stream: warn` and `stream: reject` keep parsing, decoded as
   `{when_requested: warn}`. This is the `SourceRef` scalar-or-mapping pattern the repository already uses
   (`scenario/model.go`, `DecodeStrict` at line 824), so every existing Exa fixture stays valid byte for byte.
-- **Declaring `deltas:` implies `when_requested: stream`.** Writing the script and forgetting the switch would
-  otherwise serve a JSON body and a warning, silently.
-- **A turn with no `stream:` block keeps today's behaviour** — `warn` — so no existing scenario changes meaning.
+- **Declaring `deltas:` implies `when_requested: stream` — on turn 0, which is the turn the policy is read from.**
+  Writing the script and forgetting the switch would otherwise serve a JSON body and a warning, silently.
+
+  On any **later** turn the implication cannot fire, because that turn's policy is never read
+  ([the preamble](#sse-streaming) explains why the policy must be per entry). Deltas there would otherwise be
+  silently dead — the exact failure this implication rule exists to prevent, one turn along — so
+  `scenario.stream.deltas_ignored` is a load **error**: a turn declares `deltas:` while the entry's effective policy
+  is not `stream`. It is the mirror of `deltas_empty`, and between them every combination of "entry streams" and
+  "turn has deltas" is either valid or reported:
+
+  | entry policy | turn has `deltas` | outcome |
+  |---|---|---|
+  | `stream` | yes | serves the stream |
+  | `stream` | no | `scenario.stream.deltas_empty` (error) |
+  | not `stream` | yes | `scenario.stream.deltas_ignored` (error) |
+  | not `stream` | no | serves JSON, unchanged |
+
+- **A turn with no `stream:` block keeps today's behaviour under an entry that does not stream** — `warn` — so no
+  existing scenario changes meaning. Under an entry whose policy *is* `stream`, such a turn is a `deltas_empty`
+  error rather than a silent JSON response, per the table above.
 - **`Body` is still rendered.** A streaming turn renders the non-streaming body too; it is what a non-streaming caller
   receives and what a stream-suppressing fault writes. See [§4.4](#44-faults-that-suppress-the-stream).
 
@@ -1087,6 +1116,7 @@ All are load-time unless marked, so a bad streaming fixture fails at readiness r
 | `scenario.stream.policy.unknown` | error | `when_requested` is not `warn`, `reject` or `stream` |
 | `scenario.stream.policy.ignored` | warning | `when_requested` declared on a turn after the first — the policy is per entry, so a later one is never read (this is the shipped `perplexity.stream.policy.ignored`, generalised) |
 | `scenario.stream.deltas_empty` | error | the entry's policy is `stream` and **some turn** declares no `deltas` — that turn would serve an empty stream |
+| `scenario.stream.deltas_ignored` | error | a turn declares `deltas:` while the entry's policy is **not** `stream` — the script is dead and would serve JSON silently |
 | `scenario.stream.answer_mismatch` | warning | concatenated `deltas` do not equal the projection's `answer` |
 | `scenario.fault.after_chunk.not_streaming` | error | `after_chunk` set on a kind that is not `stream_*` |
 | `scenario.fault.stream_mismatch` | error | a `stream_*` kind on an **entry whose policy is not `stream`**, or `truncate_body` on an **entry whose policy is `stream`** |
