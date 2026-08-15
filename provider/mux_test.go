@@ -44,6 +44,160 @@ func testSpec() MuxSpec {
 	}
 }
 
+// --- a served HEAD on a poll-shaped route ----------------------------------
+
+// pollSpec is the async poll shape: a GET whose lane is per job and a HEAD on
+// the same path with its OWN fault key and its own handler.
+//
+// The HEAD handler must not be the GET handler. Go routes HEAD to a GET pattern
+// automatically, and for a poll that means turn selection runs, an attempt is
+// claimed and the job's cursor advances — for a request whose body net/http then
+// discards. One existence check would silently consume a poll.
+func pollSpec(get, head Handler) MuxSpec {
+	return MuxSpec{
+		Routes: []Route{
+			{
+				Pattern:  "GET /runs/{id}",
+				FaultKey: "exa:runs.poll",
+				LaneFrom: []string{LaneFromPath + "id"},
+			},
+			{
+				// Its own key: a HEAD must not draw on the poll budget for the same
+				// reason it must not advance the cursor.
+				Pattern:  "HEAD /runs/{id}",
+				FaultKey: "exa:runs.head",
+				LaneFrom: []string{LaneFromPath + "id"},
+			},
+		},
+		Handlers: map[string]Handler{
+			"GET /runs/{id}":  get,
+			"HEAD /runs/{id}": head,
+		},
+		NotFound: func(_ *Exchange) Response {
+			return Response{Status: http.StatusNotFound, Body: []byte(`{}`), Label: "nf"}
+		},
+		MethodNotAllowed: func(allow []string) Handler {
+			return func(_ *Exchange) Response {
+				return Response{
+					Status: http.StatusMethodNotAllowed,
+					Header: http.Header{"Allow": []string{strings.Join(allow, ", ")}},
+					Body:   []byte(`{}`), Label: "mna",
+				}
+			}
+		},
+	}
+}
+
+// TestHeadIsServedByItsOwnHandler pins the mechanism. Registering "HEAD /p"
+// alongside "GET /p" needs NO change to NewMux: the registration loop splits on
+// the method, so the pattern registers like any other and paths[path] picks HEAD
+// up for the Allow header for free.
+func TestHeadIsServedByItsOwnHandler(t *testing.T) {
+	t.Parallel()
+
+	var getCalls, headCalls int
+	spec := pollSpec(
+		func(_ *Exchange) Response {
+			getCalls++
+			return Response{Status: http.StatusOK, Body: []byte(`{"status":"running"}`), Label: "get"}
+		},
+		func(_ *Exchange) Response {
+			headCalls++
+			return Response{Status: http.StatusOK, Label: "head"}
+		},
+	)
+	mux := NewMux(Deps{}, Exa, spec)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodHead, "/runs/run_a", nil))
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 1, headCalls, "HEAD must reach its own handler")
+	require.Zero(t, getCalls, "HEAD must not fall through to the GET handler")
+}
+
+// The Allow header advertises HEAD because the route genuinely serves it. This
+// is the half an earlier design got right for the wrong reason: it wanted to
+// advertise HEAD while still letting it reach the GET handler.
+func TestHeadAppearsInAllow(t *testing.T) {
+	t.Parallel()
+
+	spec := pollSpec(
+		okHandler(`{"status":"running"}`),
+		func(_ *Exchange) Response { return Response{Status: http.StatusOK, Label: "head"} },
+	)
+	mux := NewMux(Deps{}, Exa, spec)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/runs/run_a", nil))
+
+	require.Equal(t, http.StatusMethodNotAllowed, w.Code)
+	require.Equal(t, "GET, HEAD", w.Header().Get("Allow"))
+}
+
+// TestHeadDoesNotAdvanceThePollCursor is the test that actually guards the bug.
+//
+// A status-code assertion alone would still pass if the dedicated handler were
+// removed, because HEAD reaching the GET handler ALSO returns 200. Only the
+// following GET's call index can tell the two apart.
+func TestHeadDoesNotAdvanceThePollCursor(t *testing.T) {
+	t.Parallel()
+
+	var seen []int
+	spec := pollSpec(
+		func(x *Exchange) Response {
+			seen = append(seen, x.CallIndex())
+			return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "get", FaultEligible: true}
+		},
+		func(_ *Exchange) Response {
+			// A real headJob resolves the job and claims nothing. Claiming nothing
+			// is the property under test.
+			return Response{Status: http.StatusOK, Label: "head"}
+		},
+	)
+	mux := NewMux(Deps{}, Exa, spec)
+
+	for range 3 {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodHead, "/runs/run_a", nil))
+		require.Equal(t, http.StatusOK, w.Code)
+	}
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs/run_a", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+
+	require.Equal(t, []int{0}, seen,
+		"three HEADs consumed %d polls; the first real GET must still be poll 0", len(seen))
+}
+
+// Two jobs polled through one route keep separate cursors, which is what
+// Route.LaneFrom exists for. Without it both would draw from one sequence and
+// each poll would receive the snapshot scripted for the other job.
+func TestPollCursorsArePerJob(t *testing.T) {
+	t.Parallel()
+
+	byID := map[string][]int{}
+	spec := pollSpec(
+		func(x *Exchange) Response {
+			id := x.Request.PathValue("id")
+			byID[id] = append(byID[id], x.CallIndex())
+			return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "get", FaultEligible: true}
+		},
+		func(_ *Exchange) Response { return Response{Status: http.StatusOK, Label: "head"} },
+	)
+	mux := NewMux(Deps{}, Exa, spec)
+
+	for _, id := range []string{"run_a", "run_b", "run_a", "run_b", "run_a"} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs/"+id, nil))
+		require.Equal(t, http.StatusOK, w.Code)
+	}
+
+	require.Equal(t, []int{0, 1, 2}, byID["run_a"])
+	require.Equal(t, []int{0, 1}, byID["run_b"], "run_b's polls must not be numbered by run_a's")
+}
+
 // TestNewMuxRoutingTable is §5.1's verification table, verbatim. It runs once,
 // against NewMux, rather than three times against three copies of the
 // registration logic.

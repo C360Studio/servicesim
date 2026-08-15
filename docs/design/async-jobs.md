@@ -1171,7 +1171,12 @@ with a fault plan.
 
 ## 6. GET routes on a POST-shaped mux
 
-`provider.NewMux` needs **one** change, and it is not the one a reader expects.
+`provider.NewMux` needs **no change at all**. Two drafts of this section claimed it needed one; A2 established
+otherwise by writing the tests, and the record is corrected here rather than left for a third reader to re-derive.
+
+The registration loop already splits a pattern on its method (`provider/mux.go:58`) and accumulates the methods a
+path answers (`:60`), so `HEAD /agent/runs/{id}` registers like any other route, gets its own handler, and appears in
+the `Allow` header for free. Everything below is about what a provider declares, not about the mux.
 
 What already works, verified ([§0](#0-mechanics-verified-against-the-toolchain-before-writing-this)):
 
@@ -1204,15 +1209,22 @@ the GET handler — the bug above, announced. The second registered `HEAD` to a 
 Refusing it bought a real fidelity divergence — RFC 9110 makes `HEAD` mandatory wherever `GET` is served — for
 nothing.
 
+A provider declares it in `Routes()` beside the others, which is also what registers its fault key — the engine's key
+set is built by `faults.New` from the routes it is handed (`internal/faults/engine.go`), so a key that never reaches
+that loop would make every HEAD collect a `fault.unknown_key` warning:
+
 ```go
-// HEAD is registered explicitly so it does NOT fall through to the GET handler,
+// HEAD is a route of its own so it does NOT fall through to the GET handler,
 // which would claim an attempt and advance the job cursor for a request whose
 // body net/http discards.
 //
-// ResolveJob claims nothing, so this answers the question a HEAD actually asks —
-// does this job exist — at the same statuses GET uses, and leaves the poll
-// sequence exactly where it was.
-inner.Handle("HEAD "+path, Handle(d, p, headRoute, headJob(spec)))
+// Its own FaultKey: a HEAD must not draw on the poll budget for the same reason
+// it must not advance the cursor.
+provider.Route{
+	Pattern:  "HEAD /agent/runs/{id}",
+	FaultKey: "exa:agent_runs.head",
+	LaneFrom: []string{provider.LaneFromPath + "id"},
+}
 ```
 
 `headJob` looks the job up with `ResolveJob`, returns `404` when it is absent and `200` with the streaming-free
