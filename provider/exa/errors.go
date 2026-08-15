@@ -180,17 +180,27 @@ func classifyCode(code, message string) (int, string, string) {
 	case provider.CodeBodyTooLarge:
 		return http.StatusRequestEntityTooLarge, TagInvalidRequestBody, message
 
-	case provider.CodeNoHandler, codeProjectionInvalid, codeRenderFailed:
+	case provider.CodeJobIDInvalid, provider.CodeNoHandler, codeProjectionInvalid, codeRenderFailed:
 		return http.StatusInternalServerError, TagInternalError, messageInternalError
 
-	case provider.CodeNamespaceLimit:
+	case provider.CodeNamespaceLimit, provider.CodeJobLimitReached:
 		// 503 rather than 500: the simulator is refusing to take on more state,
 		// not reporting a broken scenario, and the operator's fix is to raise
-		// --max-namespaces. The finding's own message carries that instruction,
-		// so it is passed through rather than flattened to a generic string —
-		// this is a Servicesim configuration problem and the consumer needs to
-		// be told which knob, not handed a plausible-looking vendor error.
+		// --max-namespaces or --max-jobs. The finding's own message carries
+		// that instruction, so it is passed through rather than flattened to a
+		// generic string — this is a Servicesim configuration problem and the
+		// consumer needs to be told which knob, not handed a plausible-looking
+		// vendor error.
 		return http.StatusServiceUnavailable, TagInternalError, message
+
+	case provider.CodeJobIDCollision:
+		// 500, per docs/design/async-jobs.md §7.3: the identifier is already
+		// live in this namespace, which happens when a reset drops fault
+		// cursors without dropping job records. That is a Servicesim-internal
+		// condition, not something the client's request got wrong, and the
+		// finding's message already names the fix, so it is passed through
+		// the same way the namespace-limit message is.
+		return http.StatusInternalServerError, TagInternalError, message
 
 	case codeOutputSchemaDepth, codeOutputSchemaProperties:
 		return http.StatusBadRequest, TagInvalidJSONSchema, messageInvalidJSONSchema

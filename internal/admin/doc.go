@@ -26,10 +26,15 @@
 // which a header, query parameter, body property or finding message could
 // leave the process unmasked.
 //
-// Nothing here mutates scenario state. POST /__admin/reset clears the journal
-// and the fault counters and does nothing else, per the CLAUDE.md house rule:
-// a mutable admin API becomes hidden shared state between concurrent tests.
-// Parallel CI isolates by process; reset is a local-development convenience.
+// Nothing here mutates scenario state. POST /__admin/reset clears the journal,
+// the fault counters and the async job registry and does nothing else, per the
+// CLAUDE.md house rule: a mutable admin API becomes hidden shared state between
+// concurrent tests. Parallel CI isolates by process; reset is a
+// local-development convenience. GET /__admin/jobs is the read-only
+// counterpart: it lists live async job records — id, namespace, entry, create
+// index, created_at — with no poll cursor (nothing can read one without
+// claiming it) and no lane key (a lane key embeds turn_key extractor values
+// verbatim, and nothing redacts it).
 //
 // Provider routes are deliberately absent from this mux. A request to
 // :8080/search is a 404 with a plain {"error":"not found"} body, which catches

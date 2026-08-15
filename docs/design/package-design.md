@@ -60,7 +60,7 @@ point of use, and the four that change the design are:
 | `internal/wire` | internal | Response-side rendering: typed struct to JSON, extra-field merge. |
 | `internal/ids` | internal | Deterministic identifier derivation from stable fixture keys. |
 | `internal/config` | internal | Flag/env configuration with defined precedence and path-traversal-safe scenario resolution. |
-| `internal/admin` | internal | `/healthz`, `/readyz`, `/__admin/requests`, `/__admin/scenario`, `/__admin/reset`. |
+| `internal/admin` | internal | `/healthz`, `/readyz`, `/__admin/requests`, `/__admin/scenario`, `/__admin/jobs`, `/__admin/reset`. |
 | `internal/server` | internal | Composition and lifecycle: build handlers, bind listeners, graceful shutdown, readiness gate. |
 | `cmd/servicesim` | binary | Flag entry point, `--version`, `--healthcheck`, signal handling. |
 
@@ -2024,6 +2024,8 @@ environment would silently override an explicit flag.
 | `--tavily-port` | `SERVICESIM_TAVILY_PORT` | `8082` |
 | `--perplexity-port` | `SERVICESIM_PERPLEXITY_PORT` | `8083` |
 | `--providers` | `SERVICESIM_PROVIDERS` | `exa,tavily,perplexity` |
+| `--max-namespaces` | `SERVICESIM_MAX_NAMESPACES` | `1024` |
+| `--max-jobs` | `SERVICESIM_MAX_JOBS` | `256` |
 | `--journal-capacity` | `SERVICESIM_JOURNAL_CAPACITY` | `1000` (`0` disables retention) |
 | `--max-request-bytes` | `SERVICESIM_MAX_REQUEST_BYTES` | `1048576` |
 | `--max-journal-body-bytes` | `SERVICESIM_MAX_JOURNAL_BODY_BYTES` | `65536` |
@@ -2465,9 +2467,9 @@ type ScenarioResponse struct {
 ```
 
 Routes: `GET /healthz`, `GET /readyz`, `GET /__admin/requests` (filters `?provider=`, `?since=`, `?limit=`,
-`?pretty=1`), `GET /__admin/scenario`, `POST /__admin/reset`. `POST /__admin/reset` clears the journal *and* the fault
-counters, and is the only mutating admin endpoint. Per the plan it is a local-development convenience; parallel CI
-isolates by process, not by reset.
+`?pretty=1`), `GET /__admin/scenario`, `GET /__admin/jobs` (`?namespace=`, `?pretty=1`), `POST /__admin/reset`.
+`POST /__admin/reset` clears the journal, the fault counters *and* the async job registry, and is the only mutating
+admin endpoint. Per the plan it is a local-development convenience; parallel CI isolates by process, not by reset.
 
 ```go
 // Package server composes handlers, binds listeners and manages lifecycle.

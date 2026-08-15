@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/provider"
 )
 
@@ -40,6 +41,7 @@ func TestLoadDefaults(t *testing.T) {
 		ScenarioRoot:        "",
 		ScenarioDir:         "",
 		MaxNamespaces:       1024,
+		MaxJobs:             256,
 		JournalCapacity:     1000,
 		MaxRequestBytes:     1 << 20,
 		MaxJournalBodyBytes: 1 << 16,
@@ -123,6 +125,7 @@ func TestLoadEnvironmentAppliesToEveryBinding(t *testing.T) {
 		"SERVICESIM_PERPLEXITY_PORT":        "9083",
 		"SERVICESIM_PROVIDERS":              "exa",
 		"SERVICESIM_MAX_NAMESPACES":         "64",
+		"SERVICESIM_MAX_JOBS":               "32",
 		"SERVICESIM_JOURNAL_CAPACITY":       "7",
 		"SERVICESIM_MAX_REQUEST_BYTES":      "2048",
 		"SERVICESIM_MAX_JOURNAL_BODY_BYTES": "1024",
@@ -155,6 +158,7 @@ func TestLoadEnvironmentAppliesToEveryBinding(t *testing.T) {
 		ScenarioPath:        "/scenarios/custom.yaml",
 		ScenarioRoot:        "/scenarios",
 		MaxNamespaces:       64,
+		MaxJobs:             32,
 		JournalCapacity:     7,
 		MaxRequestBytes:     2048,
 		MaxJournalBodyBytes: 1024,
@@ -424,6 +428,96 @@ func TestLoadMaxNamespaces(t *testing.T) {
 			assert.Equal(t, tc.want, got.MaxNamespaces)
 		})
 	}
+}
+
+// TestLoadMaxJobs mirrors TestLoadMaxNamespaces: the bound on a surface that
+// also grows implicitly, one create at a time.
+func TestLoadMaxJobs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		args    []string
+		vars    map[string]string
+		want    int
+		wantErr []string
+	}{
+		{
+			name: "the default bounds a shared container",
+			want: DefaultMaxJobs,
+		},
+		{
+			name: "an explicit flag",
+			args: []string{"--max-jobs", "4"},
+			want: 4,
+		},
+		{
+			name: "one job is a legitimate bound",
+			args: []string{"--max-jobs", "1"},
+			want: 1,
+		},
+		{
+			name: "the environment binding",
+			vars: map[string]string{"SERVICESIM_MAX_JOBS": "16"},
+			want: 16,
+		},
+		{
+			// Zero is not "unlimited" and not "the default": every create would
+			// be refused.
+			name:    "zero",
+			args:    []string{"--max-jobs", "0"},
+			wantErr: []string{"--max-jobs", "at least 1"},
+		},
+		{
+			name:    "negative",
+			args:    []string{"--max-jobs", "-1"},
+			wantErr: []string{"--max-jobs", "at least 1"},
+		},
+		{
+			name:    "a negative environment value is validated like a flag value",
+			vars:    map[string]string{"SERVICESIM_MAX_JOBS": "-1"},
+			wantErr: []string{"--max-jobs", "at least 1"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := Load(tc.args, env(tc.vars))
+			if len(tc.wantErr) > 0 {
+				require.Error(t, err)
+				for _, want := range tc.wantErr {
+					assert.Containsf(t, err.Error(), want, "error %q should mention %q", err, want)
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got.MaxJobs)
+		})
+	}
+}
+
+// TestLoadMaxJobsFlagBeatsEnvironment follows the precedence tests above: an
+// explicit flag, even one equal to the default, must not be shadowed by the
+// environment.
+func TestLoadMaxJobsFlagBeatsEnvironment(t *testing.T) {
+	t.Parallel()
+
+	got, err := Load([]string{"--max-jobs", "256"}, env(map[string]string{"SERVICESIM_MAX_JOBS": "9"}))
+	require.NoError(t, err)
+	assert.Equal(t, 256, got.MaxJobs)
+}
+
+// TestDefaultMaxJobsAgreesWithJobsPackage guards a duplication the import
+// graph forces: config must not import internal/jobs to read the constant (it
+// would be an odd dependency for a flag-parsing package to carry for one
+// integer), so both packages declare DefaultMaxJobs independently. Two
+// diverging values would mean the documented flag default lies about what a
+// fresh registry actually bounds itself to.
+func TestDefaultMaxJobsAgreesWithJobsPackage(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, jobs.DefaultMaxJobs, DefaultMaxJobs)
 }
 
 func TestLoadProviders(t *testing.T) {

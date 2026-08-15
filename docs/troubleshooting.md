@@ -138,8 +138,8 @@ Three ways out, in order of preference:
 
 1. Stop minting a namespace per *request*. A namespace is a per-test boundary; one per test case is the intended
    cardinality, one per HTTP call is not.
-2. Free the ones you are finished with: `POST /__admin/reset?namespace=<name>` drops that lane's journal entries
-   and fault counters **and releases its slot**.
+2. Free the ones you are finished with: `POST /__admin/reset?namespace=<name>` drops that lane's journal entries,
+   fault counters and job records **and releases its slot**.
 3. Raise `--max-namespaces`.
 
 `GET /__admin/namespaces` shows every live lane, including ones holding no entries, because those still count
@@ -151,6 +151,41 @@ against the bound:
 
 The `default` namespace never consumes budget — it is the lane every unprefixed request has always been served in,
 so counting it would make `--max-namespaces=1` mean "no namespaces at all".
+
+## A create is refused: the namespace is at its `--max-jobs` bound
+
+Async jobs — Exa `POST /agent/runs`, Tavily `POST /research` — are held per namespace and are **never evicted**,
+for the same reason namespaces themselves are not: evicting a job would turn a later poll for a job the client
+successfully created into the vendor's own 404. Once a namespace holds `--max-jobs` (default 256) live jobs, the
+next create in it is refused with a `job.limit_reached` finding:
+
+```text
+namespace "t-42" holds its maximum of 256 jobs; reset it with POST /__admin/reset, give each test its own
+namespace, or raise the bound
+```
+
+Those are the three remedies, in the order the finding names them:
+
+1. `POST /__admin/reset?namespace=<name>` drops that namespace's journal entries, fault counters and job
+   records together, and releases its job slots.
+2. Give each test its own namespace, the same fix `--max-namespaces` bounds describe above.
+3. Raise `--max-jobs`.
+
+`GET /__admin/jobs?namespace=<name>` shows what is currently live in a namespace — every job's id, entry and
+creation time — which is the fastest way to tell whether the bound was reached by a genuine backlog or by a
+suite that is not tearing down after itself.
+
+A related finding, `job.id_collision`, means a create re-minted an identifier that is still live:
+
+```text
+job "run_9f2c1ab4e5d67890abcdef0123456789" is already live in namespace "t-42"; the usual cause is a reset that
+dropped the fault cursors without dropping the job records, so this create re-minted an identifier it had
+already used
+```
+
+Reset drops all three stores in one call, which leaves one way to reach it: `POST /__admin/reset` racing live
+traffic in the same namespace. Reset is a local-development convenience, not a concurrency mechanism (house rule
+6). Use one process, or one namespace per parallel test.
 
 ## `POST /__admin/reset` came back 400
 

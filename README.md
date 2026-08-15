@@ -78,7 +78,7 @@ preserving each vendor's real path requires a separate port per provider.
 
 | Listener | Port | Routes |
 |---|---:|---|
-| admin | `8080` | `GET /healthz`, `GET /readyz`, `GET /__admin/requests`, `GET /__admin/namespaces`, `GET /__admin/scenario`, `POST /__admin/reset` |
+| admin | `8080` | `GET /healthz`, `GET /readyz`, `GET /__admin/requests`, `GET /__admin/namespaces`, `GET /__admin/scenario`, `GET /__admin/jobs`, `POST /__admin/reset` |
 | exa | `8081` | `POST /search`, `POST /answer` |
 | tavily | `8082` | `POST /search` |
 | perplexity | `8083` | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/agent`, `POST /v1/responses` |
@@ -253,6 +253,9 @@ The rest of it, briefly:
 - `-max-namespaces` (default 1024) bounds them, and exceeding the bound is a **provider-shaped 503, never a silent
   success**: the refusal happens before the handler runs, so a test in a refused namespace fails loudly instead of
   reading a response that belongs to no lane. Evicting instead would reset a running test's turn cursor mid-loop.
+  `-max-jobs` (default 256) is the same rule one level down: it bounds live async jobs per namespace and refuses
+  rather than evicts, because an evicted job would turn a later poll into the vendor's 404 for a job the client
+  successfully created.
 
   ```json
   {"requestId":"6c19404215fa0b2e878faa18675b4d90",
@@ -311,7 +314,8 @@ state between concurrent tests.
 | `GET /__admin/requests` | The redacted journal. `?provider=`, `?namespace=`, `?limit=`, `?pretty=1`. |
 | `GET /__admin/namespaces` | Every live state lane and how many entries it holds. |
 | `GET /__admin/scenario` | What was loaded: name, version, seed, source count, and any validation warnings. |
-| `POST /__admin/reset` | Drops journal entries and zeroes fault attempt counters (which are the turn cursors). |
+| `GET /__admin/jobs` | Every live async job: `?namespace=`, `?pretty=1`. Read-only; no cursor or lane key is served. |
+| `POST /__admin/reset` | Drops journal entries, zeroes fault attempt counters (which are the turn cursors), and drops async job records. |
 
 `GET /__admin/namespaces` shows lanes that hold no entries too, because they still count against
 `-max-namespaces` — which is exactly what you need to see when a namespace was refused:

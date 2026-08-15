@@ -316,6 +316,86 @@ func TestLimitsDefaults(t *testing.T) {
 	}
 }
 
+// TestListOrdersTheDeclaredTotalOrder pins the order GET /__admin/jobs depends
+// on: namespace ascending, then entry, then create index, then id. Records are
+// inserted out of that order, across two namespaces and two entries, so a List
+// that merely reflected map iteration would fail this most of the time.
+func TestListOrdersTheDeclaredTotalOrder(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry(Limits{})
+
+	insert := func(ns, entry, id string, createIndex int) {
+		j := job(ns, id)
+		j.Entry = entry
+		j.CreateIndex = createIndex
+		if _, err := r.Create(j); err != nil {
+			t.Fatalf("Create(%s, %s, %s): %v", ns, entry, id, err)
+		}
+	}
+
+	insert("t-2", "tavily_research", "run_a", 0)
+	insert("t-1", "exa_agent_runs", "run_z", 1)
+	insert("t-1", "exa_agent_runs", "run_a", 0)
+	insert("t-1", "tavily_research", "run_b", 0)
+
+	got := make([][3]any, 0, 4)
+	for _, j := range r.List() {
+		got = append(got, [3]any{j.Namespace, j.Entry, j.ID})
+	}
+	want := [][3]any{
+		{"t-1", "exa_agent_runs", "run_a"},
+		{"t-1", "exa_agent_runs", "run_z"},
+		{"t-1", "tavily_research", "run_b"},
+		{"t-2", "tavily_research", "run_a"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("List() returned %d records, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("List()[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestListOrdersByCreateIndexWithinOneEntry covers the third order key
+// directly: two records sharing a namespace and an entry must still come back
+// by create index, not by insertion or id order.
+func TestListOrdersByCreateIndexWithinOneEntry(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry(Limits{})
+	second := job("t-1", "run_second")
+	second.CreateIndex = 5
+	first := job("t-1", "run_first")
+	first.CreateIndex = 2
+
+	if _, err := r.Create(second); err != nil {
+		t.Fatalf("Create second: %v", err)
+	}
+	if _, err := r.Create(first); err != nil {
+		t.Fatalf("Create first: %v", err)
+	}
+
+	got := r.List()
+	if len(got) != 2 || got[0].ID != "run_first" || got[1].ID != "run_second" {
+		t.Errorf("List() = %+v, want run_first (index 2) before run_second (index 5)", got)
+	}
+}
+
+func TestListOnAnEmptyRegistryReturnsAnEmptySliceNotNil(t *testing.T) {
+	t.Parallel()
+
+	got := NewRegistry(Limits{}).List()
+	if got == nil {
+		t.Error("List() on an empty registry must not be nil, so a JSON encoding renders [] rather than null")
+	}
+	if len(got) != 0 {
+		t.Errorf("List() = %+v, want empty", got)
+	}
+}
+
 // --- concurrency -----------------------------------------------------------
 
 // The bound must be exact under concurrency: N goroutines racing to create into
@@ -430,6 +510,33 @@ func TestConcurrentMixedAccess(t *testing.T) {
 			}
 		}()
 	}
+	wg.Wait()
+}
+
+// List must be safe to read while creates are landing, the way the admin
+// listing reads it against a process still taking live traffic.
+func TestListRaceSafeUnderConcurrentCreate(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry(Limits{MaxJobs: 100})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := range 100 {
+			_, _ = r.Create(job("t-1", "run_"+strconv.Itoa(i)))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			for _, j := range r.List() {
+				_ = j.ID // touched, so the compiler cannot elide the read under -race
+			}
+		}
+	}()
 	wg.Wait()
 }
 

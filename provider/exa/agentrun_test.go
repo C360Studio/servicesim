@@ -472,6 +472,7 @@ func TestAgentRunCreateAtTheJobBound(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rec.Code)
 
 	rec = s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"second"}`})
-	assert.NotEqual(t, http.StatusCreated, rec.Code, "a create past the bound must not succeed")
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code,
+		"a create past the bound is a Servicesim configuration wall, not a malformed client request")
 	assert.True(t, s.hasFinding(provider.CodeJobLimitReached))
 }

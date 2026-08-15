@@ -106,13 +106,22 @@ func errorResponse(x *provider.Exchange) provider.Response {
 		status, message = http.StatusRequestEntityTooLarge, MessageBodyTooLarge
 	case containsAny(errs, []string{provider.CodeNoMatchingTurn}):
 		status, message = http.StatusNotFound, MessageNoMatchingTurn
-	case containsAny(errs, []string{CodeProjectionInvalid}):
+	case containsAny(errs, []string{CodeProjectionInvalid, provider.CodeJobIDInvalid}):
 		status, message = http.StatusInternalServerError, MessageInternalServerError
-	case containsAny(errs, []string{provider.CodeNamespaceLimit}):
+	case containsAny(errs, []string{provider.CodeNamespaceLimit, provider.CodeJobLimitReached}):
 		// 503, and the finding's own message rather than a constant: this is a
 		// Servicesim configuration problem, and the consumer needs to be told
-		// which knob to turn, not handed a plausible-looking vendor error.
+		// which knob to turn (--max-namespaces or --max-jobs), not handed a
+		// plausible-looking vendor error.
 		status, message = http.StatusServiceUnavailable, errs[0].Message
+	case containsAny(errs, []string{provider.CodeJobIDCollision}):
+		// 500, per docs/design/async-jobs.md §7.3: the identifier is already
+		// live in this namespace, which happens when a reset drops fault
+		// cursors without dropping job records. That is Servicesim-internal,
+		// not the client's mistake, and the finding's message already names
+		// the fix, so it is passed through the same way the namespace-limit
+		// message is.
+		status, message = http.StatusInternalServerError, errs[0].Message
 	case len(errs) > 0:
 		// The first error in Findings order. That order is total — severity,
 		// then field, then code — so a request with two problems reports the

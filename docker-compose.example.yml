@@ -27,6 +27,10 @@ services:
       # loud provider-shaped error, never a silent eviction: evicting would
       # reset a running test's turn cursor mid-loop.
       - --max-namespaces=1024
+      # Bounds how many live async jobs (Exa agent runs, Tavily research)
+      # one namespace may hold. Same rule as --max-namespaces, one level
+      # down: a create beyond the bound is refused, never evicted.
+      - --max-jobs=256
 
     volumes:
       # Read-only, because Servicesim never writes here and a simulator that
@@ -40,7 +44,8 @@ services:
       - ./test/fixtures/research:/scenarios:ro
 
     ports:
-      - "8080:8080" # admin: /healthz, /readyz, /__admin/requests, /__admin/scenario, /__admin/reset
+      - "8080:8080" # admin: /healthz, /readyz, /__admin/requests, /__admin/namespaces, /__admin/scenario,
+                    # /__admin/jobs, /__admin/reset
       - "8081:8081" # exa:        POST /search, POST /answer
       - "8082:8082" # tavily:     POST /search
       - "8083:8083" # perplexity: POST /v1/sonar, /chat/completions, /v1/agent, /v1/responses

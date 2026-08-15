@@ -52,6 +52,12 @@ const (
 	// MaxNamespaces × JournalCapacity, and both are configurable.
 	DefaultMaxNamespaces = 1024
 
+	// DefaultMaxJobs bounds the number of live async jobs per namespace. It
+	// matches jobs.DefaultMaxJobs, checked by an agreement test rather than
+	// imported directly: importing internal/jobs here would buy one constant at
+	// the cost of a dependency this package does not otherwise need.
+	DefaultMaxJobs = 256
+
 	// ScenarioDirDefault is the scenario name in --scenario-dir that serves a
 	// request carrying no /x/<scenario> prefix. See [DefaultScenarioEntry] for
 	// the full rule, which also covers a directory holding one scenario under
@@ -154,6 +160,14 @@ type Config struct {
 	// belongs to a namespace even when it names none.
 	MaxNamespaces int
 
+	// MaxJobs bounds the number of live async jobs per namespace. Exceeding it
+	// refuses the create rather than evicting a record: an evicted job would
+	// turn a later poll for a job the client successfully created into the
+	// vendor's 404, which is a correctness failure rather than an
+	// observability one (internal/jobs). At least 1, for the same reason as
+	// MaxNamespaces: zero would refuse every create.
+	MaxJobs int
+
 	// JournalCapacity is the maximum number of retained journal entries. Zero
 	// disables retention.
 	JournalCapacity int
@@ -213,6 +227,7 @@ var bindings = []binding{
 	{"perplexity-port", "SERVICESIM_PERPLEXITY_PORT"},
 	{"providers", "SERVICESIM_PROVIDERS"},
 	{"max-namespaces", "SERVICESIM_MAX_NAMESPACES"},
+	{"max-jobs", "SERVICESIM_MAX_JOBS"},
 	{"journal-capacity", "SERVICESIM_JOURNAL_CAPACITY"},
 	{"max-request-bytes", "SERVICESIM_MAX_REQUEST_BYTES"},
 	{"max-journal-body-bytes", "SERVICESIM_MAX_JOURNAL_BODY_BYTES"},
@@ -236,6 +251,7 @@ type raw struct {
 	perplexityPort      int
 	providers           string
 	maxNamespaces       int
+	maxJobs             int
 	journalCapacity     int
 	maxRequestBytes     int64
 	maxJournalBodyBytes int
@@ -272,6 +288,8 @@ func newFlagSet(r *raw) *flag.FlagSet {
 		"comma-separated providers to serve")
 	flags.IntVar(&r.maxNamespaces, "max-namespaces", DefaultMaxNamespaces,
 		"maximum number of live namespaces")
+	flags.IntVar(&r.maxJobs, "max-jobs", DefaultMaxJobs,
+		"maximum live async jobs per namespace")
 	flags.IntVar(&r.journalCapacity, "journal-capacity", DefaultJournalCapacity,
 		"maximum retained journal entries (0 disables retention)")
 	flags.Int64Var(&r.maxRequestBytes, "max-request-bytes", DefaultMaxRequestBytes,
@@ -390,6 +408,7 @@ func assemble(r raw, provided map[string]bool) (Config, error) {
 		ScenarioRoot:        strings.TrimSpace(r.scenarioRoot),
 		ScenarioDir:         strings.TrimSpace(r.scenarioDir),
 		MaxNamespaces:       r.maxNamespaces,
+		MaxJobs:             r.maxJobs,
 		JournalCapacity:     r.journalCapacity,
 		MaxRequestBytes:     r.maxRequestBytes,
 		MaxJournalBodyBytes: r.maxJournalBodyBytes,
@@ -533,6 +552,13 @@ func (c Config) validate() error {
 	// surface --max-namespaces exists to close.
 	if c.MaxNamespaces < 1 {
 		return fmt.Errorf("--max-namespaces: must be at least 1, got %d", c.MaxNamespaces)
+	}
+	// Zero would refuse every create, for the same reason as --max-namespaces
+	// above: it reads as "no jobs allowed" rather than "unlimited" or "the
+	// default", and a typo here should fail loudly at startup rather than as an
+	// unexplained refusal on the process's very first create.
+	if c.MaxJobs < 1 {
+		return fmt.Errorf("--max-jobs: must be at least 1, got %d", c.MaxJobs)
 	}
 	if c.JournalCapacity < 0 {
 		return fmt.Errorf("--journal-capacity: must not be negative, got %d", c.JournalCapacity)

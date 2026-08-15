@@ -25,7 +25,10 @@
 package jobs
 
 import (
+	"cmp"
 	"errors"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -313,4 +316,40 @@ func (r *Registry) Reset() {
 	defer r.mu.Unlock()
 
 	clear(r.jobs)
+}
+
+// List returns every live record across every namespace, in the declared total
+// order: namespace ascending, then entry, then create index, then id. Every
+// field compared is a string or an int, and (namespace, id) is unique, so the
+// order is total — Go's map iteration must never reach a caller through this
+// method (CLAUDE.md house rule 2).
+//
+// It is not part of [Store]: a consumer's own implementation is not obliged to
+// support enumeration, and the admin surface asserts for this method as an
+// optional capability the same way it asserts for a namespace-scoped fault
+// reset. It returns a snapshot copy, so a caller mutating the slice or the
+// registry mutating afterwards cannot affect the other.
+func (r *Registry) List() []Job {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]Job, 0)
+	for _, live := range r.jobs {
+		for _, j := range live {
+			out = append(out, j)
+		}
+	}
+	slices.SortFunc(out, func(a, b Job) int {
+		if c := strings.Compare(a.Namespace, b.Namespace); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.Entry, b.Entry); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.CreateIndex, b.CreateIndex); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out
 }

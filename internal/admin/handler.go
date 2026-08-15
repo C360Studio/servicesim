@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
@@ -37,6 +38,16 @@ type Deps struct {
 	// namespace, which provider.Faults does not require — see [namespacedFaults]
 	// for why the capability is optional and what happens without it.
 	Faults provider.Faults
+
+	// Jobs is the async-job registry /__admin/reset drops records from and
+	// /__admin/jobs lists. It must be the same instance every provider's
+	// Deps.Jobs holds, or a reset drops records no handler consults — the same
+	// rule as Journal and Faults, and the reason is the same one that makes
+	// this a three-store reset rather than two: a job's poll cursor IS a fault
+	// attempt counter (docs/design/async-jobs.md §7.3), so cursors dropped
+	// without the records they identify collide the next create with a record
+	// still live.
+	Jobs jobs.Store
 
 	// Scenario is the loaded, validated, resolved corpus /__admin/scenario
 	// describes.
@@ -69,6 +80,12 @@ func (d Deps) normalized() Deps {
 	}
 	if d.Faults == nil {
 		d.Faults = noopFaults{}
+	}
+	if d.Jobs == nil {
+		// A fresh registry, never a shared one — the same rule as Journal above,
+		// and for the same reason: two Sims in parallel subtests must not resolve
+		// job identifiers out of one another's registry.
+		d.Jobs = jobs.NewRegistry(jobs.Limits{})
 	}
 	if d.Scenario == nil {
 		d.Scenario = scenario.Empty()
@@ -152,10 +169,11 @@ type errorResponse struct {
 // Handler builds the admin mux.
 //
 // Routes: GET /healthz, GET /readyz, GET /__admin/requests, GET
-// /__admin/namespaces, GET /__admin/scenario, POST /__admin/reset. Everything
-// else is 404 {"error":"not found"}, and a known path reached with the wrong
-// method is 405 with a sorted Allow header — sorted because Go map iteration
-// must never reach output, not even a header (package-design §3.3).
+// /__admin/namespaces, GET /__admin/scenario, GET /__admin/jobs, POST
+// /__admin/reset. Everything else is 404 {"error":"not found"}, and a known
+// path reached with the wrong method is 405 with a sorted Allow header —
+// sorted because Go map iteration must never reach output, not even a header
+// (package-design §3.3).
 func Handler(deps Deps) http.Handler {
 	d := deps.normalized()
 
@@ -165,6 +183,7 @@ func Handler(deps Deps) http.Handler {
 	route(mux, "/__admin/requests", map[string]http.HandlerFunc{http.MethodGet: d.handleRequests})
 	route(mux, "/__admin/namespaces", map[string]http.HandlerFunc{http.MethodGet: d.handleNamespaces})
 	route(mux, "/__admin/scenario", map[string]http.HandlerFunc{http.MethodGet: d.handleScenario})
+	route(mux, "/__admin/jobs", map[string]http.HandlerFunc{http.MethodGet: d.handleJobs})
 	route(mux, "/__admin/reset", map[string]http.HandlerFunc{http.MethodPost: d.handleReset})
 	mux.HandleFunc("/", d.handleNotFound)
 	return mux
@@ -240,10 +259,10 @@ func (d Deps) handleScenario(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReset drops retained state and mutates nothing else. It clears journal
-// entries and zeroes fault attempt counters — which are also the turn cursors —
-// and it never touches the loaded scenario: an admin API that could reconfigure
-// a running simulator is hidden shared state between concurrent tests (CLAUDE.md
-// house rule 6).
+// entries, zeroes fault attempt counters — which are also the turn cursors —
+// and drops async job records, and it never touches the loaded scenario: an
+// admin API that could reconfigure a running simulator is hidden shared state
+// between concurrent tests (CLAUDE.md house rule 6).
 //
 // The scope must be stated explicitly. Either ?namespace=<name> drops one lane
 // or ?all=true drops every lane; a bare POST is a 400 that says so.
@@ -292,27 +311,44 @@ const (
 		"was reset; resetting everything requires ?all=true"
 )
 
-// resetAll drops every namespace: all journal entries and every fault counter.
+// resetAll drops every namespace: all journal entries, every fault counter and
+// every job record. Do not reorder: see [Deps.resetNamespace] for why the
+// scoped path cannot go jobs-first, and this path mirrors it so the two
+// spellings of reset behave the same way relative to each other.
 func (d Deps) resetAll(w http.ResponseWriter) {
 	d.Journal.Reset()
 	d.Faults.Reset()
+	d.Jobs.Reset()
 	d.Logger.Info("admin.reset",
 		slog.String("scenario", d.Scenario.Name),
 		slog.String("scope", "all"),
-		slog.String("hint", "every namespace's journal entries and fault counters were cleared"))
+		slog.String("hint", "every namespace's journal entries, fault counters and job records were cleared"))
 
 	writeJSON(w, http.StatusOK, statusResponse{Status: "reset"}, false)
 }
 
-// resetNamespace drops one namespace's journal entries and fault counters,
-// leaving every other namespace untouched.
+// resetNamespace drops one namespace's journal entries, fault counters and job
+// records, leaving every other namespace untouched.
 //
-// A surface that can scope only one of the two state stores scopes neither. A
-// half-scoped reset — an empty journal beside a cursor still mid-plan — is worse
-// than a refusal, because the next request in that namespace is served a turn
-// from the wrong position and nothing says so. The order below is what makes
-// that hold: the fault engine is only asked about its capability, and
-// journal.ResetIn drops nothing when it reports it cannot scope.
+// A surface that can scope only some of the three state stores scopes none of
+// them. A half-scoped reset — an empty journal beside a cursor still mid-plan,
+// or a cursor reset with the job record it identifies left live — is worse than
+// a refusal, because the next request in that namespace is served wrong state
+// and nothing says so. The order below is what makes that hold: both capability
+// checks run before anything is dropped, so a store that cannot scope leaves
+// every store untouched.
+//
+// jobs.Store declares ResetIn unconditionally rather than as an asserted
+// capability, so there is no third type assertion here — every implementation
+// of the seam can scope a reset by construction
+// (docs/design/async-jobs.md §7.3).
+//
+// Do not reorder this to jobs-first. The window a reset can race live traffic
+// through is symmetric regardless of which store drops first — see §7.3's
+// "ordering cannot close the window" — and jobs-first would additionally break
+// the invariant above: a store that turns out not to scope would leave job
+// state already destroyed by a request that then reports 501 having "changed
+// nothing".
 func (d Deps) resetNamespace(w http.ResponseWriter, namespace string) {
 	scoped, ok := d.Faults.(namespacedFaults)
 	if !ok {
@@ -324,6 +360,7 @@ func (d Deps) resetNamespace(w http.ResponseWriter, namespace string) {
 		return
 	}
 	scoped.ResetIn(namespace)
+	d.Jobs.ResetIn(namespace)
 
 	// The namespace is safe to log and to echo: it survived ValidNamespace, so it
 	// is at most 64 characters of [A-Za-z0-9_-] with no separator, no control
@@ -332,7 +369,7 @@ func (d Deps) resetNamespace(w http.ResponseWriter, namespace string) {
 		slog.String("scenario", d.Scenario.Name),
 		slog.String("scope", "namespace"),
 		slog.String("namespace", namespace),
-		slog.String("hint", "one namespace's journal entries and fault counters were cleared"))
+		slog.String("hint", "one namespace's journal entries, fault counters and job records were cleared"))
 
 	writeJSON(w, http.StatusOK, statusResponse{Status: "reset", Namespace: namespace}, false)
 }

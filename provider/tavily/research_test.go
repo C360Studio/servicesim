@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -168,6 +169,33 @@ func TestResearchPollCursorsArePerTask(t *testing.T) {
 	rec, out = researchPoll(t, h, second)
 	assert.Equal(t, http.StatusAccepted, rec.Code)
 	assert.Equal(t, StatusPending, out["status"], "the second task drew from the first task's cursor")
+}
+
+// A create refused at the job bound is a Servicesim configuration wall, not a
+// malformed client request: it must answer the provider-shaped 503, not the
+// 400 a validation failure would, and it must name the remedy.
+func TestResearchCreateAtTheJobBound(t *testing.T) {
+	t.Parallel()
+
+	loaded, report, err := scenario.Parse([]byte(researchScenario))
+	require.NoError(t, err)
+	require.True(t, report.OK(), "%v", report.Findings)
+	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{
+		Name:         Validator{},
+		NameResearch: ResearchValidator{},
+	})
+	require.Empty(t, findings, "the fixture must validate before it is served")
+
+	h := New(provider.Deps{Scenario: loaded, Jobs: jobs.NewRegistry(jobs.Limits{MaxJobs: 1})})
+
+	rec := post(t, h, "/research", `{"input":"first"}`, bearer)
+	require.Equal(t, http.StatusCreated, rec.Code, "the first create must succeed: %s", rec.Body.String())
+
+	rec = post(t, h, "/research", `{"input":"second"}`, bearer)
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code,
+		"a create past the bound is a Servicesim configuration wall, not a malformed client request")
+	assert.Contains(t, rec.Body.String(), "holds its maximum of 1 jobs",
+		"the refusal should name the configured bound")
 }
 
 // The required field is `input`, not `query`. Accepting /search's field name

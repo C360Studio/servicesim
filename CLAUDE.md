@@ -30,7 +30,7 @@ scenario YAML ──► canonical sources ──► per-provider projection ─�
                                              ├─► tavily   listener :8082  POST /search
                                              └─► perplexity listener :8083  POST /v1/sonar, /chat/completions
 
-                        admin listener :8080  /healthz  /readyz  /__admin/requests  /__admin/reset
+                        admin listener :8080  /healthz  /readyz  /__admin/requests  /__admin/jobs  /__admin/reset
 ```
 
 Separate listeners are not a stylistic choice — Exa and Tavily both serve `POST /search`, so preserving each

@@ -1392,6 +1392,12 @@ worth adding. It mutates nothing, so house rule 6 is untouched, and it is the fa
 this surface generates: "did the create I think I made actually happen here?" and "does *this replica* hold the job I
 am polling?" — which is the multi-replica diagnostic below.
 
+**Shipped as `{id, namespace, entry, create_index, created_at}`, with no `turn_index`.** The poll cursor lives in the
+fault engine's attempt counter, and that seam offers no non-claiming read (§8, "localCursor is not readable"), so
+there is no value to put behind a `turn_index` key without the listing itself claiming an attempt. `lane_key` is
+also absent, on house-rule-4 grounds: a lane key embeds a route's `turn_key` or `Route.LaneFrom` extractor values
+verbatim, which can include a credential a scenario author wrote into a `header:` or `body_json:` extractor.
+
 ---
 
 ## 8. Multi-replica: the consequence, stated explicitly
@@ -1576,6 +1582,11 @@ None of those are in this design.
 | **A7** | `scenarios/protocol/async-job.yaml` (completed / failed / stuck), `docs/scenario-schema.md` async section, `contracts/exa/README.md` correction, README + troubleshooting multi-replica sections | A3, A4 |
 
 A1 and A2 are the critical path; A3 and A4 are independent of each other.
+
+**A5 done, 2026-08-15** — matching `docs/adopter-backlog.md`'s marking for A1–A4. The known defect this unit exists
+to fix, scoped reset dropping cursors without dropping jobs (§7.3), is closed: `admin.Deps.Jobs`, three-store
+`resetAll`/`resetNamespace`, `GET /__admin/jobs`, `--max-jobs`/`SERVICESIM_MAX_JOBS`, and the unconditional
+`servicesim.single_replica_required` startup log all shipped together. A6 and A7 remain open.
 
 ---
 

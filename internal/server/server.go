@@ -194,7 +194,7 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Server, error
 			MaxBodyBytes:  cfg.MaxJournalBodyBytes,
 			MaxNamespaces: cfg.MaxNamespaces,
 		}),
-		jobs:    jobs.NewRegistry(jobs.Limits{}),
+		jobs:    jobs.NewRegistry(jobs.Limits{MaxJobs: cfg.MaxJobs}),
 		ready:   new(atomic.Bool),
 		started: make(chan struct{}),
 	}
@@ -205,6 +205,7 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Server, error
 	s.surfaces = s.newSurfaces(admin.Deps{
 		Journal:  s.journal,
 		Faults:   newFaultsFanout(s.scenarios),
+		Jobs:     s.jobs,
 		Scenario: s.Scenario(),
 		Report:   s.Report(),
 		Ready:    s.ready,
@@ -291,7 +292,7 @@ func (s *Server) add(ls *loadedScenario, isDefault bool) {
 		MaxJournalBodyBytes: s.cfg.MaxJournalBodyBytes,
 		MaxNamespaces:       s.cfg.MaxNamespaces,
 		Jobs:                s.jobs,
-		MaxJobs:             jobs.DefaultMaxJobs,
+		MaxJobs:             s.cfg.MaxJobs,
 	}
 
 	s.scenarios = append(s.scenarios, ls)
@@ -595,12 +596,25 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 
 	s.ready.Store(true)
+
+	// Emitted unconditionally, once, and before server.ready: namespace lane
+	// state, turn cursors and async job records are all per-process
+	// (docs/design/async-jobs.md §8), and that is true of every configuration
+	// this binary can run, not only the ones that happen to hit it. A caller
+	// waiting on Started must see this before it does anything else, which is
+	// why it runs before close(s.started) below rather than after.
+	s.logger.Info("servicesim.single_replica_required",
+		slog.String("hint", "namespace lane state, turn cursors and async job records are per-process; "+
+			"run one replica, or route stickily on the /n/<namespace> path prefix"),
+		slog.String("doc", "docs/troubleshooting.md"))
+
 	s.logger.Info("server.ready",
 		slog.String("scenario", s.Scenario().Name),
 		slog.String("version", s.version),
 		slog.Int("listeners", len(s.surfaces)),
 		slog.Int("scenarios", len(s.scenarios)),
 		slog.Int("max_namespaces", s.cfg.MaxNamespaces),
+		slog.Int("max_jobs", s.cfg.MaxJobs),
 		slog.String("namespace", provider.DefaultNamespace),
 		slog.Int("warnings", len(s.Report().Warnings())))
 

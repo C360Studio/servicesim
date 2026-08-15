@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/internal/config"
@@ -900,6 +901,166 @@ func TestLogLevelIsHonoured(t *testing.T) {
 // -----------------------------------------------------------------------------
 // Wiring
 // -----------------------------------------------------------------------------
+
+// asyncAgentRunScenario is the smallest async entry from
+// docs/design/async-jobs.md §2.4: a single-shot block normalises into one
+// unconditional turn, so the first poll is already terminal. That is all these
+// tests need — they exercise the create/reset/poll wiring, not the poll
+// cursor's own turn selection, which provider/exa/agentrun_test.go covers.
+const asyncAgentRunScenario = `
+version: 1
+name: async-reset
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    text: The report states the finding.
+providers:
+  exa_agent_runs:
+    turns:
+      - respond:
+          status: completed
+          output:
+            text: The report states the finding.
+`
+
+// createAgentRun POSTs an Exa agent-run create and returns the minted
+// identifier, failing the test if the create did not succeed.
+func createAgentRun(t *testing.T, exaAddr, path string) string {
+	t.Helper()
+	status, body := postBody(t, exaAddr, path, `{"query":"find the finding"}`)
+	require.Equal(t, http.StatusCreated, status, "create failed: %s", body)
+
+	var out struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &out))
+	require.NotEmpty(t, out.ID)
+	return out.ID
+}
+
+// pollAgentRun sends an authenticated GET, which plain [get] does not: a poll
+// route needs a credential exactly like the create it follows.
+func pollAgentRun(t *testing.T, exaAddr, path string) int {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+exaAddr+path, nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+testKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	return resp.StatusCode
+}
+
+// resetScope POSTs /__admin/reset with the given query string, closing the
+// response body itself: every caller in this file only cares about the status.
+func resetScope(t *testing.T, adminAddr, query string) int {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"http://"+adminAddr+"/__admin/reset?"+query, nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	return resp.StatusCode
+}
+
+// TestResetDropsJobRecordsWithTheCursors is the sequential collision
+// docs/design/async-jobs.md §7.3 describes, reached deterministically on the
+// documented happy path rather than by racing a reset against live traffic:
+// without Deps.Jobs reset in the same call as the fault counters, a create
+// issued after a namespace reset re-mints an identifier still live from
+// before it, and collides with job.id_collision instead of succeeding with
+// the id it minted the first time.
+func TestResetDropsJobRecordsWithTheCursors(t *testing.T) {
+	t.Parallel()
+
+	h := start(t, testConfig(t, writeScenario(t, asyncAgentRunScenario)...), discard())
+	exa := h.Addr(string(provider.Exa))
+	admin := h.Addr(SurfaceAdmin)
+
+	first := createAgentRun(t, exa, "/n/t-x/agent/runs")
+
+	// Resetting a DIFFERENT namespace first must not disturb t-x's job: it is
+	// still pollable afterwards.
+	require.Equal(t, http.StatusOK, resetScope(t, admin, "namespace=t-y"))
+	require.Equal(t, http.StatusOK, pollAgentRun(t, exa, "/n/t-x/agent/runs/"+first),
+		"another namespace's reset must not touch t-x's job")
+
+	// Resetting t-x itself must drop the cursor AND the record together, or the
+	// next create collides with the record the reset was supposed to clear.
+	require.Equal(t, http.StatusOK, resetScope(t, admin, "namespace=t-x"))
+
+	second := createAgentRun(t, exa, "/n/t-x/agent/runs")
+	assert.Equal(t, first, second,
+		"the call index reset to 0, so the SAME identifier must come back — a different one, or a "+
+			"job.id_collision 500, would mean the reset dropped only the cursor or only the record")
+
+	// The id is pollable after the reset+re-create — the registry holds at
+	// most one record per (namespace, id), so this alone cannot distinguish a
+	// fresh record from a stale one. That distinction is what the `first ==
+	// second` assertion above actually proves: a different identifier (or a
+	// job.id_collision 500) would mean the reset dropped only the cursor or
+	// only the record.
+	require.Equal(t, http.StatusOK, pollAgentRun(t, exa, "/n/t-x/agent/runs/"+second))
+}
+
+// TestMaxJobsBoundsJobsPerNamespace is the flag-to-registry wiring assertion:
+// --max-jobs must reach the registry a create is refused against, and the
+// bound must be per namespace rather than process-wide. It also pins
+// Deps.MaxJobs directly, since that field has no request-path reader of its
+// own to prove it through.
+func TestMaxJobsBoundsJobsPerNamespace(t *testing.T) {
+	t.Parallel()
+
+	h := start(t, testConfig(t, append(writeScenario(t, asyncAgentRunScenario), "--max-jobs", "1")...), discard())
+	exa := h.Addr(string(provider.Exa))
+
+	require.Len(t, h.scenarios, 1)
+	assert.Equal(t, 1, h.scenarios[0].deps.MaxJobs, "--max-jobs must reach Deps.MaxJobs, not just the registry")
+
+	status, body := postBody(t, exa, "/n/t-1/agent/runs", `{"query":"first"}`)
+	require.Equal(t, http.StatusCreated, status, "the first create in a fresh namespace must succeed: %s", body)
+
+	status, body = postBody(t, exa, "/n/t-1/agent/runs", `{"query":"second"}`)
+	assert.Equal(t, http.StatusServiceUnavailable, status, "a create past --max-jobs must be refused with the "+
+		"provider-shaped 5xx, not treated as a malformed client request: %s", body)
+	assert.Contains(t, body, "holds its maximum of 1 jobs",
+		"the refusal should name the configured bound, proving 1 (not the default) reached the registry")
+
+	// A different namespace has its own bound: the first one's fullness must
+	// not leak across the namespace boundary.
+	status, body = postBody(t, exa, "/n/t-2/agent/runs", `{"query":"first"}`)
+	assert.Equal(t, http.StatusCreated, status, "another namespace's create must still succeed: %s", body)
+}
+
+// TestSingleReplicaWarningIsAnnouncedOnceAtStartup covers
+// docs/design/async-jobs.md §8 item 2: the constraint is emitted
+// unconditionally, once, and names the two things a reader needs — what is
+// per-process and where to read more.
+func TestSingleReplicaWarningIsAnnouncedOnceAtStartup(t *testing.T) {
+	t.Parallel()
+
+	var logs logBuffer
+	cfg := testConfig(t)
+	start(t, cfg, NewLogger(cfg, &logs))
+
+	require.Equal(t, 1, strings.Count(logs.String(), "servicesim.single_replica_required"),
+		"the single-replica constraint belongs in the startup log exactly once")
+	require.Contains(t, logs.String(), "docs/troubleshooting.md")
+	require.Contains(t, logs.String(), "namespace lane state, turn cursors and async job records are per-process",
+		"the hint must name what is per-process, not only where to route around it")
+	require.Contains(t, logs.String(), "/n/<namespace>")
+
+	// Not just present, but emitted before server.ready: a reader following the
+	// startup log top to bottom must see the constraint before the line that
+	// tells them the server is up.
+	warnIdx := strings.Index(logs.String(), "servicesim.single_replica_required")
+	readyIdx := strings.Index(logs.String(), "server.ready")
+	require.NotEqual(t, -1, readyIdx, "server.ready must appear in the startup log")
+	assert.Less(t, warnIdx, readyIdx, "the single-replica constraint must log before server.ready")
+}
 
 // TestResetClearsTheCountersTheHandlersConsult is the wiring assertion §2.9
 // calls out by name: admin.Deps.Faults and every provider's Deps.Faults must be

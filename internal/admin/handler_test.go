@@ -19,6 +19,7 @@ import (
 	// Aliased because several tests below name a local fake "faults"; the real
 	// engine appears here only to prove the shipped wiring answers a scoped reset.
 	faultengine "github.com/c360studio/servicesim/internal/faults"
+	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
@@ -718,6 +719,89 @@ func TestHandler_ResetNamespaceWithTheShippedEngine(t *testing.T) {
 	assert.Equal(t, []uint64{1, 3}, seqs, "only t-1's journal entries were dropped")
 }
 
+// mustCreate seeds a job store for a test, failing it rather than returning an
+// error: a seed that could not be created is never the state a test meant to
+// start from.
+func mustCreate(t *testing.T, store *jobs.Registry, namespace, id, entry string) {
+	t.Helper()
+	_, err := store.Create(jobs.Job{ID: id, Namespace: namespace, Entry: entry, CreatedAt: baseTime})
+	require.NoError(t, err)
+}
+
+// TestHandler_ResetAllDropsJobRecordsInEveryNamespace is the admin half of
+// §7.3's invariant: a job's poll cursor IS a fault attempt counter, so
+// dropping the counters without the records they identify would collide the
+// next create with a record still live.
+func TestHandler_ResetAllDropsJobRecordsInEveryNamespace(t *testing.T) {
+	store := jobs.NewRegistry(jobs.Limits{})
+	mustCreate(t, store, "t-1", "run_a", "exa_agent_runs")
+	mustCreate(t, store, "t-2", "run_b", "exa_agent_runs")
+
+	h := admin.Handler(admin.Deps{Journal: journal.NewRing(8, 4096), Faults: &fakeFaults{}, Jobs: store})
+	rec := serve(t, h, http.MethodPost, "/__admin/reset?all=true")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	_, ok := store.Lookup("t-1", "run_a")
+	assert.False(t, ok, "an all reset must drop every namespace's job records")
+	_, ok = store.Lookup("t-2", "run_b")
+	assert.False(t, ok, "an all reset must drop every namespace's job records")
+}
+
+// TestHandler_ResetNamespaceDropsOneLaneOfJobRecords is the scoped half: one
+// namespace's job records drop with its cursors, and every other namespace's
+// jobs stay pollable.
+func TestHandler_ResetNamespaceDropsOneLaneOfJobRecords(t *testing.T) {
+	store := jobs.NewRegistry(jobs.Limits{})
+	mustCreate(t, store, "t-1", "run_a", "exa_agent_runs")
+	mustCreate(t, store, "t-2", "run_b", "exa_agent_runs")
+
+	h := admin.Handler(admin.Deps{Journal: journal.NewRing(8, 4096), Faults: &fakeFaults{}, Jobs: store})
+	rec := serve(t, h, http.MethodPost, "/__admin/reset?namespace=t-1")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	_, ok := store.Lookup("t-1", "run_a")
+	assert.False(t, ok, "t-1's job record must be dropped with its cursor")
+	_, ok = store.Lookup("t-2", "run_b")
+	assert.True(t, ok, "t-2's job record must survive t-1's reset")
+}
+
+// TestHandler_ResetNamespaceRefusalLeavesJobRecordsAlone extends the honesty
+// assertion (TestHandler_ResetNamespaceRefusesWhenStateIsNotIsolated) to the
+// third store: a scoped reset that cannot be honoured for the journal or the
+// fault engine must not touch job records either, or the all-or-nothing
+// invariant only covers two stores out of three.
+func TestHandler_ResetNamespaceRefusalLeavesJobRecordsAlone(t *testing.T) {
+	t.Run("journal does not isolate namespaces", func(t *testing.T) {
+		j := &rawJournal{}
+		j.Append(newEntry(1, "exa", inNamespace("t-1")))
+		faults := &fakeFaults{}
+		store := jobs.NewRegistry(jobs.Limits{})
+		mustCreate(t, store, "t-1", "run_a", "exa_agent_runs")
+
+		rec := serve(t, admin.Handler(admin.Deps{Journal: j, Faults: faults, Jobs: store}), http.MethodPost,
+			"/__admin/reset?namespace=t-1")
+
+		require.Equal(t, http.StatusNotImplemented, rec.Code)
+		_, ok := store.Lookup("t-1", "run_a")
+		assert.True(t, ok, "a refused reset must not drop job records")
+	})
+
+	t.Run("fault engine does not isolate namespaces", func(t *testing.T) {
+		ring := journal.NewRing(8, 4096)
+		ring.Append(newEntry(1, "exa", inNamespace("t-1")))
+		faults := &unscopedFaults{}
+		store := jobs.NewRegistry(jobs.Limits{})
+		mustCreate(t, store, "t-1", "run_a", "exa_agent_runs")
+
+		rec := serve(t, admin.Handler(admin.Deps{Journal: ring, Faults: faults, Jobs: store}), http.MethodPost,
+			"/__admin/reset?namespace=t-1")
+
+		require.Equal(t, http.StatusNotImplemented, rec.Code)
+		_, ok := store.Lookup("t-1", "run_a")
+		assert.True(t, ok, "a refused reset must not drop job records")
+	})
+}
+
 // TestHandler_Namespaces is the endpoint a developer debugging a shared
 // container reaches for first: which lanes are alive in there, and how much has
 // each of them recorded.
@@ -892,6 +976,7 @@ func TestHandler_WrongMethodIsMethodNotAllowed(t *testing.T) {
 		{name: "post to readyz", method: http.MethodPost, target: "/readyz", wantAllow: "GET, HEAD"},
 		{name: "delete the journal", method: http.MethodDelete, target: "/__admin/requests", wantAllow: "GET, HEAD"},
 		{name: "post to the namespace listing", method: http.MethodPost, target: "/__admin/namespaces", wantAllow: "GET, HEAD"},
+		{name: "post to the job listing", method: http.MethodPost, target: "/__admin/jobs", wantAllow: "GET, HEAD"},
 		{name: "get the reset endpoint", method: http.MethodGet, target: "/__admin/reset", wantAllow: "POST"},
 	}
 
@@ -921,6 +1006,9 @@ func TestHandler_ZeroDepsAnswersEveryRoute(t *testing.T) {
 		{method: http.MethodGet, target: "/__admin/requests", want: http.StatusOK},
 		{method: http.MethodGet, target: "/__admin/namespaces", want: http.StatusOK},
 		{method: http.MethodGet, target: "/__admin/scenario", want: http.StatusOK},
+		// The substitute registry created by normalized() can enumerate itself,
+		// so a zero Deps answers the listing rather than a 501 it does not need.
+		{method: http.MethodGet, target: "/__admin/jobs", want: http.StatusOK},
 		// A bare reset states no scope, and that is a 400 whatever is wired.
 		{method: http.MethodPost, target: "/__admin/reset", want: http.StatusBadRequest},
 		{method: http.MethodPost, target: "/__admin/reset?all=true", want: http.StatusOK},
