@@ -190,6 +190,81 @@ func TestParse_VersionIsPeekedBeforeTheStrictDecode(t *testing.T) {
 	}
 }
 
+// TestVersionSupported covers both directions of the gate. The suite previously
+// tested only a v2 file on a v1 build, which is the direction that must FAIL —
+// leaving the direction that must SUCCEED, an older file on a newer build,
+// unproven. That is the direction every adopting repository depends on the day
+// SchemaVersion moves, so it is the one worth pinning.
+func TestVersionSupported(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		declared int
+		build    int
+		want     bool
+	}{
+		{"a file matching the build", 1, 1, true},
+		{"a v1 file on a v2 build", 1, 2, true},
+		{"a v1 file several versions later", 1, 5, true},
+		{"a v2 file on a v2 build", 2, 2, true},
+		{"a file from the future", 2, 1, false},
+		{"zero was never a released schema", 0, 1, false},
+		{"zero is not merely 'older'", 0, 5, false},
+		{"a negative version", -1, 2, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := versionSupported(tc.declared, tc.build); got != tc.want {
+				t.Errorf("versionSupported(%d, %d) = %v, want %v",
+					tc.declared, tc.build, got, tc.want)
+			}
+		})
+	}
+}
+
+// A rejected version must name the range this build accepts, so the reader can
+// tell whether to upgrade Servicesim or fix the file. The single-version phrasing
+// is what docs/scenario-schema.md quotes verbatim.
+func TestUnsupportedVersionMessage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		declared int
+		build    int
+		want     []string
+	}{
+		{
+			name:     "from the future, single-version build",
+			declared: 2, build: 1,
+			want: []string{"version 2", "only version 1", "pin the scenario to version 1"},
+		},
+		{
+			name:     "from the future, multi-version build",
+			declared: 9, build: 3,
+			want: []string{"version 9", "versions 1 through 3", "pin the scenario to version 3"},
+		},
+		{
+			name:     "below the floor says so, rather than blaming the build",
+			declared: 0, build: 2,
+			want: []string{"version 0", "at least 1"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := unsupportedVersionMessage(tc.declared, tc.build)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("message %q does not mention %q", got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestParse_Failures(t *testing.T) {
 	t.Parallel()
 
@@ -210,6 +285,15 @@ func TestParse_Failures(t *testing.T) {
 			src:      "version: 1\n\tbad indentation\n",
 			wantCode: "scenario.version.unreadable",
 			wantMsg:  "not valid YAML",
+		},
+		{
+			// Widening the gate to accept older files must not accept a version
+			// below the floor: 0 is what a typo or a templating bug produces,
+			// never a released schema.
+			name:     "version zero",
+			src:      "version: 0\nname: n\n",
+			wantCode: "scenario.version.unsupported",
+			wantMsg:  "at least 1",
 		},
 		{
 			name:     "unknown top-level key",

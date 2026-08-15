@@ -2,6 +2,8 @@ package provider
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -11,6 +13,32 @@ import (
 // a scenario file shared across repositories must not break the moment one
 // consumer pins an older Servicesim.
 const CodeProviderUnimplemented = "scenario.provider.unimplemented"
+
+// CodeTurnRouteUnknown is the finding raised for a `when.route:` naming a route
+// the provider kind does not serve. It is an ERROR, not a warning: a turn whose
+// route name matches nothing never fires, so the scenario quietly serves some
+// other turn than the one its author wrote. A simulator exists to remove exactly
+// that class of doubt, so the typo has to stop the process rather than change
+// which response a consumer's test sees.
+const CodeTurnRouteUnknown = "scenario.turn.route_unknown"
+
+// RouteLister is implemented by a Validator whose provider package can name the
+// routes its kind serves, which is what makes a `when.route:` value checkable at
+// load rather than at request time.
+//
+// It is a separate optional interface, type-asserted at the call site, rather
+// than a second method on Validator. Validator is exported and has
+// implementations outside this repository's control, so widening it would break
+// them for a check they can opt into instead (house rule 7). The same
+// optional-interface shape is used for NamespaceAdmitter.
+//
+// The route set must be the one that KIND serves, not the whole package's.
+// Perplexity registers six routes across two entries, and `route: agent` written
+// in the Sonar block is an authoring error precisely because that entry does not
+// serve it.
+type RouteLister interface {
+	Routes() []Route
+}
 
 // Validator is implemented by a provider package that can decode and validate its
 // own projection bodies. It is the seam scenario.Validate cannot cross: under the
@@ -80,7 +108,58 @@ func ValidateScenario(s *scenario.Scenario, handlers map[string]Validator) []sce
 			continue
 		}
 		e.Implemented = true
+		if lister, ok := v.(RouteLister); ok {
+			findings = append(findings, validateTurnRoutes(name, kind, e, lister.Routes())...)
+		}
 		findings = append(findings, v.ValidateProjections(s, e)...)
 	}
 	return findings
+}
+
+// validateTurnRoutes checks every `when.route:` in an entry against the routes
+// its kind actually serves, so a misspelled or misplaced name fails at load.
+//
+// It reports the served names in the message. A bare "route X is unknown" leaves
+// the author guessing at a vocabulary they cannot see from the scenario file —
+// the names come from Go source in a provider package, not from anything in
+// their repository.
+func validateTurnRoutes(name, kind string, e *scenario.ProviderEntry, routes []Route) []scenario.Finding {
+	if len(routes) == 0 {
+		return nil
+	}
+	var findings []scenario.Finding
+	for i := range e.Turns {
+		when := e.Turns[i].When
+		if when == nil || when.Route == "" {
+			continue
+		}
+		if slices.ContainsFunc(routes, func(r Route) bool {
+			return scenario.RouteMatches(when.Route, r.FaultKey)
+		}) {
+			continue
+		}
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityError,
+			Code:     CodeTurnRouteUnknown,
+			Path:     fmt.Sprintf("providers.%s.turns[%d].when.route", name, i),
+			Message: fmt.Sprintf("route %q matches no route served by provider kind %q; it serves %s",
+				when.Route, kind, strings.Join(routeNames(routes), ", ")),
+		})
+	}
+	return findings
+}
+
+// routeNames lists the bare route names a route set offers, deduplicated and in
+// registration order. Registration order, not sorted and never map order,
+// because a readiness failure whose reasons reshuffle between runs is miserable
+// to diff — the same rule ValidateScenario follows for findings.
+func routeNames(routes []Route) []string {
+	names := make([]string, 0, len(routes))
+	for _, r := range routes {
+		n := scenario.RouteKeySuffix(r.FaultKey)
+		if n != "" && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	return names
 }

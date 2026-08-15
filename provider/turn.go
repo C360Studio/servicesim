@@ -22,16 +22,20 @@ var ErrNoMatchingTurn = errors.New("provider: no turn matches this request")
 // scenario that rate-limits call 2 and answers differently on call 3 stays
 // coherent. Pass Exchange.CallIndex, never a counter of your own.
 //
+// route is the Route.FaultKey of the route serving the request, which is what a
+// turn's `when.route:` selects on. Aliases share a key, so a scenario written
+// against one spelling of a route also serves requests through the others.
+//
 // The nil-When fallback is belt and braces: a turn with no When already matches
 // everything, so the loop would have returned it. It is written out because the
 // alternative to "unreachable and obvious" is "reachable and silent" the first
 // time Match grows an axis whose zero value stops matching.
-func SelectTurn(e *scenario.ProviderEntry, callIndex int, body []byte) (*scenario.Turn, int, error) {
+func SelectTurn(e *scenario.ProviderEntry, callIndex int, route string, body []byte) (*scenario.Turn, int, error) {
 	if e == nil || len(e.Turns) == 0 {
 		return nil, -1, ErrNoMatchingTurn
 	}
 	for i := range e.Turns {
-		if e.Turns[i].When.Matches(callIndex, body) {
+		if e.Turns[i].When.Matches(callIndex, route, body) {
 			return &e.Turns[i], i, nil
 		}
 	}
@@ -62,9 +66,10 @@ func SelectTurn(e *scenario.ProviderEntry, callIndex int, body []byte) (*scenari
 // a rejected request must not consume one (§4.4).
 func SelectTurnFor(x *Exchange, e *scenario.ProviderEntry) (*scenario.Turn, int) {
 	index := x.CallIndex()
-	turn, at, err := SelectTurn(e, index, x.Raw)
+	turn, at, err := SelectTurn(e, index, x.Route.FaultKey, x.Raw)
 	if err != nil {
-		x.Fail(CodeNoMatchingTurn, "", "no turn in provider %q matches call %d", entryName(e), index)
+		x.Fail(CodeNoMatchingTurn, "", "no turn in provider %q matches call %d on route %q",
+			entryName(e), index, x.Route.FaultKey)
 		return nil, -1
 	}
 	return turn, at

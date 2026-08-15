@@ -1387,6 +1387,28 @@ type AuthObservation struct {
 	// same key without the journal ever holding one. It is not a secrecy boundary
 	// for a low-entropy value: never point Servicesim at a real credential.
 	Fingerprint string `json:"fingerprint,omitempty"`
+
+	// Placements lists EVERY recognised placement that carried a value; the
+	// fields above describe only the first. A client sending both a Bearer header
+	// and an x-api-key is misconfigured in a way that works against a permissive
+	// server and fails against a strict one, and recording one placement made
+	// that invisible. len(placements) == 1 is how a consumer proves its adapter
+	// sends exactly the credential the vendor documents.
+	Placements []AuthPlacement `json:"placements,omitempty"`
+}
+
+// AuthPlacement is one credential placement observed on a request. It never holds
+// a credential value, only the fingerprint of one.
+type AuthPlacement struct {
+	// Header is the placement, lower-cased: a header name such as
+	// "authorization", or a non-header placement such as "body:api_key".
+	Header string `json:"header"`
+
+	// Scheme is the Authorization scheme, for example "Bearer".
+	Scheme string `json:"scheme,omitempty"`
+
+	// Fingerprint is on the same terms as AuthObservation.Fingerprint.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // Outcome is what the request produced.

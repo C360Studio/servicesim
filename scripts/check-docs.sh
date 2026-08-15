@@ -182,10 +182,14 @@ claim_count=$((claim_count + builtins_checked))
 # routes from the route(mux, ...) registrations. This is a grep for the literal,
 # not proof the handler is reachable — an integration test proves that.
 
+known_provider_routes="$tmp/known_provider_routes"
+{ grep -hoE '"(GET|POST|PUT|PATCH|DELETE) /[^"]*"' provider/*/handler.go 2>/dev/null || true; } |
+	tr -d '"' | sort -u >"$known_provider_routes"
+require_nonempty "$known_provider_routes" "registered provider routes"
+
 known_routes="$tmp/known_routes"
 {
-	{ grep -hoE '"(GET|POST|PUT|PATCH|DELETE) /[^"]*"' provider/*/handler.go 2>/dev/null || true; } |
-		tr -d '"'
+	cat "$known_provider_routes"
 	awk '
 		/route\(mux, "/ {
 			path = $0
@@ -372,6 +376,61 @@ if [ -s "$image_refs" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 6. The contracts index table
+# ---------------------------------------------------------------------------
+#
+# contracts/ is excluded from DOC_GLOBS because it documents the vendors' APIs.
+# Its index table is the one exception: the "Base URL simulated" column is a
+# claim about THIS binary, and it is the first page an adopter reads to decide
+# what to trust.
+#
+# Checked in BOTH directions, because it has been wrong in both. It once claimed
+# a route the binary did not serve, AND omitted Exa POST /answer plus two
+# Perplexity routes whose goldens were already committed beside it. An adopter
+# built a "servicesim is one-shot request/response only" inventory partly from
+# this table, so an omission here is not cosmetic — it is a reader concluding a
+# capability does not exist.
+#
+# The omission direction is the half a name checker cannot normally do: every
+# other category proves documented names are real, while this one also proves
+# real names are documented.
+#
+# Rows in the "NOT SIMULATED" table below it carry a bare path with no method
+# (`/contents`), so requiring METHOD + path skips them without needing to parse
+# table boundaries.
+
+contracts_index="contracts/README.md"
+contracts_checked=0
+
+if [ -f "$contracts_index" ]; then
+	claimed_routes="$tmp/claimed_routes"
+	grep -oE '`(GET|POST|PUT|PATCH|DELETE) /[A-Za-z0-9_/.{}-]*`' "$contracts_index" 2>/dev/null |
+		tr -d '`' | sort -u >"$claimed_routes" || true
+
+	# Direction 1: everything the table claims is simulated must be registered.
+	while IFS= read -r route; do
+		[ -n "$route" ] || continue
+		contracts_checked=$((contracts_checked + 1))
+		grep -qxF "$route" "$known_provider_routes" || {
+			line=$(grep -nF "\`$route\`" "$contracts_index" | head -1 | cut -d: -f1)
+			note "$contracts_index" "${line:-1}" \
+				"index table claims '$route' is simulated, but no provider registers it"
+		}
+	done <"$claimed_routes"
+
+	# Direction 2: every registered provider route must appear in the table.
+	while IFS= read -r route; do
+		[ -n "$route" ] || continue
+		contracts_checked=$((contracts_checked + 1))
+		grep -qxF "$route" "$claimed_routes" ||
+			note "$contracts_index" "1" \
+				"index table omits '$route', which this build serves — a reader takes the table as the list of what is simulated"
+	done <"$known_provider_routes"
+
+	claim_count=$((claim_count + contracts_checked))
+fi
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 
@@ -384,6 +443,8 @@ printf '  routes    %4d claim(s) vs %s registered pattern(s) (%d method-strict, 
 	"$routes_checked" "$(wc -l <"$known_routes" | tr -d ' ')" "$routes_strict"
 printf '  symbols   %4d claim(s) vs %s exported name(s)\n' \
 	"$symbols_checked" "$(wc -l <"$known_symbols" | tr -d ' ')"
+printf '  contracts %4d claim(s) — index table vs %s provider route(s), both directions\n' \
+	"$contracts_checked" "$(wc -l <"$known_provider_routes" | tr -d ' ')"
 if [ -n "$images_skipped" ]; then
 	printf '  images    SKIPPED (%s) — not a documentation failure\n\n' "$images_skipped"
 else
@@ -401,6 +462,7 @@ empty_categories=""
 [ "$builtins_checked" -gt 0 ] || empty_categories="$empty_categories builtins"
 [ "$routes_checked" -gt 0 ] || empty_categories="$empty_categories routes"
 [ "$symbols_checked" -gt 0 ] || empty_categories="$empty_categories symbols"
+[ "$contracts_checked" -gt 0 ] || empty_categories="$empty_categories contracts"
 if [ -n "$empty_categories" ]; then
 	printf 'BROKEN GUARD: 0 claims extracted for:%s\n' "$empty_categories" >&2
 	printf 'Nothing was checked there. Fix the extractor in %s.\n' "$0" >&2

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/c360studio/servicesim/internal/journal"
@@ -58,6 +59,49 @@ type Exchange struct {
 //
 // It is the zero Lane on an Exchange built by hand rather than by Handle.
 func (x *Exchange) Lane() Lane { return x.lane }
+
+// AcceptedPlacements resolves which credential placements authenticate this
+// request. It is the one precedence rule the three provider packages share, kept
+// here rather than written out three times, because three copies of a rule about
+// credentials are three chances to disagree about what authenticates:
+//
+//	scenario auth.headers  >  Route.Credentials  >  the provider's own default
+//
+// auth.headers wins outright. It is the scenario author's explicit assertion
+// about what their client should be sending, and a negative test — "prove a
+// body-placed key is now rejected" — is worthless if a route default quietly
+// re-admits it.
+//
+// providerDefault is what the package accepted before routes could speak for
+// themselves; it still applies to any route that declares no Credentials.
+//
+// The result is lower-cased and trimmed, so a route or a scenario may spell a
+// header "X-API-Key" without it silently matching nothing. Callers must treat
+// the slice as read-only.
+func (x *Exchange) AcceptedPlacements(policy scenario.AuthPolicy, providerDefault []string) []string {
+	switch {
+	case len(policy.Headers) > 0:
+		return normalizePlacements(policy.Headers)
+	case len(x.Route.Credentials) > 0:
+		return normalizePlacements(x.Route.Credentials)
+	default:
+		return normalizePlacements(providerDefault)
+	}
+}
+
+// normalizePlacements lower-cases and trims a placement list. Credential headers
+// are matched case-insensitively everywhere else, so a policy that did not
+// normalise would fail in the one direction nobody tests: a correctly-spelled
+// header that authenticates nothing.
+func normalizePlacements(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s = strings.ToLower(strings.TrimSpace(s)); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // Warn records a warning finding. Warnings are journal-only: the request still
 // receives its scenario response.

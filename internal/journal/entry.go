@@ -59,6 +59,38 @@ type AuthObservation struct {
 	// same key without the journal ever holding one. It is not a secrecy boundary
 	// for a low-entropy value: never point Servicesim at a real credential.
 	Fingerprint string `json:"fingerprint,omitempty"`
+
+	// Placements lists EVERY recognised placement that carried a value, in the
+	// order they were extracted. The fields above describe only the first.
+	//
+	// Recording one placement made a whole class of assertion unwritable. A
+	// client that sends both a Bearer header and an x-api-key is misconfigured in
+	// a way that works against a permissive server and fails against a strict
+	// one, and with a single Header field the journal could not show it — the
+	// second placement simply vanished. "My adapter sends exactly one credential,
+	// in the placement this vendor documents" is a thing a consumer should be
+	// able to prove, and len(placements) == 1 is how.
+	//
+	// Every entry carries a fingerprint rather than a value, on the same terms as
+	// Fingerprint above.
+	Placements []AuthPlacement `json:"placements,omitempty"`
+}
+
+// AuthPlacement is one credential placement observed on a request. It never
+// holds a credential value, only the fingerprint of one.
+type AuthPlacement struct {
+	// Header is the placement, lower-cased: a header name such as
+	// "authorization", or a non-header placement such as "body:api_key".
+	Header string `json:"header"`
+
+	// Scheme is the Authorization scheme, for example "Bearer". Empty for
+	// placements that carry no scheme.
+	Scheme string `json:"scheme,omitempty"`
+
+	// Fingerprint is the first eight hex characters of a domain-separated
+	// SHA-256 of the presented credential, on the same terms as
+	// AuthObservation.Fingerprint.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // Outcome is what the request produced.
@@ -350,6 +382,13 @@ func Redact(e Entry) Entry {
 		}
 		e.Findings = findings
 	}
+	// Placements hold fingerprints, never values, so there is nothing here to
+	// mask. It is still rebuilt, because this function promises to share no
+	// mutable state with its argument and a caller that appended to the returned
+	// entry's placements would otherwise reach the live one.
+	if e.Auth.Placements != nil {
+		e.Auth.Placements = append([]AuthPlacement(nil), e.Auth.Placements...)
+	}
 	return e
 }
 
@@ -368,6 +407,9 @@ func cloneEntry(e Entry) Entry {
 	}
 	if e.Findings != nil {
 		e.Findings = append([]Finding(nil), e.Findings...)
+	}
+	if e.Auth.Placements != nil {
+		e.Auth.Placements = append([]AuthPlacement(nil), e.Auth.Placements...)
 	}
 	return e
 }

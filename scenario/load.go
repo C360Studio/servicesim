@@ -67,10 +67,9 @@ func Parse(src []byte) (*Scenario, Report, error) {
 		r.add(SeverityError, "scenario.version.unreadable", "version", "%s", err.Error())
 		return nil, r, r.Err()
 	}
-	if version != SchemaVersion {
+	if !versionSupported(version, SchemaVersion) {
 		r.add(SeverityError, "scenario.version.unsupported", "version",
-			"scenario declares version %d, but this build of Servicesim understands only version %d; upgrade Servicesim or pin the scenario to version %d",
-			version, SchemaVersion, SchemaVersion)
+			"%s", unsupportedVersionMessage(version, SchemaVersion))
 		return nil, r, r.Err()
 	}
 
@@ -91,6 +90,52 @@ func Parse(src []byte) (*Scenario, Report, error) {
 		return s, r, r.Err()
 	}
 	return s, r, nil
+}
+
+// versionSupported reports whether a scenario declaring schema version declared
+// can be loaded by a build whose own schema version is build.
+//
+// The comparison is deliberately asymmetric. An older file loads on a newer
+// build, because the only compatible way to extend this schema is to add
+// OPTIONAL keys — so every key a v1 file can carry is still a known key under a
+// v2 build's KnownFields(true) decode. A newer file does not load on an older
+// build, because the keys it carries do not exist here, and failing loudly is
+// the entire point of the strict decoder.
+//
+// Strict equality — what this replaced — meant that the day SchemaVersion became
+// 2, every scenario file in every adopting repository would stop loading until
+// someone hand-edited it. That is an N-repository migration bought for nothing,
+// and it contradicts the compatibility argument the open registry was adopted on.
+//
+// Versions below 1 are rejected rather than waved through as
+// older-and-therefore-fine. Zero is what an author gets from a typo or an
+// unrendered template, never from a released schema, and accepting it would
+// decode a file against an envelope nobody ever specified.
+func versionSupported(declared, build int) bool {
+	return declared >= 1 && declared <= build
+}
+
+// unsupportedVersionMessage explains a rejected version in one sentence, naming
+// the range this build accepts so the reader knows whether the fix is to upgrade
+// Servicesim or to correct the file.
+func unsupportedVersionMessage(declared, build int) string {
+	if declared < 1 {
+		return fmt.Sprintf(
+			"scenario declares version %d, but a schema version is at least 1; this build of Servicesim understands %s",
+			declared, versionRange(build))
+	}
+	return fmt.Sprintf(
+		"scenario declares version %d, but this build of Servicesim understands only %s; upgrade Servicesim or pin the scenario to version %d",
+		declared, versionRange(build), build)
+}
+
+// versionRange renders the accepted range, collapsing the single-version case so
+// a v1 build says "version 1" rather than "versions 1 through 1".
+func versionRange(build int) string {
+	if build <= 1 {
+		return fmt.Sprintf("version %d", build)
+	}
+	return fmt.Sprintf("versions 1 through %d", build)
 }
 
 // peekVersion reads only the version key, tolerating every other key, so that a

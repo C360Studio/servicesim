@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -158,6 +159,85 @@ func TestHandleJournalsACompletedRequest(t *testing.T) {
 	require.Equal(t, len(`{"ok":true}`), e.Outcome.BytesWritten)
 	require.Empty(t, e.Findings)
 	require.JSONEq(t, `{"query":"climate"}`, string(e.Body))
+}
+
+// TestHandleJournalsEveryCredentialPlacement is the assertion the single-Header
+// journal made unwritable: a client sending two credentials looked identical to
+// one sending a single documented credential. A consumer proving "my adapter
+// sends exactly the placement this vendor documents" needs to see both.
+func TestHandleJournalsEveryCredentialPlacement(t *testing.T) {
+	t.Parallel()
+
+	t.Run("two placements are both recorded", func(t *testing.T) {
+		t.Parallel()
+
+		j := journal.NewRing(8, 4096)
+		r := postJSON(`{"query":"climate"}`)
+		r.Header.Set("Authorization", "Bearer test-key")
+		r.Header.Set("x-api-key", "other-key")
+
+		serve(Deps{Journal: j}, okHandler(`{"ok":true}`), r)
+
+		e := j.Snapshot()[0]
+		require.True(t, e.Auth.Present)
+		require.Len(t, e.Auth.Placements, 2, "len(placements) is how 'exactly one' is asserted")
+
+		placements := make([]string, 0, 2)
+		for _, p := range e.Auth.Placements {
+			placements = append(placements, p.Header)
+			require.NotEmpty(t, p.Fingerprint, "a placement carries a fingerprint, never a value")
+		}
+		require.Equal(t, []string{"authorization", "x-api-key"}, placements)
+
+		// Different keys must fingerprint differently, or a rotation test could
+		// not tell the two placements apart.
+		require.NotEqual(t, e.Auth.Placements[0].Fingerprint, e.Auth.Placements[1].Fingerprint)
+
+		// The scalar fields still describe the first placement, so every existing
+		// consumer of e.Auth.Header keeps reading what it always read.
+		require.Equal(t, "authorization", e.Auth.Header)
+		require.Equal(t, "Bearer", e.Auth.Scheme)
+		require.Equal(t, e.Auth.Placements[0].Fingerprint, e.Auth.Fingerprint)
+	})
+
+	t.Run("one placement lists exactly one", func(t *testing.T) {
+		t.Parallel()
+
+		j := journal.NewRing(8, 4096)
+		r := postJSON(`{"query":"climate"}`)
+		r.Header.Set("Authorization", "Bearer test-key")
+
+		serve(Deps{Journal: j}, okHandler(`{"ok":true}`), r)
+
+		e := j.Snapshot()[0]
+		require.Len(t, e.Auth.Placements, 1)
+		require.Equal(t, "authorization", e.Auth.Placements[0].Header)
+	})
+
+	t.Run("no credential lists none", func(t *testing.T) {
+		t.Parallel()
+
+		j := journal.NewRing(8, 4096)
+		serve(Deps{Journal: j}, okHandler(`{"ok":true}`), postJSON(`{"query":"climate"}`))
+
+		e := j.Snapshot()[0]
+		require.False(t, e.Auth.Present)
+		require.Empty(t, e.Auth.Placements, "an absent credential must not journal an empty placement")
+	})
+
+	t.Run("a raw credential never reaches the journal by this path", func(t *testing.T) {
+		t.Parallel()
+
+		j := journal.NewRing(8, 4096)
+		r := postJSON(`{"query":"climate"}`)
+		r.Header.Set("x-api-key", "sk-live-should-never-appear")
+
+		serve(Deps{Journal: j}, okHandler(`{"ok":true}`), r)
+
+		encoded, err := json.Marshal(j.Snapshot()[0])
+		require.NoError(t, err)
+		require.NotContains(t, string(encoded), "sk-live-should-never-appear")
+	})
 }
 
 func TestHandleLoggerNeverSeesRawCredential(t *testing.T) {

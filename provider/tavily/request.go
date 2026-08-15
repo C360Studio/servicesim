@@ -463,7 +463,7 @@ func quoteAlternatives(values []string) string {
 // journal's auth observation names it and tavily.api_key.in_body flags it.
 func checkAuth(x *provider.Exchange, entry *scenario.ProviderEntry) {
 	policy := authPolicy(entry)
-	presented := presentedCredentials(x, acceptedPlacements(policy))
+	presented := presentedCredentials(x, acceptedPlacements(x, policy))
 
 	if policy.Mode == scenario.AuthReject {
 		// Deliberately a mismatch rather than a missing credential: something
@@ -523,9 +523,12 @@ func presentedCredentials(x *provider.Exchange, accepted []string) []httpx.Crede
 	if !ok {
 		return presented
 	}
-	if !x.Auth.Present {
-		x.Auth = httpx.Observe(body, true)
-	}
+	// The body placement is journaled whether or not a header was already
+	// observed. Handle's header scan cannot see it, so without this a request
+	// sending BOTH a Bearer header and a body api_key would record only the
+	// header — and "my client sends exactly one credential" is the assertion
+	// that needs both to be visible.
+	x.Auth = httpx.AddPlacement(x.Auth, body)
 	if slices.Contains(accepted, PlacementBodyAPIKey) {
 		presented = append(presented, body)
 	}
@@ -562,21 +565,19 @@ func authPolicy(entry *scenario.ProviderEntry) scenario.AuthPolicy {
 	return policy
 }
 
+// defaultPlacements are the placements a Tavily route accepts when it declares
+// no Credentials of its own: the Authorization header the vendor documents, and
+// the body api_key property real client code sends.
+var defaultPlacements = []string{provider.PlacementAuthorization, PlacementBodyAPIKey}
+
 // acceptedPlacements returns the credential placements that authenticate,
-// lower-cased. Two are accepted by default: the Authorization header the vendor
-// documents, and the body api_key property real client code sends.
+// lower-cased, applying the shared precedence: a scenario's auth.headers first,
+// then the serving route's own Credentials, then the package default.
 //
 // A scenario's auth.headers replaces the set outright, and may name
 // PlacementBodyAPIKey ("body:api_key") alongside header names. Listing only
 // header names is how a consumer that has moved off the body placement asserts
 // it: a body-placed key then fails with auth.missing rather than being served.
-func acceptedPlacements(policy scenario.AuthPolicy) []string {
-	if len(policy.Headers) == 0 {
-		return []string{"authorization", PlacementBodyAPIKey}
-	}
-	out := make([]string, 0, len(policy.Headers))
-	for _, header := range policy.Headers {
-		out = append(out, strings.ToLower(header))
-	}
-	return out
+func acceptedPlacements(x *provider.Exchange, policy scenario.AuthPolicy) []string {
+	return x.AcceptedPlacements(policy, defaultPlacements)
 }

@@ -37,6 +37,34 @@ providers:
           answer: I do not know
 `
 
+// routedYAML is the shape this axis exists for: two routes of one provider
+// scripted independently, where the poll route's sequence says nothing about
+// what the create route returned. No body_contains or body_json could express
+// it, because a GET poll carries no body at all.
+const routedYAML = `
+version: 1
+name: routed
+providers:
+  exa:
+    turns:
+      - when:
+          route: answer
+        respond:
+          answer: created
+      - when:
+          route: search
+          call_index: 0
+        respond:
+          answer: pending
+      - when:
+          route: search
+          call_index: 1
+        respond:
+          answer: completed
+      - respond:
+          answer: fallback
+`
+
 const singleShotYAML = `
 version: 1
 name: single-shot
@@ -72,11 +100,13 @@ func TestSelectTurn(t *testing.T) {
 	scripted := mustScenario(t, scriptedYAML).Provider("exa")
 	single := mustScenario(t, singleShotYAML).Provider("exa")
 	none := mustScenario(t, noFallbackYAML).Provider("exa")
+	routed := mustScenario(t, routedYAML).Provider("exa")
 
 	tests := []struct {
 		name      string
 		entry     *scenario.ProviderEntry
 		callIndex int
+		route     string
 		body      string
 		wantIndex int
 		wantErr   bool
@@ -114,13 +144,44 @@ func TestSelectTurn(t *testing.T) {
 			entry: none, callIndex: 1, wantErr: true,
 		},
 		{name: "a nil entry is an error", entry: nil, wantErr: true},
+
+		// Route selection. The cursor is already per route (TurnKey defaults to
+		// ["route"]), so these call indices are each route's own sequence.
+		{
+			name:  "route selects its own turn regardless of call index",
+			entry: routed, route: "exa:answer", callIndex: 0, wantIndex: 0,
+		},
+		{
+			name:  "the same call index on another route selects a different turn",
+			entry: routed, route: "exa:search", callIndex: 0, wantIndex: 1,
+		},
+		{
+			name:  "the poll route's second call is scripted independently",
+			entry: routed, route: "exa:search", callIndex: 1, wantIndex: 2,
+		},
+		{
+			name:  "the create route is not affected by the poll route's sequence",
+			entry: routed, route: "exa:answer", callIndex: 1, wantIndex: 0,
+		},
+		{
+			name:  "a route with no turn of its own falls through to the fallback",
+			entry: routed, route: "exa:contents", callIndex: 0, wantIndex: 3,
+		},
+		{
+			name:  "a route-scoped turn does not fire for an unmatched call index",
+			entry: routed, route: "exa:search", callIndex: 9, wantIndex: 3,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			turn, index, err := SelectTurn(tc.entry, tc.callIndex, []byte(tc.body))
+			route := tc.route
+			if route == "" {
+				route = "exa:search"
+			}
+			turn, index, err := SelectTurn(tc.entry, tc.callIndex, route, []byte(tc.body))
 			if tc.wantErr {
 				require.ErrorIs(t, err, ErrNoMatchingTurn)
 				require.Nil(t, turn)
@@ -289,6 +350,83 @@ providers:
 
 	require.Empty(t, findings, "one implementation serves both instances")
 	require.Equal(t, []string{"openai", "openai_fallback"}, v.seen)
+}
+
+// routeListingValidator is a recordingValidator that also implements RouteLister,
+// which is how a provider package opts its `when.route:` values into checking.
+type routeListingValidator struct {
+	recordingValidator
+	routes []Route
+}
+
+func (v *routeListingValidator) Routes() []Route { return v.routes }
+
+// TestValidateScenarioChecksTurnRoutes is the guard that keeps a route typo from
+// being silent. An unmatched `when.route:` produces a turn that never fires, so
+// the scenario serves some other turn and the consumer's test passes or fails
+// for a reason nobody wrote down.
+func TestValidateScenarioChecksTurnRoutes(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+version: 1
+name: routes
+providers:
+  exa:
+    turns:
+      - when: {route: search}
+        respond: {answer: a}
+      - when: {route: "exa:answer"}
+        respond: {answer: b}
+      - when: {route: serch}
+        respond: {answer: typo}
+      - when: {route: "tavily:search"}
+        respond: {answer: wrong provider}
+      - respond: {answer: fallback}
+`
+	s := mustScenario(t, src)
+	v := &routeListingValidator{routes: []Route{
+		{Pattern: "POST /search", FaultKey: "exa:search"},
+		{Pattern: "POST /answer", FaultKey: "exa:answer"},
+	}}
+
+	findings := ValidateScenario(s, map[string]Validator{"exa": v})
+
+	require.Len(t, findings, 2, "the two good spellings must not be reported")
+
+	require.Equal(t, CodeTurnRouteUnknown, findings[0].Code)
+	require.Equal(t, scenario.SeverityError, findings[0].Severity,
+		"a turn that can never fire must stop the process, not warn")
+	require.Equal(t, "providers.exa.turns[2].when.route", findings[0].Path)
+	require.Contains(t, findings[0].Message, `"serch"`)
+	require.Contains(t, findings[0].Message, "search, answer",
+		"the message must name the vocabulary, which is not visible from the scenario file")
+
+	// A qualified name from another provider is the paste-into-the-wrong-block
+	// error, and it must not be rescued by its matching suffix.
+	require.Equal(t, "providers.exa.turns[3].when.route", findings[1].Path)
+	require.Contains(t, findings[1].Message, `"tavily:search"`)
+}
+
+// A validator that does not implement RouteLister must not be forced to: route
+// checking is opt-in, so an out-of-tree provider keeps loading unchanged.
+func TestValidateScenarioSkipsRouteCheckWithoutRouteLister(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+version: 1
+name: unchecked
+providers:
+  exa:
+    turns:
+      - when: {route: anything-at-all}
+        respond: {answer: a}
+`
+	s := mustScenario(t, src)
+
+	findings := ValidateScenario(s, map[string]Validator{"exa": &recordingValidator{}})
+
+	require.Empty(t, findings)
 }
 
 // TestSelectTurnForIsKeyedOnTheLaneNotTheRoute is the survey's failure (a) at the

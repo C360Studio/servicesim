@@ -170,8 +170,12 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 		}()
 
 		readRequest(x, &entry)
+		// Every presented placement is recorded, not just the first. A request
+		// carrying both a Bearer header and an x-api-key is a real client
+		// misconfiguration, and a journal that showed only one of them could not
+		// be used to prove which placements an adapter actually sends.
 		if creds := httpx.ExtractCredentials(r); len(creds) > 0 {
-			x.Auth = httpx.Observe(creds[0], true)
+			x.Auth = httpx.ObserveAll(creds)
 		}
 
 		// One resolution, here, after the body is readable and before the handler

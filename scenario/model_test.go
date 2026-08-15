@@ -328,10 +328,14 @@ func TestMatch_Matches(t *testing.T) {
 	idx := func(i int) *int { return &i }
 	body := []byte(`{"model":"sonar","stream":false,"n":3,"messages":[{"role":"system"},{"role":"user"}]}`)
 
+	// The route key serving the request under test, unless a case overrides it.
+	const servingRoute = "exa:search"
+
 	tests := []struct {
 		name  string
 		match *Match
 		call  int
+		route string
 		want  bool
 	}{
 		{name: "nil matches everything", match: nil, call: 7, want: true},
@@ -345,6 +349,46 @@ func TestMatch_Matches(t *testing.T) {
 		{name: "body json number keeps its literal", match: &Match{BodyJSON: map[string]string{"n": "3"}}, want: true},
 		{name: "body json array index", match: &Match{BodyJSON: map[string]string{"messages.1.role": "user"}}, want: true},
 		{name: "body json missing path", match: &Match{BodyJSON: map[string]string{"nope": "x"}}, want: false},
+
+		// Route is the axis a multi-route provider is unscriptable without.
+		{name: "bare route hit", match: &Match{Route: "search"}, want: true},
+		{name: "bare route miss", match: &Match{Route: "answer"}, want: false},
+		{name: "qualified route hit", match: &Match{Route: "exa:search"}, want: true},
+		{
+			// A qualified name is never reduced to its own suffix first, or
+			// pasting an Exa turn into a Tavily block would silently keep working
+			// against the wrong provider's route.
+			name:  "qualified route does not match another provider's same-named route",
+			match: &Match{Route: "exa:search"},
+			route: "tavily:search",
+			want:  false,
+		},
+		{
+			name:  "bare route does match across providers, which is the point of the bare form",
+			match: &Match{Route: "search"},
+			route: "tavily:search",
+			want:  true,
+		},
+		{
+			// The default TurnKey is ["route"], so this reads "the third call to
+			// the poll route" — the shape every async surface needs.
+			name:  "route and call index together",
+			match: &Match{Route: "search", CallIndex: idx(2)},
+			call:  2,
+			want:  true,
+		},
+		{
+			name:  "route matches but call index does not",
+			match: &Match{Route: "search", CallIndex: idx(2)},
+			call:  1,
+			want:  false,
+		},
+		{
+			name:  "an unqualified key with no colon still matches",
+			match: &Match{Route: "bare"},
+			route: "bare",
+			want:  true,
+		},
 		{
 			name:  "fields AND rather than OR",
 			match: &Match{CallIndex: idx(0), BodyContains: "opus"},
@@ -352,17 +396,81 @@ func TestMatch_Matches(t *testing.T) {
 		},
 		{
 			name:  "every field satisfied",
-			match: &Match{CallIndex: idx(0), BodyContains: "sonar", BodyJSON: map[string]string{"model": "sonar"}},
+			match: &Match{Route: "search", CallIndex: idx(0), BodyContains: "sonar", BodyJSON: map[string]string{"model": "sonar"}},
 			want:  true,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := tc.match.Matches(tc.call, body); got != tc.want {
+			route := tc.route
+			if route == "" {
+				route = servingRoute
+			}
+			if got := tc.match.Matches(tc.call, route, body); got != tc.want {
 				t.Fatalf("Matches = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestMatch_IsEmptyCountsRoute(t *testing.T) {
+	t.Parallel()
+
+	// Route must participate in IsEmpty, or a turn constrained ONLY by route
+	// would be treated as the unconditional fallback — scenario.Validate uses
+	// IsEmpty to find that fallback, so a route-only turn would be mistaken for
+	// one and every later turn reported as unreachable.
+	if (&Match{Route: "search"}).IsEmpty() {
+		t.Error("a route-only predicate constrains something")
+	}
+	if !(&Match{}).IsEmpty() {
+		t.Error("an all-zero predicate is empty")
+	}
+}
+
+func TestRouteMatches(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		authored string
+		key      string
+		want     bool
+	}{
+		{"search", "exa:search", true},
+		{"exa:search", "exa:search", true},
+		{"answer", "exa:search", false},
+		{"exa:search", "tavily:search", false},
+		{"exa:answer", "exa:search", false},
+		{"completions", "perplexity:completions", true},
+		{"bare", "bare", true},
+		{"bare", "other", false},
+		{"", "exa:search", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.authored+"/"+tc.key, func(t *testing.T) {
+			t.Parallel()
+			if got := RouteMatches(tc.authored, tc.key); got != tc.want {
+				t.Errorf("RouteMatches(%q, %q) = %v, want %v", tc.authored, tc.key, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRouteKeySuffix(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"exa:search":             "search",
+		"perplexity:completions": "completions",
+		"bare":                   "bare",
+		"a:b:c":                  "c",
+		"":                       "",
+	}
+	for key, want := range tests {
+		if got := RouteKeySuffix(key); got != want {
+			t.Errorf("RouteKeySuffix(%q) = %q, want %q", key, got, want)
+		}
 	}
 }
 
@@ -372,7 +480,7 @@ func TestMatch_MatchesIsDeterministicAcrossRuns(t *testing.T) {
 	m := &Match{BodyJSON: map[string]string{"model": "sonar", "messages.0.role": "system"}}
 	body := []byte(`{"model":"sonar","messages":[{"role":"system"}]}`)
 	for range 50 {
-		if !m.Matches(0, body) {
+		if !m.Matches(0, "perplexity:completions", body) {
 			t.Fatal("map iteration order reached the matching decision")
 		}
 	}

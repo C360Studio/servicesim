@@ -42,9 +42,10 @@ func Routes() []provider.Route {
 // block's own `fault:`, which the scenario loader normalises onto the turn.
 func RouteSearch() provider.Route {
 	return provider.Route{
-		Pattern:  patternSearch,
-		FaultKey: faultKeySearch,
-		Fault:    func(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, providerName) },
+		Pattern:     patternSearch,
+		FaultKey:    faultKeySearch,
+		Credentials: authHeaders,
+		Fault:       func(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, providerName) },
 	}
 }
 
@@ -53,9 +54,10 @@ func RouteSearch() provider.Route {
 // to /search.
 func RouteAnswer() provider.Route {
 	return provider.Route{
-		Pattern:  patternAnswer,
-		FaultKey: faultKeyAnswer,
-		Fault:    answerFault,
+		Pattern:     patternAnswer,
+		FaultKey:    faultKeyAnswer,
+		Credentials: authHeaders,
+		Fault:       answerFault,
 	}
 }
 

@@ -60,39 +60,45 @@ func agentFault(s *scenario.Scenario) *scenario.Fault { return provider.TurnFaul
 
 // RouteSonar returns POST /v1/sonar, the canonical Sonar endpoint.
 func RouteSonar() provider.Route {
-	return provider.Route{Pattern: PatternSonar, FaultKey: FaultKeyCompletions, Fault: sonarFault}
+	return provider.Route{Pattern: PatternSonar, FaultKey: FaultKeyCompletions,
+		Credentials: bearerOnly, Fault: sonarFault}
 }
 
 // RouteChatCompletions returns POST /chat/completions, the OpenAI SDK alias of
 // the Sonar endpoint reached from a base_url that already ends in /v1, on the
 // same fault key.
 func RouteChatCompletions() provider.Route {
-	return provider.Route{Pattern: PatternChatCompletions, FaultKey: FaultKeyCompletions, Fault: sonarFault}
+	return provider.Route{Pattern: PatternChatCompletions, FaultKey: FaultKeyCompletions,
+		Credentials: bearerOnly, Fault: sonarFault}
 }
 
 // RouteChatCompletionsV1 returns POST /v1/chat/completions, the OpenAI SDK alias
 // of the Sonar endpoint reached from a base_url with no /v1 suffix, on the same
 // fault key.
 func RouteChatCompletionsV1() provider.Route {
-	return provider.Route{Pattern: PatternChatCompletionsV1, FaultKey: FaultKeyCompletions, Fault: sonarFault}
+	return provider.Route{Pattern: PatternChatCompletionsV1, FaultKey: FaultKeyCompletions,
+		Credentials: bearerOnly, Fault: sonarFault}
 }
 
 // RouteAgent returns POST /v1/agent, the canonical Agent API endpoint.
 func RouteAgent() provider.Route {
-	return provider.Route{Pattern: PatternAgent, FaultKey: FaultKeyAgent, Fault: agentFault}
+	return provider.Route{Pattern: PatternAgent, FaultKey: FaultKeyAgent,
+		Credentials: bearerOnly, Fault: agentFault}
 }
 
 // RouteResponses returns POST /v1/responses, the OpenAI SDK alias of the Agent
 // endpoint reached from a base_url with no /v1 suffix, on the same fault key.
 func RouteResponses() provider.Route {
-	return provider.Route{Pattern: PatternResponses, FaultKey: FaultKeyAgent, Fault: agentFault}
+	return provider.Route{Pattern: PatternResponses, FaultKey: FaultKeyAgent,
+		Credentials: bearerOnly, Fault: agentFault}
 }
 
 // RouteResponsesBare returns POST /responses, the OpenAI SDK alias of the Agent
 // endpoint reached from a base_url that already ends in /v1, on the same fault
 // key.
 func RouteResponsesBare() provider.Route {
-	return provider.Route{Pattern: PatternResponsesBare, FaultKey: FaultKeyAgent, Fault: agentFault}
+	return provider.Route{Pattern: PatternResponsesBare, FaultKey: FaultKeyAgent,
+		Credentials: bearerOnly, Fault: agentFault}
 }
 
 // Routes returns the six Perplexity routes across two surfaces, in registration
@@ -107,10 +113,22 @@ func RouteResponsesBare() provider.Route {
 // It is a function, not a package-level var, so no consumer can mutate the route
 // table of a package it merely imported.
 func Routes() []provider.Route {
-	return []provider.Route{
-		RouteSonar(), RouteChatCompletions(), RouteChatCompletionsV1(),
-		RouteAgent(), RouteResponses(), RouteResponsesBare(),
-	}
+	return slices.Concat(SonarRoutes(), AgentRoutes())
+}
+
+// SonarRoutes returns the three spellings of the Sonar surface, which is what the
+// "perplexity" scenario entry scripts. It is separate from AgentRoutes because a
+// `when.route:` is validated against the routes ITS entry serves: the two
+// surfaces are independent entries with independent turn cursors, so naming an
+// Agent route from a Sonar block is an authoring error worth reporting.
+func SonarRoutes() []provider.Route {
+	return []provider.Route{RouteSonar(), RouteChatCompletions(), RouteChatCompletionsV1()}
+}
+
+// AgentRoutes returns the three spellings of the Agent surface, which is what the
+// "perplexity_agent" scenario entry scripts.
+func AgentRoutes() []provider.Route {
+	return []provider.Route{RouteAgent(), RouteResponses(), RouteResponsesBare()}
 }
 
 // New returns the Perplexity handler, built with provider.NewMux over Routes().
@@ -366,6 +384,10 @@ func Validators() map[string]provider.Validator {
 // SonarValidator decodes and checks the Sonar projections in a scenario.
 type SonarValidator struct{}
 
+// Routes implements provider.RouteLister, so a `when.route:` in a "perplexity"
+// entry is checked against the Sonar surface alone.
+func (SonarValidator) Routes() []provider.Route { return SonarRoutes() }
+
 // ValidateProjections decodes every turn's Sonar projection body and reports
 // what it finds, addressed by the turn's YAML path.
 func (SonarValidator) ValidateProjections(s *scenario.Scenario, e *scenario.ProviderEntry) []scenario.Finding {
@@ -381,6 +403,10 @@ func (SonarValidator) ValidateProjections(s *scenario.Scenario, e *scenario.Prov
 
 // AgentValidator decodes and checks the Agent API projections in a scenario.
 type AgentValidator struct{}
+
+// Routes implements provider.RouteLister, so a `when.route:` in a
+// "perplexity_agent" entry is checked against the Agent surface alone.
+func (AgentValidator) Routes() []provider.Route { return AgentRoutes() }
 
 // ValidateProjections decodes every turn's Agent projection body and reports
 // what it finds, addressed by the turn's YAML path.

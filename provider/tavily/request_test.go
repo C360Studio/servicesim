@@ -332,9 +332,13 @@ func TestBodyAPIKeyAuthenticates(t *testing.T) {
 
 // TestBothCredentialPlacementsAreRecorded pins what a consumer asserting "my
 // adapter sent the credential the way we intended" reads. Presenting both is
-// accepted, and the header — the placement the vendor documents — keeps the
-// auth observation while the body placement is carried by its own finding, so
-// neither is lost in the other.
+// accepted; the header — the placement the vendor documents — keeps the scalar
+// auth observation, and BOTH appear in Auth.Placements.
+//
+// Handle's header scan cannot see a body-placed key, so the body placement is
+// added by this package after the body is decoded. Before Placements existed the
+// second credential was visible only as a side effect of a finding, which meant
+// "my client sends exactly one credential" could not be asserted directly.
 func TestBothCredentialPlacementsAreRecorded(t *testing.T) {
 	t.Parallel()
 
@@ -352,6 +356,34 @@ func TestBothCredentialPlacementsAreRecorded(t *testing.T) {
 	require.Equal(t, "authorization", entry.Auth.Header)
 	require.Equal(t, "Bearer", entry.Auth.Scheme)
 	require.Contains(t, findingCodes(t, ring), CodeAPIKeyInBody)
+
+	require.Len(t, entry.Auth.Placements, 2,
+		"a request sending two credentials must journal two placements")
+	placements := make([]string, 0, 2)
+	for _, p := range entry.Auth.Placements {
+		placements = append(placements, p.Header)
+	}
+	require.Equal(t, []string{"authorization", PlacementBodyAPIKey}, placements,
+		"the header is observed by Handle, the body placement added after decoding")
+}
+
+// A body-placed key on its own is one placement, not two, and it is the primary.
+// This is the shape the first adopter's real client produces.
+func TestBodyOnlyCredentialIsASinglePlacement(t *testing.T) {
+	t.Parallel()
+
+	ring := journal.NewRing(8, 1<<16)
+	rec := post(t, newHandler(t, validationScenario, ring),
+		"/search", `{"query":"report a","api_key":"tvly-body-key"}`, "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	entry := ring.Snapshot()[0]
+	require.Len(t, entry.Auth.Placements, 1)
+	require.Equal(t, PlacementBodyAPIKey, entry.Auth.Placements[0].Header)
+	require.Equal(t, PlacementBodyAPIKey, entry.Auth.Header,
+		"with no header credential, the body placement is the primary observation")
+	require.Equal(t, entry.Auth.Placements[0].Fingerprint, entry.Auth.Fingerprint)
 }
 
 // TestAuthentication covers §6.4: either the documented Authorization: Bearer

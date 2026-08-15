@@ -248,9 +248,35 @@ type Turn struct {
 // existing mocks do and migration needs it, but a scenario that can be written
 // with CallIndex should be.
 type Match struct {
+	// Route matches the route serving the request, so one provider's turn list
+	// can script several routes independently. Without it a multi-route provider
+	// is unscriptable: a GET poll carries no body, so BodyContains and BodyJSON
+	// cannot see it, and CallIndex alone cannot say WHICH route's third call is
+	// meant. "The third poll returns completed, whatever the create call did" is
+	// the shape every async surface needs and the reason this axis exists.
+	//
+	// The value is a route key. Two spellings match:
+	//
+	//	route: search        the bare key, which is what you normally write
+	//	route: "exa:search"  the fully qualified key, when disambiguating
+	//
+	// Route keys deliberately collapse ALIASES: Perplexity serves /v1/sonar,
+	// /chat/completions and /v1/chat/completions from one key, so `route:
+	// completions` matches a request through any of the three. That is the same
+	// grouping the fault engine counts attempts on, which is what keeps a retry
+	// through an alias drawing on the budget the scenario scripted.
+	//
+	// A name that matches no route the provider registers is an ERROR at load,
+	// not a turn that quietly never fires. See provider.ValidateScenario.
+	Route string `yaml:"route,omitempty"`
+
 	// CallIndex matches the zero-based count of prior requests in this turn
 	// lane (see TurnKey). This is the primitive an agentic loop needs and the
 	// one the fault engine already maintains.
+	//
+	// Note the interaction with Route: the default TurnKey is ["route"], so the
+	// cursor is ALREADY per route. `{route: poll, call_index: 2}` means the third
+	// call to the poll route, not the third call to the provider.
 	CallIndex *int `yaml:"call_index,omitempty"`
 
 	// BodyContains matches when the raw request body contains this substring.
@@ -633,9 +659,12 @@ func (t *Turn) DecodeProjection(name string, index int, into any) error {
 //
 // It reads the request and the call counter only. It never consults a clock,
 // because a predicate that depends on wall time is a flaky test waiting to happen.
-func (m *Match) Matches(callIndex int, body []byte) bool {
+func (m *Match) Matches(callIndex int, route string, body []byte) bool {
 	if m == nil {
 		return true
+	}
+	if m.Route != "" && !RouteMatches(m.Route, route) {
+		return false
 	}
 	if m.CallIndex != nil && *m.CallIndex != callIndex {
 		return false
@@ -664,7 +693,43 @@ func (m *Match) Matches(callIndex int, body []byte) bool {
 // IsEmpty reports whether the predicate constrains nothing, which is the same as
 // having no `when` at all. Nil-safe.
 func (m *Match) IsEmpty() bool {
-	return m == nil || (m.CallIndex == nil && m.BodyContains == "" && len(m.BodyJSON) == 0)
+	return m == nil ||
+		(m.Route == "" && m.CallIndex == nil && m.BodyContains == "" && len(m.BodyJSON) == 0)
+}
+
+// RouteMatches reports whether an authored `when.route:` name selects the route
+// key serving a request.
+//
+// Two spellings are accepted, and the asymmetry is deliberate. A bare name
+// ("search") matches the last segment of any key, because inside one provider's
+// block the qualifier is constant noise. A qualified name ("exa:search") must
+// match the key EXACTLY — it is never reduced to its own last segment first,
+// which would make `route: "exa:search"` silently match tavily:search if someone
+// pasted it into the wrong block. Being explicit must never widen a match.
+//
+// It is exported for one reason: provider.ValidateScenario must reject a route
+// name that matches nothing, and a validator using a second, separately-written
+// copy of this rule would eventually disagree with the matcher about what a
+// scenario means. Two derivations are two chances to disagree.
+func RouteMatches(authored, key string) bool {
+	if authored == key {
+		return true
+	}
+	if strings.Contains(authored, ":") {
+		return false
+	}
+	return authored == RouteKeySuffix(key)
+}
+
+// RouteKeySuffix returns the part of a route key after its last colon, which is
+// the bare name a scenario author writes. Exported alongside RouteMatches so a
+// validator can tell an author which names it accepts using the same reduction
+// the matcher applies.
+func RouteKeySuffix(key string) string {
+	if i := strings.LastIndex(key, ":"); i >= 0 {
+		return key[i+1:]
+	}
+	return key
 }
 
 // lookupJSONPath walks a dotted path over a decoded JSON value, treating a

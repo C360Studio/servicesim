@@ -326,11 +326,15 @@ func TestConversation_ScriptsAnAgenticLoop(t *testing.T) {
 	toolResult := []byte(`{"input":[{"type":"tool_result","content":"https://example.test/report-a"}]}`)
 	unrelated := []byte(`{"input":[{"type":"message","content":"something else entirely"}]}`)
 
-	assert.True(t, first.When.Matches(0, unrelated), "turn 0 matches the first call")
-	assert.False(t, first.When.Matches(1, toolResult), "turn 0 is confined to the first call")
-	assert.True(t, second.When.Matches(1, toolResult), "turn 1 matches the tool result coming back")
-	assert.False(t, second.When.Matches(1, unrelated), "turn 1 needs its substring")
-	assert.True(t, fallback.When.Matches(7, unrelated), "the fallback matches anything")
+	// None of these turns constrains a route, so the serving key does not change
+	// any outcome here; it is the real Agent key so the call reads as a real one.
+	const route = "perplexity:agent"
+
+	assert.True(t, first.When.Matches(0, route, unrelated), "turn 0 matches the first call")
+	assert.False(t, first.When.Matches(1, route, toolResult), "turn 0 is confined to the first call")
+	assert.True(t, second.When.Matches(1, route, toolResult), "turn 1 matches the tool result coming back")
+	assert.False(t, second.When.Matches(1, route, unrelated), "turn 1 needs its substring")
+	assert.True(t, fallback.When.Matches(7, route, unrelated), "the fallback matches anything")
 
 	// The other three providers stay in the single-shot form, so this scenario
 	// still configures every listener.

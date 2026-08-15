@@ -8,13 +8,22 @@ derived from and the date the shape was verified.
 |---|---|---|---|
 | Exa | [`exa/README.md`](exa/README.md) | 2026-08-14 | `POST /search`, `POST /answer` |
 | Tavily | [`tavily/README.md`](tavily/README.md) | 2026-08-14 | `POST /search` |
-| Perplexity | [`perplexity/README.md`](perplexity/README.md) | 2026-08-14 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/agent`, `POST /v1/responses` |
+| Perplexity | [`perplexity/README.md`](perplexity/README.md) | 2026-08-14 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
 
-Every route in that column has golden fixtures in this directory. The column was previously incomplete — it
-omitted Exa `POST /answer` and Perplexity `POST /v1/agent` and `POST /v1/responses` while their goldens were
-already committed here — so treat it as the list of what is simulated, not as a summary of the interesting parts.
-`POST /chat/completions` and `POST /v1/responses` are the SDK-routing aliases described in
-[`perplexity/README.md`](perplexity/README.md); they share the shapes of `/v1/sonar` and `/v1/agent` respectively.
+Every route in that column has golden fixtures in this directory. Treat it as the complete list of what is
+simulated, not as a summary of the interesting parts.
+
+**`scripts/check-docs.sh` now proves that column against the routes the binary actually registers, in both
+directions**, so the table cannot claim a route that does not exist *or* omit one that does. Both failures had
+already happened: the column once omitted Exa `POST /answer` and Perplexity `POST /v1/agent` and
+`POST /v1/responses` while their goldens sat committed beside it, and a later pass still omitted
+`POST /v1/chat/completions` and `POST /responses`. An adopter built a "Servicesim models one-shot
+request/response only" inventory partly from this table, which is why an omission here is not cosmetic — a reader
+concludes a capability does not exist.
+
+`POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/responses` and `POST /responses` are the
+SDK-routing aliases described in [`perplexity/README.md`](perplexity/README.md); each pair shares the shapes of
+`/v1/sonar` and `/v1/agent` respectively.
 
 ## Vendor endpoints that are NOT simulated
 

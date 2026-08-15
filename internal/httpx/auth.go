@@ -110,3 +110,59 @@ func Observe(c Credential, present bool) journal.AuthObservation {
 		Fingerprint: redact.Fingerprint(c.Value),
 	}
 }
+
+// ObserveAll converts every presented credential into one observation. The first
+// fills the scalar fields, for the many consumers that only ever ask "was a
+// credential presented, and where"; all of them, including that first, are listed
+// in Placements.
+//
+// Recording only the first is what this replaced, and it lost real information: a
+// request carrying both an Authorization header and an x-api-key journaled as
+// though it had sent one. A consumer proving its adapter sends exactly the
+// placement a vendor documents could not see the extra one it was also sending.
+func ObserveAll(creds []Credential) journal.AuthObservation {
+	if len(creds) == 0 {
+		return journal.AuthObservation{}
+	}
+	obs := Observe(creds[0], true)
+	obs.Placements = make([]journal.AuthPlacement, 0, len(creds))
+	for _, c := range creds {
+		obs.Placements = append(obs.Placements, placementOf(c))
+	}
+	return obs
+}
+
+// AddPlacement records one more placement on an existing observation, promoting
+// it to the primary if none was recorded yet.
+//
+// It exists for placements no generic header scan can find: Tavily's credential
+// arrives as a property of the JSON body, so it is discovered by the provider
+// package after Handle has already observed the headers. Appending rather than
+// replacing is what lets a request presenting a header AND a body key journal
+// both, which is precisely the misconfiguration worth being able to see.
+func AddPlacement(obs journal.AuthObservation, c Credential) journal.AuthObservation {
+	p := placementOf(c)
+	if !obs.Present {
+		obs.Present = true
+		obs.Header = p.Header
+		obs.Scheme = p.Scheme
+		obs.Fingerprint = p.Fingerprint
+	}
+	for _, existing := range obs.Placements {
+		if existing == p {
+			return obs
+		}
+	}
+	obs.Placements = append(obs.Placements, p)
+	return obs
+}
+
+// placementOf renders one credential as a journal placement, fingerprinting the
+// value rather than carrying it.
+func placementOf(c Credential) journal.AuthPlacement {
+	return journal.AuthPlacement{
+		Header:      strings.ToLower(c.Header),
+		Scheme:      c.Scheme,
+		Fingerprint: redact.Fingerprint(c.Value),
+	}
+}

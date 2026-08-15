@@ -41,7 +41,12 @@ func RouteSearch() provider.Route {
 	return provider.Route{
 		Pattern:  PatternSearch,
 		FaultKey: FaultKeySearch,
-		Fault:    func(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, Name) },
+		// POST /search carries a JSON body, so both the documented Authorization
+		// header and the body api_key real clients send authenticate here. The GET
+		// poll routes Phase 3 adds will declare Authorization alone — they have no
+		// body to carry a key in, which is why this is per route.
+		Credentials: defaultPlacements,
+		Fault:       func(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, Name) },
 	}
 }
 
@@ -80,6 +85,10 @@ func New(deps provider.Deps) http.Handler {
 // this package knows, and scenario is a level-1 package that must not import
 // provider/tavily to find out.
 type Validator struct{}
+
+// Routes implements provider.RouteLister, so a `when.route:` in a Tavily entry is
+// checked against the routes this package actually serves.
+func (Validator) Routes() []provider.Route { return Routes() }
 
 // Compile-time proof that the seam is implemented; provider.ValidateScenario
 // takes a map of these and a mismatch would otherwise surface as a build error

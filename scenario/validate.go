@@ -110,10 +110,13 @@ func (s *Scenario) Validate() Report {
 		return r
 	}
 
-	if s.Version != SchemaVersion {
+	// Parse already gates the version before decoding; this repeats the check
+	// because Validate is reachable directly on a hand-built Scenario, which is
+	// how testkit and provider tests construct one. Both gates share the same
+	// predicate so they cannot drift into disagreeing about what loads.
+	if !versionSupported(s.Version, SchemaVersion) {
 		r.add(SeverityError, "scenario.version.unsupported", "version",
-			"scenario declares version %d, but this build of Servicesim understands only version %d",
-			s.Version, SchemaVersion)
+			"%s", unsupportedVersionMessage(s.Version, SchemaVersion))
 	}
 	if strings.TrimSpace(s.Name) == "" {
 		r.add(SeverityError, "scenario.name.missing", "name", "name is required")

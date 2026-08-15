@@ -5,8 +5,9 @@ projections that render it onto the wire. It is the only input Servicesim takes:
 request at the same call position always produce byte-identical responses. Derived identifiers move with the call
 position, so two successive calls are distinguishable and a fresh state lane reproduces call 0 exactly.
 
-This is the reference for scenario authors in consuming repositories. `version: 1` is the only schema version this
-build understands.
+This is the reference for scenario authors in consuming repositories. `version: 1` is the current schema version.
+A build accepts its own version and every earlier one, so a file pinned to `version: 1` keeps loading unchanged
+after Servicesim's schema moves on. See [The version gate](#the-version-gate).
 
 Two rules govern the whole file:
 
@@ -18,7 +19,7 @@ Two rules govern the whole file:
 ## The shape of a scenario
 
 ```yaml
-version: 1                 # required, must be 1
+version: 1                 # required; 1 is the current schema version
 name: fusion-overlap       # required
 description: ...           # optional
 seed: fusion-overlap       # optional, defaults to name
@@ -43,7 +44,7 @@ deliberate rather than accidental, which is what makes a consumer's deduplicatio
 
 | Key | Type | Required | Renders to |
 |---|---|---|---|
-| `version` | integer | yes | Nothing. Must be `1`; any other value is a load error. |
+| `version` | integer | yes | Nothing. At least `1`, and no greater than the build's current schema version (`1` today). A version from the future is a load error. |
 | `name` | string | yes | The default `seed`, and the `name` field of `GET /__admin/scenario`. |
 | `description` | string | no | Nothing. Documentation for whoever reads the file next. |
 | `seed` | string | no | The stable key every derived identifier hangs off. Defaults to `name`, so two scenarios never collide on request IDs. |
@@ -181,6 +182,7 @@ everything.
 
 | Key | Type | Matches when |
 |---|---|---|
+| `route` | string | The route serving the request is this one. See [`route`](#route--scripting-one-provider-s-several-routes) below. A name the provider does not serve is a load error. |
 | `call_index` | integer | The zero-based count of prior requests **in this turn lane** equals it — see [`turn_key`](#turn_key--what-the-cursor-counts-per), whose default of `["route"]` makes the lane the route. A negative value is a load error. |
 | `body_contains` | string | The raw request body contains this substring. Deliberately crude — it covers "which tool result came back" without becoming an expression language. |
 | `body_json` | map of string to string | Every dotted path matches, for example `{model: sonar, "messages.0.role": system}`. A numeric segment indexes an array. Values compare as strings after JSON scalar formatting. An empty key is a load error. |
@@ -194,6 +196,54 @@ place and stays there for a while. `body_contains` exists because it is what mos
 migrating them needs it; a scenario that can be written with `call_index` should be. `body_json` sits in between:
 it is structural rather than textual, so `body_json: {model: sonar}` survives a reworded prompt in a way
 `body_contains: "summarise the report"` does not.
+
+### `route` — scripting one provider's several routes
+
+A provider that serves more than one route needs turns addressed to a particular one. `call_index` alone cannot do
+it: it says *which call*, never *which route's* call. Nor can the body matchers, because a `GET` poll carries no
+body at all.
+
+```yaml
+providers:
+  exa:
+    turns:
+      - when: {route: answer}                  # POST /answer, however many times
+        respond: {answer: a direct answer}
+      - when: {route: search, call_index: 0}   # the first POST /search
+        respond: {results: [{source: source-a}]}
+      - when: {route: search, call_index: 1}   # the second, independently
+        respond: {results: []}
+      - respond: {results: []}                 # the fallback
+```
+
+The default `turn_key` is `["route"]`, so **the cursor is already per route**. `{route: search, call_index: 1}`
+therefore means *the second call to the search route*, whatever the answer route did — which is the whole point.
+`call_index` on its own could not say that.
+
+**Aliases collapse.** Route names group the spellings of one operation, so Perplexity's `/v1/sonar`,
+`/chat/completions` and `/v1/chat/completions` are all `route: completions`. A scenario written against one spelling
+serves a client that uses another, and a retry through an alias draws on the budget the scenario scripted. This is
+the same grouping the fault engine counts attempts on.
+
+Two spellings are accepted:
+
+| Written | Matches |
+|---|---|
+| `route: search` | The bare name — any route whose key ends in `search`. This is what you normally write. |
+| `route: "exa:search"` | The fully qualified key, matched exactly. |
+
+The qualified form is **never** reduced to its bare name first. `route: "exa:search"` pasted into a `tavily:` block
+matches nothing and fails at load, rather than quietly matching `tavily:search`. Being explicit must not widen a
+match.
+
+**A name that matches no route the provider serves is an error at load**, not a turn that silently never fires. The
+error names the routes that provider does serve, because that vocabulary lives in Servicesim's Go source and is not
+visible from your scenario file:
+
+```text
+providers.exa.turns[2].when.route: route "serch" matches no route served by
+provider kind "exa"; it serves search, answer
+```
 
 ### Turn selection rules
 
@@ -314,10 +364,45 @@ error, `scenario.source.unknown`, naming the normalised YAML path — for exampl
 |---|---|---|
 | `mode` | `required` \| `optional` \| `reject` | `required` is the default. `reject` always answers 401, which is what the `unauthorized` built-in uses. Any other value is a load error. |
 | `expect_key` | string | The presented credential must match exactly. Use a fake value; only a fingerprint is ever retained. |
-| `headers` | list of string | Overrides the accepted credential placements, for example `[authorization]` to reject an `x-api-key` that Exa would otherwise allow. |
+| `headers` | list of string | Overrides the accepted credential placements outright, for example `[authorization]` to reject an `x-api-key` that Exa would otherwise allow. Despite the name it takes placements, not only header names — see below. |
 
-Accepted placements by default: Exa takes `x-api-key` or `Authorization: Bearer`; Tavily and Perplexity take
-`Authorization: Bearer` only.
+#### Credential placements
+
+A placement is where a credential arrives. Most are header names; one is not:
+
+| Placement | Meaning |
+|---|---|
+| `authorization` | The `Authorization` header, with or without a `Bearer` prefix. The vendors' own docs disagree about the scheme, so both are accepted. |
+| `x-api-key` | The `x-api-key` header. |
+| `body:api_key` | An `api_key` property in the JSON request body. Not a header — which is why the vocabulary exists at all. |
+
+Defaults are **per route**, because the real vendors vary placement per route:
+
+| Provider | Route | Accepts by default |
+|---|---|---|
+| Exa | `POST /search`, `POST /answer` | `authorization`, `x-api-key` |
+| Tavily | `POST /search` | `authorization`, `body:api_key` |
+| Perplexity | all six routes | `authorization` |
+
+A route with a JSON body can take the key in that body; a `GET` has nowhere to put one and takes a header instead.
+Servicesim models that per route rather than per provider, so a provider whose POST and GET differ is expressible.
+
+`auth.headers` overrides all of it, for the whole provider entry:
+
+```text
+auth.headers  >  the route's default  >  nothing else
+```
+
+The override is deliberately blunt. It exists for negative tests — *prove my client no longer sends the key in the
+body* — and an assertion like that is worthless if a route default quietly re-admits the placement you are trying to
+rule out:
+
+```yaml
+providers:
+  tavily:
+    auth:
+      headers: [authorization]   # a body-placed api_key now fails auth.missing
+```
 
 ### `validation`
 
@@ -423,6 +508,31 @@ providers:
 Per-turn and per-lane fault plans are deferred work, not something a scenario can express today. If you want "fail
 the retry, not the first call", say so with `attempts:` — a leading `- status: 200` is an unfaulted attempt, so
 `[{status: 200}, {status: 429}, {status: 200}]` faults only the second call.
+
+### What claims a call index, and what does not
+
+`call_index` counts the requests a lane actually *served*. A request Servicesim refused before reaching your script
+does not claim an index, does not advance the cursor, and does not consume an attempt from a fault plan. It is
+journaled with `"attempt_index": -1`, which is how you tell the two apart:
+
+| Outcome | Claims a call index |
+|---|---|
+| A scripted response, faulted or not | yes |
+| A request rejected for a validation error | **no** — `attempt_index: -1` |
+| A request rejected for a missing or wrong credential | **no** — `attempt_index: -1` |
+
+This is deliberate, and it is the reason a scenario stays readable. If a rejection consumed an index, then adding
+one malformed request to a test — or fixing an adapter so it stops sending one — would silently renumber every
+`call_index` after it, and the fixture would fail somewhere unrelated to the change.
+
+**A dynamically-enforced 429 will follow the same rule.** Servicesim does not enforce rate limits today; `429` is
+something a scenario scripts through `fault.attempts`, and that is a served response which does claim its index. If
+an enforcing mode is ever added, a 429 it originates will *not* claim a call index, on the same terms as an auth
+rejection above.
+
+That commitment is written down here rather than settled later because settling it later is not free: consumers are
+authoring fixtures keyed on `call_index` now, and a rate limiter that claimed indices would renumber every one of
+them on the day it shipped — in every adopting repository at once, with no error message pointing at the cause.
 
 ## Provider projection bodies
 
@@ -592,16 +702,50 @@ turn index. A typo in a key you *did* mean to write is never silently tolerated.
 
 ### The version gate
 
-`version` is read before the strict decode, so a mismatch is reported as one sentence rather than as a wall of
-unknown-key errors. A `version: 2` file loaded by this build fails startup with:
+A build accepts **its own schema version and every earlier one**. The gate is a range, not an equality:
+
+| Declared | On a build at version 1 | On a build at version 2 |
+|---|---|---|
+| `version: 0` | load error — below the floor | load error — below the floor |
+| `version: 1` | loads | loads |
+| `version: 2` | load error — from the future | loads |
+
+Older-loads-on-newer is the direction that matters to you: a scenario file pinned to `version: 1` keeps loading
+unchanged when Servicesim's schema version moves to 2. It does not need re-dating, re-pinning or hand-editing. The
+alternative — strict equality — would mean that every scenario file in every adopting repository stopped loading on
+the day the schema moved, which is an N-repository migration bought for nothing.
+
+Newer-on-older cannot work and fails loudly, because the keys such a file carries do not exist in the older build
+and `KnownFields(true)` is the whole point. `version` is read *before* the strict decode, so this is reported as one
+sentence rather than as a wall of unknown-key errors:
 
 ```text
 scenario declares version 2, but this build of Servicesim understands only version 1;
 upgrade Servicesim or pin the scenario to version 1
 ```
 
-A file with no `version` key at all fails with `scenario declares no version; add "version: 1"`. Both are error
-findings on the path `version`, and both prevent the process from starting.
+Versions below `1` are rejected rather than treated as merely old. Zero is what a typo or an unrendered template
+produces, never a released schema, and decoding such a file would validate it against an envelope nobody specified:
+
+```text
+scenario declares version 0, but a schema version is at least 1;
+this build of Servicesim understands version 1
+```
+
+A file with no `version` key at all fails with `scenario declares no version; add "version: 1"`. All of these are
+error findings on the path `version`, and all prevent the process from starting.
+
+#### What actually forces a version bump
+
+Adding an **optional** key is not a breaking change and does not require one. Under `KnownFields(true)` the strict
+decode rejects keys it does not know, so the compatibility question runs one way only: an older file never carries a
+key a newer build lacks. A newer build reading an older file simply finds the new keys absent and applies their
+documented defaults.
+
+The practical conclusion, recorded here so it does not have to be re-derived: **every remaining schema change on the
+roadmap is additive, so none of them forces `version: 2`.** A bump is needed only to remove a key, to rename one, or
+to change what an existing key means — and each of those is a decision to take deliberately, not a side effect of
+adding a feature.
 
 ## Worked example: one source through every provider
 

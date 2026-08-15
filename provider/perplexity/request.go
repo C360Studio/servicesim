@@ -168,19 +168,15 @@ func checkAuth(x *provider.Exchange, e *scenario.ProviderEntry) {
 		policy = e.Auth
 	}
 
-	mode := scenario.AuthRequired
-	allowed := bearerOnly
+	var effective scenario.AuthPolicy
 	if policy != nil {
-		if policy.Mode != "" {
-			mode = policy.Mode
-		}
-		if len(policy.Headers) > 0 {
-			allowed = make([]string, 0, len(policy.Headers))
-			for _, h := range policy.Headers {
-				allowed = append(allowed, strings.ToLower(h))
-			}
-		}
+		effective = *policy
 	}
+	mode := effective.Mode
+	if mode == "" {
+		mode = scenario.AuthRequired
+	}
+	allowed := x.AcceptedPlacements(effective, bearerOnly)
 
 	if mode == scenario.AuthReject {
 		x.Fail(CodeAuthRejected, "", "this scenario rejects every credential")

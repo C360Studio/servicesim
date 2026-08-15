@@ -4,7 +4,7 @@ The first adopter reviewed Servicesim against their target architecture and retu
 their own client code. This document is the durable record of that backlog, the evidence-based status of each item,
 the phased plan, and the decisions already taken. It exists so the work can be picked up cold.
 
-Recorded 2026-08-15, against **v0.1.1**. Phase 0 is shipped; everything from Phase 1 on is open.
+Recorded 2026-08-15, against **v0.1.1**. Phases 0 and 1 are shipped; everything from Phase 2 on is open.
 
 ## Decisions already taken
 
@@ -78,7 +78,13 @@ contracts/ as a trustworthy fidelity record before the adopter reads it to plan 
   JSON body and the perplexity.stream.unimplemented finding vanish when Phase 5 lands), anything asserting on
   aborting-fault journal timestamps (broken, fixed in Phase 6), and the multi-replica hazard.
 
-### Phase 1 — Schema-envelope changes, before anyone writes a scenario file
+### Phase 1 — Schema-envelope changes, before anyone writes a scenario file — SHIPPED
+
+> Shipped after v0.1.1. All six items landed; what each turned into is recorded under the item.
+>
+> One API break to note in the release: `provider.SelectTurn` takes a `route string` before `body`.
+> The scenario-file surface is additive only — `when.route:` is a new optional key, so every existing
+> scenario file loads unchanged.
 
 Everything here changes the shape or the loading rules of scenario YAML. Each is small today and an N-repository
 migration once the adopter and their peers have authored fixtures — this is the entire second ordering rule,
@@ -92,27 +98,43 @@ and collapses at six.
 **Unblocks:** Every multi-route provider item in Phases 3, 4, 5 and 8; the three-way credential matrix; and the
 adopter's ability to author scenario YAML in Tier-1 that survives the rest of this roadmap without a rewrite.
 
-- Widen the schema gate to accept version <= SchemaVersion (scenario/load.go:69-75 is strict equality) and add the
-  missing reverse-direction test — scenario/load_test.go:166-181 covers only a v2 file on a v1 build, never a v1 file on
-  a v2 build. Then record the conclusion that follows: under KnownFields(true) new optional keys are additive, so
-  nothing else in this backlog forces a bump.
-- Route-addressable turn selection: a when.route: matcher, or route-scoped turn lists. This is the item to put first
-  if anything slips, because 'the third poll returns completed' must be sayable independently of what the create call
-  returned, and no axis today expresses it.
-- Per-route credential placement: a Route.Credentials default that an entry's auth.headers overrides, with a
-  vocabulary that can express body:api_key. AuthPolicy today is per provider ENTRY (scenario/model.go:158-169, 301-311)
-  and its Headers field is a list of HEADER names, so 'body on POST, Bearer on GET' for one provider is not expressible
-  at any level. This is what makes Tavily /research possible in Phase 3 and what encodes the Perplexity-Bearer /
-  Exa-x-api-key / Tavily-body+Bearer matrix.
-- Journal every presented credential placement, not just the first: provider/handle.go:173 records creds[0] only, so a
-  request presenting both Bearer and x-api-key records only the header, and a matrix test cannot assert from the journal
-  that the client sent exactly one placement.
-- Settle in writing, in docs/scenario-schema.md, that a dynamically-enforced 429 does NOT claim a call index —
-  matching the existing auth-rejection precedent (journaled attempt=-1). This costs nothing now and prevents every
-  call_index-keyed consumer fixture renumbering silently if enforcement is ever built.
-- Add the guard that makes this class of drift unrepeatable: scripts/check-docs.sh already proves documented flags,
-  builtins, routes and testkit symbols against the real binary in CI — extend it to prove the contracts index table
-  against the registered Route patterns.
+- **DONE — schema gate widened.** The gate is now a RANGE, not an upper bound: `1 <= version <= SchemaVersion`.
+  Widening to `<=` alone would also have accepted `version: 0`, which is what a typo or an unrendered template
+  produces and was never a released schema. Both gates moved, not one — `scenario/validate.go` had a second strict
+  equality that would have kept rejecting what `Parse` had just accepted; they now share one predicate. The missing
+  reverse direction (a v1 file on a v2 build) is covered by `TestVersionSupported`, which required extracting
+  `versionSupported(declared, build)` so the build's version is a parameter rather than a constant. The conclusion is
+  recorded in docs/scenario-schema.md under "What actually forces a version bump": optional keys are additive, so
+  nothing else on this roadmap forces `version: 2`.
+- **DONE — `when.route:` shipped.** Matching is on `Route.FaultKey`, not the URL pattern, which means aliases
+  collapse for free: `route: completions` matches all three Perplexity spellings and draws the budget the scenario
+  scripted. Two spellings are accepted — a bare name matches any key's last segment, a qualified name matches
+  exactly and is never reduced to its own suffix first, so `route: "exa:search"` pasted into a Tavily block fails
+  rather than quietly matching `tavily:search`. An unknown route name is a load-time ERROR listing the served names,
+  via a new optional `provider.RouteLister` interface (type-asserted, so `Validator` did not change and out-of-tree
+  providers keep loading). Perplexity's route set is split into `SonarRoutes()`/`AgentRoutes()` so `route: agent`
+  written in a Sonar block is caught. `provider.SelectTurn` gained a `route` parameter — the one API break.
+- **DONE — per-route credential placement.** `Route.Credentials` holds the placements a route accepts, in a shared
+  vocabulary (`provider.PlacementAuthorization`, `PlacementXAPIKey`, `PlacementBodyAPIKey`) lifted out of
+  provider/tavily so a scenario author need not know which provider invented the spelling. The precedence rule lives
+  in ONE place, `Exchange.AcceptedPlacements` — `auth.headers` > `Route.Credentials` > the package default — because
+  three copies of a rule about what authenticates are three chances to disagree, and the disagreement shows up as a
+  401 against working client code. The scenario-level override stays entry-wide on purpose: it exists for negative
+  tests ("prove my client no longer sends the key in the body"), which a route default must not be able to re-admit.
+- **DONE — every placement journaled.** `AuthObservation.Placements []AuthPlacement` lists all of them; the scalar
+  fields still describe the first, so existing consumers of `auth.header` read what they always read. Additive, so
+  no existing journal assertion changed. Tavily's body-placed key is appended after the body decodes, because
+  Handle's header scan cannot see it — a request sending both a Bearer header and a body `api_key` now journals two
+  placements instead of losing one. `len(placements) == 1` is the assertion this existed to make writable.
+- **DONE — the call-index commitment is in writing.** docs/scenario-schema.md now carries "What claims a call index,
+  and what does not", with the table of outcomes and the verified `attempt_index: -1` precedent, and states that an
+  enforcing 429 will follow the same rule if Phase 9 ever builds one.
+- **DONE — and it immediately found two live bugs.** scripts/check-docs.sh now proves the contracts index table
+  against the registered provider routes in BOTH directions. The omission direction is the half a name checker
+  cannot normally do: every other category proves documented names are real, this one also proves real names are
+  documented. It found that the table still omitted `POST /v1/chat/completions` and `POST /responses` — the two bare
+  aliases Phase 0 added — months of that being invisible ended the first time the check ran. Both directions were
+  verified to fail on a deliberately broken table before being trusted.
 
 ### Phase 2 — Revise the two design documents against the challenge findings
 

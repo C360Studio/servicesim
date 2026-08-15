@@ -303,6 +303,69 @@ func TestAuth_AcceptsBothDocumentedPlacements(t *testing.T) {
 	}
 }
 
+// TestAuth_RouteCredentialsNarrowTheProviderDefault is the point of per-route
+// placement. Exa's package default accepts x-api-key, but a route that declares
+// Authorization alone must not: the async surfaces Phase 3 adds take a Bearer
+// header on their GET polls, which carry no body and follow a different vendor
+// rule from the POSTs beside them. Before this existed, "body on POST, Bearer on
+// GET" for one provider was not expressible at any level.
+func TestAuth_RouteCredentialsNarrowTheProviderDefault(t *testing.T) {
+	t.Parallel()
+
+	newExchange := func(t *testing.T, credentials []string, header, value string) *provider.Exchange {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{"query":"q"}`))
+		req.Header.Set(header, value)
+		return &provider.Exchange{
+			Deps:    provider.Deps{}.Normalized(),
+			Request: req,
+			Route: provider.Route{
+				Pattern:     patternSearch,
+				FaultKey:    faultKeySearch,
+				Credentials: credentials,
+			},
+		}
+	}
+
+	hasCode := func(x *provider.Exchange, code string) bool {
+		for _, f := range x.Findings() {
+			if f.Code == code {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("a route accepting only Authorization rejects x-api-key", func(t *testing.T) {
+		t.Parallel()
+		x := newExchange(t, []string{provider.PlacementAuthorization}, "x-api-key", "test-key")
+		authenticate(x, nil)
+
+		assert.True(t, x.Failed(), "a placement the route does not accept must not authenticate")
+		assert.True(t, hasCode(x, codeAuthMissing))
+		assert.True(t, hasCode(x, codeAuthWrongPlacement),
+			"the wrong placement stays visible, so the adapter author can see what they sent")
+	})
+
+	t.Run("and still accepts the placement it does declare", func(t *testing.T) {
+		t.Parallel()
+		x := newExchange(t, []string{provider.PlacementAuthorization}, "Authorization", "Bearer test-key")
+		authenticate(x, nil)
+
+		assert.False(t, x.Failed())
+		assert.Empty(t, x.Findings())
+	})
+
+	t.Run("a route declaring nothing keeps the provider default", func(t *testing.T) {
+		t.Parallel()
+		x := newExchange(t, nil, "x-api-key", "test-key")
+		authenticate(x, nil)
+
+		assert.False(t, x.Failed(),
+			"every route registered before Credentials existed relies on this fallback")
+	})
+}
+
 func TestAuth_MissingCredentialIs401WithInvalidAPIKeyTag(t *testing.T) {
 	t.Parallel()
 

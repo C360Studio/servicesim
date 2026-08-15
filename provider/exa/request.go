@@ -116,13 +116,7 @@ func authenticate(x *provider.Exchange, e *scenario.ProviderEntry) {
 		return
 	}
 
-	accepted := authHeaders
-	if len(policy.Headers) > 0 {
-		accepted = make([]string, 0, len(policy.Headers))
-		for _, h := range policy.Headers {
-			accepted = append(accepted, strings.ToLower(h))
-		}
-	}
+	accepted := x.AcceptedPlacements(policy, authHeaders)
 
 	presented := httpx.ExtractCredentials(x.Request)
 	var match *httpx.Credential

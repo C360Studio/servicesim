@@ -342,6 +342,10 @@ const (
 // exa.Validator{} and testkit can do the same without wiring anything.
 type Validator struct{}
 
+// Routes implements provider.RouteLister, so a `when.route:` in an Exa entry is
+// checked against the routes this package actually serves.
+func (Validator) Routes() []provider.Route { return Routes() }
+
 // ValidateProjections decodes every turn's Exa projection and reports what it
 // finds, addressed by the turn's YAML path. internal/server calls it through
 // provider.ValidateScenario before readiness reports true, so a fixture with a

@@ -203,6 +203,82 @@ providers:
 	}
 }
 
+// TestAcceptedPlacements pins the precedence every provider package shares.
+// Three copies of a rule about what authenticates would be three chances to
+// disagree, and the disagreement would show up as a 401 against working client
+// code — which is exactly the bug v0.1.1 shipped to fix.
+func TestAcceptedPlacements(t *testing.T) {
+	t.Parallel()
+
+	providerDefault := []string{PlacementAuthorization, PlacementXAPIKey}
+
+	tests := []struct {
+		name   string
+		route  []string
+		policy scenario.AuthPolicy
+		want   []string
+	}{
+		{
+			name: "no route and no policy falls back to the provider default",
+			want: providerDefault,
+		},
+		{
+			name:  "a route speaks for itself",
+			route: []string{PlacementAuthorization, PlacementBodyAPIKey},
+			want:  []string{PlacementAuthorization, PlacementBodyAPIKey},
+		},
+		{
+			name:   "a scenario overrides the provider default",
+			policy: scenario.AuthPolicy{Headers: []string{PlacementAuthorization}},
+			want:   []string{PlacementAuthorization},
+		},
+		{
+			// The negative test the override exists for: "prove my client no
+			// longer sends the key in the body". A route default that quietly
+			// re-admitted it would make that assertion unwritable.
+			name:   "a scenario overrides the route too",
+			route:  []string{PlacementAuthorization, PlacementBodyAPIKey},
+			policy: scenario.AuthPolicy{Headers: []string{PlacementAuthorization}},
+			want:   []string{PlacementAuthorization},
+		},
+		{
+			name:  "spelling is normalised, so a capitalised header still matches",
+			route: []string{"X-API-Key", "  Authorization  "},
+			want:  []string{PlacementXAPIKey, PlacementAuthorization},
+		},
+		{
+			name:   "an empty entry in a policy is dropped rather than matching nothing",
+			policy: scenario.AuthPolicy{Headers: []string{PlacementAuthorization, "", "  "}},
+			want:   []string{PlacementAuthorization},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			x := &Exchange{Route: Route{Pattern: "POST /search", Credentials: tc.route}}
+			require.Equal(t, tc.want, x.AcceptedPlacements(tc.policy, providerDefault))
+		})
+	}
+}
+
+// A route's Credentials must not be handed out as the live slice: a caller that
+// appended to the result would rewrite the route table for every later request
+// in the process.
+func TestAcceptedPlacementsDoesNotAliasTheRoute(t *testing.T) {
+	t.Parallel()
+
+	route := Route{Credentials: []string{PlacementAuthorization}}
+	x := &Exchange{Route: route}
+
+	got := x.AcceptedPlacements(scenario.AuthPolicy{}, nil)
+	got = append(got, "injected") //nolint:staticcheck // the append is the point
+
+	require.Equal(t, []string{PlacementAuthorization}, route.Credentials)
+	require.Equal(t, []string{PlacementAuthorization},
+		x.AcceptedPlacements(scenario.AuthPolicy{}, nil))
+}
+
 func TestExchangeFaultClaimsOnce(t *testing.T) {
 	t.Parallel()
 

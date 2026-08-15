@@ -646,7 +646,11 @@ Selection lives in `provider` alongside fault selection and shares its counter â
 // callIndex comes from the same per-FaultKey counter the fault engine uses, so
 // a scenario that rate-limits call 2 and answers differently on call 3 stays
 // coherent.
-func SelectTurn(e *scenario.ProviderEntry, callIndex int, body []byte) (*scenario.Turn, int, error)
+//
+// route is the Route.FaultKey serving the request, which is what a turn's
+// `when.route:` selects on. Aliases share a key, so a scenario written against
+// one spelling of a route also serves requests through the others.
+func SelectTurn(e *scenario.ProviderEntry, callIndex int, route string, body []byte) (*scenario.Turn, int, error)
 ```
 
 ### What this does not do
