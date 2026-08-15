@@ -412,11 +412,26 @@ func resolveLane(x *Exchange, p lanePrefix) {
 // that did resolve. The request is still served — loudly, in the journal, rather
 // than silently in a lane the author did not intend.
 func turnLaneKey(x *Exchange) string {
-	extractors := entryTurnKey(x).Extractors()
+	scenarioExtractors := entryTurnKey(x).Extractors()
+
+	// Route discriminators come last, so a scenario's turn_key subdivides the
+	// route and these subdivide that. Order is part of the key: reversing it
+	// would rename every lane.
+	extractors := scenarioExtractors
+	if len(x.Route.LaneFrom) > 0 {
+		extractors = make([]string, 0, len(scenarioExtractors)+len(x.Route.LaneFrom))
+		extractors = append(extractors, scenarioExtractors...)
+		extractors = append(extractors, x.Route.LaneFrom...)
+	}
 
 	// The default is one lane per route, and it must produce Route.FaultKey
 	// verbatim: that is the key a fault engine pre-registered at construction.
 	// A turn_key of nothing but "route" entries says the same thing.
+	//
+	// The route's own extractors are included in this question. Without them a
+	// poll route with the default turn_key would take this path and return the
+	// fault key verbatim — one lane for every job, which is the whole bug
+	// LaneFrom exists to prevent.
 	if !hasDiscriminator(extractors) {
 		return x.Route.FaultKey
 	}
@@ -439,12 +454,17 @@ func turnLaneKey(x *Exchange) string {
 			}
 			path := strings.TrimPrefix(extractor, scenario.TurnKeyBodyJSONPrefix)
 			value, ok := lookupLaneJSON(decoded, path)
-			parts = appendLanePart(x, parts, extractor, value, ok)
+			parts = appendLanePart(x, parts, extractor, value, ok, turnKeyFault)
 
 		case strings.HasPrefix(extractor, scenario.TurnKeyHeaderPrefix):
 			name := strings.TrimPrefix(extractor, scenario.TurnKeyHeaderPrefix)
 			value := x.Request.Header.Get(name)
-			parts = appendLanePart(x, parts, extractor, value, value != "")
+			parts = appendLanePart(x, parts, extractor, value, value != "", turnKeyFault)
+
+		case strings.HasPrefix(extractor, LaneFromPath):
+			name := strings.TrimPrefix(extractor, LaneFromPath)
+			value := pathValue(x, name)
+			parts = appendLanePart(x, parts, extractor, value, ValidJobID(value), pathFault(name))
 
 		default:
 			// scenario.Validate rejects an unknown extractor at load, so this is
@@ -455,6 +475,16 @@ func turnLaneKey(x *Exchange) string {
 	}
 
 	return strings.Join(parts, laneKeySeparator)
+}
+
+// pathValue reads a ServeMux wildcard, tolerating an Exchange built by hand
+// rather than by a mux — provider tests construct those, and a nil Request must
+// resolve to nothing rather than panic.
+func pathValue(x *Exchange, name string) string {
+	if x.Request == nil {
+		return ""
+	}
+	return x.Request.PathValue(name)
 }
 
 // hasDiscriminator reports whether the extractor list asks for anything beyond
@@ -470,21 +500,43 @@ func hasDiscriminator(extractors []string) bool {
 	return false
 }
 
+// laneFault is the finding a failed extractor is reported under. It is a pair
+// rather than a constant because the two SOURCES of extractors have different
+// audiences: a scenario's turn_key is written by the fixture author in YAML, and
+// a route's LaneFrom is written by a provider package in Go.
+type laneFault struct {
+	code  string
+	field string
+	// subject names the extractor in a message, so the sentence reads for
+	// whichever of the two an author is looking at.
+	subject string
+}
+
+// turnKeyFault reports a scenario-authored extractor.
+var turnKeyFault = laneFault{code: CodeTurnKeyUnresolved, field: "turn_key", subject: "turn_key extractor"}
+
+// pathFault reports a route-declared path extractor, addressed at the path
+// wildcard the client actually got wrong rather than at a turn_key the author
+// never wrote and could not add.
+func pathFault(name string) laneFault {
+	return laneFault{code: CodeJobIDInvalid, field: name, subject: "path value"}
+}
+
 // appendLanePart adds one extractor's contribution, or warns and adds nothing.
 // The extractor name is part of the segment, so two extractors that resolve to
 // the same text still name different lanes — without it, ["header:a","header:b"]
 // would put a="x" and b="x" in one lane.
-func appendLanePart(x *Exchange, parts []string, extractor, value string, ok bool) []string {
+func appendLanePart(x *Exchange, parts []string, extractor, value string, ok bool, f laneFault) []string {
 	switch {
 	case !ok:
-		x.Warn(CodeTurnKeyUnresolved, "turn_key",
-			"turn_key extractor %q resolved nothing on this request; the lane is named by the route and the extractors that did",
-			extractor)
+		x.Warn(f.code, f.field,
+			"%s %q resolved nothing usable on this request; the lane is named by the route and the extractors that did",
+			f.subject, extractor)
 		return parts
 	case len(value) > maxLaneValueLen:
-		x.Warn(CodeTurnKeyUnresolved, "turn_key",
-			"turn_key extractor %q resolved a value longer than %d bytes and was not used",
-			extractor, maxLaneValueLen)
+		x.Warn(f.code, f.field,
+			"%s %q resolved a value longer than %d bytes and was not used",
+			f.subject, extractor, maxLaneValueLen)
 		return parts
 	}
 	return append(parts, extractor+"="+value)

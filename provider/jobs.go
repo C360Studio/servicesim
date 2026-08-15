@@ -14,6 +14,17 @@ const (
 	MaxJobIDLen = 64
 )
 
+// LaneFromPath is the [Route.LaneFrom] extractor that reads a ServeMux wildcard:
+// "path:id" resolves r.PathValue("id").
+//
+// It is reachable only through Route.LaneFrom. scenario.Validate does not accept
+// it in a turn_key, and that is deliberate: an unrecognised extractor is a LOAD
+// ERROR there, so a scenario file using "path:id" would be unloadable on any
+// already-released binary — a hard failure in a consumer's CI rather than a
+// warning. Keeping it on the route means no scenario file mentions it and no
+// older binary ever sees it.
+const LaneFromPath = "path:"
+
 // Finding codes the async job surfaces raise.
 const (
 	// CodeJobIDInvalid is raised when a route's path-derived lane discriminator

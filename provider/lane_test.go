@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/internal/journal"
+	"github.com/c360studio/servicesim/scenario"
 )
 
 // rolesYAML keys the turn cursor on the caller's role, which is the shape the
@@ -246,6 +247,197 @@ func TestRouteEntryNamingAnUndeclaredEntry(t *testing.T) {
 
 	if got := x.Entry(); got != nil {
 		t.Errorf("Entry() = %+v, want nil for an entry the scenario does not declare", got)
+	}
+}
+
+// --- Route.LaneFrom --------------------------------------------------------
+
+// laneFromExchange builds an Exchange for a poll-shaped route whose lane is
+// discriminated by a path wildcard.
+func laneFromExchange(t *testing.T, s *scenario.Scenario, id string) *Exchange {
+	t.Helper()
+	// The target is fixed and always well-formed; the identifier is set as the
+	// path VALUE, which is what ServeMux hands a handler after percent-decoding
+	// and what the extractor reads. Interpolating it into the target instead
+	// would make httptest.NewRequest parse a request line, and the values worth
+	// testing here — a space, a slash — are exactly the ones that breaks on.
+	r := httptest.NewRequest(http.MethodGet, "/agent/runs/x", nil)
+	r.SetPathValue("id", id)
+	return &Exchange{
+		Deps:     Deps{Scenario: s}.Normalized(),
+		Provider: Exa,
+		Request:  r,
+		Route: Route{
+			Pattern:  "GET /agent/runs/{id}",
+			FaultKey: "exa:agent_runs.poll",
+			LaneFrom: []string{LaneFromPath + "id"},
+		},
+	}
+}
+
+// The whole point of LaneFrom: two jobs polled in one namespace must not share a
+// cursor. A route-keyed lane would hand each poll the snapshot scripted for the
+// other job, which fails somewhere else entirely and much later.
+func TestLaneFromPathGivesEachJobItsOwnLane(t *testing.T) {
+	t.Parallel()
+
+	s := mustScenario(t, `
+version: 1
+name: async
+providers:
+  exa:
+    turns:
+      - respond: {}
+`)
+
+	first := turnLaneKey(laneFromExchange(t, s, "run_aaa"))
+	second := turnLaneKey(laneFromExchange(t, s, "run_bbb"))
+
+	if first == second {
+		t.Fatalf("two jobs share one lane: %q", first)
+	}
+	if !strings.Contains(first, "path:id=run_aaa") {
+		t.Errorf("lane = %q, want the identifier in it", first)
+	}
+	if !strings.HasPrefix(first, "exa:agent_runs.poll") {
+		t.Errorf("lane = %q, want the route key leading", first)
+	}
+
+	// Same identifier, same lane — a poll sequence has to be reproducible.
+	if again := turnLaneKey(laneFromExchange(t, s, "run_aaa")); again != first {
+		t.Errorf("lane not stable for one identifier: %q then %q", first, again)
+	}
+}
+
+// hasDiscriminator has to see the ROUTE's extractors. Without that a poll route
+// with the default turn_key takes the allocation-free path and returns the fault
+// key verbatim — one lane for every job, which is the bug LaneFrom exists to
+// prevent, reintroduced by an optimisation.
+func TestLaneFromDefeatsTheAllocationFreePath(t *testing.T) {
+	t.Parallel()
+
+	s := mustScenario(t, `
+version: 1
+name: async
+providers:
+  exa:
+    turns:
+      - respond: {}
+`)
+
+	x := laneFromExchange(t, s, "run_aaa")
+	if got := turnLaneKey(x); got == x.Route.FaultKey {
+		t.Fatalf("lane = %q, the bare fault key — the route's extractors were not consulted", got)
+	}
+}
+
+// Route extractors come after the scenario's, because order is part of the key:
+// reversing it would rename every lane.
+func TestLaneFromOrdersAfterTheScenarioTurnKey(t *testing.T) {
+	t.Parallel()
+
+	s := mustScenario(t, `
+version: 1
+name: async
+providers:
+  exa:
+    turn_key: ["route", "header:x-tenant"]
+    turns:
+      - respond: {}
+`)
+
+	x := laneFromExchange(t, s, "run_aaa")
+	x.Request.Header.Set("x-tenant", "acme")
+
+	got := turnLaneKey(x)
+	tenant := strings.Index(got, "header:x-tenant=acme")
+	id := strings.Index(got, "path:id=run_aaa")
+
+	if tenant < 0 || id < 0 {
+		t.Fatalf("lane = %q, want both extractors present", got)
+	}
+	if tenant > id {
+		t.Errorf("lane = %q, want the scenario's extractor before the route's", got)
+	}
+}
+
+// A failed path extractor raises its OWN finding. Reusing turn_key_unresolved
+// would address a scenario key the author never wrote and cannot add: LaneFrom
+// is declared in Go by the provider package.
+func TestLaneFromFailureRaisesJobIDInvalidNotTurnKey(t *testing.T) {
+	t.Parallel()
+
+	s := mustScenario(t, `
+version: 1
+name: async
+providers:
+  exa:
+    turns:
+      - respond: {}
+`)
+
+	tests := []struct {
+		name string
+		id   string
+	}{
+		{"absent", ""},
+		{"a percent-decoded separator", "run/abc"},
+		{"over the length bound", strings.Repeat("a", MaxJobIDLen+1)},
+		{"not an identifier at all", "run abc"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			x := laneFromExchange(t, s, tc.id)
+			got := turnLaneKey(x)
+
+			// The request is still served, in the route's own lane, loudly.
+			if got != x.Route.FaultKey {
+				t.Errorf("lane = %q, want the route key when the discriminator fails", got)
+			}
+
+			findings := x.Findings()
+			if len(findings) != 1 {
+				t.Fatalf("findings = %+v, want exactly one", findings)
+			}
+			if findings[0].Code != CodeJobIDInvalid {
+				t.Errorf("code = %q, want %q", findings[0].Code, CodeJobIDInvalid)
+			}
+			if findings[0].Field != "id" {
+				t.Errorf("field = %q, want the path wildcard's own name", findings[0].Field)
+			}
+			if strings.Contains(findings[0].Message, "turn_key") {
+				t.Errorf("message names turn_key, which the author never wrote: %q", findings[0].Message)
+			}
+		})
+	}
+}
+
+// A route with no LaneFrom is completely unaffected: every route registered
+// before the field existed relies on that.
+func TestNoLaneFromKeepsTheRouteLane(t *testing.T) {
+	t.Parallel()
+
+	s := mustScenario(t, `
+version: 1
+name: sync
+providers:
+  exa:
+    turns:
+      - respond: {}
+`)
+
+	x := &Exchange{
+		Deps:     Deps{Scenario: s}.Normalized(),
+		Provider: Exa,
+		Route:    Route{Pattern: "POST /search", FaultKey: "exa:search"},
+	}
+	if got := turnLaneKey(x); got != "exa:search" {
+		t.Errorf("lane = %q, want the fault key verbatim", got)
+	}
+	if f := x.Findings(); len(f) != 0 {
+		t.Errorf("unexpected findings: %+v", f)
 	}
 }
 

@@ -89,6 +89,27 @@ type Route struct {
 	// both "perplexity:completions".
 	FaultKey string
 
+	// LaneFrom names lane discriminators this ROUTE contributes, in the same
+	// extractor grammar as scenario.TurnKey and evaluated after the scenario's,
+	// so a lane key reads "<route key> | <scenario extractors> | <route
+	// extractors>".
+	//
+	// It exists because a poll route's per-job lane is not a scenario author's
+	// choice. Two jobs polled concurrently in one namespace share a route, and a
+	// route-keyed cursor would hand each poll the snapshot scripted for the other
+	// job — the fan-out failure turn_key exists to prevent, arriving from the
+	// routing side rather than the scenario side. A wrong status code fails
+	// loudly; a coherent "running" belonging to somebody else's job fails
+	// somewhere else entirely, much later.
+	//
+	// It is declared here rather than in scenario, and that is what keeps the
+	// schema additive: scenario.Validate rejects an unrecognised turn_key
+	// extractor as a LOAD ERROR, so a "path:" extractor written in a scenario
+	// file would be the one change in this design that an older binary refuses to
+	// load. Declaring it on the route means no scenario file mentions it and no
+	// older binary ever sees it.
+	LaneFrom []string
+
 	// Fault selects this route's fault plan out of a scenario, for example
 	// func(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, "exa") }
 	// (nil-safe on every hop). It exists so the fault engine never has to know
