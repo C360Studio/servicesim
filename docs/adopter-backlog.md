@@ -6,32 +6,34 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-15 (evening), against **v0.2.0**, tagged and published from `main` the same evening.
+Recorded 2026-08-15 (late evening), against **v0.2.0** plus Phase 2 and Phase 4 on `main`, unreleased.
 
 | Phase | State |
 |---|---|
 | 0 — stop rejecting valid traffic | **shipped** in v0.1.1 |
 | 1 — schema-envelope changes | **shipped** in v0.2.0 |
-| 2 — revise the two design documents | **round 3**, conceptual findings answered; Go blocks demoted to illustrative |
+| 2 — revise the two design documents | **DONE** — `async-jobs.md` is the record of what shipped; `streaming.md` passed its round-3 challenge re-review, no owner decision open |
 | 3 — the async job machine | **shipped** in v0.2.0 (A1–A7 complete) |
-| 4 onward | open — **Phase 4's contract verification, or Phase 5, is next** |
+| 4 — the remaining synchronous routes | **DONE**, unreleased — `/contents`, `/findSimilar`, `/extract`, `stream_mode`, plus the contract-hygiene fixes |
+| 5 onward | open — **Phase 5 (SSE) is next**; Phase 7's provenance-date item is already done |
 
-`main` is green and pushed; `v0.2.0` resolves on ghcr.io in both spellings against one digest
-(`sha256:f1248516…`), and the README and Compose pins point at it. The tag's annotated message is the release
-note (there is no CHANGELOG file and no GitHub Release object, matching v0.1.1); it calls out the one Go API break
-(`provider.SelectTurn` gained a `route` parameter) and the one behaviour change to the shipped `perplexity_agent`
-surface (`Route.Entry` — its own `turn_key` is honoured now, where before it silently inherited the primary
-entry's).
+`main` is green and pushed. **v0.2.0** is the last tag; everything Phase 2 and Phase 4 added since — three new
+routes with goldens, honest provenance dates and goldens for the async routes, two wire corrections to routes
+released in v0.2.0 (Exa `output.structured` renders explicit `null`; a failed Tavily research poll carries only
+`request_id`/`status`/`response_time`), Perplexity's nullable enums accepting explicit `null` — is unreleased. That
+is worth a **v0.3.0** soon: the two wire corrections are the kind of change a consumer holding v0.2.0 goldens wants
+to hear about in a note, not discover in a diff.
 
 ### Start here
 
-**Phase 4 or Phase 5.** Phase 4's prerequisite is contract verification of Exa `/contents`, `/findSimilar` and
-Tavily `/extract` (decision D7 — re-verify against vendor docs first), which is a reading task with no code
-dependency. Phase 5 (SSE) is the adopter's MUST-HAVE and its blocker is Phase 2's `streaming.md` revision, which is
-at round 3 like `async-jobs.md`; the lesson of Phase 3 — build A2 and let the compiler answer what prose could not
-— applies directly, so the recommendation is to start Phase 5 with its "Response can express a stream"
-provider-core unit rather than a fourth prose round. Whichever is chosen, tell the adopter v0.2.0 exists first: the
-open questions for them (below) are still open, and their Tier-1 async paths are now simulable.
+**Phase 5 — SSE streaming**, the adopter's MUST-HAVE. Its specification, `docs/design/streaming.md`, has passed the
+round-3 re-review and its banner names unit 1: `Response.Stream` + the `execute` branch + the widened `Handle`
+journal condition + the SSE writer. §10 of that document is the ordered prerequisite — regenerate the Perplexity SSE
+contract from the vendor's openapi.json first, with every simulator-chosen frame-level choice recorded in
+provenance. Build unit 1 and let the compiler settle the mechanical layer, as Phase 3 did; do not open a fourth
+prose round. Also worth doing first, cheaply: tell the adopter v0.2.0 exists, and hand them the seven D7 questions
+now inlined in `contracts/tavily/README.md` and `contracts/exa/README.md` ("Open questions for the adopter") — the
+`/extract` body-`api_key` and `/findSimilar`-still-called answers decide whether two Phase 4 choices stand.
 
 ### What closed today, beyond A5–A7
 
@@ -547,8 +549,10 @@ Also converts the multi-replica hazard from documentation into an enforced defau
 - A Kubernetes manifest shipping replicas: 1 with a comment explaining why, the readiness probe on /readyz, and a
   digest-pinned image reference. Shipping the manifest WITHOUT the replica note would actively make things worse — a
   manifest is the artifact people scale.
-- Fix the provenance date model before the first refresh: add per-provider or per-entry dates and demote the global
-  VerifiedOn to 'oldest entry' or drop it.
+- **DONE 2026-08-15 (pulled forward for Phase 4)** — Fix the provenance date model before the first refresh: per-entry
+  dates are now real, the provider-level date must match the index table (a test parses it), and `VerifiedOn` is the
+  oldest entry, pinned by a test to the recomputed minimum. Goldens for the async routes were added in the same
+  change; the async routes had shipped without any.
 - Add an optional api_version to contracts.Record, plus spec_sha256 for the spec-derived provider. What exists today
   is a date, not a version. Perplexity's contract came from a machine-readable openapi.json that has a version and hash
   which could be diffed mechanically; Exa and Tavily came from prose pages, where the honest version is a content hash
