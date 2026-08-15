@@ -199,7 +199,8 @@ surface both consume, and delivers the documented single-replica exemption (task
   in the JSON body on the POST, Bearer on the GET poll). This surface literally cannot work until placement is
   resolvable per route, which is why Phase 1 precedes this.
 - A5: internal/admin scoped reset across all three stores in the corrected order, the optional GET /__admin/jobs
-  listing with a declared total order, --max-jobs wiring, and the single-replica startup log line.
+  listing with a declared total order, a job-count bound wired through configuration (the flag does not exist
+  yet; naming it here would assert a flag the binary does not have), and the single-replica startup log line.
 - A6: testkit — Job and Jobs aliases, Sim.Jobs(), a poll-sequence assertion, and the examples/adapter alias guard.
 - A7: scenarios/protocol/async-job.yaml covering completed, failed and stuck-pending; the docs/scenario-schema.md
   async section; and the multi-replica sections in README.md and docs/troubleshooting.md. The README isolation table at
