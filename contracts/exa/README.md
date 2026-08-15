@@ -13,6 +13,8 @@ the live contract canary reports drift.
 - <https://exa.ai/docs/reference/answer>
 - <https://exa.ai/docs/reference/error-codes>
 - <https://apis.io/apis/exa-ai/exa-ai-search-api/>
+- <https://exa.ai/docs/exa-spec.yaml> — the vendor's own OpenAPI spec; source of record for `/findSimilar` and
+  used to cross-check `/contents`.
 
 ## Endpoints
 
@@ -20,8 +22,8 @@ the live contract canary reports drift.
 |---|---|---|---|
 | `POST` | `/search` | canonical, simulated | Base URL <https://api.exa.ai>. Confirmed on both the OpenAPI-backed reference page and the coding-agents guide. |
 | `POST` | `/answer` | canonical, simulated | Separate documented endpoint at <https://exa.ai/docs/reference/answer>. Same auth. Request: query (string, required), stream, text, outputSchema. Response: answer (string\|object), citations[] (title,url,publishedDate,author,id,image,text), requestId, costDollars. The plan doc does not mention /answer at all. |
-| — | `/contents` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. Referenced indirectly by the error-codes page's `statuses[]` / CRAWL_* tags, which describe a contents-fetch surface. No /contents reference page was fetched, so no method or route shape is asserted here. |
-| — | `/findSimilar` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. Named here so a reader can tell it was considered rather than overlooked; nothing about its method, request or response is asserted. |
+| `POST` | `/contents` | canonical, verified 2026-08-15, NOT YET SIMULATED (Phase 4) | See the "POST /contents" section below. |
+| `POST` | `/findSimilar` | canonical per the live OpenAPI spec, DEPRECATED by the vendor, verified 2026-08-15, NOT YET SIMULATED | See the "POST /findSimilar" section below. The vendor's own OpenAPI spec documents this route in full and marks it `deprecated: true`, steering callers to `/search` instead; a prose reference page for it 404s, which is why an earlier pass wrongly recorded "no documentation found". |
 | `POST` | `/agent/runs` | canonical, simulated | Create-then-poll create route. See the "Exa Agent API" section at the end of this file. |
 | `GET` | `/agent/runs/{id}` | canonical, simulated | Poll route. |
 | `HEAD` | `/agent/runs/{id}` | canonical, simulated | Existence check; claims no turn or attempt. |
@@ -468,3 +470,284 @@ routes in both directions).
 
 A `POST /research` endpoint appears in third-party integration documentation but not in Exa's own docs index.
 Treat it as retired; do not simulate it.
+
+## POST /contents
+
+Verified against live vendor documentation on **2026-08-15**.
+
+Sources:
+
+- <https://exa.ai/docs/reference/get-contents>
+- <https://exa.ai/docs/reference/contents-api-guide-for-coding-agents> — cross-checked; no mention of `findSimilar`
+  anywhere on it, but it is not a strict subset of the reference page above: it types `summary` as `boolean|object`
+  where the reference page's OpenAPI types it `object|null`, and its Request-Level Errors table names `400`, `401`,
+  `422` and `429` for `/contents`, where 422 does not otherwise appear on the reference page. Both disagreements are
+  recorded below rather than silently resolved one way.
+- <https://exa.ai/docs/reference/error-codes> — already cited above for `/search` and `/answer`; the page states
+  the `CRAWL_*` status tags below are "specific to the `/contents` endpoint and are not returned by `/search`." It
+  also names `/contents`-specific fault tags outside the `statuses[]` mechanism: `ROBOTS_FILTER_FAILED` (403,
+  "`/contents` only — all requested URLs were blocked by robots.txt"), `FETCH_DOCUMENT_ERROR` (422, "A specific URL
+  could not be processed"), `NO_CONTENT_FOUND` (400, "No contents could be found for the given URLs") and
+  `INVALID_URLS` (400, "One or more URLs/IDs are in an invalid format").
+- <https://exa.ai/docs/exa-spec.yaml> — the vendor's own OpenAPI spec (linked from the docs index's "OpenAPI
+  Specification" entry), `title: Exa Public API`, `version: 2.0.0`. Confirmed as canonical for `/contents` and used
+  above for the `anyOf [<type>, null]` nullability and the `entities`/`extras`/`statuses` schemas below.
+
+**Status: canonical, verified, NOT YET SIMULATED (Phase 4).** Nothing in this section claims the route is
+registered by the binary; `contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth
+for that.
+
+### Auth
+
+The OpenAPI spec's top-level `security` for this route lists two schemes: `apiKey` (the `x-api-key` header,
+matching the code samples on the page) and `bearer` (`Authorization: Bearer <token>`, matching the guide's "Pass
+your API key via the `Authorization: Bearer` header."). Both forms are vendor-documented for `/contents`.
+
+### Request
+
+Exactly one of `ids` or `urls` is required — **one-of, not both, not neither.** A validator that requires both,
+or silently prefers one over the other, rejects valid production traffic.
+
+| Field | Type | Required | Range / Enum | Default | Notes |
+|---|---|---|---|---|---|
+| `ids` | `array[string]` | one-of with `urls` | 1–100 items, 1–2048 chars each | — | Document IDs from a prior Exa search. |
+| `urls` | `array[string]` | one-of with `ids` | 1–100 items, 1–2048 chars each | — | URLs to crawl directly. |
+| `compliance` | `string` | no | `hipaa` | — | Enterprise-only, cache-only retrieval. |
+| `text` | `boolean\|object` | no | — | `false` | **Union**, same duality as `/search`'s `contents.text`. See below. |
+| `text.maxCharacters` | `integer` | no | 1–10000 | — | |
+| `text.includeHtmlTags` | `boolean` | no | — | `false` | |
+| `text.verbosity` | `string` | no | `compact`, `standard`, `full` | `compact` | |
+| `text.includeSections` | `array[string]` | no | `header`, `navigation`, `banner`, `body`, `sidebar`, `footer`, `metadata` | — | |
+| `text.excludeSections` | `array[string]` | no | same enum as `includeSections` | — | |
+| `highlights` | `boolean\|object` | no | — | `false` | **Union.** |
+| `highlights.query` | `string` | no | — | — | Guides LLM highlight selection. |
+| `highlights.maxCharacters` | `integer` | no | 1–10000 | — | Total per URL. |
+| `highlights.numSentences` | `integer` | no | ≥1 | — | **DEPRECATED.** |
+| `highlights.highlightsPerUrl` | `integer` | no | ≥1 | — | **DEPRECATED, ignored.** |
+| `summary` | `boolean\|object` (per the guide) / `object` (per the OpenAPI spec) | no | — | — | **Vendor pages disagree — see below.** |
+| `summary.query` | `string` | no | — | — | |
+| `summary.schema` | `object` | no | — | — | JSON Schema draft-07 for structured summary output. |
+| `extras.links` | `integer` | no | 0–1000 | `0` | |
+| `extras.imageLinks` | `integer` | no | 0–1000 | `0` | **Not on `/search`'s `contents.extras`** — see divergence note below. |
+| `extras.richImageLinks` | `integer` | no | 0–1000 | `0` | **Not on `/search`'s `contents.extras`** — see divergence note below. |
+| `extras.richLinks` | `integer` | no | 0–1000 | `0` | **Not on `/search`'s `contents.extras`** — see divergence note below. |
+| `extras.codeBlocks` | `integer` | no | 0–1000 | `0` | |
+| `maxAgeHours` | `integer` | no | -1 to 720 | — | `-1` = always serve cached; `0` = force a fresh crawl. |
+| `livecrawl` | `string` | no | `never`, `always`, `fallback`, `preferred` | — | **DEPRECATED**, use `maxAgeHours`. Do not send `livecrawl` and `maxAgeHours` together — the page says so verbatim; whether the API rejects the pair is not stated. |
+| `livecrawlTimeout` | `integer` | no | 1–90000 (ms) | `10000` | |
+| `subpages` | `integer` | no | 0–100 | `0` | |
+| `subpageTarget` | `string\|array[string]` | no | string: 1–100 chars; array: 0–100 items, each 1–100 chars | — | **Union.** An empty array is allowed (`minItems: 0`). |
+| `context` | `boolean\|object` | no | `{maxCharacters: 1-10000}` | — | **DEPRECATED**, use `highlights` or `text` instead. **Union**, same shape family as `/search`'s deprecated `context`. |
+
+**`summary`'s type is contradicted between the two vendor pages.** The OpenAPI spec embedded on the
+`get-contents` reference page types `summary` as `anyOf [object{query, schema}, null]` — object or null, no
+boolean form. The companion guide page's Request Parameters table lists it as `boolean or object` with the note
+"Return LLM-generated summary. Object form: `{query, schema}`." A validator built strictly from the OpenAPI spec
+would reject `"summary": true`, which the guide presents as valid. Recorded as a disagreement, not resolved here.
+
+**Every optional request field above (and every nested option field) is documented `anyOf [<type>, null]` on the
+OpenAPI spec**, not merely optional-by-omission: `compliance`, `text`, `highlights`, `summary`, `extras`,
+`context`, `livecrawl`, `livecrawlTimeout`, `maxAgeHours`, `subpages`, `subpageTarget`, and every nested key under
+`text`/`highlights`/`summary`/`extras` (`maxCharacters`, `includeHtmlTags`, `verbosity`, `includeSections`,
+`excludeSections`, `query`, `numSentences`, `highlightsPerUrl`, `schema`, `links`, `imageLinks`, `richImageLinks`,
+`richLinks`, `codeBlocks`) all carry an explicit `{type: "null"}` arm. Explicit JSON `null` (e.g. `"text": null`,
+`"maxAgeHours": null`) is therefore documented-valid input, not merely an absent key. A validator that rejects an
+explicit `null` on any of these fields rejects documented-valid traffic. The Type column above omits the `|null`
+per field for table width; treat every "no" in the Required column as "optional, and null is a valid explicit
+value" unless noted otherwise.
+
+**Divergence from `/search`'s documented `contents.extras`:** this file's `/search` Request fields table (above)
+lists only `links`, `imageLinks` and `codeBlocks` under `contents.extras`. The `/contents` page documents two more
+keys, `richImageLinks` and `richLinks`, that do not appear in the `/search` reference page fetched on 2026-08-14.
+Not resolved here — flagged so an implementer does not silently assume the two `extras` shapes are identical.
+
+### Response
+
+| Field | Type | Always present | Notes |
+|---|---|---|---|
+| `requestId` | `string` | yes | Same format family as `/search`. |
+| `results` | `array[object]` | yes | `SearchResultOutput[]`, the same object family as `/search`'s `results[]`. |
+| `results[].title` | `string` | yes (within the object) | |
+| `results[].url` | `string` | yes (within the object) | |
+| `results[].publishedDate` | `string` | conditional | OpenAPI types it plain `string` (no `null` arm) with description "Format is YYYY-MM-DD"; the guide instead says `string or null` and its example is full ISO 8601. Vendor pages disagree; recorded as-is rather than resolved. |
+| `results[].author` | `string\|null` | conditional | Explicit null, not merely absent. |
+| `results[].id` | `string` | conditional | Document ID, per the guide "same as URL". |
+| `results[].image` | `string` | conditional | URI. |
+| `results[].favicon` | `string` | conditional | URI. |
+| `results[].text` | `string` | conditional | Gated on the `text` request option. |
+| `results[].highlights` | `array[string]` | conditional | Gated on the `highlights` request option. |
+| `results[].highlightScores` | `array[number]` | conditional | Cosine similarity per highlight. |
+| `results[].summary` | `string` | conditional | Gated on the `summary` request option. |
+| `results[].subpages` | `array[object]` | conditional | OpenAPI: seven fields (`title`, `url`, `publishedDate`, `author`, `id`, `image`, `favicon`), `additionalProperties: false`. The guide instead describes it as "Same shape as results" (i.e. the full result object, not the seven-field subset). Vendor pages disagree on this element's shape; not resolved here. |
+| `results[].entities` | `array[object]` | conditional | Fully itemised in the OpenAPI spec, not merely described by name — see below. |
+| `results[].extras` | `object` | conditional | `{links: string[]}` only, `additionalProperties: false` — see below. The request's other four `extras` keys (`imageLinks`, `richImageLinks`, `richLinks`, `codeBlocks`) have no documented output counterpart. |
+| `statuses` | `array[object]` | yes | One element per requested `id`/URL. `required: [id, status]` only — `source` and `error` are both optional per the schema. |
+| `statuses[].id` | `string` | yes | The requested URL or document ID, echoed back. |
+| `statuses[].status` | `string` | yes | Enum: `success`, `error`. |
+| `statuses[].source` | `string` | no (schema `required` omits it) | Enum: `cached`, `crawled`. Both the reference page's and the guide's success examples omit this field even on `status: success`, so "conditional, and often absent" is closer than "always present". |
+| `statuses[].error` | `object\|null` | no (schema `required` omits it) | Description: "Error details, only present when status is \"error\"." Both vendor examples of `status: success` omit `error` entirely rather than sending `error: null`. |
+| `statuses[].error.tag` | `string` | conditional | Enum: `CRAWL_NOT_FOUND`, `CRAWL_TIMEOUT`, `CRAWL_LIVECRAWL_TIMEOUT`, `SOURCE_NOT_AVAILABLE`, `UNSUPPORTED_URL`, `CRAWL_UNKNOWN_ERROR`. |
+| `statuses[].error.httpStatusCode` | `integer\|null` | conditional | `anyOf [{integer, 100–599}, null]`; `UNSUPPORTED_URL`'s row on the error-codes page gives no code, i.e. the null case. |
+| `costDollars` | `object` | yes | **Verified directly on this route** — unlike the Agent API's `costDollars`, this is a reading, not an inference. |
+| `costDollars.total` | `number` | yes | The page's only JSON response example shows `{"total": 0.003}`; the schema's own per-field example is `0.007`. Both are illustrative example values, not a documented range. |
+| `costDollars.search` | `object` | conditional | Description: "Endpoint-dependent estimated search cost breakdown by retrieval mode ... Deep search modes may be reflected only in total." Shown with a `.neural` key in the schema's per-field example; the page's one JSON example omits `search` entirely, matching the same sparse-by-default pattern already recorded for `/answer`. |
+| `costDollars.search.neural` | `number` | conditional | |
+| `context` | `string` | no | **DEPRECATED**, per the request field of the same name. No example value shown. |
+
+**`results[].entities` is fully itemised in the OpenAPI spec**, not merely named by category. It is
+`oneOf` three discriminated object shapes, each `required: [id, type, version, properties]`, with `type` a
+`const` of `company`, `person` or `publication` and `version` an integer ≥ 1:
+
+- **company** `properties`: `name`, `foundedYear`, `description`, `workforce.total`, `headquarters.{address,
+  city, postalCode, country}`, `financials.{revenueAnnual, fundingTotal, fundingLatestRound}`, `webTraffic`,
+  `research`.
+- **person** `properties`: `name`, `firstName`, `lastName`, `location`, `workHistory[]`, `educationHistory[]`,
+  `research`.
+- **publication** `properties`: `title`, `year`, `date`, `type` (enum `article`, `book`, `book-chapter`,
+  `dataset`, `dissertation`, `preprint`, `report`, `review`, or `null`), `language`, `citationCount`,
+  `authors[].{name, id}`, `referenceCount`, `abstract`, `doi`.
+
+Nested field types within each entity kind (e.g. exact numeric vs. string typing inside `financials`) are not
+re-transcribed here; read the spec directly before implementing.
+
+### Error bodies
+
+The fetched `/contents` reference page itself names only two HTTP statuses: **200 OK** (successful retrieval) and
+**402 Payment Required**. The reference page's own 402 has no description beyond the name; "insufficient account
+balance" is the error-codes page's wording for 402 in general, not text found on the `/contents` page itself — cited
+here, not attributed to the wrong page. It does not reprint the full error envelope on its own page. This file
+already records the shared flat `{requestId, error, tag}` envelope (with the reduced 429 `{error}`-only shape) from
+the error-codes page cited for `/search` and `/answer`; that page is written as a cross-endpoint reference rather
+than `/contents`-specific, so the same envelope is assumed here for validation failures (400), auth failures (401)
+and rate limiting (429) — **assumed by cross-reference, not independently re-quoted for `/contents`.**
+
+**The coding-agent guide names a different, `/contents`-specific request-level error set: 400, 401, 422 and 429**,
+with 422 described as "Validation error." — a status the reference page's own 200/402 pair does not mention at
+all. Separately, the error-codes page names `/contents`-specific fault *tags* that are not part of the `statuses[]`
+per-URL mechanism below: `ROBOTS_FILTER_FAILED` (`403`, "`/contents` only — all requested URLs were blocked by
+robots.txt"), `FETCH_DOCUMENT_ERROR` (`422`, "A specific URL could not be processed"), `NO_CONTENT_FOUND` (`400`,
+"No contents could be found for the given URLs") and `INVALID_URLS` (`400`, "One or more URLs/IDs are in an
+invalid format"). None of 422, `ROBOTS_FILTER_FAILED`, `FETCH_DOCUMENT_ERROR`, `NO_CONTENT_FOUND` or
+`INVALID_URLS` has an independently-confirmed `/contents` example body; recorded as named-but-not-exemplified.
+
+**Per-URL crawl failures are a distinct mechanism from top-level HTTP errors.** A `CRAWL_NOT_FOUND` on one
+requested URL out of ten does not make the overall response non-200 — it surfaces inside that element's
+`statuses[].error`, with the response still `200 OK` and `results[]` still populated for the URLs that succeeded.
+A simulator that maps a per-URL crawl failure onto the response's own HTTP status would be wrong.
+
+### What is NOT verified, and must not be invented
+
+1. **Whether `statuses[].source` is ever guaranteed present.** The schema's `required` list omits it and both
+   vendor success examples omit the field; treat it as conditional, not merely "not verified as always-present".
+2. **The full top-level HTTP error set for `/contents` specifically, with example bodies.** 200 and 402 are named
+   with an example on the reference page; 400/401/422/429 are named (without bodies) on the guide's Request-Level
+   Errors table; 500 is assumed shared with `/search` and `/answer` by cross-reference to the error-codes page.
+   None of 400/401/422/429/500 has an independently-confirmed `/contents`-specific example body.
+3. **Nested field types inside each `results[].entities` kind** (e.g. exact typing inside `financials`,
+   `workHistory[]`, `educationHistory[]`) — the top-level shape and property names are documented in full (see
+   above), but this file does not re-transcribe every nested primitive type.
+4. **Whether `results[].subpages[]` matches the OpenAPI's seven-field element or the guide's "same shape as
+   results"** — the two vendor pages disagree (see the Response table above); not resolved here.
+5. **Whether `extras.richImageLinks` / `extras.richLinks` are also accepted (silently or otherwise) on `/search`'s
+   `contents.extras`.** The two reference pages disagree on the request-side key set; neither says the other route
+   rejects the extra keys. (The *response*-side `extras` shape is documented as `{links: string[]}` only — see
+   above; it does not mirror the request's five keys.)
+6. **`context`'s response shape** (the deprecated field) — no example value is shown on this page.
+7. **Whether `compliance: hipaa` changes the response contract** beyond restricting retrieval to cached content.
+   The guide's one relevant line — "Uses cache-only retrieval; summaries and livecrawl are not supported." —
+   answers the "cache-only" half but not the response-shape question.
+8. **Whether `summary` is boolean-or-object or object-only.** The OpenAPI spec and the guide disagree (see the
+   Request table above); not resolved here.
+
+## POST /findSimilar
+
+Verified against live vendor documentation on **2026-08-15**.
+
+**This section previously claimed no live documentation page could be found for this route, and recommended
+treating its existence as unconfirmed.** That was wrong. The prose reference page URL the earlier search targeted
+(`https://exa.ai/docs/reference/find-similar-links`) does 404, and several plausible URL guesses and a
+third-party mirror also came back negative or inconclusive — but the vendor's **own OpenAPI spec**, one link away
+from the docs index the earlier search already had open, documents the route in full. The lesson: a prose
+reference page 404ing does not mean the route is gone, and "OpenAPI Specification" in a docs index should be the
+first link followed, not the last — CONTRIBUTING.md already says "prefer a machine-readable OpenAPI document if
+one exists, because prose pages describe while the spec decides."
+
+Sources:
+
+- <https://exa.ai/docs/exa-spec.yaml> — the vendor's own OpenAPI spec, `title: Exa Public API`, `version: 2.0.0`,
+  HTTP 200, linked from <https://exa.ai/docs/reference/openapi-spec> under "OpenAPI Specification" in the docs
+  index (`llms.txt`). That page states verbatim: "The raw OpenAPI specs are the source of truth for request and
+  response schemas."
+
+**Status: canonical per the live OpenAPI spec, DEPRECATED by the vendor, NOT YET SIMULATED.** The spec marks the
+operation `deprecated: true` with `x-exa-lifecycle: deprecated`. Its description, verbatim: "Find links similar to
+the provided URL and optionally retrieve their contents. Deprecated: prefer `/search` with a query describing the
+source." Given the vendor's own steer toward `/search`, whether to simulate this route at all — rather than only
+recording its contract — is a decision for the adopter; see "Open questions for the adopter" at the end of this
+section.
+
+### Request
+
+`operationId: findSimilar`. Request body: `FindSimilarRequest`, required.
+
+| Field | Type | Required | Range / Enum | Default | Notes |
+|---|---|---|---|---|---|
+| `url` | `string` | **yes** | minLength 3 | — | The only required field. |
+| `numResults` | `integer\|null` | no | 1–100 | `10` | |
+| `includeDomains` | `array[string]\|null` | no | max 1200 items | — | |
+| `excludeDomains` | `array[string]\|null` | no | max 1200 items | — | |
+| `startPublishedDate` | `string\|null` (date-time) | no | — | — | |
+| `endPublishedDate` | `string\|null` (date-time) | no | — | — | |
+| `startCrawlDate` | `string\|null` | no | — | — | **DEPRECATED, no effect**, per the spec's own description. |
+| `endCrawlDate` | `string\|null` | no | — | — | **DEPRECATED, no effect**, per the spec's own description. |
+| `contents` | `object\|null` | no | — | — | `$ref` to the same `ContentsOptions` object as `/contents` (`text`/`highlights`/`summary`/`extras`/`livecrawl`/`maxAgeHours`/`subpages`). |
+| `category` | `string\|null` | no | `company`, `publication`, `news`, `personal site`, `financial report`, `people` | — | |
+| `excludeSourceDomain` | `boolean\|null` | no | — | — | |
+
+The spec's own components section for `ContentsOptions` was not re-fetched in full for this pass (the raw spec
+file is ~405 KB and truncates in the fetch tool before reaching the nested schema each time); it is asserted here
+only by `$ref` name and by analogy to the identically-named object already recorded in this file's `/contents`
+section. Treat that nesting as **not independently re-verified for this route** until the component itself is
+read directly (e.g. via `curl` rather than a summarising fetch).
+
+### Response
+
+`FindSimilarResponse`, `additionalProperties: false`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `requestId` | `string` | |
+| `context` | `string` | **DEPRECATED**, per the spec. |
+| `results` | `array[object]` | `SearchResultOutput[]` — the same result object family as `/search` and `/contents`. |
+| `costDollars` | `object` | `CostDollarsOutput` — the same shape as `/contents`'s `costDollars`. |
+
+### What is NOT verified, and must not be invented
+
+1. **`ContentsOptions`'s exact nested shape as referenced from this route** — asserted by `$ref` name and analogy
+   to `/contents` above, not re-read component-by-component for `/findSimilar` specifically in this pass.
+2. **`SearchResultOutput`'s and `CostDollarsOutput`'s exact field lists as referenced from this route** — asserted
+   by `$ref` name and analogy to `/search`/`/contents` above, same caveat as above.
+3. **Whether the vendor's SDKs (`exa-js`, the TypeScript SDK spec) expose a `findSimilar` method at all.** The
+   earlier search round found none in `exa-js`'s README or the TypeScript SDK specification page; that check was
+   not repeated in this pass, and a deprecated-but-spec-present route may or may not have a corresponding SDK
+   method.
+4. **The route's HTTP error set** — not separately checked against the error-codes page in this pass; treat as
+   unverified rather than assumed shared with `/contents`.
+5. **Whether the vendor plans to remove the route**, versus keeping it indefinitely in deprecated form. The spec
+   states deprecation, not a removal date.
+
+### Open questions for the adopter
+
+Decision D7 says a re-verification that contradicts the adopter's working client must surface as a decision, not
+be silently resolved by siding with the documentation. The adopter's client (`src/pkg/agent/`) is not in this
+repository, so that check could not be run as part of this verification pass. Ask the adopter:
+
+1. **Does your client call `findSimilar` at all?** The vendor marks it deprecated and steers callers to `/search`.
+   If the adopter's client does not call it, deprioritise Phase 4 simulation of this route in favour of `/search`
+   and `/contents`, which are both confirmed live and non-deprecated.
+2. **If your client does call it, does it send `startCrawlDate` / `endCrawlDate`?** The spec says these are
+   deprecated and have no effect; a client still relying on them for filtering would be silently getting
+   unfiltered results from the real API today, independent of Servicesim.
+3. **Does your client's `contents` sub-object on this route send any field not already covered by this file's
+   `/contents` section?** This section asserts the shared `ContentsOptions` shape by `$ref` name and analogy,
+   not by an independent re-read of the component for this route specifically.

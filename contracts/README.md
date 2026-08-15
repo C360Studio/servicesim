@@ -10,8 +10,9 @@ derived from and the date the shape was verified.
 | Tavily | [`tavily/README.md`](tavily/README.md) | 2026-08-15 | `POST /search`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
 | Perplexity | [`perplexity/README.md`](perplexity/README.md) | 2026-08-14 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
 
-Every route in that column has golden fixtures in this directory. Treat it as the complete list of what is
-simulated, not as a summary of the interesting parts.
+Every route in that column has golden fixtures in this directory, except the two `HEAD` routes: `HEAD` carries no
+body, so it has no fixture to pin — its behaviour is covered by the provider tests instead. Treat the column as the
+complete list of what is simulated, not as a summary of the interesting parts.
 
 **`scripts/check-docs.sh` now proves that column against the routes the binary actually registers, in both
 directions**, so the table cannot claim a route that does not exist *or* omit one that does. Both failures had
@@ -32,10 +33,10 @@ cannot tell whether it was considered and declined or never looked at — which 
 
 | Provider | Endpoint | Status | Why |
 |---|---|---|---|
-| Exa | `/contents` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. Referenced only indirectly, by the error-codes page's `statuses[]` / `CRAWL_*` tags. |
-| Exa | `/findSimilar` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. |
+| Exa | `/contents` | verified 2026-08-15 against <https://exa.ai/docs/reference/get-contents>; simulation scheduled (Phase 4) | See `contracts/exa/README.md`'s "POST /contents" section for the full recorded shape. |
+| Exa | `/findSimilar` | verified 2026-08-15 against <https://exa.ai/docs/exa-spec.yaml> (vendor marks the route `deprecated: true`); simulation scheduled (Phase 4) | The vendor's own OpenAPI spec documents this route in full and steers callers toward `/search` instead. See `contracts/exa/README.md`'s "POST /findSimilar" section for the full recorded shape and the correction to this row's earlier "no documentation found" claim. |
 | Exa | `/agent/runs` lifecycle beyond create and poll | NOT SIMULATED | Create and poll ARE simulated — see the table above. The rest of the lifecycle (listing all runs, `/agent/runs/{id}/events`, `/agent/runs/{id}/cancel`, and deleting a run) has no verified contract and is not simulated. Paths here are written without a method on purpose: the index guard reads a backticked method-plus-path as a claim that the route IS simulated. |
-| Tavily | `/extract` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. |
+| Tavily | `/extract` | verified 2026-08-15 against <https://docs.tavily.com/documentation/api-reference/endpoint/extract>; simulation scheduled (Phase 4) | See `contracts/tavily/README.md`'s "POST /extract" section for the full recorded shape. |
 
 "Scheduled for verification" means exactly that: the vendor documentation has not been fetched, dated and recorded
 under [the one rule](../CONTRIBUTING.md#the-one-rule-that-matters-most), so nothing here asserts a method, a request
@@ -57,11 +58,21 @@ Simulator tests cannot detect vendor drift — a simulator agrees with itself by
 canary (plan Phase 5) makes one bounded request per provider against the real API on a manual or scheduled trigger,
 validates only the consumed fields listed here, and fails on removed or incompatible fields. Additive fields are
 reported without failing, because external APIs evolve additively and consumers are expected to tolerate that.
+Every provider's `provenance.yaml` carries two kinds of `verified:` date — the provider-level one at the top of the
+file, matching the **Verified** column above, and one per golden entry. Both move on a drift refresh, but not for the
+same reason: an entry's date moves because that golden's shape was re-checked; the provider-level date and the
+**Verified** column above move together whenever any entry is checked later than they currently claim, because a
+whole-contract verification cannot be older than a fixture that was individually re-checked since. See the header of
+any `provenance.yaml` for how the two relate.
 
 When the canary reports drift:
 
-1. Update the affected `contracts/<provider>/README.md` and its **Verified** date.
-2. Update the provider handler and its golden fixtures in the same change.
+1. Update the affected `contracts/<provider>/README.md`, and bring `provenance.yaml`'s provider-level `verified:` and
+   this file's index-table **Verified** column into agreement in the same change — that pair is what
+   `TestProviderVerifiedMatchesReadmeIndexTable` enforces; the provider README's own headline "Verified against..."
+   date is a separate, currently-unenforced line and updating it is good practice but not mechanically checked.
+2. Update the provider handler and its golden fixtures, including each changed entry's own `verified:` date, in the
+   same change.
 3. Cut a Servicesim release — provider handler and contract changes are release-worthy; product-specific scenario
    changes in consuming repositories are not.
 

@@ -292,3 +292,158 @@ only — that is observed client behaviour, and v0.1.1 accepts it. Applying the 
 
 So the routes genuinely accept different placement sets, and `Route.Credentials` is genuinely the mechanism — the
 difference comes from the request having a body rather than from the vendor requiring different schemes.
+
+## POST /extract
+
+Verified against live vendor documentation on **2026-08-15**.
+
+Sources:
+
+- <https://docs.tavily.com/documentation/api-reference/endpoint/extract>
+- <https://docs.tavily.com/documentation/api-reference/endpoint/extract.md> — the markdown source of the same
+  page, fetched separately; the two fetches agree on every field.
+
+No separate Tavily error-code reference page was found for this route. A search result cited
+`https://docs.tavily.com/docs/rest-api/api-reference#error-codes` as a general error-codes page; that URL was
+fetched directly and returns **HTTP 404**, so it is a stale reference, not a source. `/extract`'s error bodies
+below come from its own page, matching the pattern this file already records for `/search`: every documented
+status uses its own fully-shown example rather than deferring to a shared reference.
+
+**Status: canonical, verified, NOT YET SIMULATED (Phase 4).** Nothing in this section claims the route is
+registered by the binary; `contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth
+for that.
+
+### Auth
+
+**Bearer token in the `Authorization` header only**, per the page's own auth description
+("`Bearer <token>`, where `<token>` is your Tavily API key"). **The page does not document a body-placed
+`api_key` field for `/extract`, and neither fetch of it found one.** This is a real difference from `/search`,
+where this file already records that a body `api_key` is not vendor-documented either but IS accepted because
+observed client code sends it there. No such observed client behaviour has been recorded for `/extract` — do not
+carry the `/search` body acceptance across to this route without separate evidence. See "Open questions for the
+adopter" below.
+
+### Request
+
+| Field | JSON type | Required | Enum | Range | Default | Notes |
+|---|---|---|---|---|---|---|
+| `urls` | `string\|array[string]` | **yes** | — | max 20 URLs (inferred — see below) | — | **Union** — the page's own request examples show both a bare string and an array; a validator accepting only one form rejects valid traffic. |
+| `query` | `string` | no | — | — | — | Reranks extracted chunks by relevance. |
+| `chunks_per_source` | `integer` | no | — | 1–5 | `3` | Documented as usable "only when `query` is provided" — a request field with a conditional precondition on another field. Chunks are "short content snippets (maximum 500 characters each)" pulled from the source; when returned, they appear in `raw_content` joined by a literal `[...]` separator (verbatim from the page). |
+| `extract_depth` | `string` | no | `basic`, `advanced` | — | `basic` | Cost differs by value: 1 credit per 5 successful extractions at `basic`, 2 credits per 5 at `advanced`, per the page. |
+| `include_images` | `boolean` | no | — | — | `false` | |
+| `include_favicon` | `boolean` | no | — | — | `false` | |
+| `format` | `string` | no | `markdown`, `text` | — | `markdown` | |
+| `timeout` | `float` (seconds) | no | — | 1.0–60.0 | `10` at `basic`, `30` at `advanced` | Default is itself conditional on `extract_depth`. |
+| `include_usage` | `boolean` | no | — | — | `false` | |
+
+**The 20-URL cap on `urls` is not a declared schema constraint** — no `maxItems` appears on the `urls` field
+itself. It is inferred from the 400 error example's text, `"<400 Bad Request, (e.g Max 20 URLs are allowed.)>"`.
+Marked as inferred rather than schema-declared, per house style.
+
+### Response
+
+The response schema carries **no top-level `required` list at all** — every "yes" below is inferred from the
+page's example payloads and field descriptions, not from a declared requirement.
+
+| Field | Type | Always present | Notes |
+|---|---|---|---|
+| `results` | `array[object]` | yes (inferred) | |
+| `results[].url` | `string` | yes (inferred, within the object) | Source URL. |
+| `results[].raw_content` | `string` | yes (inferred, within the object) | Full or chunked page content, per `format`. When `query` is provided, contains "the top-ranked chunks joined by `[...]` separator" (verbatim). |
+| `results[].images` | `array[string]` | conditional | Explicitly documented: "This is only available if `include_images` is set to `true`." |
+| `results[].favicon` | `string` | conditional (inferred) | The page's description ("The favicon URL for the result.") does not itself state the `include_favicon` gating; the gating is inferred from the field name and the analogous `include_images`/`images` pair, not read verbatim on this field. |
+| `failed_results` | `array[object]` | yes (inferred) | Description: "A list of URLs that could not be processed." No page text states it is always returned (possibly empty) rather than conditional; inferred from the absence of a documented gating condition, same as `results`. |
+| `failed_results[].url` | `string` | yes (inferred, within the object) | The failed URL. |
+| `failed_results[].error` | `string` | yes (inferred, within the object) | Failure reason as free text. |
+| `response_time` | `number` (float, seconds) | yes (inferred) | Same JSON type this file already records for `/search`'s `response_time` — no string-vs-number divergence on this route. |
+| `usage` | `object` | conditional (inferred) | Description: "Credit usage details for the request." No page text states the `include_usage` gating on this field itself; inferred from the field name and the request field's own note (below), not read verbatim on this field. |
+| `usage.credits` | `number` | conditional | Docs example shows `1`; same field name and shape as `/search`'s `usage.credits` already recorded in this file. The `include_usage` request field's own note states verbatim: "The value may be 0 if the total successful URL extractions has not yet reached 5 calls." — so `usage.credits: 0` is a documented, not merely possible, value. |
+| `request_id` | `string` | yes (inferred) | Example on the page is UUID-shaped (`123e4567-e89b-12d3-a456-426614174111`), matching `/search`'s documented UUID `request_id` format elsewhere in this file, but nothing on this page states the format as a rule for `/extract`. |
+
+### Error bodies
+
+Same envelope family as `/search`, shown with `/extract`-specific example text:
+
+#### 400
+
+```json
+{"detail":{"error":"<400 Bad Request, (e.g Max 20 URLs are allowed.)>"}}
+```
+
+The angle-bracket placeholder is literally what the doc example contains, same convention as the `/search` 400
+example already recorded in this file. The example text itself confirms the 20-URL cap on `urls`.
+
+#### 401
+
+```json
+{"detail":{"error":"Unauthorized: missing or invalid API key."}}
+```
+
+Identical text to the `/search` 401 example already recorded in this file.
+
+#### 429
+
+```json
+{"detail":{"error":"Your request has been blocked due to excessive requests. Please reduce rate of requests."}}
+```
+
+Identical text to the `/search` 429 example.
+
+#### 432
+
+```json
+{"detail":{"error":"<432 Custom Forbidden Error (e.g This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com)>"}}
+```
+
+Identical text to the `/search` 432 example.
+
+#### 433
+
+```json
+{"detail":{"error":"This request exceeds the pay-as-you-go limit. You can increase your limit on the Tavily dashboard."}}
+```
+
+Identical text to the `/search` 433 example.
+
+#### 500
+
+```json
+{"detail":{"error":"Internal Server Error"}}
+```
+
+Identical text to the `/search` 500 example.
+
+All six statuses and their example bodies are reprinted verbatim on `/extract`'s own page rather than by
+cross-reference, so — unlike Exa's `/contents` section above — nothing here is assumed by analogy to a sibling
+route.
+
+### What is NOT verified, and must not be invented
+
+1. **Whether a body-placed `api_key` authenticates `/extract`.** Not documented (same as `/search`), and — unlike
+   `/search` — not evidenced by any observed client code either. Treat `/extract` as Bearer-header-only until a
+   client is observed doing otherwise; do not extend the `/search` finding across routes by assumption.
+2. **`request_id`'s format.**
+3. **`failed_results[].error`'s possible values** — documented only as free text, with no enum or set of causes
+   listed.
+4. **Whether `results[]` and `failed_results[]` are mutually exclusive per URL** (i.e., a URL appears in exactly
+   one of the two arrays) — the page describes both arrays independently and never states this explicitly, though
+   it is the only sensible reading.
+5. **Whether `chunks_per_source` is rejected, ignored, or silently accepted when sent without `query`.** The page
+   says the field is usable only when `query` is provided but does not state what happens if it is sent alone.
+
+### Open questions for the adopter
+
+Decision D7 says a re-verification that contradicts the adopter's working client must surface as a decision, not
+be silently resolved by siding with the documentation — the same reasoning that produced D2 for `/search`'s
+body-placed `api_key`. The adopter's client (`src/pkg/agent/`) is not in this repository, so that check could not
+be run as part of this verification pass. Ask the adopter:
+
+1. **Does your client send a body-placed `api_key` on `POST /extract`, the way D2 already established it does on
+   `POST /search`?** If yes, this file's Bearer-only recording above is incomplete for `/extract` the same way the
+   pre-D2 `/search` recording was, and needs the same fix.
+2. **Does your client send `chunks_per_source` without `query`?** The vendor page does not document the result.
+3. **Does your client rely on `usage.credits` being present when `include_usage` is unset**, or only when set?
+   This file records it as conditional on `include_usage`, inferred rather than read verbatim on the field itself.
+4. **Does your client parse `results[].favicon` unconditionally**, or does it gate on `include_favicon` the way
+   this file infers (by analogy to `include_images`/`images`) rather than the page stating it directly?
