@@ -118,6 +118,7 @@ func validators() map[string]provider.Validator {
 		string(provider.Exa): exa.Validator{},
 		exa.NameAgentRuns:    exa.AgentRunValidator{},
 		tavily.Name:          tavily.Validator{},
+		tavily.NameResearch:  tavily.ResearchValidator{},
 	}
 	maps.Copy(out, perplexity.Validators())
 	return out

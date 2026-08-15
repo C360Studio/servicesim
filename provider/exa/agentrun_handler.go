@@ -1,6 +1,7 @@
 package exa
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/c360studio/servicesim/internal/ids"
@@ -225,6 +226,21 @@ func selectAgentRunProjection(x *provider.Exchange, e *scenario.ProviderEntry) (
 	if err := turn.DecodeProjection(NameAgentRuns, index, p); err != nil {
 		x.Fail(codeProjectionInvalid, "", "the scenario's Exa agent-run projection could not be decoded: %v", err)
 		return nil, false
+	}
+
+	// Grounding citations carry only a source id until they are resolved against
+	// the corpus; without this every citation renders with an empty title and
+	// URL. The projection is a fresh value per request, so resolving into it
+	// never mutates the scenario and two concurrent polls cannot race here.
+	if p.Output != nil {
+		path := fmt.Sprintf("providers.%s.turns[%d].respond.output", NameAgentRuns, index)
+		for gi := range p.Output.Grounding {
+			for _, f := range x.Deps.Scenario.ResolveRefs(
+				fmt.Sprintf("%s.grounding[%d]", path, gi), &p.Output.Grounding[gi],
+			) {
+				x.Warn(codeSourceUnresolved, "", "%s: %s", f.Path, f.Message)
+			}
+		}
 	}
 	return p, true
 }

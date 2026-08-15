@@ -1594,8 +1594,16 @@ a silently-removed prerequisite reads as one that was never needed.
 2. ~~**Tavily currently returns 401 for a body-placed key.**~~ **DONE — v0.1.1 and Phase 1.** The body placement now
    authenticates on POST routes (v0.1.1), and `Route.Credentials` landed in Phase 1 with the precedence rule
    `auth.headers` > `Route.Credentials` > the package default, resolved once in `Exchange.AcceptedPlacements`.
-   `POST /research` takes its credential **in the JSON body** and `GET /research/{id}` takes a **Bearer** header;
-   that is now expressible, so this surface is unblocked. Declare it on each route:
+   **Correction, 2026-08-15: the reason stated here was wrong.** This item asserted that the vendor requires
+   different schemes per route — a body key on the POST, a Bearer header on the GET. Verification against the live
+   `/research` documentation shows **`Authorization: Bearer` on both**, and no documented body placement on this
+   surface at all.
+
+   `Route.Credentials` is still the right mechanism and the surface is still unblocked, for a better-evidenced
+   reason: `contracts/tavily/README.md` records that Tavily's shipped clients send the key as a body `api_key`
+   despite the docs saying Bearer only, and v0.1.1 accepts that. A POST has a body to carry one and a GET does not,
+   so the two routes accept different placement SETS — the difference comes from the request shape, not from the
+   vendor requiring different schemes. Declare it on each route:
 
    ```go
    // POST /research

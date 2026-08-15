@@ -433,6 +433,7 @@ func validators(cfg config.Config) map[string]provider.Validator {
 			out[exa.NameAgentRuns] = exa.AgentRunValidator{}
 		case provider.Tavily:
 			out[tavily.Name] = tavily.Validator{}
+			out[tavily.NameResearch] = tavily.ResearchValidator{}
 		case provider.Perplexity:
 			maps.Copy(out, perplexity.Validators())
 		}

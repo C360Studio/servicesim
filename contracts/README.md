@@ -7,7 +7,7 @@ derived from and the date the shape was verified.
 | Provider | Contract | Verified | Base URL simulated |
 |---|---|---|---|
 | Exa | [`exa/README.md`](exa/README.md) | 2026-08-15 | `POST /search`, `POST /answer`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
-| Tavily | [`tavily/README.md`](tavily/README.md) | 2026-08-14 | `POST /search` |
+| Tavily | [`tavily/README.md`](tavily/README.md) | 2026-08-15 | `POST /search`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
 | Perplexity | [`perplexity/README.md`](perplexity/README.md) | 2026-08-14 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
 
 Every route in that column has golden fixtures in this directory. Treat it as the complete list of what is
@@ -34,7 +34,7 @@ cannot tell whether it was considered and declined or never looked at — which 
 |---|---|---|---|
 | Exa | `/contents` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. Referenced only indirectly, by the error-codes page's `statuses[]` / `CRAWL_*` tags. |
 | Exa | `/findSimilar` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. |
-| Exa | `/agent/runs` and its run lifecycle | NOT SIMULATED | Contract notes are recorded in [`exa/README.md`](exa/README.md). Its create-then-poll lifecycle needs a scenario shape Servicesim does not have yet; on the backlog. |
+| Exa | `/agent/runs` lifecycle beyond create and poll | NOT SIMULATED | Create and poll ARE simulated — see the table above. The rest of the lifecycle (listing all runs, `/agent/runs/{id}/events`, `/agent/runs/{id}/cancel`, and deleting a run) has no verified contract and is not simulated. Paths here are written without a method on purpose: the index guard reads a backticked method-plus-path as a claim that the route IS simulated. |
 | Tavily | `/extract` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. |
 
 "Scheduled for verification" means exactly that: the vendor documentation has not been fetched, dated and recorded

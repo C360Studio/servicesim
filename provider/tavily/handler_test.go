@@ -13,6 +13,7 @@ import (
 
 	"github.com/c360studio/servicesim/contracts"
 	"github.com/c360studio/servicesim/internal/faults"
+	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
@@ -449,9 +450,40 @@ func TestRoutesDeclareTheFaultKeyAndSelector(t *testing.T) {
 	t.Parallel()
 
 	routes := Routes()
-	require.Len(t, routes, 1)
+	require.Len(t, routes, 4)
 	require.Equal(t, PatternSearch, routes[0].Pattern)
 	require.Equal(t, FaultKeySearch, routes[0].FaultKey)
+
+	// Every route carries a distinct fault key: a poll retry must not consume
+	// the create's retries, and an existence check must not consume either.
+	keys := map[string]string{}
+	for _, r := range routes {
+		if prior, seen := keys[r.FaultKey]; seen {
+			t.Errorf("%s shares fault key %q with %s", r.Pattern, r.FaultKey, prior)
+		}
+		keys[r.FaultKey] = r.Pattern
+	}
+
+	// The research routes accept DIFFERENT credential placement sets, and the
+	// difference is the request shape rather than a vendor rule: the POST has a
+	// body to carry an api_key, the GET does not. contracts/tavily/README.md
+	// records that the vendor documents Bearer for both, correcting an earlier
+	// design that claimed otherwise.
+	byPattern := map[string]provider.Route{}
+	for _, r := range routes {
+		byPattern[r.Pattern] = r
+	}
+	require.Equal(t,
+		[]string{provider.PlacementAuthorization, PlacementBodyAPIKey},
+		byPattern[PatternResearchCreate].Credentials)
+	require.Equal(t,
+		[]string{provider.PlacementAuthorization},
+		byPattern[PatternResearchPoll].Credentials,
+		"a GET has no body to carry a key in")
+
+	for _, p := range []string{PatternResearchCreate, PatternResearchPoll, PatternResearchHead} {
+		require.Equal(t, NameResearch, byPattern[p].Entry, "%s resolves the wrong scenario entry", p)
+	}
 
 	// The selector is nil-safe on every hop, which is what lets the engine ask
 	// a partial scenario for a plan it may not declare.
@@ -624,10 +656,16 @@ func newHandler(t *testing.T, src string, ring *journal.Ring) http.Handler {
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
 
-	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{Name: Validator{}})
+	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{
+		Name:         Validator{},
+		NameResearch: ResearchValidator{},
+	})
 	require.Empty(t, findings, "the fixture must validate before it is served")
 
-	deps := provider.Deps{Scenario: loaded}
+	// A job store is wired by default: without one a research create still
+	// answers with a request_id and every poll 404s, which is a confusing way for
+	// an unrelated test to fail.
+	deps := provider.Deps{Scenario: loaded, Jobs: jobs.NewRegistry(jobs.Limits{})}
 	if ring != nil {
 		deps.Journal = ring
 	}

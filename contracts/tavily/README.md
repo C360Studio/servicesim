@@ -188,3 +188,107 @@ documentation on 2026-08-14. The verified contract above is authoritative.
   - **Live docs say:** Every documented error (400/401/429/432/433/500) uses the identical envelope `{"detail": {"error": "<string>"}}` — a nested object, not a flat {"error": …}. A simulator must emit this exact shape; the plan gives implementers nothing to build against.
 - **Plan said:** Implicit in the plan's field list: a `days` request parameter and `topic` enum of general|news.
   - **Live docs say:** The plan never names either, but the task asked me to verify them. `days` is entirely ABSENT from the current /search request schema (grep over the full OpenAPI returns zero hits) — recency is now time_range / start_date / end_date. `topic` has THREE values: [general, news, finance], default general. Note the 400 error example text still says "Must be 'general' or 'news'", which is stale relative to the enum.
+
+## POST /research and GET /research/{request_id}
+
+Verified against live vendor documentation on **2026-08-15**.
+
+Read from:
+
+- <https://docs.tavily.com/documentation/api-reference/endpoint/research> — create
+- <https://docs.tavily.com/documentation/api-reference/endpoint/research-get> — poll
+
+Tavily Research performs multi-step web research asynchronously: a create returns immediately with a
+`request_id`, and the client polls until the task reaches a terminal status.
+
+### Lifecycle
+
+```text
+pending -> in_progress -> completed | failed
+```
+
+`completed` and `failed` are terminal. Note there is **no `cancelled`** status, unlike Exa's agent runs — a
+simulator must not offer one here on the strength of the sibling surface.
+
+### The poll's status code varies with the task state
+
+This is the single most important thing on this surface and the easiest to get wrong:
+
+| Task state | HTTP status | Body carries |
+|---|---|---|
+| `pending`, `in_progress` | **202 Accepted** | `request_id`, `status`, `response_time` |
+| `completed`, `failed` | **200 OK** | the above plus `created_at`, `content`, `sources` |
+
+A poll is therefore **not** a constant 200 with a status field — the HTTP status is itself part of the contract, and
+a client may well branch on it before parsing. Emitting 200 throughout would let a consumer's `202 == still working`
+path go completely untested.
+
+### POST /research — request
+
+| Field | Type | Required |
+|---|---|---|
+| `input` | `string` | **yes** |
+| `model` | `string` — enum `mini`, `pro`, `auto` | no |
+| `stream` | `boolean` | no |
+| `output_schema` | `object` | no |
+| `citation_format` | `string` — enum `numbered`, `mla`, `apa`, `chicago` | no |
+| `include_domains` | `array[string]` | no |
+| `exclude_domains` | `array[string]` | no |
+| `output_length` | `string` — enum `short`, `standard`, `long` | no |
+| `files` | `array[object]` | no |
+
+Note `input`, not `query`: this surface does **not** reuse `/search`'s request field name, and a simulator that
+accepted `query` here would accept traffic the live API rejects.
+
+### POST /research — response (201 Created)
+
+All six fields are documented as required: `request_id`, `created_at`, `status`, `input`, `model`, `response_time`.
+
+The create echoes `input` and `model` back, which `/search` does not do for its own request fields. A consumer may
+read either to confirm what the task was created with.
+
+### GET /research/{request_id} — response
+
+| Field | Type | When |
+|---|---|---|
+| `request_id` | `string` | always |
+| `status` | `string` | always |
+| `response_time` | number | always |
+| `created_at` | `string` | completed only |
+| `content` | `string` or `object` | completed only |
+| `sources` | `array[object]` of `{title, url, favicon}` | completed only |
+
+`content` is genuinely string-OR-object: it is a report when no `output_schema` was supplied and structured JSON
+when one was. A consumer's decoder has to handle both, so a scenario must be able to produce both.
+
+### Divergences and what is NOT verified
+
+1. **`response_time` type.** The `/research` reference describes it as an integer; `/search`'s OpenAPI schema
+   declares `{type: number, format: float}` and this file already records that. Servicesim emits a JSON number for
+   both, which satisfies either reading — Go marshals a whole float as `1` rather than `1.0` — but the divergence is
+   recorded rather than resolved, because nothing verifies the two surfaces agree.
+2. **Credential placement per route is NOT what the async design assumed.** See below.
+3. **`files[]`, `output_schema` and the `sources[]` entry beyond `{title, url, favicon}`** have no verified
+   sub-shapes here.
+4. **The `request_id` format** is not documented. `/search`'s is a UUID; nothing verifies this surface matches.
+
+### Credential placement: the design's stated reason was wrong
+
+`docs/design/async-jobs.md` justified `Route.Credentials` by asserting that *"`POST /research` takes its credential
+in the JSON body and `GET /research/{id}` takes a Bearer header, so this surface cannot work at all until placement
+is resolvable per route."*
+
+**The vendor documents `Authorization: Bearer` for BOTH routes.** There is no documented body placement on
+`/research` at all. That justification does not hold, and it should not be repeated.
+
+The feature is still needed, for a different and better-evidenced reason. This file already records (2026-08-15,
+`/search`) that Tavily's shipped clients send the key as a body `api_key` even though the vendor documents Bearer
+only — that is observed client behaviour, and v0.1.1 accepts it. Applying the same rule here:
+
+| Route | Accepted placements | Why |
+|---|---|---|
+| `POST /research` | `authorization`, `body:api_key` | Same as `POST /search`: documented Bearer, plus the body placement real clients use on a POST. |
+| `GET /research/{request_id}` | `authorization` only | A GET has no body to carry a key in. This is physics, not policy. |
+
+So the routes genuinely accept different placement sets, and `Route.Credentials` is genuinely the mechanism — the
+difference comes from the request having a body rather than from the vendor requiring different schemes.

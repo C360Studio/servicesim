@@ -33,7 +33,7 @@ const PatternSearch = "POST /search"
 // It is a function, not a package-level var, so no consumer can mutate the
 // route table of a package it merely imported.
 func Routes() []provider.Route {
-	return []provider.Route{RouteSearch()}
+	return append([]provider.Route{RouteSearch()}, ResearchRoutes()...)
 }
 
 // RouteSearch returns POST /search, keyed "tavily:search".
@@ -60,8 +60,13 @@ func RouteSearch() provider.Route {
 // do not.
 func New(deps provider.Deps) http.Handler {
 	return provider.NewMux(deps, provider.Tavily, provider.MuxSpec{
-		Routes:   Routes(),
-		Handlers: map[string]provider.Handler{PatternSearch: handleSearch},
+		Routes: Routes(),
+		Handlers: map[string]provider.Handler{
+			PatternSearch:         handleSearch,
+			PatternResearchCreate: handleResearchCreate,
+			PatternResearchPoll:   handleResearchPoll,
+			PatternResearchHead:   handleResearchHead,
+		},
 		NotFound: func(_ *provider.Exchange) provider.Response {
 			return staticResponse(http.StatusNotFound, MessageNotFound)
 		},

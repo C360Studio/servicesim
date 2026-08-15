@@ -98,6 +98,22 @@ func TestAgentRunCreateThenPollToCompletion(t *testing.T) {
 	require.True(t, ok, "a terminal run carries output: %v", done)
 	assert.Equal(t, "Report A states the finding.", output["text"])
 
+	// Grounding citations must be RESOLVED against the corpus. A source
+	// reference carries only an id until it is, so asserting on text alone would
+	// pass with every citation rendering an empty title and URL.
+	grounding, ok := output["grounding"].([]any)
+	require.True(t, ok, "a grounded run carries grounding: %v", output)
+	require.Len(t, grounding, 1)
+
+	first, _ := grounding[0].(map[string]any)
+	citations, ok := first["citations"].([]any)
+	require.True(t, ok, "grounding carries citations: %v", first)
+	require.Len(t, citations, 1)
+
+	citation, _ := citations[0].(map[string]any)
+	assert.Equal(t, "Report A", citation["title"], "the citation did not resolve against the corpus")
+	assert.Equal(t, "https://example.test/report-a", citation["url"])
+
 	// costDollars.total is emitted on every terminal run. See the recorded
 	// inference in contracts/exa/README.md for why it ships on evidence rather
 	// than on a vendor example — and note it must be here from the FIRST
