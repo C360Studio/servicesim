@@ -14,7 +14,7 @@ services:
     # Pin the tag. Servicesim's contract is its wire output, so an image that
     # moves underneath a test suite moves the fixtures the suite asserts on.
     # Renovate or Dependabot can bump this line; :latest cannot be reviewed.
-    image: ghcr.io/c360studio/servicesim:v0.1.0
+    image: ghcr.io/c360studio/servicesim:v0.1.1
 
     # --scenario-dir serves every scenario in the directory at once, each
     # selected per request by the /x/<scenario> base-URL prefix below. For a
