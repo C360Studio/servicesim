@@ -15,10 +15,19 @@ import (
 //go:embed perplexity/*.json perplexity/provenance.yaml
 var files embed.FS
 
-// VerifiedOn is the date every contract in this package was last checked
-// against the vendors' live documentation. It is the date carried by every
-// provenance entry, and the one a live contract canary compares against when it
-// decides whether a re-verification is overdue.
+// VerifiedOn is the OLDEST per-entry `verified:` date across every provider's
+// provenance.yaml — the age of the single stalest golden fixture in this
+// package. It is not a claim that everything was checked on one day: entries
+// are dated individually (see [Record.Verified]), because a single golden
+// refresh must be able to move one date without forcing every other entry to
+// claim a verification that did not happen. VerifiedOn is the number a refresh
+// cadence or a live contract canary actually needs — "how stale is the oldest
+// thing here".
+//
+// It is declared rather than computed at init so importing this package does
+// no work and has no panic path, and TestVerifiedOnIsTheOldestEntry pins it to
+// the minimum recomputed from the provenance files: refreshing the last
+// fixture still dated this old moves this constant, and the test says so.
 const VerifiedOn = "2026-08-14"
 
 // ProvenanceFile is the name of the provenance record in each provider
@@ -75,7 +84,11 @@ type Record struct {
 	// DocumentationURL is the page the shape was read from.
 	DocumentationURL string `yaml:"documentation_url"`
 
-	// Verified is the date the shape was checked, in YYYY-MM-DD form.
+	// Verified is the date THIS golden's shape was last checked against
+	// DocumentationURL, in YYYY-MM-DD form. It answers only for this one entry —
+	// refreshing a single fixture moves only its own date, never any other
+	// entry's, and never implies the rest of the provider's contract was
+	// re-checked. See the provider-level `verified:` on provenanceFile for that.
 	Verified string `yaml:"verified"`
 
 	// Note records what is load-bearing or inferred about this fixture.
@@ -98,6 +111,13 @@ type Golden struct {
 }
 
 // provenanceFile is the on-disk shape of a provider's provenance.yaml.
+//
+// Verified, at this level, is the most recent date any part of the provider's
+// contract was verified against its vendor documentation — not any one
+// golden's date, but the claim contracts/README.md's index table makes in its
+// "Verified" column for this provider. It must be at least as recent as every
+// Goldens[i].Verified in the file: a provider cannot claim a whole-contract
+// verification older than a fixture that was individually re-checked since.
 type provenanceFile struct {
 	Provider string   `yaml:"provider"`
 	Verified string   `yaml:"verified"`
@@ -183,6 +203,34 @@ func Read(p Provider, name string) ([]byte, error) {
 // reports an error on a duplicate or unnamed entry, because a duplicate silently
 // shadows a record and an unnamed one attaches to nothing.
 func Provenance(p Provider) (map[string]Record, error) {
+	parsed, err := loadProvenanceFile(p)
+	if err != nil {
+		return nil, err
+	}
+
+	name := path.Join(string(p), ProvenanceFile)
+	records := make(map[string]Record, len(parsed.Goldens))
+	for i, record := range parsed.Goldens {
+		if record.Golden == "" {
+			return nil, fmt.Errorf("contracts: %s entry %d names no golden", name, i)
+		}
+		if _, seen := records[record.Golden]; seen {
+			return nil, fmt.Errorf("contracts: %s has two entries for %s", name, record.Golden)
+		}
+		records[record.Golden] = record
+	}
+	return records, nil
+}
+
+// loadProvenanceFile reads and parses p's provenance.yaml. [Provenance] and
+// this package's own tests (which read provenanceFile.Verified directly,
+// being in package contracts) share it so nothing parses the file twice or
+// differently. There is deliberately no exported VerifiedFor: nothing outside
+// this package's tests needs the provider-level date on its own, and house
+// rule 7 (every exported symbol is a compatibility obligation) says a
+// test-only need is not a reason to add one — see
+// provenance_internal_test.go.
+func loadProvenanceFile(p Provider) (*provenanceFile, error) {
 	if err := validate(p); err != nil {
 		return nil, err
 	}
@@ -197,18 +245,7 @@ func Provenance(p Provider) (map[string]Record, error) {
 	if err := yaml.Unmarshal(data, &parsed); err != nil {
 		return nil, fmt.Errorf("contracts: parsing %s: %w", name, err)
 	}
-
-	records := make(map[string]Record, len(parsed.Goldens))
-	for i, record := range parsed.Goldens {
-		if record.Golden == "" {
-			return nil, fmt.Errorf("contracts: %s entry %d names no golden", name, i)
-		}
-		if _, seen := records[record.Golden]; seen {
-			return nil, fmt.Errorf("contracts: %s has two entries for %s", name, record.Golden)
-		}
-		records[record.Golden] = record
-	}
-	return records, nil
+	return &parsed, nil
 }
 
 // validate rejects a provider that has no directory here, so a typo fails with

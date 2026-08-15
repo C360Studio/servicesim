@@ -1,0 +1,25 @@
+{
+  "id": "run_b7d96bf4b3dcc91559d175789c250d38",
+  "status": "completed",
+  "stopReason": "schema_satisfied",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "output": {
+    "text": "Report A finds that deterministic simulators remove flakiness from adapter test suites.",
+    "grounding": [
+      {
+        "field": "text",
+        "citations": [
+          {
+            "title": "Report A",
+            "url": "https://example.test/report-a",
+            "id": "https://example.test/report-a"
+          }
+        ],
+        "confidence": "high"
+      }
+    ]
+  },
+  "costDollars": {
+    "total": 0.045
+  }
+}

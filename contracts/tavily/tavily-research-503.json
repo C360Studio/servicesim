@@ -1,0 +1,5 @@
+{
+  "detail": {
+    "error": "namespace \"default\" holds its maximum of 1 jobs; reset it with POST /__admin/reset, give each test its own namespace, or raise the bound"
+  }
+}

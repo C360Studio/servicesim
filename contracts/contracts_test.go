@@ -81,6 +81,13 @@ func TestEveryProvenanceEntryHasGolden(t *testing.T) {
 // TestProvenanceRecordsAreComplete checks the fields a reviewer actually uses:
 // where the shape was read, when, and whether the vendor or Servicesim chose it.
 // A record missing any of those is not a provenance record.
+//
+// verified is checked only for being a real YYYY-MM-DD date, never for
+// equalling anything else: the whole point of the per-entry date model is that
+// one golden's verification date is its own, independent of every other entry
+// in the file. TestProviderVerifiedIsAtLeastEveryEntry and
+// TestProviderVerifiedMatchesReadmeIndexTable check the cross-entry and
+// cross-document constraints that actually apply.
 func TestProvenanceRecordsAreComplete(t *testing.T) {
 	t.Parallel()
 
@@ -101,9 +108,6 @@ func TestProvenanceRecordsAreComplete(t *testing.T) {
 			if !strings.HasPrefix(record.DocumentationURL, "https://") {
 				t.Errorf("%s/%s: documentation_url %q is not an https URL",
 					provider, name, record.DocumentationURL)
-			}
-			if record.Verified != contracts.VerifiedOn {
-				t.Errorf("%s/%s: verified %q, want %q", provider, name, record.Verified, contracts.VerifiedOn)
 			}
 			if _, err := time.Parse(time.DateOnly, record.Verified); err != nil {
 				t.Errorf("%s/%s: verified %q is not a YYYY-MM-DD date", provider, name, record.Verified)
@@ -145,6 +149,37 @@ func TestEveryProviderHasHappyAndEmptyAndErrorGoldens(t *testing.T) {
 		}
 	}
 }
+
+// TestVerifiedOnIsTheOldestEntry pins contracts.VerifiedOn's contract: the
+// oldest verified date across every provenance entry in every provider — the
+// age of the single stalest golden — computed rather than restated, so it
+// cannot drift from the entries it summarises.
+func TestVerifiedOnIsTheOldestEntry(t *testing.T) {
+	t.Parallel()
+
+	var oldest string
+	for _, provider := range contracts.Providers() {
+		for _, record := range provenance(t, provider) {
+			if oldest == "" || record.Verified < oldest {
+				oldest = record.Verified
+			}
+		}
+	}
+
+	if oldest == "" {
+		t.Fatal("no provenance entry carries a verified date at all")
+	}
+	if contracts.VerifiedOn != oldest {
+		t.Errorf("contracts.VerifiedOn = %q, want %q (the oldest per-entry date)", contracts.VerifiedOn, oldest)
+	}
+}
+
+// TestProviderVerifiedIsAtLeastEveryEntry and
+// TestProviderVerifiedMatchesReadmeIndexTable — the two cross-document checks
+// on the provider-level `verified:` date — live in provenance_internal_test.go
+// (package contracts), because they need provenanceFile.Verified and that
+// field is unexported: house rule 7 says a test-only need is not a reason to
+// export a new symbol, so there is no contracts.VerifiedFor here.
 
 // TestExaResultsCarryNoScore guards the single most likely Exa mistake. The plan
 // document says results carry a score float; Exa's schema has no such field, and

@@ -3,6 +3,15 @@
 # Every golden in this directory has exactly one entry here, and
 # contracts/contracts_test.go fails the build if that stops being true.
 #
+# Two `verified:` dates live in this file, and they answer different questions:
+#   - the top-level one (below) is when THIS PROVIDER'S CONTRACT AS A WHOLE was
+#     last verified, and must match contracts/README.md's index-table Verified
+#     column for perplexity.
+#   - each entry's own `verified:` is when THAT GOLDEN'S SHAPE was last checked
+#     against its documentation_url. Refreshing one fixture moves only its own
+#     date; it does not imply every other entry was re-checked, and the test
+#     suite no longer requires them all to agree.
+#
 # kind:
 #   vendor-documented  the shape AND the values come from the vendor's own
 #                      machine-readable specification.

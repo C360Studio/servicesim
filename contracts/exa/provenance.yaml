@@ -6,6 +6,15 @@
 # did we?", and it is unanswerable without a dated record of what the shape was
 # checked against.
 #
+# Two `verified:` dates live in this file, and they answer different questions:
+#   - the top-level one (below) is when THIS PROVIDER'S CONTRACT AS A WHOLE was
+#     last verified, and must match contracts/README.md's index-table Verified
+#     column for exa.
+#   - each entry's own `verified:` is when THAT GOLDEN'S SHAPE was last checked
+#     against its documentation_url. Refreshing one fixture moves only its own
+#     date; it does not imply every other entry was re-checked, and the test
+#     suite no longer requires them all to agree.
+#
 # kind:
 #   vendor-documented  the shape AND the values come from the vendor's own
 #                      documentation, quoted or directly derived from it.
@@ -16,7 +25,7 @@
 # which is the authority and must not be edited by fixture work.
 
 provider: exa
-verified: 2026-08-14
+verified: 2026-08-15
 
 goldens:
   - golden: exa-search-happy.json
@@ -193,3 +202,116 @@ goldens:
     note: >-
       UNABLE_TO_GENERATE_RESPONSE is documented as /answer-only and must not be
       reachable on /search. The message text is reconstructed.
+
+  - golden: exa-agent-runs-created.json
+    endpoint: POST /agent/runs
+    status: 201
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/agent-api/overview
+    verified: 2026-08-15
+    note: >-
+      status, stopReason (present and explicitly null) and the field names are
+      vendor-documented. createdAt's type/format and the id format are both
+      recorded NOT VERIFIED in contracts/exa/README.md's async section, so both
+      values here are Servicesim's choice.
+
+  - golden: exa-agent-runs-running.json
+    endpoint: GET /agent/runs/{id}
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/agent-api/overview
+    verified: 2026-08-15
+    note: >-
+      A non-terminal poll snapshot. status and stopReason (present and
+      explicitly null while running) are vendor-documented enum values; output,
+      error, usage and costDollars being absent matches "output exists only at
+      a terminal status", which is also documented. createdAt and id are
+      simulator-chosen, as on the create golden — id's format and createdAt's
+      type/format are both recorded NOT VERIFIED in contracts/exa/README.md's
+      async section — which is why this entry is simulator-chosen rather than
+      vendor-documented despite most of its field names being real: kind
+      describes the record as a whole, per contracts.go's definition
+      ("the shape AND the values"), and the values here are not all vendor's.
+
+  - golden: exa-agent-runs-completed.json
+    endpoint: GET /agent/runs/{id}
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/agent-api/overview
+    verified: 2026-08-15
+    note: >-
+      A terminal run. status: completed, stopReason: schema_satisfied and
+      output.text are vendor-documented fields and values. Everything else here
+      is Servicesim's: id and createdAt are simulator-chosen (NOT VERIFIED in
+      the README, same as every other agent-run entry); output.grounding's
+      shape is NOT VERIFIED, and the {title, url, id} citation triple used here
+      is the same simulator choice exa-search-structured.json makes, not a
+      vendor shape; costDollars.total is the RECORDED INFERENCE in
+      contracts/exa/README.md's "Recorded inference" section (not read from a
+      vendor example) — see that section before changing this fixture.
+      costDollars.dataSources is not emitted here because the scenario did not
+      declare one, which is also the documented default. Separately:
+      output.structured is OMITTED on this fixture rather than emitted as
+      null, because provider/exa/agentrun_handler.go's outputWire declares its
+      Structured field `any` with a `json:"structured,omitempty"` tag, and this
+      run's scenario supplied no outputSchema. contracts/exa/README.md's
+      response-fields table
+      instead documents `output.structured` as `object|null`, "null when no
+      schema was supplied" — an omitted key is not the same wire shape as a
+      present null, and a consumer decoding with `json.Unmarshal` into a struct
+      cannot tell "no schema" from "vendor added a field" the way it could with
+      an explicit null. This is a real disagreement between the code and the
+      README (the authority) discovered while auditing this fixture; it is
+      reported rather than silently reconciled either direction, and is why
+      this entry stays simulator-chosen instead of vendor-documented until it
+      is resolved — track it as a follow-up to emit output.structured: null
+      explicitly (or to correct the README if null turns out not to be
+      accurate) rather than editing this golden to paper over it.
+
+  - golden: exa-agent-runs-failed.json
+    endpoint: GET /agent/runs/{id}
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/agent-api/overview
+    verified: 2026-08-15
+    note: >-
+      A terminal failure: status: failed and stopReason: error are both
+      documented enum values. The `error` object is NOT vendor-documented: the
+      response-fields table in contracts/exa/README.md's async section has no
+      `error` row, and grepping the whole async section finds `error` only as
+      one of the four documented stopReason enum values — never as a top-level
+      run-object key with its own shape. The {code, message} shape rendered
+      here traces to docs/design/async-jobs.md's design and
+      provider/exa/agentrun_handler.go's errorWire, i.e. it is Servicesim's
+      construction, unverified against any vendor example, and a live-canary
+      run against a real failed run is what would confirm or correct it. Note
+      costDollars.total is 0, not absent: the terminal-run inference in the
+      completed golden's entry applies regardless of outcome, and a failed run
+      still reports a (possibly zero) spend rather than omitting the key. id
+      and createdAt are simulator-chosen, same as every other agent-run entry.
+
+  - golden: exa-agent-runs-404.json
+    endpoint: GET /agent/runs/{id}, an identifier this process never minted
+    status: 404
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-15
+    note: >-
+      Fail-closed: the flat {requestId, error, tag} envelope and the NOT_FOUND
+      tag are the same ones exa-search-404.json uses for unmatched routing: the
+      Agent API documents no run-specific 404 body of its own, so the general
+      error envelope applies here too.
+
+  - golden: exa-agent-runs-503.json
+    endpoint: POST /agent/runs, refused at the configured job bound
+    status: 503
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/agent-api/overview
+    verified: 2026-08-15
+    note: >-
+      Not a vendor status: this is Servicesim refusing to hold more job state,
+      using the same flat error envelope and INTERNAL_ERROR tag as every other
+      simulator-side 5xx. The message names the bound and the remedy
+      (POST /__admin/reset, a fresh namespace, or raising the bound), which is
+      the part a consumer's test failure output actually needs to be
+      actionable — the wire text itself does not name the --max-jobs flag.

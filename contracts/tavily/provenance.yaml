@@ -3,6 +3,15 @@
 # Every golden in this directory has exactly one entry here, and
 # contracts/contracts_test.go fails the build if that stops being true.
 #
+# Two `verified:` dates live in this file, and they answer different questions:
+#   - the top-level one (below) is when THIS PROVIDER'S CONTRACT AS A WHOLE was
+#     last verified, and must match contracts/README.md's index-table Verified
+#     column for tavily.
+#   - each entry's own `verified:` is when THAT GOLDEN'S SHAPE was last checked
+#     against its documentation_url. Refreshing one fixture moves only its own
+#     date; it does not imply every other entry was re-checked, and the test
+#     suite no longer requires them all to agree.
+#
 # kind:
 #   vendor-documented  the shape AND the values come from the vendor's own
 #                      documentation, quoted or directly derived from it.
@@ -13,7 +22,7 @@
 # which is the authority and must not be edited by fixture work.
 
 provider: tavily
-verified: 2026-08-14
+verified: 2026-08-15
 
 goldens:
   - golden: tavily-search-happy.json
@@ -130,3 +139,92 @@ goldens:
     documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
     verified: 2026-08-14
     note: Served with an Allow header. The message text is Servicesim's.
+
+  - golden: tavily-research-created.json
+    endpoint: POST /research
+    status: 201
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/research
+    verified: 2026-08-15
+    note: >-
+      All six documented fields (request_id, created_at, status, input, model,
+      response_time) are required and all six are present, which is the
+      vendor-documented part of this fixture. Several of the VALUES are
+      Servicesim's, not the vendor's: the request_id FORMAT is not
+      vendor-documented (see contracts/tavily/README.md "Divergences"), and the
+      UUID shape here matches /search's convention rather than a documented
+      one; model defaults to "auto" when the request omits it, which the
+      README's request table lists as a valid enum member but never as a
+      documented default; response_time is 0 because no work happened yet, an
+      arbitrary but plausible value rather than a read one; created_at is
+      rendered as millisecond-precision ISO-8601 with a Z suffix, and the
+      README records created_at's type as `string` with no format specified.
+      A canary correcting any of these should treat them as open, not settled.
+
+  - golden: tavily-research-pending.json
+    endpoint: GET /research/{request_id}
+    status: 202
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/research-get
+    verified: 2026-08-15
+    note: >-
+      A non-terminal poll: exactly request_id, status and response_time, and the
+      202 status code itself is part of the contract, not a constant 200 with a
+      status field. created_at, content and sources are all absent.
+
+  - golden: tavily-research-completed.json
+    endpoint: GET /research/{request_id}
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/research-get
+    verified: 2026-08-15
+    note: >-
+      A terminal success: created_at, content and sources join the always-present
+      three, and the status code moves from 202 to 200. sources[] is the
+      documented {title, url, favicon} triple.
+
+  - golden: tavily-research-failed.json
+    endpoint: GET /research/{request_id}
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/research-get
+    verified: 2026-08-15
+    note: >-
+      A terminal failure. Two tables in contracts/tavily/README.md's async
+      section disagree with each other on this exact case: the poll-status-code
+      table says "completed, failed" both carry created_at/content/sources,
+      while the GET response field table marks all three "completed only". No
+      failure/error body shape is documented anywhere for this surface — and,
+      unlike this note's earlier draft claimed, Exa's agent-run `error` object
+      is not vendor-documented either (see contracts/exa/provenance.yaml's
+      exa-agent-runs-failed.json entry); both providers are equally unverified
+      on their terminal-failure shape. Servicesim emits
+      created_at (matching the first table) with content and sources both
+      absent because the scenario declares neither, which happens to satisfy
+      the second table for those two fields. Flagged rather than resolved
+      unilaterally; see this unit's report.
+
+  - golden: tavily-research-404.json
+    endpoint: GET /research/{request_id}, an identifier this process never minted
+    status: 404
+    kind: simulator-chosen
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/search
+    verified: 2026-08-15
+    note: >-
+      Fail-closed, byte-identical to tavily-404.json: the research surface
+      documents no task-specific 404 body of its own, so the same
+      {"detail":{"error":"Not Found"}} envelope used for unmatched routing
+      applies here too.
+
+  - golden: tavily-research-503.json
+    endpoint: POST /research, refused at the configured job bound
+    status: 503
+    kind: simulator-chosen
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/research
+    verified: 2026-08-15
+    note: >-
+      Not a vendor status: this is Servicesim refusing to hold more job state,
+      using the same {"detail":{"error": …}} envelope as every other documented
+      status. The message names the bound and the remedy (POST /__admin/reset, a
+      fresh namespace, or raising the bound) — the wire text itself does not
+      name the --max-jobs flag.

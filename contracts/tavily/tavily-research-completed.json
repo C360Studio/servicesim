@@ -1,0 +1,14 @@
+{
+  "request_id": "d62c0172-428c-5f6f-b6a1-7460634fd960",
+  "status": "completed",
+  "response_time": 12.5,
+  "created_at": "2026-01-01T00:00:00.000Z",
+  "content": "The research found that deterministic simulation removes flakiness.",
+  "sources": [
+    {
+      "title": "Report A",
+      "url": "https://example.test/report-a",
+      "favicon": "https://example.test/favicon.ico"
+    }
+  ]
+}
