@@ -47,6 +47,23 @@ type Route struct {
 	// Pattern is a Go 1.22 ServeMux pattern, for example "POST /search".
 	Pattern string
 
+	// Entry names the scenario provider entry this route is served from. Empty
+	// means the listener's own provider name, which is what every route
+	// registered before this field existed relies on.
+	//
+	// It exists because a listener may serve MORE THAN ONE scenario entry —
+	// Perplexity's Sonar and Agent surfaces today, the async surfaces next — and
+	// without it every such entry after the first has its own `turn_key:` and
+	// `validation:` block silently ignored. Both are resolved through
+	// [Exchange.Entry], which had no way to tell which entry a request belonged
+	// to and fell back to the listener name.
+	//
+	// Resolving it from the ROUTE keeps the single-resolution rule intact: the
+	// route is known to [Handle] before the handler runs, so the lane is still
+	// resolved once, in one place. Reading it from the handler's choice of entry
+	// instead would be the derive-it-twice shape that rule forbids.
+	Entry string
+
 	// Credentials lists the placements this route accepts, in the vocabulary of
 	// the Placement constants. Empty means the provider package's own default,
 	// which is what every route registered before this field existed relies on.

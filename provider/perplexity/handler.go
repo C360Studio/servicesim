@@ -83,6 +83,7 @@ func RouteChatCompletionsV1() provider.Route {
 // RouteAgent returns POST /v1/agent, the canonical Agent API endpoint.
 func RouteAgent() provider.Route {
 	return provider.Route{Pattern: PatternAgent, FaultKey: FaultKeyAgent,
+		Entry:       NameAgent,
 		Credentials: bearerOnly, Fault: agentFault}
 }
 
@@ -90,6 +91,7 @@ func RouteAgent() provider.Route {
 // endpoint reached from a base_url with no /v1 suffix, on the same fault key.
 func RouteResponses() provider.Route {
 	return provider.Route{Pattern: PatternResponses, FaultKey: FaultKeyAgent,
+		Entry:       NameAgent,
 		Credentials: bearerOnly, Fault: agentFault}
 }
 
@@ -98,6 +100,7 @@ func RouteResponses() provider.Route {
 // key.
 func RouteResponsesBare() provider.Route {
 	return provider.Route{Pattern: PatternResponsesBare, FaultKey: FaultKeyAgent,
+		Entry:       NameAgent,
 		Credentials: bearerOnly, Fault: agentFault}
 }
 

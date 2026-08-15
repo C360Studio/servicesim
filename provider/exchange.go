@@ -260,10 +260,18 @@ func (x *Exchange) Has(key string) bool {
 	return ok
 }
 
-// Entry returns the scenario provider entry this listener serves, or nil. It
-// resolves by provider Name; a listener serving a second scenario entry — the
-// Perplexity Agent surface is one — looks that entry up by its own name instead.
+// Entry returns the scenario provider entry this request is served from, or nil:
+// [Route.Entry] when the route names one, and the listener's own provider name
+// otherwise.
+//
+// The route is consulted first because a listener may serve more than one entry.
+// Resolving by listener name alone — which this did until Route.Entry existed —
+// meant every entry after the first had its own turn_key and validation block
+// silently ignored, since both reach the scenario through here.
 func (x *Exchange) Entry() *scenario.ProviderEntry {
+	if x.Route.Entry != "" {
+		return x.Deps.Scenario.Provider(x.Route.Entry)
+	}
 	return x.Deps.Scenario.Provider(string(x.Provider))
 }
 

@@ -108,6 +108,147 @@ func twoRouteSpec(h Handler) MuxSpec {
 	}
 }
 
+// --- Route.Entry -----------------------------------------------------------
+
+// twoEntryScenario declares a turn_key on the PRIMARY entry only, which is the
+// shape that makes the resolution bug observable: before Route.Entry existed,
+// that key subdivided the second entry's lanes too.
+const twoEntryScenario = `
+version: 1
+name: two-entries
+providers:
+  perplexity:
+    turn_key: ["route", "body_json:model"]
+    turns:
+      - respond: {answer: sonar}
+  perplexity_agent:
+    turns:
+      - respond: {answer: agent}
+`
+
+// TestTurnLaneKeyResolvesTheRoutesEntry pins the fix and the behaviour change it
+// carries. A listener may serve more than one scenario entry, and before
+// Route.Entry every entry after the first had its own turn_key silently ignored
+// — entryTurnKey resolved by LISTENER name, so it read the primary entry's key
+// for every route on that listener.
+//
+// This is a REAL behaviour change for perplexity_agent, which is shipped: a
+// scenario declaring turn_key on the perplexity block and exercising the Agent
+// surface used to have the agent lane subdivided by it, and no longer does. The
+// old behaviour was an entry's own turn_key being ignored, which is a bug rather
+// than a contract, but it is asserted here so the change is pinned rather than
+// rediscovered.
+func TestTurnLaneKeyResolvesTheRoutesEntry(t *testing.T) {
+	t.Parallel()
+
+	s := mustScenario(t, twoEntryScenario)
+	body := `{"model":"sonar"}`
+
+	newExchange := func(route Route) *Exchange {
+		return &Exchange{
+			Deps:     Deps{Scenario: s}.Normalized(),
+			Provider: Perplexity,
+			Route:    route,
+			Raw:      []byte(body),
+		}
+	}
+
+	// A route with no Entry resolves the listener's entry, so the primary
+	// turn_key applies — unchanged from before.
+	primary := newExchange(Route{Pattern: "POST /v1/sonar", FaultKey: "perplexity:completions"})
+	gotPrimary := turnLaneKey(primary)
+	if !strings.Contains(gotPrimary, "body_json:model=sonar") {
+		t.Errorf("primary lane = %q, want the entry's own turn_key applied", gotPrimary)
+	}
+
+	// A route naming a different entry resolves THAT entry's turn_key, which
+	// here is unset and therefore the default ["route"] — so the lane key is the
+	// fault key verbatim.
+	second := newExchange(Route{
+		Pattern:  "POST /v1/agent",
+		FaultKey: "perplexity:agent",
+		Entry:    "perplexity_agent",
+	})
+	gotSecond := turnLaneKey(second)
+	if gotSecond != "perplexity:agent" {
+		t.Errorf("second-entry lane = %q, want %q — the primary entry's turn_key must not reach it",
+			gotSecond, "perplexity:agent")
+	}
+	if strings.Contains(gotSecond, "body_json") {
+		t.Error("the primary entry's turn_key subdivided a second entry's lane")
+	}
+
+	// No findings on either: an entry that declares no turn_key is not an
+	// unresolved extractor, it is the documented default.
+	if f := second.Findings(); len(f) != 0 {
+		t.Errorf("unexpected findings on the second entry: %+v", f)
+	}
+}
+
+// Route.Entry must also decide which entry's validation policy applies. It is
+// the same lookup, and fixing one while leaving the other would leave two of the
+// three ways to resolve an entry disagreeing.
+func TestValidationPolicyResolvesTheRoutesEntry(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+version: 1
+name: two-entries-validation
+providers:
+  perplexity:
+    validation:
+      strict: true
+    turns:
+      - respond: {answer: sonar}
+  perplexity_agent:
+    turns:
+      - respond: {answer: agent}
+`
+	s := mustScenario(t, src)
+
+	newExchange := func(route Route) *Exchange {
+		return &Exchange{
+			Deps:     Deps{Scenario: s}.Normalized(),
+			Provider: Perplexity,
+			Route:    route,
+		}
+	}
+
+	primary := newExchange(Route{Pattern: "POST /v1/sonar", FaultKey: "perplexity:completions"})
+	primary.Warn("test.code", "", "a warning")
+	if !primary.Failed() {
+		t.Error("the primary entry declares strict, so its warning must promote to an error")
+	}
+
+	second := newExchange(Route{
+		Pattern:  "POST /v1/agent",
+		FaultKey: "perplexity:agent",
+		Entry:    "perplexity_agent",
+	})
+	second.Warn("test.code", "", "a warning")
+	if second.Failed() {
+		t.Error("the second entry declares no validation policy and must not inherit the primary's strict")
+	}
+}
+
+// A route naming an entry the scenario does not declare resolves nothing, and
+// must not fall back to the listener's entry — a silent fallback would serve a
+// scenario the author never wrote for that surface.
+func TestRouteEntryNamingAnUndeclaredEntry(t *testing.T) {
+	t.Parallel()
+
+	s := mustScenario(t, twoEntryScenario)
+	x := &Exchange{
+		Deps:     Deps{Scenario: s}.Normalized(),
+		Provider: Perplexity,
+		Route:    Route{Pattern: "POST /x", FaultKey: "perplexity:x", Entry: "not_declared"},
+	}
+
+	if got := x.Entry(); got != nil {
+		t.Errorf("Entry() = %+v, want nil for an entry the scenario does not declare", got)
+	}
+}
+
 func TestValidNamespace(t *testing.T) {
 	t.Parallel()
 

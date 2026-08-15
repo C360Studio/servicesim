@@ -168,18 +168,42 @@ func TestRoutesFaultKeys(t *testing.T) {
 	routes := Routes()
 	require.Len(t, routes, 6)
 
-	want := []struct{ pattern, key string }{
-		{"POST /v1/sonar", "perplexity:completions"},
-		{"POST /chat/completions", "perplexity:completions"},
-		{"POST /v1/chat/completions", "perplexity:completions"},
-		{"POST /v1/agent", "perplexity:agent"},
-		{"POST /v1/responses", "perplexity:agent"},
-		{"POST /responses", "perplexity:agent"},
+	// Entry is empty on the Sonar routes and NameAgent on the Agent routes. Both
+	// halves matter. Sonar is the listener's own entry, so leaving it empty keeps
+	// the shipped resolution; the Agent surface is a SECOND entry on this
+	// listener, and without an explicit Entry its own turn_key and validation
+	// block are silently ignored in favour of Sonar's.
+	want := []struct{ pattern, key, entry string }{
+		{"POST /v1/sonar", "perplexity:completions", ""},
+		{"POST /chat/completions", "perplexity:completions", ""},
+		{"POST /v1/chat/completions", "perplexity:completions", ""},
+		{"POST /v1/agent", "perplexity:agent", NameAgent},
+		{"POST /v1/responses", "perplexity:agent", NameAgent},
+		{"POST /responses", "perplexity:agent", NameAgent},
 	}
 	for i, w := range want {
 		require.Equal(t, w.pattern, routes[i].Pattern)
 		require.Equal(t, w.key, routes[i].FaultKey)
+		require.Equal(t, w.entry, routes[i].Entry, "%s resolves the wrong scenario entry", w.pattern)
 		require.NotNil(t, routes[i].Fault, "%s declares no fault selector", w.pattern)
+	}
+}
+
+// The Agent surface must read its OWN turn_key, not Sonar's. This is a shipped
+// behaviour change: before Route.Entry, a turn_key on the perplexity block
+// subdivided the agent lane too, because entryTurnKey resolved by listener name.
+// The old behaviour was an entry's own turn_key being ignored — a bug, not a
+// contract — but it is pinned here so the change is asserted rather than found.
+func TestAgentSurfaceReadsItsOwnTurnKey(t *testing.T) {
+	t.Parallel()
+
+	for _, r := range AgentRoutes() {
+		require.Equal(t, NameAgent, r.Entry,
+			"%s must resolve the perplexity_agent entry, or its turn_key is ignored", r.Pattern)
+	}
+	for _, r := range SonarRoutes() {
+		require.Empty(t, r.Entry,
+			"%s is the listener's own entry and must keep resolving by listener name", r.Pattern)
 	}
 }
 
