@@ -394,11 +394,9 @@ none of those are in scope here and none are verified below.
 The vendor documentation confirms these fields exist without showing a complete example run object, so the
 following are open and a simulator must not assert them from memory:
 
-1. **`costDollars`' nested shape on this surface.** `costDollars` is confirmed present, and `costDollars.dataSources`
-   is confirmed by the official JS SDK. **`costDollars.total` is NOT confirmed for agent runs.** It is confirmed and
-   required on `/search`, and confirmed-but-optional on `/answer`, where the two share one `CostDollarsOutput`
-   schema object — so a third endpoint reusing it is plausible. Plausible is not verified. This repository has
-   already been wrong about an Exa field by reasoning from a sibling endpoint.
+1. **`costDollars`' nested shape on this surface — see the recorded inference below.** No vendor page prints a
+   complete agent-run JSON body, so the exact shape is derived rather than read. It is written down as an inference
+   with its evidence rather than presented as verified.
 2. **`createdAt`'s type and format.** `/search` has no analogue; do not assume the `publishedDate` ISO-8601 shape.
 3. **The `id` format.** No example identifier appears. `/search`'s `requestId` is 32 lowercase hex, but nothing
    verifies that this surface matches it.
@@ -407,6 +405,44 @@ following are open and a simulator must not assert them from memory:
    `outputSchema`; the examples page's prose says `output_schema`. Two sources to one, and the one that disagrees
    is prose rather than a code sample, so **camelCase is recorded** — but it is a documentation conflict rather
    than a settled fact, and a consumer sending snake_case should be accepted rather than rejected until it is.
+
+### Recorded inference: `costDollars.total` is emitted on terminal runs
+
+**Status: INFERRED, not read from a vendor example. Recorded 2026-08-15.** Servicesim emits it; this section is the
+reason, so a future reader can re-open the decision against evidence rather than re-derive it.
+
+The evidence chain, strongest first:
+
+1. The Agent API documentation states that completed runs include `costDollars`, described as **"the run's cost
+   breakdown"**. The field's presence on this surface is verified; only its interior is not.
+2. `CostDollarsOutput` is a **shared schema component** in Exa's OpenAPI specification, used by `/search`,
+   `/answer` and `/contents`. Within it, `total` is the aggregate float and is required. Two of those three are
+   independently verified in this file already (`/search` above, `/answer` in its own section).
+3. Exa's official JS SDK reads `completedRun.costDollars?.dataSources`, confirming the agent's `costDollars` is a
+   real object with per-operation breakdown keys — the same shape family as `costDollars.search` elsewhere.
+
+An aggregate-plus-breakdown object that leads with `total` across every other endpoint, on an orchestration surface
+whose cost is by definition the sum of the operations it ran, is a strong inference. It is not a reading.
+
+**The shape is a SUPERSET of `CostDollarsOutput`, not a copy**, and the distinction matters for what a simulator
+emits. `dataSources` is confirmed on agent runs and does not appear in `CostDollarsOutput`; `search` appears in
+`CostDollarsOutput` and is **not** confirmed on agent runs. So:
+
+| Key | On agent runs | Basis |
+|---|---|---|
+| `costDollars.total` | emitted | inferred, this section |
+| `costDollars.dataSources` | emitted only when a scenario declares it | verified, JS SDK |
+| `costDollars.search` | **not emitted by default** | not confirmed on this surface — do not copy it across from `/search` |
+
+**Why emit an inferred field at all**, when house rule 1 says never write a wire field from memory: this is not
+memory, it is a documented inference with a citation trail, and the cost of deferring is asymmetric. Adding a cost
+key *after* adopters hold golden files rewrites the bytes of every one of those files. Emitting it now and being
+wrong costs one field's removal; omitting it now and being wrong costs an N-repository golden refresh. The rule
+exists to stop unsourced invention, which this is not.
+
+**How to falsify it.** One captured terminal run from the live API settles it in either direction. If it turns out
+`costDollars` on this surface carries no `total`, correct this section first and the projection second — and record
+the correction here rather than silently dropping the field.
 
 ### Exa Agent API — lifecycle routes not in scope
 

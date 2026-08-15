@@ -108,11 +108,20 @@ const (
 	keyFault      = "fault"
 	keyTurns      = "turns"
 	keyTurnKey    = "turn_key"
+	keyCreate     = "create"
 )
 
 // reservedEnvelopeKeys are the provider-block keys stripped before what remains
 // becomes the projection body.
-var reservedEnvelopeKeys = []string{keyKind, keyAuth, keyValidation, keyFault, keyTurns, keyTurnKey}
+//
+// It is NOT what the loader reads. decodeProviderEntry's switch is authoritative
+// — a key with a case arm is envelope, and everything reaching default is body —
+// and this slice exists for a test to assert the two agree. Adding a key here
+// without adding a case arm changes nothing at all, which is a trap worth naming
+// because the slice reads as if it were the definition.
+var reservedEnvelopeKeys = []string{
+	keyKind, keyAuth, keyValidation, keyFault, keyTurns, keyTurnKey, keyCreate,
+}
 
 // Providers is an open registry keyed by provider name. It is deliberately not
 // a struct with one field per provider: adding a provider must not require
@@ -167,6 +176,18 @@ type ProviderEntry struct {
 
 	Auth       *AuthPolicy
 	Validation *ValidationPolicy
+
+	// Create is the create-side envelope of an async provider entry.
+	//
+	// It exists because a create-then-poll surface has two routes on one entry
+	// that need SEPARATE fault plans, and a turn of an async entry is one poll
+	// snapshot — so a plan declared on a turn belongs to the poll route and the
+	// create has nowhere to hang one. A second block-level `fault:` could not
+	// work: alongside `turns:` it is already a load error, and rightly, because
+	// in the multi-turn form nothing says which route a bare `fault:` meant.
+	//
+	// Nesting makes the route explicit in the key itself.
+	Create *CreatePolicy
 
 	// TurnKey declares what the turn cursor is keyed on. Empty means ["route"].
 	TurnKey TurnKey
@@ -354,6 +375,22 @@ type AuthPolicy struct {
 	Headers []string `yaml:"headers,omitempty"`
 }
 
+// CreatePolicy is the create-side envelope of an async provider entry: what a
+// scenario declares about the POST that mints a job, as opposed to the polls
+// that read it.
+//
+// It carries only a fault plan today. The create RESPONSE is derived in full —
+// the identifier and the vendor's initial status — because a projection body
+// alongside `turns:` is a load error, so there is nowhere honest to put
+// create-side body keys. If create-side body scripting is ever needed, this is
+// where it goes, and adding a field here is additive.
+type CreatePolicy struct {
+	// Fault is the create route's attempt budget, independent of the poll
+	// route's. A poll retry must not consume the create's retries, and a retry of
+	// one must not be answered from the other's plan.
+	Fault *Fault `yaml:"fault,omitempty"`
+}
+
 // ValidationPolicy tunes how validation findings map onto HTTP outcomes.
 type ValidationPolicy struct {
 	// Strict promotes every warning to an error.
@@ -464,6 +501,14 @@ func (s *Scenario) HasFaults() bool {
 		if e == nil {
 			continue
 		}
+		// A create-only plan counts. Without this a scenario whose only fault is
+		// `create.fault` reports no faults, so Deps.Normalized skips the
+		// deps.faults_ignored warning and the author's scripted create fault
+		// silently never fires — the exact wiring mistake that warning exists to
+		// catch.
+		if e.Create != nil && e.Create.Fault.HasAttempts() {
+			return true
+		}
 		for i := range e.Turns {
 			if e.Turns[i].Fault.HasAttempts() {
 				return true
@@ -564,6 +609,11 @@ func decodeProviderEntry(name string, node *yaml.Node) (*ProviderEntry, error) {
 		case keyTurnKey:
 			if err := val.Decode(&entry.TurnKey); err != nil {
 				return nil, fmt.Errorf("%s.turn_key: line %d: %w", base, val.Line, err)
+			}
+		case keyCreate:
+			entry.Create = &CreatePolicy{}
+			if err := DecodeStrict(val, entry.Create); err != nil {
+				return nil, fmt.Errorf("%s.create: %w", base, err)
 			}
 		case keyFault:
 			faultNode = val

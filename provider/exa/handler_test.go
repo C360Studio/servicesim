@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/internal/faults"
+	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
@@ -29,20 +30,43 @@ type sim struct {
 	journal *journal.Ring
 }
 
+// mustScenario parses a scenario or fails the test, without running the
+// projection validators. Tests that are ABOUT a validator finding need the
+// scenario to load even though a projection is wrong, which newSim refuses.
+func mustScenario(t *testing.T, src string) *scenario.Scenario {
+	t.Helper()
+	s, report, err := scenario.Parse([]byte(src))
+	require.NoErrorf(t, err, "scenario did not load: %v", report.Findings)
+	return s
+}
+
 // newSim builds a listener over a scenario written inline. Faults are wired from
 // the scenario, because a handler built without them serves a fault-free
 // response even where the scenario declares a 429 — the exact wiring mistake
 // Deps.Normalized warns about.
 func newSim(t *testing.T, src string) *sim {
 	t.Helper()
+	return newSimWithJobs(t, src, jobs.NewRegistry(jobs.Limits{}))
+}
 
-	s, report, err := scenario.Parse([]byte(src))
-	require.NoErrorf(t, err, "scenario did not load: %v", report.Findings)
+// newSimWithJobs is newSim with an explicit job store, for a test that needs to
+// control the bound.
+//
+// A store is wired by default rather than left nil: without one a create still
+// answers with an identifier and every poll 404s, which is a confusing way for
+// an unrelated test to fail.
+func newSimWithJobs(t *testing.T, src string, store *jobs.Registry) *sim {
+	t.Helper()
+
+	s := mustScenario(t, src)
 
 	// Projection bodies are invisible to scenario.Validate, so the seam that
 	// checks them runs here too: a fixture with a bad field must fail in this
 	// test, not on the first request.
-	findings := provider.ValidateScenario(s, map[string]provider.Validator{providerName: Validator{}})
+	findings := provider.ValidateScenario(s, map[string]provider.Validator{
+		providerName:  Validator{},
+		NameAgentRuns: AgentRunValidator{},
+	})
 	for _, f := range findings {
 		require.NotEqualf(t, scenario.SeverityError, f.Severity, "%s: %s", f.Path, f.Message)
 	}
@@ -53,6 +77,7 @@ func newSim(t *testing.T, src string) *sim {
 		Journal:   ring,
 		Faults:    faults.New(s, Routes()),
 		DelayMode: provider.DelaySkip,
+		Jobs:      store,
 	}
 	return &sim{t: t, handler: New(deps), journal: ring}
 }
@@ -212,11 +237,33 @@ func TestRoutes_DeclareSeparateFaultBudgets(t *testing.T) {
 	t.Parallel()
 
 	routes := Routes()
-	require.Len(t, routes, 2)
+	require.Len(t, routes, 5)
 	assert.Equal(t, patternSearch, routes[0].Pattern)
 	assert.Equal(t, patternAnswer, routes[1].Pattern)
 	assert.NotEqual(t, routes[0].FaultKey, routes[1].FaultKey,
 		"an /answer call must not consume /search's retry budget")
+
+	// Every route on this listener carries a distinct fault key. The async
+	// surface adds three, and the reasoning is the same each time: a poll retry
+	// must not consume the create's retries, and an existence check must not
+	// consume either.
+	keys := map[string]string{}
+	for _, r := range routes {
+		if prior, seen := keys[r.FaultKey]; seen {
+			t.Errorf("%s shares fault key %q with %s", r.Pattern, r.FaultKey, prior)
+		}
+		keys[r.FaultKey] = r.Pattern
+	}
+
+	// The async routes resolve their own scenario entry. Without Entry they would
+	// read the primary `exa` block's turn_key and validation, which is a
+	// different script entirely.
+	for _, r := range AgentRunRoutes() {
+		assert.Equal(t, NameAgentRuns, r.Entry, "%s resolves the wrong scenario entry", r.Pattern)
+	}
+	for _, r := range []provider.Route{RouteSearch(), RouteAnswer()} {
+		assert.Empty(t, r.Entry, "%s is the listener's own entry", r.Pattern)
+	}
 }
 
 func TestRouting_FailsClosedInExasOwnEnvelope(t *testing.T) {

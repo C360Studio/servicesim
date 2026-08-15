@@ -6,7 +6,7 @@ derived from and the date the shape was verified.
 
 | Provider | Contract | Verified | Base URL simulated |
 |---|---|---|---|
-| Exa | [`exa/README.md`](exa/README.md) | 2026-08-14 | `POST /search`, `POST /answer` |
+| Exa | [`exa/README.md`](exa/README.md) | 2026-08-15 | `POST /search`, `POST /answer`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
 | Tavily | [`tavily/README.md`](tavily/README.md) | 2026-08-14 | `POST /search` |
 | Perplexity | [`perplexity/README.md`](perplexity/README.md) | 2026-08-14 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
 

@@ -16,6 +16,7 @@ import (
 	"github.com/c360studio/servicesim/internal/admin"
 	"github.com/c360studio/servicesim/internal/config"
 	"github.com/c360studio/servicesim/internal/faults"
+	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/provider/exa"
@@ -101,7 +102,13 @@ type Server struct {
 	def *loadedScenario
 
 	journal *journal.Ring
-	ready   *atomic.Bool
+
+	// jobs holds the async surfaces' create-then-poll records. It is process-wide
+	// rather than per scenario, for the same reason the journal is: a job
+	// identifier is minted by one request and presented by another, and the
+	// namespace — not the scenario — is what isolates concurrent tests.
+	jobs  *jobs.Registry
+	ready *atomic.Bool
 
 	// surfaces is admin first, then the enabled providers in config order. It is
 	// fixed by New and never mutated afterwards.
@@ -187,6 +194,7 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Server, error
 			MaxBodyBytes:  cfg.MaxJournalBodyBytes,
 			MaxNamespaces: cfg.MaxNamespaces,
 		}),
+		jobs:    jobs.NewRegistry(jobs.Limits{}),
 		ready:   new(atomic.Bool),
 		started: make(chan struct{}),
 	}
@@ -282,6 +290,8 @@ func (s *Server) add(ls *loadedScenario, isDefault bool) {
 		MaxRequestBytes:     s.cfg.MaxRequestBytes,
 		MaxJournalBodyBytes: s.cfg.MaxJournalBodyBytes,
 		MaxNamespaces:       s.cfg.MaxNamespaces,
+		Jobs:                s.jobs,
+		MaxJobs:             jobs.DefaultMaxJobs,
 	}
 
 	s.scenarios = append(s.scenarios, ls)
@@ -420,6 +430,7 @@ func validators(cfg config.Config) map[string]provider.Validator {
 		switch name {
 		case provider.Exa:
 			out[string(provider.Exa)] = exa.Validator{}
+			out[exa.NameAgentRuns] = exa.AgentRunValidator{}
 		case provider.Tavily:
 			out[tavily.Name] = tavily.Validator{}
 		case provider.Perplexity:

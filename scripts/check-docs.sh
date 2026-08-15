@@ -182,9 +182,19 @@ claim_count=$((claim_count + builtins_checked))
 # routes from the route(mux, ...) registrations. This is a grep for the literal,
 # not proof the handler is reachable — an integration test proves that.
 
+# Every non-test file of a provider package, not just handler.go: a provider
+# large enough to split its routes across files (exa's async surface lives in
+# agentrun_handler.go) would otherwise have those routes read as unregistered,
+# and the contracts check below would report a true row in the index table as a
+# false one. Test files are excluded because their fixture patterns are not
+# registrations.
 known_provider_routes="$tmp/known_provider_routes"
-{ grep -hoE '"(GET|POST|PUT|PATCH|DELETE) /[^"]*"' provider/*/handler.go 2>/dev/null || true; } |
-	tr -d '"' | sort -u >"$known_provider_routes"
+{
+	for f in provider/*/*.go; do
+		case "$f" in *_test.go) continue ;; esac
+		grep -hoE '"(HEAD|GET|POST|PUT|PATCH|DELETE) /[^"]*"' "$f" 2>/dev/null || true
+	done
+} | tr -d '"' | sort -u >"$known_provider_routes"
 require_nonempty "$known_provider_routes" "registered provider routes"
 
 known_routes="$tmp/known_routes"
@@ -217,7 +227,7 @@ sed -E 's/^[A-Z]+ //' "$known_routes" | sort -u >"$known_paths"
 # shows methods that must NOT work — troubleshooting.md explains the 405 for
 # `GET /search` — so outside a table only the path is required to exist.
 route_claims="$tmp/route_claims"
-grep_docs_lines '`(GET|POST|PUT|PATCH|DELETE) /' >"$route_claims"
+grep_docs_lines '`(HEAD|GET|POST|PUT|PATCH|DELETE) /' >"$route_claims"
 
 routes_checked=0
 routes_strict=0
@@ -227,7 +237,7 @@ while IFS=: read -r file line rest; do
 	case "$rest" in
 	'|'*) strict=yes ;;
 	esac
-	for tok in $(printf '%s' "$rest" | grep -oE '`(GET|POST|PUT|PATCH|DELETE) /[A-Za-z0-9_/.{}<>-]*' | tr ' ' '~'); do
+	for tok in $(printf '%s' "$rest" | grep -oE '`(HEAD|GET|POST|PUT|PATCH|DELETE) /[A-Za-z0-9_/.{}<>-]*' | tr ' ' '~'); do
 		route=$(printf '%s' "$tok" | tr -d '`' | tr '~' ' ')
 		path=${route#* }
 		routes_checked=$((routes_checked + 1))
@@ -404,7 +414,7 @@ contracts_checked=0
 
 if [ -f "$contracts_index" ]; then
 	claimed_routes="$tmp/claimed_routes"
-	grep -oE '`(GET|POST|PUT|PATCH|DELETE) /[A-Za-z0-9_/.{}-]*`' "$contracts_index" 2>/dev/null |
+	grep -oE '`(HEAD|GET|POST|PUT|PATCH|DELETE) /[A-Za-z0-9_/.{}-]*`' "$contracts_index" 2>/dev/null |
 		tr -d '`' | sort -u >"$claimed_routes" || true
 
 	# Direction 1: everything the table claims is simulated must be registered.

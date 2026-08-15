@@ -35,7 +35,7 @@ const (
 // It is a function, not a package-level var, so no consumer can mutate the route
 // table of a package it merely imported.
 func Routes() []provider.Route {
-	return []provider.Route{RouteSearch(), RouteAnswer()}
+	return append([]provider.Route{RouteSearch(), RouteAnswer()}, AgentRunRoutes()...)
 }
 
 // RouteSearch returns POST /search, keyed "exa:search". Its plan is the provider
@@ -98,8 +98,11 @@ func New(deps provider.Deps) http.Handler {
 	return provider.NewMux(deps, provider.Exa, provider.MuxSpec{
 		Routes: Routes(),
 		Handlers: map[string]provider.Handler{
-			patternSearch: handleSearch,
-			patternAnswer: handleAnswer,
+			patternSearch:    handleSearch,
+			patternAnswer:    handleAnswer,
+			patternRunCreate: handleAgentRunCreate,
+			patternRunPoll:   handleAgentRunPoll,
+			patternRunHead:   handleAgentRunHead,
 		},
 		NotFound:         handleNotFound,
 		MethodNotAllowed: func(_ []string) provider.Handler { return handleMethodNotAllowed },

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/c360studio/servicesim/internal/faults"
+	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/provider/exa"
@@ -115,6 +116,7 @@ func routes() []provider.Route {
 func validators() map[string]provider.Validator {
 	out := map[string]provider.Validator{
 		string(provider.Exa): exa.Validator{},
+		exa.NameAgentRuns:    exa.AgentRunValidator{},
 		tavily.Name:          tavily.Validator{},
 	}
 	maps.Copy(out, perplexity.Validators())
@@ -240,6 +242,7 @@ type Sim struct {
 	scenario *scenario.Scenario
 	journal  *journal.Ring
 	faults   provider.Faults
+	jobs     *jobs.Registry
 
 	// names is the enabled provider set in stable order. handlers and servers are
 	// written once during construction and only read afterwards.
@@ -352,6 +355,7 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 		scenario: sc,
 		journal:  journal.NewRing(o.capacity, provider.DefaultMaxJournalBodyBytes),
 		faults:   NewFaults(sc),
+		jobs:     jobs.NewRegistry(jobs.Limits{}),
 		names:    enabled(tb, o.providers),
 		handlers: map[provider.Name]http.Handler{},
 		client:   newClient(),
@@ -364,6 +368,7 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 		Clock:     o.clock,
 		DelayMode: o.delayMode,
 		Logger:    slog.New(slog.DiscardHandler),
+		Jobs:      s.jobs,
 	}
 	for _, name := range s.names {
 		switch name {
@@ -561,6 +566,16 @@ func (s *Sim) Scenario() *scenario.Scenario {
 func (s *Sim) Reset() {
 	s.journal.Reset()
 	s.faults.Reset()
+
+	// Jobs drop with the cursors, in the same call. Resetting the fault counters
+	// rewinds the turn cursor, and a job identifier is derived from the call
+	// index — so cursors reset without records dropped means the next create
+	// re-mints an identifier that is still live and fails with a collision.
+	//
+	// That path needs no concurrency at all: this method is documented for a test
+	// that reuses one Sim across phases, which is exactly when it happens. Every
+	// surface that resets fault counters resets jobs alongside them.
+	s.jobs.Reset()
 }
 
 // Close stops every server. [Start] and the handler constructors already register
