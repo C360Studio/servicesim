@@ -152,3 +152,39 @@ providers:
     search_results:
       - source-a
       - source-b
+
+  # This file's lane story is about `turn_key` on the Sonar route; the happy
+  # shape here is just a coherent async surface so one --scenario flag still
+  # configures every listener.
+  exa_agent_runs:
+    turns:
+      - when: {call_index: 0}
+        respond:
+          status: running
+      - when: {call_index: 1}
+        respond:
+          status: running
+      - respond:
+          status: completed
+          output:
+            text: Report A and Report B agree on the finding.
+            grounding:
+              - field: answer
+                citations:
+                  - source-a
+                confidence: high
+          cost_dollars:
+            total: 0.045
+
+  tavily_research:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - when: {call_index: 1}
+        respond: {status: in_progress}
+      - respond:
+          status: completed
+          content: Report A and Report B agree on the finding.
+          sources:
+            - source-a
+            - source-b

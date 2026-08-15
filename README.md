@@ -280,10 +280,10 @@ The rest of it, briefly:
 
 **Run exactly one Servicesim process per base URL. Two replicas behind one address is silently wrong, not slow.**
 
-Every piece of lane state — fault attempt counters, turn cursors, journal entries and their sequence numbers,
-and the namespace registry `-max-namespaces` bounds — lives in that process's memory. Nothing is shared, nothing
-is replicated and nothing is persisted. Namespaces isolate lanes *within* a process; they do not join lanes
-*across* processes.
+Every piece of lane state — fault attempt counters, turn cursors, async job records, journal entries and their
+sequence numbers, and the namespace registry `-max-namespaces` bounds — lives in that process's memory. Nothing is
+shared, nothing is replicated and nothing is persisted. Namespaces isolate lanes *within* a process; they do not
+join lanes *across* processes.
 
 So a second replica does not halve the load, it forks the state. Requests from one client are spread across
 replicas by whatever balances them, and each replica counts only the calls it happened to receive:
@@ -294,6 +294,7 @@ replicas by whatever balances them, and each replica counts only the calls it ha
 | `attempts: [{status: 429}, {status: 200}]` | Each replica owns a full budget, so the 429 is served **twice** — once per replica — before either succeeds. |
 | `AssertRequestCount(t, sim, provider.Exa, 3)` | The journal read reaches one replica and sees only its share: 1 or 2, varying run to run. |
 | `POST /__admin/reset?namespace=t1` | Resets the replica that answered. The others keep their cursors. |
+| `POST /agent/runs` then `GET /agent/runs/{id}` (or Tavily's `/research` equivalent) | The create lands on one replica; if the poll lands on another, it holds no record of the job and answers the vendor's 404 for a job that exists — "polls 404 intermittently". |
 
 **The symptom you would actually see** is a test suite that passes locally and fails intermittently in the
 deployment that scaled out, with failures that never mention the simulator: a retry test that reports one retry
@@ -343,7 +344,7 @@ entirely and much later:
 
 ## Built-in protocol scenarios
 
-Eleven scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
+Thirteen scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
 `testkit.WithBuiltin("<name>")`. They cover *protocol* behaviour, which is the same for every consumer;
 product-specific corpora belong in your own repository.
 
@@ -351,6 +352,8 @@ product-specific corpora belong in your own repository.
 |---|---|
 | `happy` | The baseline: a well-formed 200 from every provider parses into your own model. |
 | `empty-results` | Zero results in a well-shaped envelope is handled as "no results", not as an error. |
+| `async-failed` | An Exa agent run and a Tavily research task each reach a terminal `failed` status, so your failure branch reads the error detail rather than mis-parsing it as success. |
+| `async-stuck` | An Exa agent run and a Tavily research task never terminate, so your own poll timeout — not Servicesim — is what ends the loop. |
 | `unauthorized` | A 401 in each vendor's own error envelope is surfaced as an auth failure and is not retried. |
 | `rate-limited` | A 429 with `Retry-After`, then success — backoff and retry work, and the retry is counted. |
 | `server-error` | A 500 is surfaced as an upstream failure rather than mistaken for an empty result set. |

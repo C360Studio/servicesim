@@ -124,6 +124,19 @@ check "POST :8081/answer (exa)" \
       -H 'content-type: application/json' -H 'x-api-key: smoke-test-key' \
       -d '{"query":"smoke"}')" "200"
 
+# The async create routes. The image's default scenario is `happy`, which
+# declares both async entries (scenarios/protocol/happy.yaml), so a create
+# against either one mints a job and answers 201.
+check "POST :8081/agent/runs (exa, async create)" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${EXA_PORT}/agent/runs" \
+      -H 'content-type: application/json' -H 'x-api-key: smoke-test-key' \
+      -d '{"query":"smoke"}')" "201"
+
+check "POST :8082/research (tavily, async create)" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${TAVILY_PORT}/research" \
+      -H 'content-type: application/json' -H 'authorization: Bearer smoke-test-key' \
+      -d '{"input":"smoke"}')" "201"
+
 # All four Perplexity routes: the two Sonar paths (canonical + OpenAI SDK
 # alias) and the two Agent API paths. The aliases are not in the vendor's
 # OpenAPI document but consumers reach them through the OpenAI SDK, so a

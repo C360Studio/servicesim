@@ -55,3 +55,22 @@ providers:
     usage:
       input_tokens: 18
       output_tokens: 12
+
+  # A completed run that found nothing. `output` is declared with an explicit
+  # empty text rather than omitted — that just makes `output` present for the
+  # validator (it renders as an empty object, `"output":{}`, since an empty
+  # `text` is omitempty on the wire) — because an absent `output` on a
+  # completed run raises the completed_without_output WARNING at load, and
+  # this built-in must load with zero findings. The empty-result case is
+  # deliberate, not an unfinished fixture.
+  exa_agent_runs:
+    status: completed
+    output:
+      text: ""
+
+  # A completed task that produced no report. `content` is an explicit empty
+  # string, not an absent key, for the same reason as above: absent content on
+  # a completed task raises completed_without_content.
+  tavily_research:
+    status: completed
+    content: ""

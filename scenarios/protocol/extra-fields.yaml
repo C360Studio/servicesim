@@ -78,3 +78,27 @@ providers:
     answer: Report A states the finding.
     search_results:
       - source-a
+
+  exa_agent_runs:
+    status: completed
+    output:
+      text: Report A states the finding.
+      grounding:
+        - field: answer
+          citations:
+            - source-a
+          confidence: high
+    cost_dollars:
+      total: 0.005
+    extra_fields:
+      experimental_trace_id: trace-0
+      service_tier: default
+
+  tavily_research:
+    status: completed
+    content: Report A states the finding.
+    sources:
+      - source-a
+    extra_fields:
+      experimental_relevance: 0.77
+      service_tier: default

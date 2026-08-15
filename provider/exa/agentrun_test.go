@@ -89,6 +89,8 @@ func TestAgentRunCreateThenPollToCompletion(t *testing.T) {
 		assert.Nil(t, got["output"], "output must not exist before a terminal status")
 		assert.Nil(t, got["costDollars"], "a run that has not finished has spent nothing")
 		assert.Nil(t, got["stopReason"], "a non-terminal run carries a null stop reason")
+		_, present := got["stopReason"]
+		assert.True(t, present, "stopReason must be present and explicitly null, not omitted")
 	}
 
 	done := pollRun(t, s, id)

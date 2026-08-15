@@ -291,6 +291,9 @@ func renderRunSnapshot(x *provider.Exchange, p *AgentRunProjection, id string) (
 		Status:    p.EffectiveStatus(),
 		CreatedAt: x.Deps.Scenario.BaseTime().UTC().Format(scenario.PublishedAtLayout),
 	}
+	// stopReason has no `omitempty`: contracts/exa/README.md documents it as
+	// `string|null`, present and explicitly null while queued or running, not
+	// absent. A nil pointer here renders the JSON `null` the contract promises.
 	if reason := p.EffectiveStopReason(); reason != "" {
 		out.StopReason = &reason
 	}
@@ -337,7 +340,7 @@ func renderRunSnapshot(x *provider.Exchange, p *AgentRunProjection, id string) (
 type runWire struct {
 	ID          string      `json:"id"`
 	Status      string      `json:"status"`
-	StopReason  *string     `json:"stopReason,omitempty"`
+	StopReason  *string     `json:"stopReason"`
 	CreatedAt   string      `json:"createdAt,omitempty"`
 	Output      *outputWire `json:"output,omitempty"`
 	Error       *errorWire  `json:"error,omitempty"`

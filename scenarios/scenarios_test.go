@@ -23,6 +23,8 @@ import (
 // its coverage silently, and every one of these is referenced by name from the
 // README, the Dockerfile or a consumer's testkit call.
 var builtins = []string{
+	"async-failed",
+	"async-stuck",
 	"conversation",
 	"empty-results",
 	"extra-fields",
@@ -39,7 +41,9 @@ var builtins = []string{
 // implementedProviders are the provider entries every built-in must declare, so
 // that one --scenario flag configures every listener coherently instead of
 // leaving one of them serving something unrelated.
-var implementedProviders = []string{"exa", "tavily", "perplexity", "perplexity_agent"}
+var implementedProviders = []string{
+	"exa", "tavily", "perplexity", "perplexity_agent", "exa_agent_runs", "tavily_research",
+}
 
 // documentedProjectionKeys is the projection body key set docs/scenario-schema.md
 // documents per provider, minus the reserved envelope keys the scenario package
@@ -54,6 +58,8 @@ var documentedProjectionKeys = map[string]map[string]bool{
 		"citations", "search_results", "usage", "images", "related_questions", "extra_fields"),
 	"perplexity_agent": keySet("response_id", "message_id", "model", "status", "answer", "queries",
 		"search_results", "annotations", "error", "usage", "extra_fields"),
+	"exa_agent_runs":  keySet("status", "stop_reason", "output", "error", "cost_dollars", "usage", "extra_fields"),
+	"tavily_research": keySet("status", "content", "sources", "response_time", "extra_fields"),
 }
 
 // refListKeys are the projection keys whose list elements may be the scalar
@@ -445,6 +451,122 @@ func sonarAnswer(t *testing.T, sim *testkit.Sim, model string) string {
 	return decoded.Choices[0].Message.Content
 }
 
+// TestAsyncFailed_BothSurfacesReachATerminalFailure drives a create and then
+// polls each async surface through its own listener to a terminal FAILED
+// status — the behaviour a consumer's failure branch is written against, and
+// the reason this built-in exists rather than only `happy`'s completed runs.
+func TestAsyncFailed_BothSurfacesReachATerminalFailure(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("async-failed"),
+		testkit.WithProviders(provider.Exa, provider.Tavily))
+
+	exaHeaders := map[string]string{"x-api-key": "test-exa-key"}
+	exaID := asyncCreate(t, sim, provider.Exa, "/agent/runs", `{"query":"find the finding"}`, exaHeaders)
+
+	running := asyncPoll(t, sim, provider.Exa, "/agent/runs/"+exaID, exaHeaders)
+	assert.Equal(t, "running", running["status"], "the first poll is still running")
+
+	failed := asyncPoll(t, sim, provider.Exa, "/agent/runs/"+exaID, exaHeaders)
+	assert.Equal(t, "failed", failed["status"])
+	errObj, ok := failed["error"].(map[string]any)
+	require.True(t, ok, "a failed run must carry an error object: %v", failed)
+	assert.Equal(t, "AGENT_RUN_FAILED", errObj["code"])
+
+	tavilyHeaders := map[string]string{"authorization": "Bearer test-tavily-key"}
+	tavilyID := asyncCreate(t, sim, provider.Tavily, "/research", `{"input":"find the finding"}`, tavilyHeaders)
+
+	pending := asyncPoll(t, sim, provider.Tavily, "/research/"+tavilyID, tavilyHeaders)
+	assert.Equal(t, "pending", pending["status"], "the first poll is still pending")
+
+	taskFailed := asyncPoll(t, sim, provider.Tavily, "/research/"+tavilyID, tavilyHeaders)
+	assert.Equal(t, "failed", taskFailed["status"])
+	assert.NotEmpty(t, taskFailed["content"], "the failure is explained where this surface has to explain it")
+}
+
+// TestAsyncStuck_NeitherSurfaceEverTerminates is the regression test for the
+// built-in's whole point: Servicesim never decides a job is stuck, so every
+// poll — however many — answers with the same non-terminal status.
+func TestAsyncStuck_NeitherSurfaceEverTerminates(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("async-stuck"),
+		testkit.WithProviders(provider.Exa, provider.Tavily))
+
+	exaHeaders := map[string]string{"x-api-key": "test-exa-key"}
+	exaID := asyncCreate(t, sim, provider.Exa, "/agent/runs", `{"query":"q"}`, exaHeaders)
+	for i := range 3 {
+		got := asyncPoll(t, sim, provider.Exa, "/agent/runs/"+exaID, exaHeaders)
+		assert.Equalf(t, "running", got["status"], "poll %d", i)
+	}
+
+	tavilyHeaders := map[string]string{"authorization": "Bearer test-tavily-key"}
+	tavilyID := asyncCreate(t, sim, provider.Tavily, "/research", `{"input":"q"}`, tavilyHeaders)
+	for i := range 3 {
+		got := asyncPoll(t, sim, provider.Tavily, "/research/"+tavilyID, tavilyHeaders)
+		assert.Equalf(t, "pending", got["status"], "poll %d", i)
+	}
+}
+
+// asyncCreate posts a create request against an async entry's create route and
+// returns the minted identifier, under either wire spelling ("id" for Exa,
+// "request_id" for Tavily).
+func asyncCreate(
+	t *testing.T, sim *testkit.Sim, p provider.Name, path, body string, headers map[string]string,
+) string {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, sim.URL(p)+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := sim.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equalf(t, http.StatusCreated, resp.StatusCode, "create failed: %s", raw)
+
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(raw, &out))
+	id, _ := out["id"].(string)
+	if id == "" {
+		id, _ = out["request_id"].(string)
+	}
+	require.NotEmpty(t, id)
+	return id
+}
+
+// asyncPoll issues one GET against a job's poll route and decodes the body.
+func asyncPoll(
+	t *testing.T, sim *testkit.Sim, p provider.Name, path string, headers map[string]string,
+) map[string]any {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, sim.URL(p)+path, nil)
+	require.NoError(t, err)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := sim.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(raw, &out), "body: %s", raw)
+	return out
+}
+
 // TestUnknownProvider_LoadsWithTheImplementedProvidersIntact is the promise a
 // scenario file shared across repositories depends on: a provider this build
 // cannot serve must never fail the load.
@@ -473,7 +595,7 @@ func TestUnknownProvider_LoadsWithTheImplementedProvidersIntact(t *testing.T) {
 			"%s must still carry a projection body", provider)
 	}
 	assert.Equal(t,
-		[]string{"exa", "tavily", "perplexity", "perplexity_agent", "openai"},
+		[]string{"exa", "tavily", "perplexity", "perplexity_agent", "exa_agent_runs", "tavily_research", "openai"},
 		s.Providers.Names(), "declaration order is preserved")
 }
 

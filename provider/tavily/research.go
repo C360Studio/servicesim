@@ -243,7 +243,7 @@ func handleResearchPoll(x *provider.Exchange) provider.Response {
 		return errorResponse(x)
 	}
 
-	body, err := renderResearchSnapshot(p, id)
+	body, err := renderResearchSnapshot(x, p, id)
 	if err != nil {
 		x.Fail(CodeProjectionInvalid, "", "the research projection could not be rendered: %v", err)
 		return errorResponse(x)
@@ -327,9 +327,10 @@ func knownResearchModel(v string) bool {
 // renderResearchSnapshot renders one poll body.
 //
 // A non-terminal task carries only request_id, status and response_time; the
-// completed fields appear at a terminal status. That is the vendor's documented
-// split and it pairs with the 202/200 status code.
-func renderResearchSnapshot(p *ResearchProjection, id string) ([]byte, error) {
+// completed fields — including created_at — appear at a terminal status. That
+// is the vendor's documented split (contracts/tavily/README.md's poll-status
+// table) and it pairs with the 202/200 status code.
+func renderResearchSnapshot(x *provider.Exchange, p *ResearchProjection, id string) ([]byte, error) {
 	out := researchPollWire{
 		RequestID:    id,
 		Status:       p.EffectiveStatus(),
@@ -340,6 +341,7 @@ func renderResearchSnapshot(p *ResearchProjection, id string) ([]byte, error) {
 	}
 
 	if p.IsTerminal() {
+		out.CreatedAt = x.Deps.Scenario.BaseTime().UTC().Format(scenario.PublishedAtLayout)
 		out.Content = p.Content
 		for _, ref := range p.Sources {
 			src := scenario.Render(ref)
@@ -370,6 +372,7 @@ type researchPollWire struct {
 	RequestID    string               `json:"request_id"`
 	Status       string               `json:"status"`
 	ResponseTime float64              `json:"response_time"`
+	CreatedAt    string               `json:"created_at,omitempty"`
 	Content      any                  `json:"content,omitempty"`
 	Sources      []researchSourceWire `json:"sources,omitempty"`
 }

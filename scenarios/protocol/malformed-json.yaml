@@ -74,3 +74,30 @@ providers:
     answer: Report A states the finding.
     search_results:
       - source-a
+
+  # The block-level `fault:` on an async entry with no `turns:` covers the POLL
+  # route (create.fault is a separate, undeclared budget here), which is what
+  # the create/poll route split makes possible: the create still succeeds, and
+  # every poll after it comes back truncated.
+  exa_agent_runs:
+    fault:
+      after: repeat_last
+      attempts:
+        - kind: invalid_json
+          status: 200
+          raw_body: '{"id":"run_00000000000000000000000000000000","status":"completed","output":{'
+    status: completed
+    output:
+      text: Report A states the finding.
+
+  tavily_research:
+    fault:
+      after: repeat_last
+      attempts:
+        - kind: invalid_json
+          status: 200
+          raw_body: '{"request_id":"00000000-0000-0000-0000-000000000000","status":"completed",'
+    status: completed
+    content: Report A states the finding.
+    sources:
+      - source-a

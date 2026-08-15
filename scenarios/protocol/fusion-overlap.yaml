@@ -135,3 +135,40 @@ providers:
       cost:
         input_cost: 0.0002
         output_cost: 0.0006
+
+  # The happy shape: this file's overlap arrangement is about deduplication and
+  # corroboration, not the async surface, so the two entries below are just a
+  # coherent two-poll-then-completed lifecycle, kept coherent with every other
+  # built-in.
+  exa_agent_runs:
+    turns:
+      - when: {call_index: 0}
+        respond:
+          status: running
+      - when: {call_index: 1}
+        respond:
+          status: running
+      - respond:
+          status: completed
+          output:
+            text: Report A and Report B agree on the finding.
+            grounding:
+              - field: answer
+                citations:
+                  - source-a
+                confidence: high
+          cost_dollars:
+            total: 0.045
+
+  tavily_research:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - when: {call_index: 1}
+        respond: {status: in_progress}
+      - respond:
+          status: completed
+          content: Report A and Report B agree on the finding.
+          sources:
+            - source-a
+            - source-b

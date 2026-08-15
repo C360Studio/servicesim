@@ -70,3 +70,31 @@ providers:
     answer: Report A states the finding.
     search_results:
       - source-a
+
+  # The failure is on the CREATE: a run never gets minted, so there is nothing
+  # to poll. `create.fault` is the only plan an async entry needs to express
+  # "this surface is permanently down" — the poll turn below is declared only
+  # because every built-in must carry one.
+  exa_agent_runs:
+    create:
+      fault:
+        after: repeat_last
+        attempts:
+          - status: 500
+            error: Internal server error.
+            tag: INTERNAL
+    status: completed
+    output:
+      text: Report A states the finding.
+
+  tavily_research:
+    create:
+      fault:
+        after: repeat_last
+        attempts:
+          - status: 500
+            error: Internal server error.
+    status: completed
+    content: Report A states the finding.
+    sources:
+      - source-a

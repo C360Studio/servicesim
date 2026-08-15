@@ -288,6 +288,15 @@ providers:
 The YAML anchor is doing the de-duplication a `repeat:` key would otherwise do. That is deliberate — see
 [§2.5](#25-the-sugar-that-was-rejected).
 
+**Correction, 2026-08-15: this anchor does not load.** `scenario.decodeTurns` decodes each turn list item
+independently, and `DecodeStrict` re-marshals *only that one node* before feeding it to a strict decoder
+(`scenario/model.go`, `DecodeStrict`'s doc comment: "the node is re-encoded and fed to a strict decoder"). An
+anchor defined in one turn is absent from a later turn's re-encoded bytes, so the alias fails to resolve —
+verified with `scenario.Parse` on this exact shape: `yaml: unknown anchor 'pending' referenced`. Fixture authors
+should write the repeated snapshot out literally, once per turn, as the built-in scenarios in
+`scenarios/protocol/*.yaml` do. `docs/scenario-schema.md`'s async section does not show the anchor form for the
+same reason.
+
 The terminal turn is unconditional and therefore also answers polls 4, 5, 6…, which is what every real job API does:
 a finished run keeps returning its result. Nothing special-cases it; it is the existing fallback rule.
 
@@ -343,7 +352,9 @@ Everything downstream sees one shape.
   reconciliation is where a fixture author's mental model breaks.
 - It would change what `call_index` means for existing files the moment the two are combined, which is a
   version-2 event ([§9](#9-schema-versioning-additive-to-version-1)) bought for syntax.
-- YAML anchors already solve the duplication, are standard, and are already used elsewhere in fixtures.
+- YAML anchors are standard and were the intended solution to the duplication — but do not work across turns in
+  this loader ([§2.1's correction](#21-two-pending-polls-then-completed)); a fixture author writes the repeated
+  snapshot out literally instead.
 
 `fault:` on an async entry keeps the documented rule: a plan is registered **per route**, the first turn declaring
 non-empty `attempts:` supplies it, and it starts consuming from that route's first request.
@@ -384,7 +395,7 @@ The last two are the ones a fixture author actually hits, and both are silent fa
 | exa | `POST /agent/runs` | `exa:agent_runs.create` | `create.fault` on the entry | — |
 | exa | `GET /agent/runs/{id}` | `exa:agent_runs.poll` | the first turn declaring `attempts` | `["path:id"]` |
 | tavily | `POST /research` | `tavily:research.create` | `create.fault` on the entry | — |
-| tavily | `GET /research/{id}` | `tavily:research.poll` | the first turn declaring `attempts` | `["path:id"]` |
+| tavily | `GET /research/{request_id}` | `tavily:research.poll` | the first turn declaring `attempts` | `["path:request_id"]` |
 
 Create and poll draw on **separate** budgets, for the same reason `exa:search` and `exa:answer` do: a poll retry must
 not consume the create's retries, and a retry of one must not be answered from the other's plan.
@@ -1597,7 +1608,27 @@ to fix, scoped reset dropping cursors without dropping jobs (§7.3), is closed: 
 
 **A6 done, 2026-08-15.** `testkit.Job`, `testkit.Jobs`, `testkit.JobStats` (closing the alias set over `Store`'s
 own method set, per §4.5), `testkit.NewJobs`, `Sim.Jobs()`, `Namespace.Jobs()` and `testkit.AssertPollSequence`
-shipped together, confirming §7.3's `Sim.Reset()` behaviour rather than re-implementing it. A7 remains open.
+shipped together, confirming §7.3's `Sim.Reset()` behaviour rather than re-implementing it.
+
+**A7 done, 2026-08-15.** `scenarios/protocol/*.yaml` gained `exa_agent_runs` and `tavily_research` entries on every
+built-in, plus two new built-ins (`async-failed`, `async-stuck`); `docs/scenario-schema.md` gained the async
+section this row promised; the README and `docs/troubleshooting.md` multi-replica sections gained the job row
+("polls 404 intermittently") the design predicted in [§8](#8-multi-replica-the-consequence-stated-explicitly).
+Four corrections against this document were found in the process, three fixed in place and one left as historical:
+
+1. [§2.1](#21-two-pending-polls-then-completed)/[§2.5](#25-the-sugar-that-was-rejected) told fixture authors to
+   de-duplicate the repeated pending snapshot with a YAML anchor/alias across turns (`respond: &pending` /
+   `respond: *pending`). It does not load: `scenario.decodeTurns` re-marshals each turn independently, so an
+   alias whose anchor lives in a different turn is unresolvable. **Fixed in place**, with the verified error text.
+2. [§3.1](#31-the-route-table)'s route table gave Tavily's poll as `GET /research/{id}` with `LaneFrom`
+   `["path:id"]`; the shipped route is `GET /research/{request_id}` / `["path:request_id"]`. **Fixed in place.**
+3. §2.1's YAML example showed `output.content`/`output.citations`; the shipped Exa projection is `output.text` +
+   `output.grounding[]`. **Already flagged and left as illustrative** — see the note at the top of A7's spec.
+4. [§2.6](#26-validation-the-provider-package-owns)'s finding table names five of `AgentRunValidator`'s seven
+   codes — `exa.agent_run.status.unknown` and `exa.agent_run.stop_reason.unknown` are shipped and load-bearing but
+   were never added to that table. **Left as written**, marked historical by this note, rather than edited to
+   match code after the fact; the authoritative list is `docs/scenario-schema.md`'s async section, sourced from
+   `provider/exa/agentrun.go` directly.
 
 ---
 

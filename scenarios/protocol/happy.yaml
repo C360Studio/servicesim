@@ -116,3 +116,41 @@ providers:
       cost:
         input_cost: 0.0001
         output_cost: 0.0004
+
+  # Exa's Agent API. Its own entry, independent of the block above: a turn here
+  # is one poll snapshot, not a request/response pair, so the two pending polls
+  # below are what "still running" looks like across a client's retry loop.
+  exa_agent_runs:
+    turns:
+      - when: {call_index: 0}
+        respond:
+          status: running
+      - when: {call_index: 1}
+        respond:
+          status: running
+      - respond:
+          status: completed
+          output:
+            text: Report A states the finding.
+            grounding:
+              - field: answer
+                citations:
+                  - source-a
+                confidence: high
+          cost_dollars:
+            total: 0.045
+
+  # Tavily's async research surface. Same shape, different lifecycle: pending,
+  # then in_progress, then a terminal snapshot carrying content and sources.
+  tavily_research:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - when: {call_index: 1}
+        respond: {status: in_progress}
+      - respond:
+          status: completed
+          content: Report A states the finding, and Report B corroborates it.
+          sources:
+            - source-a
+            - source-b

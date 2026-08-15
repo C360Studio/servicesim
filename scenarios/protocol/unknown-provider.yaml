@@ -60,6 +60,29 @@ providers:
     search_results:
       - source-a
 
+  # This file is about an unrecognised provider name; the happy shape here is
+  # just a coherent async surface so one --scenario flag still configures
+  # every listener. Single-shot, like the four blocks above it: the test
+  # asserting the implemented providers are untouched holds every one of them
+  # to that same one-turn shape.
+  exa_agent_runs:
+    status: completed
+    output:
+      text: Report A states the finding.
+      grounding:
+        - field: answer
+          citations:
+            - source-a
+          confidence: high
+    cost_dollars:
+      total: 0.045
+
+  tavily_research:
+    status: completed
+    content: Report A states the finding.
+    sources:
+      - source-a
+
   # No handler in this build. The body is never decoded — the scenario package
   # leaves every projection undecoded, and no provider package claims this name.
   openai:

@@ -407,13 +407,13 @@ simulator per test or a distinct namespace.
 Check how many Servicesim **replicas** are behind that base URL. If the answer is more than one, that is the bug,
 and it is the only failure in this document that Servicesim cannot tell you about itself.
 
-All lane state — fault attempt counters, turn cursors, journal entries and their sequence numbers, and the
-namespace registry `--max-namespaces` bounds — is held in the serving process's memory. It is never shared,
-replicated or persisted. **Servicesim is single-replica by design.** Namespaces isolate lanes *within* one
-process; they do nothing across processes.
+All lane state — fault attempt counters, turn cursors, async job records, journal entries and their sequence
+numbers, and the namespace registry `--max-namespaces` bounds — is held in the serving process's memory. It is
+never shared, replicated or persisted. **Servicesim is single-replica by design.** Namespaces isolate lanes
+*within* one process; they do nothing across processes.
 
 Two replicas therefore do not share a sequence, they run two of them, and each request is counted only by the
-replica that received it. The four ways that surfaces:
+replica that received it. The five ways that surfaces:
 
 | Symptom | What is happening |
 |---|---|
@@ -421,11 +421,25 @@ replica that received it. The four ways that surfaces:
 | A "fail once, then succeed" retry test sees two failures | Each replica holds a complete copy of the attempt plan, so the 429 is served once per replica before either gets to its 200. |
 | `testkit.AssertRequestCount` is short, by a number that changes per run | The journal read reaches one replica and sees only that replica's share of the traffic. |
 | A scoped reset does not reset | It clears the replica that answered the reset call. The others keep their cursors and their journal. |
+| A poll 404s for a job the create just made — "polls 404 intermittently" | Each replica holds its own job registry, so a poll landing on a different replica than its create finds no record and answers the vendor's 404 for a job that exists. See [the section above](#a-poll-returns-404-for-a-job-the-create-just-returned). |
 
-What makes it expensive is that **nothing reports it**. Every response is a well-shaped 200, no finding is
-raised, no warning is logged, and the journal is internally consistent on whichever replica you happen to ask —
-because from inside one process nothing went wrong. The failure surfaces as an assertion about *your* client's
-behaviour, so the natural reading is that the client has a bug it does not have.
+Every row but the last is silent by design: nothing is logged, no finding is raised, and the journal looks
+internally consistent on whichever replica you happen to ask. The job-poll row carries one unconditional signal and
+one conditional one, where the other four carry none. First, the process logs `servicesim.single_replica_required`
+once, unconditionally, at startup — before any request can hit this — naming the exact constraint. Second, a poll
+of a well-formed identifier raises the `job.foreign_id` **warning** finding described above, but only if the
+*polling* replica has itself already minted at least one job in this namespace — its own registry is what the
+check reads. A poll that diverges to a replica that has minted nothing in this namespace yet — the common shape
+with per-test namespaces used once — gets no `job.foreign_id` finding either, and the startup log is what is left
+to lean on.
+
+Neither signal changes the response, which is still the vendor's ordinary 404, and neither can tell a divergent
+replica apart from a stale or hand-written fixture id — that ambiguity is inherent, not a gap in the diagnostic.
+
+What makes the other four rows expensive is that **nothing reports them**. Every response is a well-shaped 200, no
+finding is raised, no warning is logged, and the journal is internally consistent on whichever replica you happen
+to ask — because from inside one process nothing went wrong. The failure surfaces as an assertion about *your*
+client's behaviour, so the natural reading is that the client has a bug it does not have.
 
 A replica cannot detect a sibling, so there is no check to switch on. Pin the count: `replicas: 1` in a
 Kubernetes Deployment, `deploy.replicas: 1` in Compose, one container in CI. If you need more capacity or more

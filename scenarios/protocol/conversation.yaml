@@ -103,3 +103,38 @@ providers:
       - respond:
           status: incomplete
           answer: No further information.
+
+  # This file's script is about the Perplexity Agent's multi-turn form; the
+  # happy shape here is just a coherent async surface so one --scenario flag
+  # still configures every listener.
+  exa_agent_runs:
+    turns:
+      - when: {call_index: 0}
+        respond:
+          status: running
+      - when: {call_index: 1}
+        respond:
+          status: running
+      - respond:
+          status: completed
+          output:
+            text: Report A states the finding.
+            grounding:
+              - field: answer
+                citations:
+                  - source-a
+                confidence: high
+          cost_dollars:
+            total: 0.045
+
+  tavily_research:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - when: {call_index: 1}
+        respond: {status: in_progress}
+      - respond:
+          status: completed
+          content: Report A states the finding.
+          sources:
+            - source-a

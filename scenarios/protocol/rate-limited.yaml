@@ -84,3 +84,54 @@ providers:
     answer: Report A states the finding.
     search_results:
       - source-a
+
+  # Two routes, two budgets: `create.fault` covers POST /agent/runs and the
+  # block-level `fault:` covers the poll, exactly as the design's §2.5 two
+  # independent counters require. The poll's declared "- status: 200" is a
+  # fault of kind none — it does not override what the handler renders, it
+  # only marks the attempt as unfaulted, and a completed poll always renders
+  # 200 anyway.
+  exa_agent_runs:
+    create:
+      fault:
+        attempts:
+          - status: 429
+            retry_after: 1
+            error: Rate limit exceeded.
+            tag: RATE_LIMIT
+          - status: 201
+    fault:
+      attempts:
+        - status: 429
+          retry_after: 1
+          error: Rate limit exceeded.
+          tag: RATE_LIMIT
+        - status: 200
+    status: completed
+    output:
+      text: Report A states the finding.
+    cost_dollars:
+      total: 0.005
+
+  # Same shape on the research surface. The poll's "- status: 200" attempt
+  # happens to match what a completed task really answers (200), but that is
+  # a property of THIS scenario reaching completed, not something the fault
+  # attempt enforces.
+  tavily_research:
+    create:
+      fault:
+        attempts:
+          - status: 429
+            retry_after: 1
+            error: Rate limit exceeded.
+          - status: 201
+    fault:
+      attempts:
+        - status: 429
+          retry_after: 1
+          error: Rate limit exceeded.
+        - status: 200
+    status: completed
+    content: Report A states the finding.
+    sources:
+      - source-a

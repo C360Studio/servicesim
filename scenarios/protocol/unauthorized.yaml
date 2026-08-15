@@ -59,3 +59,18 @@ providers:
     answer: Report A states the finding.
     search_results:
       - source-a
+
+  exa_agent_runs:
+    auth:
+      mode: reject
+    status: completed
+    output:
+      text: Report A states the finding.
+
+  tavily_research:
+    auth:
+      mode: reject
+    status: completed
+    content: Report A states the finding.
+    sources:
+      - source-a

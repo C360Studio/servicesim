@@ -98,13 +98,16 @@ mistake.
 `providers` is an **open registry** keyed by provider name, not a fixed set of fields. Adding a provider to
 Servicesim never changes this schema, and a scenario written today keeps working when new providers arrive.
 
-The names this build has handlers for are `exa`, `tavily`, `perplexity` (Sonar) and `perplexity_agent` (the Agent
-API). Sonar and the Agent surface are separate entries deliberately: a scenario can rate-limit one and leave the
-other healthy, which is how a consumer's migration fallback gets tested.
+The names this build has handlers for are `exa`, `tavily`, `perplexity` (Sonar), `perplexity_agent` (the Agent
+API), `exa_agent_runs` (Exa's create-then-poll Agent surface) and `tavily_research` (Tavily's create-then-poll
+Research surface). Each async entry is independent of its sync sibling deliberately: a scenario can rate-limit
+one and leave the other healthy, which is how a consumer's migration fallback gets tested. See
+[The async surfaces](#the-async-surfaces-exa_agent_runs-and-tavily_research).
 
 ### Reserved envelope keys
 
-Inside a provider block, **six** keys are reserved. Everything else in the block is that provider's projection body.
+Inside a provider block, **seven** keys are reserved. Everything else in the block is that provider's projection
+body.
 
 | Key | Type | Effect |
 |---|---|---|
@@ -114,6 +117,7 @@ Inside a provider block, **six** keys are reserved. Everything else in the block
 | `fault` | [Fault](#fault) | The deterministic failure plan. Illegal alongside `turns:` — see [Faults and turns](#faults-and-turns). |
 | `turns` | list of [Turn](#the-multi-turn-form) | A conversation script. Mutually exclusive with a projection body at block level. |
 | `turn_key` | list of string | What the turn cursor is keyed on. Defaults to `["route"]`. See [`turn_key`](#turn_key--what-the-cursor-counts-per). |
+| `create` | `{fault}` | The create route's own attempt budget, on a create-then-poll async entry (`exa_agent_runs`, `tavily_research`). See [The async surfaces](#the-async-surfaces-exa_agent_runs-and-tavily_research). |
 
 `extra_fields` is **not** in that list, even though it reads like envelope machinery. Every provider projection
 declares its own `extra_fields`, so the key is left in the body and behaves identically in a single-shot block and
@@ -542,10 +546,21 @@ journaled with `"attempt_index": -1`, which is how you tell the two apart:
 | A scripted response, faulted or not | yes |
 | A request rejected for a validation error | **no** — `attempt_index: -1` |
 | A request rejected for a missing or wrong credential | **no** — `attempt_index: -1` |
+| `exa_agent_runs` / `tavily_research`: a create | yes — the create route's own lane, independent of any job |
+| `exa_agent_runs` / `tavily_research`: a poll that resolves a real job | yes — the job's own per-job lane, not the route's |
+| `exa_agent_runs` / `tavily_research`: `HEAD` on either route | **no** — it answers existence only and never reaches turn selection |
+| `exa_agent_runs` / `tavily_research`: a poll of an identifier this process never minted | **no** — `provider.ResolveJob` claims nothing before rendering the vendor's 404 |
+| `exa_agent_runs` / `tavily_research`: a poll whose identifier fails `provider.ValidJobID` | **no** — treated identically to an unknown identifier above; a malformed identifier is never this process's own |
 
 This is deliberate, and it is the reason a scenario stays readable. If a rejection consumed an index, then adding
 one malformed request to a test — or fixing an adapter so it stops sending one — would silently renumber every
 `call_index` after it, and the fixture would fail somewhere unrelated to the change.
+
+A poll whose identifier fails `ValidJobID` can raise **two** warnings for one request, and neither claims an
+index: lane resolution warns `job.id_invalid` first (naming the path wildcard, not `turn_key`, because
+`Route.LaneFrom` is declared in Go, not YAML), because the identifier cannot become part of the per-job lane; the
+handler then treats the same identifier as unresolved and answers the vendor's 404 the way any unknown identifier
+does.
 
 **A dynamically-enforced 429 will follow the same rule.** Servicesim does not enforce rate limits today; `429` is
 something a scenario scripts through `fault.attempts`, and that is a served response which does claim its index. If
@@ -677,6 +692,146 @@ is fixed — `search_results` first, then `message` — and a scenario cannot re
 | `error` | `{message, code, type}` | `error`. `message` is required by the specification. |
 | `usage` | `{input_tokens, output_tokens, total_tokens, cost}` | `usage`. Note the field names differ from Sonar's. `total_tokens` is derived when zero; `cost` is `{currency, input_cost, output_cost, total_cost, cache_creation_cost, cache_read_cost, tool_calls_cost}`, with `currency` defaulting to `USD` and `total_cost` derived when zero. |
 | `extra_fields` | map | Merged into the top-level response object. |
+
+### The async surfaces: `exa_agent_runs` and `tavily_research`
+
+Exa's Agent API and Tavily's Research API are **create-then-poll**: a `POST` mints a job and returns an identifier
+immediately, and everything interesting — progress, the terminal payload, failure — lives on the `GET` that polls
+it. Each is its own provider entry, following the `perplexity` / `perplexity_agent` precedent exactly: independent
+`auth`, `validation`, `fault` and `turns`. A scenario that uses only the sync surfaces omits the entry and is
+unaffected.
+
+**A turn of an async entry is one poll snapshot.** That is the whole schema addition — no new envelope key
+describes a job — and every existing turn mechanism applies unchanged: `when`, `call_index`, the single-shot/
+multi-turn equivalence, and the unconditional-last-turn fallback. Two pending turns followed by an unconditional
+terminal one is a job that answers "still working" twice and then completes, and the terminal turn keeps answering
+every poll after it — the same fallback rule that already means "keep returning the terminal snapshot forever". A
+single-shot block — one unconditional turn — is the **zero-poll** case: the job is already terminal on its first
+poll.
+
+| Provider entry | Routes served |
+|---|---|
+| `exa_agent_runs` | `POST /agent/runs` (create), `GET /agent/runs/{id}` (poll), `HEAD /agent/runs/{id}` (existence only) |
+| `tavily_research` | `POST /research` (create), `GET /research/{request_id}` (poll), `HEAD /research/{request_id}` (existence only) |
+
+The create response is derived in full and cannot be scripted: a projection body alongside `turns:` is already a
+load error, so there is nowhere honest to put create-side keys. `exa_agent_runs` creates at `queued` (plus
+`id` and `createdAt`); `tavily_research` creates at `pending` (plus `request_id`, `created_at`, `input`, `model`
+and `response_time`).
+
+`exa_agent_runs`:
+
+| Key | Type | Renders to |
+|---|---|---|
+| `status` | `queued` \| `running` \| `completed` \| `failed` \| `cancelled` | `status`. Empty means `running`, so a pending poll can be written as `respond: {}`. `completed`, `failed` and `cancelled` are terminal. |
+| `stop_reason` | `schema_satisfied` \| `budget_reached` \| `error` \| `cancelled` | `stopReason`. A non-terminal snapshot always renders `null`. A terminal one derives it from `status` — `failed` becomes `error`, `cancelled` stays `cancelled`, everything else becomes `schema_satisfied` — unless stated explicitly. |
+| `output` | `{text, structured, grounding}` | `output`, whenever declared. A real run only carries one at a terminal status, and `status: completed` with none is a load-time warning — but nothing stops a non-terminal turn from declaring one too; use it only on the terminal snapshot. `grounding[]` entries are `{field, citations, confidence}`, resolved against the corpus exactly like `exa`'s own `output.grounding`. |
+| `error` | `{code, message}` | `error`. Required when `status: failed` — declaring `failed` with no `error` is a load error, because a consumer's failure branch is what such a scenario tests. |
+| `cost_dollars` | `{total, data_sources}` | `costDollars`, emitted on every **terminal** snapshot whether or not the scenario declares one, and never on a non-terminal one even if declared — a real run has spent nothing until it finishes. Unlike `exa`'s own `costDollars`, there is no `search` key here — it is not confirmed on this surface. |
+| `usage` | `{agent_compute_units, data_sources}` | `usage`. Optional — unlike `costDollars` it carries no documented always-present guarantee. |
+| `extra_fields` | map | Merged into the top-level response object. |
+
+`tavily_research`:
+
+| Key | Type | Renders to |
+|---|---|---|
+| `status` | `pending` \| `in_progress` \| `completed` \| `failed` | `status`. Empty means `pending`. `completed` and `failed` are terminal — there is no `cancelled` on this surface, unlike Exa's. Also selects the poll's HTTP status: `202` while pending or in progress, `200` once terminal. |
+| `content` | string or object | `content`, emitted only at a terminal status. Deliberately untyped: the vendor renders either a report string or a structured object, depending on whether the create supplied `output_schema`, and a scenario must be able to produce both. |
+| `sources` | list of source reference | `sources[]`, emitted only at a terminal status. |
+| `response_time` | number | `response_time`. Zero unless declared — nothing on a response path ever reads a real clock. |
+| `extra_fields` | map | Merged into the top-level response object. |
+
+Both polls also carry a `createdAt`/`created_at` string, sourced from `time.base` like the create body's — not a
+projection key, so there is nothing to declare. Exa's `createdAt` appears on every poll; Tavily's `created_at`
+appears only once the task reaches a terminal status, matching contracts/tavily/README.md's poll-status table.
+
+**`create` is the create route's own attempt budget.** It is nested rather than a second block-level `fault:`,
+because a block-level `fault:` alongside `turns:` is already a load error and, in the multi-turn form, there is
+genuinely no way to say which route a bare `fault:` meant. It reads a *different* scenario location from the
+poll's plan — the first turn declaring a non-empty `attempts:` list, exactly as [Faults and turns](#faults-and-turns)
+describes for every other multi-route entry — which is what makes the two budgets independent in substance, not
+only in name:
+
+```yaml
+providers:
+  exa_agent_runs:
+    create:                    # the POST /agent/runs plan
+      fault:
+        attempts:
+          - {status: 429, retry_after: 1}
+          - {status: 201}     # a kind-none attempt still writes `status` to the wire,
+                                # so the success attempt must name the vendor's real
+                                # create status (201), not a generic 200
+    turns:                     # each turn is a poll; a turn's fault is the POLL plan
+      - when: {call_index: 0}  # turn 0 must be conditional, or turn 1 is unreachable
+        fault:
+          attempts:
+            - {status: 200}
+            - {status: 503}    # every job's SECOND poll fails
+            - {status: 200}
+        respond: {status: running}
+      - respond: {status: completed, output: {text: done}}
+```
+
+Because the poll route's lane is per job (below), that poll plan consumes **per job**: the `503` above is every
+job's second poll, not whichever job happens to poll second globally.
+
+A kind-none attempt that names a `status` pins the wire status to it, whatever the handler would have written.
+That is invisible on a route that answers 200 anyway and wrong on the two that do not: a create answers `201`, and a
+`tavily_research` poll answers `202` until the task is terminal. Write the success attempt as `- {}` — no status,
+no kind — wherever the route's real status is not 200 or varies with state, and name a status only when pinning it
+is the point. `[{status: 429}, {}]` on a `tavily_research` poll plan is "rate-limit the first poll, then serve
+whatever the snapshot says"; `[{status: 429}, {status: 200}]` would answer 200 to a poll that is still pending.
+
+**Per-job lanes.** A poll route's lane is per job, not per route. `Route.LaneFrom` — `["path:id"]` for
+`exa_agent_runs`, `["path:request_id"]` for `tavily_research` — adds the path wildcard's value as an extra
+component, in the style of `turn_key`, declared in Go on the route rather than in the scenario, so no scenario file ever
+writes it. That is what makes `call_index` on a poll mean *poll N of this job*, not *the Nth poll of any job on
+this route*: two jobs polled concurrently in one namespace get two independent cursors and two independent fault
+budgets, and everything [`turn_key`](#turn_key--what-the-cursor-counts-per) already lists comes free with it,
+because the poll cursor *is* the fault attempt counter.
+
+A `turn_key:` written on the async entry itself still applies on top of that job discriminator, and `header:<name>`
+is the extractor to reach for if you need a second axis. `body_json:<path>` is not: a `GET` poll carries no body,
+so the path can never resolve and **every poll** raises `scenario.turn_key_unresolved` — the request is still
+served, just from a lane missing that discriminator. Leave `turn_key` unset unless you need one; the per-job lane
+is automatic and needs no declaration.
+
+**Validation.** Each async entry's `ValidateProjections` decodes every turn and reports these findings, in addition
+to the generic ones every provider raises for a malformed `respond:` node or an unresolved source reference (see
+[Validation](#validation-what-fails-and-what-only-warns)):
+
+`exa_agent_runs`:
+
+| Code | Severity | Condition |
+|---|---|---|
+| `exa.agent_run.status.unknown` | error | `status` is not one of `queued`, `running`, `completed`, `failed`, `cancelled` |
+| `exa.agent_run.stop_reason.unknown` | error | `stop_reason` is set and is not one of `schema_satisfied`, `budget_reached`, `error`, `cancelled` |
+| `exa.agent_run.failed_without_error` | error | `status: failed` with no `error` |
+| `exa.agent_run.terminal_then_pending` | error | a non-terminal turn declared after a terminal one — a run does not un-complete |
+| `exa.agent_run.script_exhausted` | warning | no unconditional final turn: the poll after the script's last snapshot gets `scenario.no_matching_turn` and a 404 the author did not intend |
+| `exa.agent_run.body_predicate_on_poll` | warning | a turn's `when` uses `body_contains` or `body_json` — a `GET` poll carries no body, so it can never match |
+| `exa.agent_run.completed_without_output` | warning | `status: completed` with no `output` — the vendor allows it, but it is almost always an unfinished fixture |
+
+`tavily_research`:
+
+| Code | Severity | Condition |
+|---|---|---|
+| `tavily.research.status.unknown` | error | `status` is not one of `pending`, `in_progress`, `completed`, `failed` |
+| `tavily.research.completed_without_content` | warning | `status: completed` with no `content` |
+| `tavily.research.terminal_then_pending` | error | a non-terminal turn declared after a terminal one |
+
+`tavily_research`'s validator has no equivalent to `script_exhausted` or `body_predicate_on_poll` today: a body
+predicate on a Tavily poll turn is dead in exactly the same way as Exa's, silently, with no load-time warning yet.
+
+**Reset.** `POST /__admin/reset` (scoped with `?namespace=`) drops one namespace's async job records together with
+its fault and turn cursors, in the same call; `testkit.Sim.Reset()` does the same but for every namespace at once,
+since it carries no namespace argument. Neither may run alone: dropping only the cursors would let the next
+create claim index 0 again and collide with a job record that is still live (`job.id_collision`); dropping only the
+jobs would 404 every live identifier while the create kept advancing. A job's identifier derives from the call
+index it was minted at, so the same create issued after a reset, at the same call position, mints the identifier
+it minted before — which is what keeps a golden file portable across a reset the same way every other derived
+identifier already is.
 
 ### What the request still controls
 

@@ -1,0 +1,87 @@
+# A run/task on each async surface that reaches a terminal FAILED status
+# instead of completing.
+#
+# The four synchronous surfaces stay in the ordinary happy shape — this file
+# is about the async lifecycle, not about anything those four surfaces do
+# differently — so only the two async entries below diverge from `happy`.
+version: 1
+name: async-failed
+description: >-
+  A well-formed 200 from every synchronous surface, and a run/task on each
+  async surface that reaches a terminal failed status, carrying the failure
+  detail a consumer's error branch reads.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    author: A. Author
+    published_at: 2026-05-20T00:00:00Z
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+providers:
+
+  exa:
+    results:
+      - source: source-a
+    cost_dollars:
+      total: 0.005
+    answer:
+      answer: Report A states the finding.
+      citations:
+        - source-a
+
+  tavily:
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+
+  perplexity:
+    answer: A grounded answer citing Report A.
+    finish_reason: stop
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    answer: Report A states the finding.
+    search_results:
+      - source-a
+
+  # One running poll, then a terminal FAILED status carrying the required
+  # error object — a failed run with no error is a load ERROR
+  # (exa.agent_run.failed_without_error), because a consumer's failure branch
+  # is exactly what this scenario exists to exercise.
+  #
+  # stop_reason is not declared: AgentRunProjection.EffectiveStopReason derives
+  # "error" for any failed run automatically, so writing it here would only
+  # restate what the code already does.
+  exa_agent_runs:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: running}
+      - respond:
+          status: failed
+          error:
+            code: AGENT_RUN_FAILED
+            message: The run could not be completed.
+
+  # Tavily documents no distinct error shape for a failed task. The verified
+  # contract (contracts/tavily/README.md, "The poll's status code varies with
+  # the task state") lists `content` and `sources` as what a terminal poll
+  # carries for BOTH completed and failed — there is no separate error object,
+  # and ResearchProjection has no field for one. `content` is used to say what
+  # happened, because it is the only place this surface has to say it.
+  tavily_research:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - respond:
+          status: failed
+          content: The research task failed before producing a report.

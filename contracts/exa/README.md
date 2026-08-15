@@ -22,7 +22,10 @@ the live contract canary reports drift.
 | `POST` | `/answer` | canonical, simulated | Separate documented endpoint at <https://exa.ai/docs/reference/answer>. Same auth. Request: query (string, required), stream, text, outputSchema. Response: answer (string\|object), citations[] (title,url,publishedDate,author,id,image,text), requestId, costDollars. The plan doc does not mention /answer at all. |
 | — | `/contents` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. Referenced indirectly by the error-codes page's `statuses[]` / CRAWL_* tags, which describe a contents-fetch surface. No /contents reference page was fetched, so no method or route shape is asserted here. |
 | — | `/findSimilar` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. Named here so a reader can tell it was considered rather than overlooked; nothing about its method, request or response is asserted. |
-| — | `/agent/runs` (+ run lifecycle) | NOT SIMULATED | On the backlog. See the "Exa Agent API" section at the end of this file for the lifecycle and the reason. |
+| `POST` | `/agent/runs` | canonical, simulated | Create-then-poll create route. See the "Exa Agent API" section at the end of this file. |
+| `GET` | `/agent/runs/{id}` | canonical, simulated | Poll route. |
+| `HEAD` | `/agent/runs/{id}` | canonical, simulated | Existence check; claims no turn or attempt. |
+| — | `/agent/runs` (list), `/agent/runs/{id}/events`, `/agent/runs/{id}/cancel`, `/agent/runs/{id}` (`DELETE`) | NOT SIMULATED | On the backlog. See the "Exa Agent API" section at the end of this file. |
 
 ## Authentication
 
@@ -444,22 +447,24 @@ exists to stop unsourced invention, which this is not.
 `costDollars` on this surface carries no `total`, correct this section first and the projection second — and record
 the correction here rather than silently dropping the field.
 
-### Exa Agent API — lifecycle routes not in scope
+### Exa Agent API — create, poll and HEAD are simulated; the rest of the lifecycle is not
 
-Exa also exposes an asynchronous agentic surface — `POST /agent/runs` plus a run lifecycle
-(`GET /agent/runs`, `GET /agent/runs/{id}`, `GET /agent/runs/{id}/events`, `POST /agent/runs/{id}/cancel`,
-`DELETE /agent/runs/{id}`). Servicesim does not simulate it today: its create-then-poll lifecycle needs a
-different scenario shape than a single request/response projection, because a create returns immediately and the
-output only exists at a terminal status. That is the whole reason, and it is a reason about Servicesim's scenario
-model, not about who calls the endpoint. The surface is on the backlog. Exa's own guidance is "for simpler
-low-latency retrieval, prefer /search".
+Exa also exposes an asynchronous agentic surface: `POST /agent/runs` mints a run, and everything interesting —
+progress, the terminal output, failure — lives on `GET /agent/runs/{id}`, which a consumer polls. Servicesim
+simulates the create, poll and `HEAD /agent/runs/{id}` (existence-only) routes, driven by the scenario provider
+entry `exa_agent_runs` — see `docs/scenario-schema.md`'s async section for the projection shape, and
+`docs/design/async-jobs.md` for why this needed a different scenario shape than a single request/response
+projection (a create returns immediately and the output only exists at a terminal status).
 
-This section previously carried a second reason — that no consumer used the endpoint. That claim was false: the
-first adopter's client calls `POST /agent/runs` and `GET /agent/runs/{id}`. It has been struck rather than
-corrected in place, because the claim should never have been made from either direction. This file records what
-the *vendor's* contract is; whether some consumer does or does not call a route is not something it can verify,
-and asserting it here is how a wrong statement acquired the authority of a verified one. State a scenario-model
-reason, a verification-status reason, or no reason.
+Exa's remaining lifecycle routes — `GET /agent/runs` (list), `GET /agent/runs/{id}/events`,
+`POST /agent/runs/{id}/cancel` and `DELETE /agent/runs/{id}` — are NOT simulated. They are on the backlog and fall
+to the catch-all's provider-shaped 404 until built. Exa's own guidance is "for simpler low-latency retrieval,
+prefer /search".
+
+This section previously carried a stronger claim — that none of the surface was simulated, and before that, that
+no consumer used it. Both were corrected in place rather than only struck, because the create/poll/HEAD routes
+have since shipped (see `contracts/README.md`'s index table, which check-docs.sh verifies against the registered
+routes in both directions).
 
 A `POST /research` endpoint appears in third-party integration documentation but not in Exa's own docs index.
 Treat it as retired; do not simulate it.

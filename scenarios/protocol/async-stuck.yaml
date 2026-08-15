@@ -1,0 +1,68 @@
+# A run/task on each async surface that never reaches a terminal status.
+#
+# One unconditional non-terminal turn per async entry: every poll, however
+# many, answers "still running" / "still pending". Servicesim never decides a
+# job is stuck — there is no timeout logic here — so what this scenario tests
+# is entirely on the consumer's side: does its own poll loop eventually give
+# up, rather than retrying forever against a real API that can legitimately
+# leave a job outstanding for a long time.
+#
+# The four synchronous surfaces stay in the ordinary happy shape; this file is
+# about the async lifecycle only.
+version: 1
+name: async-stuck
+description: >-
+  A well-formed 200 from every synchronous surface, and a run/task on each
+  async surface that never terminates, so a consumer's own poll timeout is
+  what is under test.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    author: A. Author
+    published_at: 2026-05-20T00:00:00Z
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+providers:
+
+  exa:
+    results:
+      - source: source-a
+    cost_dollars:
+      total: 0.005
+    answer:
+      answer: Report A states the finding.
+      citations:
+        - source-a
+
+  tavily:
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+
+  perplexity:
+    answer: A grounded answer citing Report A.
+    finish_reason: stop
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    answer: Report A states the finding.
+    search_results:
+      - source-a
+
+  # Single-shot, unconditional, and non-terminal: every poll answers running.
+  exa_agent_runs:
+    status: running
+
+  # Single-shot, unconditional, and non-terminal: every poll answers pending.
+  tavily_research:
+    status: pending
