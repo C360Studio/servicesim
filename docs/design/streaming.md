@@ -1,81 +1,179 @@
 # SSE streaming
 
-> ## REVISED (round 2) — pending re-review
+> ## REVISED (round 3) — re-reviewed 2026-08-15: PASS
 >
-> Round 1 was re-reviewed and failed: one blocker, two majors. **Round 2 answers all of them.** Summary:
+> **Phase 5 may start with unit 1:** `Response.Stream` + the `execute` branch + the widened `Handle` journal
+> condition + the SSE writer. **OPEN — owner decision: none.**
 >
-> - **Suppression (blocker).** Round 1 added §4.4 saying `execute` does not re-derive suppression, and left §4.3
->   doing exactly that. §4.2 now decides it before `faultOutcome` and before the journal condition, so
->   `resp.Stream != nil` means "this exchange **will** stream" everywhere downstream; §4.3 is a single branch with
->   no `suppressesStream` call and a note explaining why adding one back would reintroduce the defect. The two
->   declarations that must be hoisted above the existing defer (`provider/handle.go:164`) are now stated.
-> - **Per-turn policy vs per-route plan (major).** Resolved by making the **policy entry-level and the content per
->   turn**, which is what shipped code already does and, more importantly, all it *can* do: rejection must happen
->   before turn selection claims an attempt (`rejectStream` at `provider/perplexity/handler.go:210`,
->   `SelectTurnFor` at `:220`), so a per-turn policy could never be honoured. This dissolves the mismatch rather
->   than validating against it — either the entry streams and every turn does, or none does. `after_chunk` is
->   bounded by the smallest chunk count across the entry's turns, since the plan is per route.
-> - **Preamble vs §4.1 (major).** Both now say the same thing, and it matches shipped behaviour.
-> - Minors: `warnOnce` replaced with a plain `Warn` (no such helper exists; the `closed` guard already bounds it);
->   `decodeRefOrMapping` corrected to `(*SourceRef).UnmarshalYAML` (`scenario/model.go:407`); `DecodeStrict` line
->   reference corrected to `:824`.
+> A third, independent reviewer re-read this document end to end against both B1 lenses and the round-3 change list
+> below, and re-verified every round-3 blocker/major disposition against the current tree. Verdict: **PASS**. Every
+> round-3 major is answered, not restated, everywhere the document touches the topic; no conceptual arbitration was
+> left undecided. Six minor/nit items survived the re-review, none of them a decision ambiguity — each was a place
+> where the prose's decision was correct but not yet applied consistently, or a factual count that had drifted from
+> the tree. This pass fixes all six in place, in the sections named:
+>
+> - §3.1's `StreamScript` doc comment now says one terminal chunk (it listed `finish_reason` and `usage` as separate
+>   frames while §2, §7, §9 and §10 all pinned one; the Go block was always illustrative and prose already won, but
+>   the drift is now gone).
+> - §7 now says each Perplexity surface has **three** route spellings, not two — `SonarRoutes()` and `AgentRoutes()`
+>   each list three, verified in `provider/perplexity/handler.go`.
+> - §5.1 now states explicitly that `StreamOutcome.PaceMS[AfterChunk]` includes the stall and `StallBeforeMS` is the
+>   same duration lifted back out, so `AssertStreamPacing` on a stall scenario needs no separate addition.
+> - §4.2's mirror-case bullet now spells out the `truncate_body`-claimed-while-streaming direction of
+>   `scenario.stream.abort_unreachable` with the same mechanism sentence the `stream_*`-on-non-streaming case already
+>   had, rather than leaving it to be inferred from the finding table alone.
+> - §4.3 now says `faultHeader` **keeps** `Content-Type: text/event-stream` on the stream path (it only overrides
+>   `Content-Type` for `content_type`, `wrong_content_type` or `invalid_json`) — the prior wording, "still resets",
+>   said the opposite of what the code does.
+> - §7 now states explicitly that landing `GrammarTyped` is what gives the Agent entry a `stream:` key at all: the
+>   Agent surface has no `Stream` field today and warns `CodeAgentStreamUnsupported` unconditionally
+>   (`provider/perplexity/agent.go`), which is what the preamble's "no policy knob" claim was resting on without
+>   saying so.
+>
+> **OPEN — owner decision:** none. The re-review found no conceptual arbitration left to the owner; every finding it
+> raised had a decision this document could make and justify from the shipped code or a rule already stated
+> elsewhere in it.
+>
+> <details><summary>Round-3 change list (cycle 1, the pass that produced the PASS verdict above)</summary>
+>
+> Round 2's banner claimed a round-3 re-review had already run and answered every conceptual finding from round 2.
+> No round-3 change list, and no record of what a re-reviewer found, existed anywhere in this document — that claim
+> was itself unverifiable, which is the exact defect the backlog's re-review process exists to catch. This revision
+> is what made "round 3" real: two independent adversarial reviews were run against the document as round 2 left
+> it, and every finding they returned is answered below, in place, rather than summarised here.
+>
+> **Answered, not restated, this round:**
+>
+> - **A `stream_*` fault can be claimed by a request that does not stream, even under a `stream`-policy entry.**
+>   Round 2's per-turn/per-route fix stopped a `stream_*` fault from landing on a non-streaming *turn*; it did not
+>   stop one from landing on a non-streaming *request* to a streaming turn, because `when_requested` answers "does
+>   the surface serve a stream when asked", and this design's own preamble endorses a client asking on call 1 and
+>   not asking on call 3 in the same lane. §4.2 and §9 now say what happens: the claimed attempt is reported, never
+>   silently absorbed into an ordinary 200. See [§4.2](#42-handle--one-condition-widens) and
+>   [§9](#9-validation-findings-this-adds).
+> - **`stream_stall`'s `Delay` does not also run as a time-to-first-byte sleep.** §3.1 and §4.3 now agree: the
+>   generic pre-dispatch delay is skipped for `stream_stall`, whose `Delay`/`AfterChunk` pair is resolved entirely
+>   inside the stream plan. See [§3.1](#31-scenario--the-projection-grammar) and
+>   [§4.3](#43-execute--one-branch-before-the-existing-switch).
+> - **The finding-code retirement table contradicted the paragraph above it.** `perplexity.stream.policy.unknown`
+>   and `perplexity.stream.policy.ignored` are retired in favour of the envelope-level codes, consistently now. See
+>   [§9](#9-validation-findings-this-adds).
+> - **The "one entry, two grammars" premise was checked against the current route table and does not hold.**
+>   `Route.Entry`, a Phase 1/3 change, already gives Sonar (`NameSonar`) and the Agent API (`NameAgent`) independent
+>   scenario entries, independent validators and independent turn cursors — confirmed in
+>   `provider/perplexity/handler.go` and `provider/perplexity/doc.go`. Grammar is fixed per entry with no case left
+>   to reconcile; §9's "the grammar is fixed by the provider entry" now says why. See
+>   [§9](#9-validation-findings-this-adds).
+> - **The exported projection field this design needs to change type on is now named as a breaking change**, not
+>   silently implied by "additions only". `PerplexityProjection.Stream` and Exa's projection `Stream` field both
+>   change type from `scenario.StreamPolicy` to `scenario.StreamScript`; §3 now carries the one exception to "no
+>   existing field changes type" instead of contradicting it. See [§3](#3-go-types).
+> - **`AssertGoldenSSE`**, named in the backlog's Phase 5 list but absent from this document, now has a §5.4 that
+>   decides what it diffs, what it ignores by default, and its file extension.
+> - **§10 now states the contract-fidelity work as an explicit Phase 5 prerequisite** with its three steps in order,
+>   and pins the one frame-level choice every other section depended on without saying so: `finish_reason` and
+>   `usage` ride on the same terminal chunk on `GrammarDelta`, recorded as simulator-chosen.
+> - **Every file:line reference in the document was re-verified against the current tree and replaced with a
+>   symbol name.** Several had already drifted within the round-2 pass that "corrected" them; symbols do not drift.
+> - A dozen further minors and nits — the `stream_truncate`/`stream_truncate_chunk` spelling, the
+>   `after_chunk.out_of_range` bound (`>=`, not "exceeds"), `Outcome.BytesWritten`'s truncate_body exception,
+>   `stream.abort_unreachable`'s naming and its now-shared home with the finding above, attempt headers on the
+>   stream path, `truncate_after_bytes`'s per-chunk meaning, pacing's reach into the role/terminal/`[DONE]` frames,
+>   `AwaitStreamClosed`'s namespace handling, and a handful of factual drifts — are each answered at their own
+>   section rather than listed twice.
+>
+> **OPEN — owner decision:** none. Every conceptual arbitration the two reviews raised had a decision this document
+> could make and justify from the shipped code or from a rule already stated elsewhere in it; none needed to be
+> deferred.
+>
+> </details>
 >
 > ### The Go blocks below are ILLUSTRATIVE, not normative
 >
 > **Normative:** the decisions, their reasoning, the finding codes and severities, the ordering constraints, and the
-> invariants — in particular that suppression is decided once before the append, and that policy is per entry while
-> content is per turn.
+> invariants — in particular that suppression is decided once before the append, that policy is per entry while
+> content is per turn, and that a fault attempt scripted for a transport the exchange does not use is reported, not
+> silently absorbed.
 >
-> **Illustrative:** every `go` block. Signatures, arities and registration details in them are sketches, and have
-> been wrong repeatedly in exactly those dimensions. Prose cannot be type-checked; two adversarial review rounds
-> produced a flat rate of mechanical defects in these blocks while the conceptual layer converged. Read them for
-> shape and intent. Where a block and the prose disagree, **the prose wins**; where the code, once written,
-> disagrees with a block, the code wins and the block should be deleted rather than patched.
+> **Illustrative:** every `go` block, including `wantsStream` and every other helper named only inside one. Signatures,
+> arities and registration details in them are sketches, and have been wrong repeatedly in exactly those dimensions.
+> Prose cannot be type-checked; three adversarial review rounds have now produced a flat rate of mechanical defects
+> in these blocks while the conceptual layer converged. Read them for shape and intent. Where a block and the prose
+> disagree, **the prose wins**; where the code, once written, disagrees with a block, the code wins and the block
+> should be deleted rather than patched.
 >
-> **Still a design, not an instruction to start.** Round 2 was re-reviewed and its conceptual findings are answered
-> in round 3. Implementation is Phase 5, which is gated behind Phase 3 in any case.
+> **Still a design, not an instruction to start.** Implementation is Phase 5, gated behind Phase 3, which has
+> shipped (see `docs/design/async-jobs.md`).
 >
-> <details><summary>Round-1 findings, all now addressed above</summary>
+> <details><summary>Review history (rounds 1–2)</summary>
 >
-> - **Blocker — §4.3 still performs the operation §4.4 forbids.** §4.4 says suppression is decided before the
->   append and that "`execute` does not re-derive it"; §4.3's code block, unrevised, still contains
->   `resp = suppressStream(resp)` inside `execute`. §4.2's early-journal condition and its deferred close both read
->   the *outer* `resp`, which that local reassignment never touches — so a suppressed stream still journals a fully
->   planned `Outcome.Stream` and still stamps `client_gone`. The finding verbatim.
-> - **Major — "effective policy" is per turn; the plan it is checked against is per route.** `TurnFault` returns the
->   first turn declaring `attempts` (`provider/turn.go:90-101`), so a `stream_disconnect` declared on a streaming
->   turn 0 can land on a non-streaming turn 3, leave `resp.Stream == nil`, and fall through to `writeResponse`
->   silently. Load-time validation passes both. `after_chunk.out_of_range` is likewise undefined about *which*
->   turn's chunk count. This is the async blocker's shape, reintroduced by the streaming fix.
-> - **Major — the preamble and §4.1 disagree about which policies are per turn.** The preamble says `warn` and
->   `reject` stay provider-level; §4.1 switches on the *selected* turn's projection. Shipped code is turn-0-only for
->   all three (`provider/exa/handler.go:252-264`, `provider/perplexity/handler.go:312-327`).
-> - Minors: `warnOnce` does not exist; §3.1 cites a non-existent `decodeRefOrMapping`; §2's `DecodeStrict` line
->   reference is wrong; §4.2's `defer` references variables declared after the existing defer at
->   `provider/handle.go:164` and the required hoist is unstated.
->
-> **Answered in round 1 and still sound:** the compatibility blocker. `stream: warn` + `truncate_body` stays
-> loadable, §9's table keys on effective policy in both directions, and the regression fixture is the right guard.
->
-> ---
->
-> And the round-1 revision notes those findings were written against. The original adversarial review returned
-> **needs-revision** on 2026-08-15 with one blocker and one major; round 1 claimed both were answered:
->
-> - ~~**Blocker:** §9 raises `scenario.fault.stream_mismatch` on the *presence* of a `stream:` key, which would fire
->   against Exa's already-shipped projection.~~ **Answered.** Both directions now key on the **effective policy**:
->   `warn` and `reject` declare a policy and produce no stream, so `truncate_body` stays valid with them. §9 carries
->   the shipped-fixture case that would have broken, and requires it as a regression fixture. §4.4 was restating the
->   presence rule and is corrected too.
-> - ~~Stream suppression is decided inside `execute` against its own copy of the response.~~ **Answered.**
->   Suppression is now decided once, where `Handle` builds the entry and before the append; a suppressed stream
->   journals `Outcome.Stream = nil` rather than a fully-specified stream that never happens. See §4.4.
->
-> Also revised in the same pass: §8's reason 1 argued from a strict-equality version gate that **Phase 1 has since
-> widened to a range**, so that reason is now weaker and says so; and §9 records that
-> `perplexity.agent.stream.unsupported` is misnamed against every other `perplexity.stream.*` code.
->
-> That re-review has now run, and the verdict is at the top of this banner.
+> > ## REVISED (round 2) — pending re-review
+> >
+> > Round 1 was re-reviewed and failed: one blocker, two majors. **Round 2 answers all of them.** Summary:
+> >
+> > - **Suppression (blocker).** Round 1 added §4.4 saying `execute` does not re-derive suppression, and left §4.3
+> >   doing exactly that. §4.2 now decides it before `faultOutcome` and before the journal condition, so
+> >   `resp.Stream != nil` means "this exchange **will** stream" everywhere downstream; §4.3 is a single branch with
+> >   no `suppressesStream` call and a note explaining why adding one back would reintroduce the defect. The two
+> >   declarations that must be hoisted above the existing defer (`provider/handle.go`'s deferred recover/record)
+> >   are now stated.
+> > - **Per-turn policy vs per-route plan (major).** Resolved by making the **policy entry-level and the content per
+> >   turn**, which is what shipped code already does and, more importantly, all it *can* do: rejection must happen
+> >   before turn selection claims an attempt (`rejectStream` runs before `SelectTurnFor` in `handleSonar`), so a
+> >   per-turn policy could never be honoured. This dissolves the mismatch rather than validating against it — either
+> >   the entry streams and every turn does, or none does. `after_chunk` is bounded by the smallest chunk count
+> >   across the entry's turns, since the plan is per route.
+> > - **Preamble vs §4.1 (major).** Both now say the same thing, and it matches shipped behaviour.
+> > - Minors: `warnOnce` replaced with a plain `Warn` (no such helper exists; the `closed` guard already bounds it);
+> >   `decodeRefOrMapping` corrected to `(*SourceRef).UnmarshalYAML`; `DecodeStrict` line reference corrected.
+> >
+> > **Still a design, not an instruction to start.** Round 2 was re-reviewed and its conceptual findings are
+> > answered in round 3. Implementation is Phase 5, which is gated behind Phase 3 in any case.
+> >
+> > <details><summary>Round-1 findings, all now addressed above</summary>
+> >
+> > - **Blocker — §4.3 still performs the operation §4.4 forbids.** §4.4 says suppression is decided before the
+> >   append and that "`execute` does not re-derive it"; §4.3's code block, unrevised, still contains
+> >   `resp = suppressStream(resp)` inside `execute`. §4.2's early-journal condition and its deferred close both read
+> >   the *outer* `resp`, which that local reassignment never touches — so a suppressed stream still journals a fully
+> >   planned `Outcome.Stream` and still stamps `client_gone`. The finding verbatim.
+> > - **Major — "effective policy" is per turn; the plan it is checked against is per route.** `TurnFault` returns
+> >   the first turn declaring `attempts`, so a `stream_disconnect` declared on a streaming turn 0 can land on a
+> >   non-streaming turn 3, leave `resp.Stream == nil`, and fall through to `writeResponse` silently. Load-time
+> >   validation passes both. `after_chunk.out_of_range` is likewise undefined about *which* turn's chunk count.
+> >   This is the async blocker's shape, reintroduced by the streaming fix.
+> > - **Major — the preamble and §4.1 disagree about which policies are per turn.** The preamble says `warn` and
+> >   `reject` stay provider-level; §4.1 switches on the *selected* turn's projection. Shipped code is turn-0-only
+> >   for both policies that ship today (`streamPolicy` in `provider/exa/handler.go` and
+> >   `provider/perplexity/handler.go`).
+> > - Minors: `warnOnce` does not exist; §3.1 cites a non-existent `decodeRefOrMapping`; §2's `DecodeStrict` line
+> >   reference is wrong; §4.2's `defer` references variables declared after the existing defer and the required
+> >   hoist is unstated.
+> >
+> > **Answered in round 1 and still sound:** the compatibility blocker. `stream: warn` + `truncate_body` stays
+> > loadable, §9's table keys on effective policy in both directions, and the regression fixture is the right guard.
+> >
+> > ---
+> >
+> > And the round-1 revision notes those findings were written against. The original adversarial review returned
+> > **needs-revision** on 2026-08-15 with one blocker and one major; round 1 claimed both were answered:
+> >
+> > - ~~**Blocker:** §9 raises `scenario.fault.stream_mismatch` on the *presence* of a `stream:` key, which would
+> >   fire against Exa's already-shipped projection.~~ **Answered.** Both directions now key on the **effective
+> >   policy**: `warn` and `reject` declare a policy and produce no stream, so `truncate_body` stays valid with
+> >   them. §9 carries the shipped-fixture case that would have broken, and requires it as a regression fixture.
+> >   §4.4 was restating the presence rule and is corrected too.
+> > - ~~Stream suppression is decided inside `execute` against its own copy of the response.~~ **Answered.**
+> >   Suppression is now decided once, where `Handle` builds the entry and before the append; a suppressed stream
+> >   journals `Outcome.Stream = nil` rather than a fully-specified stream that never happens. See §4.4.
+> >
+> > Also revised in the same pass: §8's reason 1 argued from a strict-equality version gate that **Phase 1 has
+> > since widened to a range**, so that reason is now weaker and says so; and §9 records that
+> > `perplexity.agent.stream.unsupported` is misnamed against every other `perplexity.stream.*` code.
+> >
+> > That re-review has now run, and the verdict is at the top of this banner.
+> >
+> > </details>
 >
 > </details>
 
@@ -92,28 +190,30 @@ It supersedes exactly two prior decisions:
    scenario-schema version bump." The premise was true when it was written and is false now. See
    [Schema versioning](#8-schema-versioning).
 
-Streaming currently produces a journal warning and an ordinary JSON body: `perplexity.stream.unimplemented`
-(`provider/perplexity/request.go:74`), `perplexity.agent.stream.unsupported` (`provider/perplexity/agent.go:31`),
-`exa.stream.unimplemented` (`provider/exa/request.go:34`).
+Streaming currently produces a journal warning and an ordinary JSON body: `CodeStreamUnimplemented` —
+`perplexity.stream.unimplemented` — raised in Sonar's `validateSonarRequest`; `CodeAgentStreamUnsupported` —
+`perplexity.agent.stream.unsupported` — raised in the Agent surface's field validation; and Exa's unexported
+`codeStreamUnimplemented` — `exa.stream.unimplemented` — raised in `validateStream`.
 
 A `stream:` scalar in a `respond:` body already chooses between that default (`warn`) and a provider-shaped rejection
-(`reject`) on Exa's two routes and on Sonar. On both it is read from the provider block's **first turn only**
-(`streamPolicy` in `provider/exa/handler.go` and `provider/perplexity/handler.go`), because rejection has to happen
-before turn selection claims a fault attempt; Sonar warns `perplexity.stream.policy.ignored` at startup for a
-`stream:` written on any later turn. The Agent surface has no policy knob and always warns.
+(`reject`) on Exa's `/search` and `/answer` routes and on Sonar. On both it is read from the provider block's **first
+turn only** (`streamPolicy` in `provider/exa/handler.go` and `provider/perplexity/handler.go`), because rejection has
+to happen before turn selection claims a fault attempt; Sonar warns `perplexity.stream.policy.ignored` at startup for
+a `stream:` written on any later turn. The Agent surface has no policy knob and always warns — Exa's `/agent/runs`
+routes are a separate surface again and are out of scope for this design either way.
 
 So those codes survive as the `warn` default, and what this design adds is the third value — `stream`, which serves
 the scripted sequence.
 
 **The policy is per ENTRY; the content is per TURN.** That split is forced, not a simplification:
 
-- **Policy — `warn`, `reject`, `stream` — is read once from the entry**, exactly as shipped code already does
-  (`provider/exa/handler.go:252-264`, `provider/perplexity/handler.go:312-327`, both turn 0). The reason is in the
-  shipped godoc and is a hard ordering constraint: the policy decides whether a request is *rejected*, and rejection
-  must happen before turn selection claims an attempt, or a refused request eats a retry budget. `rejectStream` runs
-  at `provider/perplexity/handler.go:210`; `SelectTurnFor` at `:220`. **A policy that varied per turn could never be
-  honoured** — you cannot reject a request on the strength of a turn you have not selected without the selection
-  itself consuming the attempt the rejection must not consume.
+- **Policy — `warn`, `reject`, `stream` — is read once from the entry**, exactly as shipped code already does in
+  `streamPolicy` on both surfaces, always from turn 0. The reason is in the shipped godoc and is a hard ordering
+  constraint: the policy decides whether a request is *rejected*, and rejection must happen before turn selection
+  claims an attempt, or a refused request eats a retry budget. `rejectStream` runs before `validateSonarRequest`,
+  and both run before `SelectTurnFor`. **A policy that varied per turn could never be honoured** — you cannot reject
+  a request on the strength of a turn you have not selected without the selection itself consuming the attempt the
+  rejection must not consume.
 - **`deltas:` are per turn**, necessarily: they are the answer, and each turn has its own.
 
 An earlier draft had `stream` per turn and the other two per entry, which is unimplementable for the reason above
@@ -125,8 +225,15 @@ the surface, not of call position. A consumer who wants call 1 streamed and call
 then `stream: false`** — the variation already lives in the client's request, which is the thing under test. The
 scenario never needed to encode it.
 
-See [§2](#2-scenario-yaml) and
-[§8](#8-schema-versioning).
+That freedom has a consequence a fault plan has to answer, not just the projection: a `stream_*` fault attempt is
+still claimed by whichever call draws it, streamed or not, because the attempt is claimed at turn selection, before
+the handler has looked at `stream` on the wire. Call 3 above can draw the entry's `stream_disconnect` attempt on a
+request that never asked to stream. §4.2 and §9 say what that does — it is reported, not silently served as a plain
+200 — rather than being ruled out here, because it cannot be ruled out here: the entry-level policy makes the
+mismatch *rare*, not *impossible*.
+
+See [§2](#2-scenario-yaml), [§4.2](#42-handle--one-condition-widens), [§8](#8-schema-versioning) and
+[§9](#9-validation-findings-this-adds).
 
 ---
 
@@ -154,15 +261,15 @@ expectation.
 
 **Verdict: the claim is half right, and the missing half is the important one.**
 
-What *is* ready: the abort machinery. `closeBeforeHeaders`, `truncateBody` and `resetAndClose`
-(`provider/fault_exec.go:226–281`) already do everything a mid-stream disconnect needs, and `Handle`'s
-`defer`/`recover`/re-`panic` (`provider/handle.go:164–170`) already survives it. None of that changes.
+What *is* ready: the abort machinery. `closeBeforeHeaders`, `truncateBody` and `resetAndClose` in
+`provider/fault_exec.go` already do everything a mid-stream disconnect needs, and `Handle`'s deferred
+`recover`/`record`/re-`panic` already survives it. None of that changes.
 
 What is **not** ready, and is not mentioned in the note:
 
-- **`Response` cannot express a stream.** `Response.Body` is `[]byte` and `execute` writes it in a single
-  `writeResponse` call (`provider/fault_exec.go:112`). There is no yield point between bytes, so there is nowhere for
-  pacing, for a mid-stream stall, or for a `ctx.Done()` check to live.
+- **`Response` cannot express a stream.** `Response.Body` is `[]byte` and `execute`'s no-attempt path writes it in a
+  single `writeResponse` call. There is no yield point between bytes, so there is nowhere for pacing, for a
+  mid-stream stall, or for a `ctx.Done()` check to live.
 - **The journal-visibility invariant is violated by every stream, not only by aborting ones.** Rule 3 of `Handle`'s
   contract — "an aborting fault is journaled *before* the socket is touched" — exists because the client observes the
   abort while the handler goroutine is still unwinding. A stream makes that true of *every* response: the client
@@ -177,9 +284,9 @@ Both gaps are fixed below, additively.
 ## 2. Scenario YAML
 
 The scenario projects **content**; the provider package owns the **wire contract**. A scenario author scripts the
-deltas and the pacing; it cannot hand-assemble frames, because the opening role chunk, the `finish_reason` chunk,
-the terminal usage chunk and the `[DONE]` sentinel are contract-fixed and getting them wrong is what the simulator
-exists to prevent.
+deltas and the pacing; it cannot hand-assemble frames, because the opening role chunk, the terminal chunk carrying
+both `finish_reason` and `usage` together, and the `[DONE]` sentinel are contract-fixed (§7, §10) and getting them
+wrong is what the simulator exists to prevent.
 
 ```yaml
 version: 1
@@ -231,8 +338,15 @@ Rules that make this shape work:
   chunk. One declaration serves both transports, so a scenario cannot drift into quoting one cost when it streams and
   another when it does not — which is precisely the bug an adopter's spend-attribution test would be unable to see.
 - **A scalar is still accepted.** `stream: warn` and `stream: reject` keep parsing, decoded as
-  `{when_requested: warn}`. This is the `SourceRef` scalar-or-mapping pattern the repository already uses
-  (`scenario/model.go`, `DecodeStrict` at line 824), so every existing Exa fixture stays valid byte for byte.
+  `{when_requested: warn}`. This is the `SourceRef` scalar-or-mapping pattern `scenario` already uses, decoded
+  through `DecodeStrict`. It applies to a `respond:`-wrapped `stream:` and to the **single-shot** shape too — a
+  provider block with no `turns:` and no `respond:` normalises to one turn whose projection body is the block
+  itself minus its reserved envelope keys (`scenario/model.go`'s single-shot normalisation), which is the shape
+  `providers.exa.stream: reject` uses today. Neither shape is exercised by a shipped `scenarios/` fixture as of this
+  writing — the only `stream: warn`/`stream: reject` fixtures in the tree are inline YAML strings inside
+  `provider/exa/request_test.go` and `provider/perplexity/handler_test.go` — so the compatibility claim rests on the
+  decoder accepting the key today, not on an existing fixture exercising it. §9's required regression fixture is
+  what turns that claim into a checked one.
 - **Declaring `deltas:` implies `when_requested: stream` — on turn 0, which is the turn the policy is read from.**
   Writing the script and forgetting the switch would otherwise serve a JSON body and a warning, silently.
 
@@ -298,19 +412,36 @@ Two traps worth naming, because both produce a green test that proved nothing:
 
 - **The retry must land in the same lane.** Attempt 1 is served only if the retried request resolves to the same
   cursor key. With `turn_key: ["route", "body_json:model"]`, a retry that changes `model` is a *different lane* and
-  draws attempt 0 again — it will be disconnected a second time, forever. `Lane.CursorKey`
-  (`provider/lane.go:124`) is the authority on what "same lane" means.
+  draws attempt 0 again — it will be disconnected a second time, forever. `Lane.CursorKey` is the authority on what
+  "same lane" means.
 - **`stream_stall` under `DelaySkip` does not stall.** Stream pacing honours `Deps.DelayMode` exactly as fault delays
   do, so `testkit.WithSkippedDelays` makes a 65 s stall free — and useless for a timeout assertion. A test that
   asserts a Temporal timeout must run under the default `DelayReal`. `Outcome.Stream.PaceMS` still records the
   planned schedule under either mode, which is what a test asserting "the scenario asked for 12 s gaps" compares
-  against.
+  against. The 65 s in the example above is `stream_stall`'s `Delay`, not a time-to-first-byte sleep — see
+  [§3.1](#31-scenario--the-projection-grammar).
 
 ---
 
 ## 3. Go types
 
-Every declaration is the real signature. Additions only; no existing field changes type or meaning.
+The blocks below are illustrative, per the banner, not real signatures — the banner's rule governs here as
+everywhere else in this document, and this section does not get an exception to it.
+
+**Additions only, with one exception.** `scenario.StreamPolicy` and its two constants, `StreamWarn` and
+`StreamReject`, are not new: they ship today (`scenario/model.go`), and both provider packages' exported projection
+structs already carry a field of that type — `PerplexityProjection.Stream` and Exa's own projection's `Stream`
+field, both `scenario.StreamPolicy`, both tagged `yaml:"stream,omitempty"`. This design adds a third policy value,
+`StreamServe`, to that existing enum, and adds the new `StreamScript` struct below it. Because `stream:` in a
+`respond:` body must decode into a single field — a mapping form that also carries `deltas:` and `pace:` cannot
+share a YAML key with a plain string field — landing `StreamScript` means retyping those same two exported fields
+from `scenario.StreamPolicy` to `scenario.StreamScript`, whose `UnmarshalYAML` accepts the old scalar shorthand and
+decodes it exactly as `StreamPolicy` did. That is a breaking change to an exported field's Go type on both provider
+packages' exported projection structs, and it is named as one rather than hidden inside "additions only": it is
+worth taking here, in this pass, for the same reason `perplexity.agent.stream.unsupported`'s rename is (§9) — every
+streaming type in both packages is already being revisited, and a second pass later to fix this one field would be
+a second breaking change instead of the first one landing complete. No other exported field's type or meaning
+changes.
 
 ### 3.1 `scenario` — the projection grammar
 
@@ -328,10 +459,10 @@ const (
 
 // StreamScript is the provider-neutral streaming projection: what to say, and how
 // slowly. It is deliberately not a list of frames. Frame assembly — the opening
-// role delta, the finish_reason chunk, the terminal usage chunk, the [DONE]
-// sentinel — is the vendor's contract and belongs to the provider package, which
-// is the same split the non-streaming path already makes between a projection and
-// a renderer.
+// role delta, the deltas, the one terminal chunk carrying finish_reason and usage
+// together, the [DONE] sentinel — is the vendor's contract and belongs to the
+// provider package, which is the same split the non-streaming path already makes
+// between a projection and a renderer.
 //
 // It lives in scenario rather than in a provider package because all three
 // providers stream the same way and a second copy of this grammar is a second
@@ -362,10 +493,10 @@ type StreamScript struct {
 	Terminal *StreamTerminal `yaml:"terminal,omitempty"`
 }
 
-// UnmarshalYAML accepts the scalar shorthand, so `stream: warn` — the form every
-// existing Exa fixture uses — keeps parsing as {when_requested: warn}. The mapping
-// branch decodes strictly, following the scalar-or-mapping pattern
-// (*SourceRef).UnmarshalYAML already uses (scenario/model.go:407).
+// UnmarshalYAML accepts the scalar shorthand, so `stream: warn` — the form the
+// scalar-or-mapping pattern already supports — keeps parsing as
+// {when_requested: warn}. The mapping branch decodes strictly, following the
+// same pattern (*SourceRef).UnmarshalYAML uses in scenario/model.go.
 func (s *StreamScript) UnmarshalYAML(value *yaml.Node) error
 
 // EffectivePolicy applies the "deltas imply stream" default. Nil-safe.
@@ -443,6 +574,23 @@ const (
 `Reset` and `TruncateAfterBytes` are reused unchanged, keeping one spelling of "RST not FIN" and one of "how many
 bytes first" across the streaming and non-streaming catalogue.
 
+**`Delay` is never a time-to-first-byte sleep for `FaultStreamStall`, and the generic pre-dispatch delay in `execute`
+does not run for it either.** The comment above states the field's meaning; this states the mechanism, because §4.3
+otherwise reads as though the existing "delay runs first for every kind" block is untouched, and untouched means
+`stream_stall` would sleep `Delay` twice — once before the status line, once again before chunk `AfterChunk` — which
+is not what any scenario author asking for one mid-stream pause wants. The rule: the pre-dispatch delay block runs
+for every kind except `FaultStreamStall`, exactly as it already skips work when `Delay` is zero; `planStream`
+resolves `FaultStreamStall`'s `Delay` entirely as the extra gap before chunk `AfterChunk`, folded into that chunk's
+pace: `StreamOutcome.PaceMS[AfterChunk]` is the script's ordinary pace for that chunk plus the stall, one number,
+because `PaceMS` records what `executeStream` actually sleeps before writing each chunk and the stall is part of
+that sleep. `StallBeforeMS` is the same duration lifted back out as its own field so a reader — or
+`AssertStreamPacing` (§5.3) — does not have to know which index carries a fold-in to recover it; asserting the
+*planned* per-chunk gaps against `PaceMS` on a stall scenario therefore already includes the stall with no separate
+addition. `faultOutcome` follows the same split: it does not set `Outcome.DelayMS` for `FaultStreamStall` — that field
+means time-to-first-byte for every kind that has one — and reports the mid-stream pause only through
+`StreamOutcome.StallBeforeMS` (§5.1). A stall that also wants a slow first byte still declares two attempts, or a
+scripted first-chunk `pace`, exactly as the field comment above says.
+
 ### 3.2 `provider` — transport
 
 ```go
@@ -507,8 +655,9 @@ type Stream struct {
 	Usage json.RawMessage
 
 	// CostTotal is the total the terminal chunk declares, lifted from whichever
-	// vendor field carries it — usage.cost.total_cost on Sonar, usage.cost.total_cost
-	// on the Agent surface, costDollars.total on Exa. It exists so a cross-provider
+	// vendor field carries it — usage.cost.total_cost on Sonar, response.usage.cost.total_cost
+	// on the Agent surface (nested one level deeper, inside the ResponsesResponse the
+	// terminal event wraps), costDollars.total on Exa. It exists so a cross-provider
 	// spend assertion is one field read rather than three vendor-specific ones.
 	// Usage remains the authority; this is a convenience and is nil when the
 	// script omits usage.
@@ -547,8 +696,24 @@ func EncodeSSE(events []SSEEvent) []StreamChunk
 
 ### 4.1 The handler
 
-`handleSonar` gains one branch after rendering, and nothing before it moves. Routing, authentication, validation and
-turn selection are untouched, so a rejected request still consumes no attempt (§4.4 of the package design).
+`handleSonar` gains one branch after rendering, and turn selection is untouched, so a rejected request still consumes
+no attempt (§4.4 of the package design). **Validation is not untouched, and saying so was wrong.**
+`validateSonarRequest` already raises `CodeStreamUnimplemented` unconditionally for any `body.stream == true`, before
+`renderSonar` runs and before the branch below exists — that is the shipped `warn` behaviour today, not a
+post-render default. Landing `stream` policy means threading the policy into that decision, the same way Exa's
+`validateStream` already takes the policy as a parameter and applies it inside validation rather than after
+rendering. Concretely: `validateSonarRequest`'s stream check becomes conditional on `streamPolicy(entry)` —
+
+- **`warn`:** unchanged. `CodeStreamUnimplemented` fires exactly as it does today.
+- **`reject`:** unreachable here, because `rejectStream` already returned before `validateSonarRequest` runs.
+- **`stream`:** the check does not fire. A request that will actually receive a scripted SSE sequence must not also
+  carry a warning promising "this request receives the ordinary non-streaming body" — that promise would be false,
+  and §4.1's own `rejectStream` comment already names exactly this failure mode ("Journalling both would leave a
+  consumer reading two findings that contradict each other") for the reject case; the same reasoning applies to warn.
+
+The sketch below is illustrative and shows the *effect* — a stream branch after rendering — not the *mechanism*; the
+mechanism is the paragraph above, inside validation, not a second `if wantsStream(x)` gate bolted on after the body
+is already rendered.
 
 ```go
 	body, err := renderSonar(x, &p, model)
@@ -558,10 +723,10 @@ turn selection are untouched, so a rejected request still consumes no attempt (�
 		FaultEligible: true, FaultBody: faultBody(SurfaceSonar),
 	}
 	// streamPolicy(entry) — the ENTRY's policy, read from turn 0, not the
-	// selected turn's. This is the same call rejectStream already makes at
-	// provider/perplexity/handler.go:210, before SelectTurnFor. Reading the
-	// selected turn here would let `reject` and `stream` disagree about the same
-	// request, since one is decided before turn selection and the other after.
+	// selected turn's. This is the same call rejectStream already makes, before
+	// SelectTurnFor. Reading the selected turn here would let `reject` and
+	// `stream` disagree about the same request, since one is decided before
+	// turn selection and the other after.
 	if wantsStream(x) {
 		switch streamPolicy(entry) {
 		case scenario.StreamServe:
@@ -581,6 +746,17 @@ turn selection are untouched, so a rejected request still consumes no attempt (�
 	}
 	return resp
 ```
+
+The `StreamReject` case above is illustrative and shows the *outcome*, not the shipped *mechanism*: shipped
+`rejectStream` already returns before `renderSonar` is reachable, calling `x.Fail(CodeStreamUnimplemented, ...)`, and
+`handleSonar` turns that into a 422 through `validationResponse` — not the 400 in the sketch. **The finding code stays
+`perplexity.stream.unimplemented` for the reject path, unchanged, which is a decision and not an oversight.** Only
+`perplexity.agent.stream.unsupported` is renamed in §9, because that rename fixes a structural naming defect — the
+surface qualifier sorts before the subject, which breaks a `perplexity.stream.` prefix filter. "Unimplemented" for a
+rejected stream is not that kind of defect: the word is still literally true (this exchange will not receive a
+stream, whether because streaming does not exist yet or because this scenario's policy declines it), and renaming
+it would be a second breaking finding-code change in the same pass for a surface the regression fixture does not
+even cover, for no structural gain. It stays.
 
 ### 4.2 `Handle` — one condition widens
 
@@ -620,8 +796,44 @@ always the special case; streaming is the general one.
 `resp.Stream != nil` therefore means "this exchange **will** stream", never "this turn declares a stream". By the
 time anything reads it, suppression has already been applied.
 
+**The mirror case — a claimed attempt that cannot be honoured because this exchange will not stream — is decided in
+the same place, for the same reason.** `dec.Attempt` is already claimed by the time this code runs (turn selection
+inside `h(x)` claims it via `SelectTurnFor`/`x.CallIndex`, before the handler even knows whether `resp.Stream` will
+be set), and `resp.Stream` reflects only whether *this specific request* asked to stream — the entry's policy can be
+`stream` while call 3 in the lane sends `stream: false` (§2, the preamble). So the claimed attempt and the response's
+transport can disagree in the direction suppression does not cover: a `stream_*` kind claimed against a `resp.Stream
+== nil` exchange. Left alone, `execute`'s existing switch has no case for a `stream_*` `EffectiveKind` and falls into
+its `default:`, which writes `resp.Body` as an ordinary 200 — the attempt is consumed and nothing about the fault
+happens, silently. That is the outcome §9 already calls "the worst outcome for a test written to prove reconnect
+logic", reached one gap earlier.
+
+The fix has the same shape as suppression, checked right beside it:
+
+- If `dec.Attempt` is non-nil, its `EffectiveKind()` is one of the three `stream_*` kinds, and `resp.Stream == nil`,
+  `Handle` records a `scenario.stream.abort_unreachable` finding at ERROR severity on `x` — through the same
+  recording path `Fail` uses, but without engaging `Fail`'s handler-return convention, since `resp` is already built
+  and is still served exactly as scripted. This never silences the mismatch and never reroutes the response.
+- `faultOutcome` and `execute` treat the attempt as `FaultNone` for every purpose except the journal's own record of
+  intent: `Outcome.FaultKind` still names the scripted kind (`stream_disconnect`, and so on) so a reader can see what
+  was asked for, `Outcome.Aborted` stays `false` because nothing was aborted, and `Outcome.DelayMS` is not applied —
+  the attempt's `Delay`, if any, is scoped to the stream that never happens. This mirrors how `AbortAfterChunk` and
+  `TruncatedAtByte` already record the *scripted* fault rather than the observed one (§5.1); here the whole attempt
+  is scripted and unobserved.
+- This is the same finding a hand-built entry that skipped load-time validation reaches when a `stream_*` kind is
+  claimed against a `truncate_body`-only, non-`stream` entry — the general case §9's `scenario.fault.stream_mismatch`
+  guards at load time. Both are "the claimed attempt cannot apply to this exchange's actual transport"; one is
+  caught before any request arrives, the other cannot be, because it depends on what a specific request asked for.
+  One finding code covers both, at the two points each is reachable. The mirror direction — a hand-built entry claims
+  `truncate_body` while `resp.Stream != nil` — is handled identically, not just by the same finding code: `Handle`
+  treats it exactly as the `stream_*`-on-non-streaming case above, mirrored. `suppressesStream` (§4.4) does not list
+  `truncate_body`, so `execute` takes the streaming branch and the scripted sequence is served in full; `Handle`
+  records `scenario.stream.abort_unreachable` at ERROR alongside the append, and `faultOutcome` treats the attempt as
+  `FaultNone` for the same reasons as above (`Outcome.FaultKind` still names `truncate_body`, `Outcome.Aborted` stays
+  `false`, no `DelayMS`). This case is reachable only when load-time validation was skipped, which is why it is minor
+  in practice but not silently divergent from the rule stated here.
+
 **Two declarations must be hoisted.** The deferred fallback below references `resp` and `closer`, and in shipped code
-`resp` is declared at `provider/handle.go:199` — 35 lines *after* the existing defer at `:164`. Both become `var`
+`resp` is declared 35 lines after `Handle`'s existing deferred `recover`/`record` block. Both become `var`
 declarations above that defer, and `resp := h(x)` becomes `resp = h(x)`. This is easy to miss because the code reads
 correctly in isolation and fails to compile only once assembled.
 
@@ -666,9 +878,11 @@ correctly in isolation and fails to compile only once assembled.
 func execute(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttempt,
 	resp Response, mode DelayMode, out journal.Outcome, closer func(journal.StreamClose),
 ) journal.Outcome {
-	// The delay runs first for every kind, unchanged. For a stream it is
-	// time-to-first-byte, which is what a consumer's connect timeout observes.
-	// ... existing delay block, verbatim ...
+	// The delay runs first for every kind EXCEPT stream_stall, whose Delay is
+	// the mid-stream pause planStream resolves instead (§3.1). For every other
+	// kind, streaming included, this delay is time-to-first-byte, which is what
+	// a consumer's connect timeout observes.
+	// ... existing delay block, gains one kind check ...
 
 	// One branch, not a switch. execute does not decide suppression and cannot
 	// tell that it happened: Handle applied it before this was called, so a
@@ -745,6 +959,34 @@ Note the ordering inside the abort branch: `closeWith` runs **before** `hijackRe
 same discipline `Handle` applies to `record()`, for the same reason — after the RST the client can already observe the
 abort, so anything a test might read has to be durable by then.
 
+Four more wire-visible details the sketch leaves to guesswork, decided here rather than at Phase 5's first unit,
+because each is observable on the wire and two implementers guessing independently would build different fixtures:
+
+- **`streamHeader()` sets exactly two headers**: `Content-Type: text/event-stream` and `Cache-Control: no-cache`.
+  Nothing else — no `Connection` (chunked transfer already keeps the connection open) and no
+  `X-Accel-Buffering` (that header exists for an nginx reverse proxy this container does not run, and stating a
+  header for infrastructure the simulator has no control over would be a fidelity claim it cannot back).
+- **Attempt headers apply on the stream path too.** `applyHeader(w, resp.Header)` above is illustrative shorthand;
+  the real call is `applyHeader(w, faultHeader(a, resp))`, the same `faultHeader` the non-streaming switch already
+  uses, so a `headers:`/`retry_after` declared on a non-suppressing attempt (`kind: none` with `headers:`, or a
+  `stream_*` kind with `headers:`) reaches the client instead of silently vanishing. `faultHeader` still keeps
+  `Content-Type: text/event-stream` in this path — it copies `resp.Header` and only overrides `Content-Type` for an
+  attempt whose kind is `content_type`, `wrong_content_type` or `invalid_json` (§4.4), none of which a `stream_*`
+  attempt is — which is exactly what makes it the right call to route through rather than `resp.Header` alone.
+- **`truncate_after_bytes` unset on `stream_truncate_chunk` means half of that one chunk's bytes**, not half the
+  stream. `planStream` resolves it with the same rule `truncationLen` already applies to `truncate_body` — zero
+  means half, clamped to the chunk's length — applied to `plan.Chunks[AfterChunk].Bytes` rather than to the whole
+  body. Reusing the field name without reusing this rule would make the same YAML key mean two different halves
+  depending on which fault kind it appeared on.
+- **`pace:` gates every chunk `executeStream` writes, including the opening role chunk and the terminal chunk and
+  `[DONE]`**, not only the scripted deltas. `plan.PaceOf(i)` is defined over every index in `plan.Chunks`, which
+  `EncodeSSE` builds from the full frame sequence, not just `Deltas`; the role chunk therefore gets the script's
+  default `Pace` as the gap between headers-flushed and its own write (in addition to, not instead of, any
+  time-to-first-byte `Delay` a fault attempt declares — the two are independent gaps at the same point in the
+  sequence). A `StreamDelta.Pace` overrides the default for that delta's own chunk only; `StreamTerminal.Pace`
+  overrides it for the terminal chunk; there is no override for the role chunk or `[DONE]`, which always use the
+  script's default `Pace`.
+
 ### 4.4 Faults that suppress the stream
 
 A real vendor does not answer a `stream: true` request with a 429 wrapped in SSE. The error happens before the stream
@@ -752,9 +994,8 @@ starts, so the response is an ordinary JSON error. `suppressesStream` therefore 
 `invalid_json`, `wrong_content_type`, `empty_body`, `extra_fields` and `close_before_headers`, and the request is
 served by today's code path against `Response.Body` and `Response.FaultBody`.
 
-`suppressStream` must reset `Content-Type`. `faultHeader` copies the handler's header first
-(`provider/fault_exec.go:186–190`), so `text/event-stream` would otherwise leak onto a JSON error body — a fidelity
-bug that would teach a consumer to parse the wrong thing.
+`suppressStream` must reset `Content-Type`. `faultHeader` copies the handler's header first, so `text/event-stream`
+would otherwise leak onto a JSON error body — a fidelity bug that would teach a consumer to parse the wrong thing.
 
 `truncate_body` is the one non-streaming kind that is **rejected at load** on an entry whose policy is `stream`
 (`scenario.fault.stream_mismatch`), naming `stream_truncate_chunk` as the streaming spelling. Silently
@@ -762,8 +1003,7 @@ reinterpreting it would be the wrong kind of helpful. The mirror check applies t
 whose policy is *not* `stream` is a load-time error.
 
 Both checks key on the entry's **effective policy**, never on the presence of a `stream:` key — `warn` and `reject`
-declare a
-policy and produce no stream, so `truncate_body` remains valid with them. See
+declare a policy and produce no stream, so `truncate_body` remains valid with them. See
 [§9](#9-validation-findings-this-adds) for why that distinction is load-bearing and for the fixture that guards it.
 
 #### Suppression is decided once, before the entry is journaled
@@ -855,12 +1095,16 @@ type StreamOutcome struct {
 `Outcome` gains `Stream *StreamOutcome json:"stream,omitempty"`, nil for every non-streaming request, so no existing
 journal consumer sees a changed shape.
 
-Two existing fields keep their exact meanings, which is what makes them trustworthy across the change:
+One existing field keeps its exact meaning for a stream, and one keeps its meaning with a pre-existing exception that
+is worth restating rather than assumed:
 
-- **`Outcome.BytesWritten` is always observed, never planned.** It is `0` at append and is filled in by the close.
-  `Stream.BytesPlanned` is the plan. A reader never has to ask which one it is holding.
-- **`Outcome.Aborted` reflects the script**, set at append, exactly as it already is for `truncate_body`
-  (`provider/fault_exec.go:83–85`).
+- **For a streamed exchange, `Outcome.BytesWritten` is observed, not planned.** It is `0` at append and is filled in
+  by the close. `Stream.BytesPlanned` is the plan. This is new behaviour for a streamed exchange, not a universal
+  rule restated: `faultOutcome` already sets `Outcome.BytesWritten` at append time for `truncate_body`, computed by
+  `truncationLen` before a byte is written, and that non-streaming exception is unchanged by this design. A reader
+  checking whether a given `Outcome.BytesWritten` is planned or observed asks `outcome.stream != nil` first, and
+  `dec.Attempt.EffectiveKind() == truncate_body` second; there is no single rule that answers it for every kind.
+- **`Outcome.Aborted` reflects the script**, set at append, exactly as it already is for `truncate_body`.
 
 `CompletedAt` is the one field whose meaning is genuinely time-dependent, so it is stated rather than left to be
 inferred: **for a streamed exchange, `completed_at` is the instant the response was decided, until the close amends it
@@ -872,7 +1116,7 @@ meaningless for streams read while open, which `testkit` enforces by making the 
 
 The close needs to reach an entry that is already stored. `Journal` is a consumer-implementable interface — adding a
 method breaks every implementation outside this repository — so the close is an **optional capability**, declared and
-reached exactly the way `Namespaced` already is (`internal/journal/entry.go:236`):
+reached exactly the way `Namespaced` already is in `internal/journal/entry.go`:
 
 ```go
 // StreamCloser is a Journal that can complete a streamed entry it already holds.
@@ -928,8 +1172,16 @@ The middle row is the point of the whole design. Everything the adopter's spend 
 assertions read is final before the first flush, so those tests need no waiting and cannot flake.
 
 The third row needs a wait for the same reason the second does not: the client sees `[DONE]` before the handler
-returns. `AwaitStreamClosed` polls with a deadline, exactly as the existing `Sim.AwaitRequests`
-(`testkit/server.go:519`) already does for arrival.
+returns. `AwaitStreamClosed` polls with a deadline, exactly as the existing `Sim.AwaitRequests` already does for
+arrival.
+
+**`AwaitStreamClosed` follows the pair `AwaitRequests` already establishes, not a bare `seq`.** `journal.NextIn`
+draws `Seq` from the namespace's own counter, so a sequence number alone does not identify an entry across
+namespaces — the same reason `Sim.AwaitRequests` and `Namespace.AwaitRequests` already exist as two methods rather
+than one taking a namespace string. `AwaitStreamClosed` is that same pair: a `Sim` method reading the default
+namespace and a `Namespace` method reading its own, both taking only `seq`, because the namespace is the receiver
+rather than a parameter. This is mechanical once stated — the shape to copy already ships — so it is not left to
+Phase 5's first unit to invent.
 
 `testkit` also gains two assertions so consumers do not hand-roll them:
 
@@ -947,6 +1199,31 @@ func AssertStreamPacing(tb testing.TB, e Entry, want ...time.Duration)
 Chunk **bytes** are deliberately not journaled. A stream is unbounded where a request body is not, `MaxJournalBodyBytes`
 bounds only the request, and the consumer already holds every byte — it is the client. Golden-file regression over an
 SSE exchange is taken client-side, over the reassembled stream.
+
+### 5.4 `AssertGoldenSSE`
+
+The backlog names this unit; this document did not, which left every shape decision to whoever builds it first. It
+follows `AssertGoldenJSON`'s existing pattern (`testkit/golden.go`) rather than inventing a new one, because an SSE
+transcript and a JSON body differ in framing, not in what "golden" means:
+
+- **Unit of comparison: parsed frames, not raw bytes.** The caller passes the reassembled response body — the
+  client already did the read-boundary reassembly §6.2 requires — and `AssertGoldenSSE` parses it into the same
+  `(event, data)` pairs `EncodeSSE` produces, then diffs frame-by-frame with `go-cmp`, exactly as `AssertGoldenJSON`
+  diffs decoded JSON rather than raw bytes. A byte-for-byte comparison would fail on the read-boundary
+  non-determinism §6.2 documents even though the frames are identical; a frame comparison does not.
+- **Each frame's `data` line is decoded as JSON and compared semantically**, the same way `AssertGoldenJSON` already
+  compares a body — key order is not part of any wire contract here, so it is not part of the golden either. The
+  bare `[DONE]` token is not JSON and is compared as the literal string it is.
+- **Derived identifiers are ignored by default, mirroring `AssertGoldenJSON`'s `derivedIDPaths`.** Chunk `id`
+  advances with call index by design (§6.1), so a golden bound to one call position would fail on every other one; a
+  `GoldenExactIDs`-equivalent option opts back in for a route with no fault plan, where the identifier is stable.
+  `[DONE]` is part of the golden — omitting it is what `terminal.omit_done` exists to script, and a golden that
+  silently ignored the sentinel could not tell a completed stream from a scripted omission.
+- **File extension is `.sse`**, matching the fixtures §10 already names (`perplexity-sonar-stream.sse`, and so on),
+  stored under `contracts/perplexity/` beside their non-streaming counterparts.
+- **A one-delta change diffs as one frame**, not a whole-file diff, because the comparison is per-frame: this is the
+  entire reason `AssertGoldenJSON` is not simply pointed at the reassembled bytes, and the reason the backlog names
+  this as its own unit rather than a call site of the existing one.
 
 ---
 
@@ -968,25 +1245,25 @@ are compact JSON and contain no newline, so in practice every frame is exactly t
 
 Chunked transfer encoding means the **TCP read boundaries a client observes are not deterministic**. The probe in §1
 shows an 18-byte body arriving as `"data: a\n"` then `"\ndata: b\n\n"` — one frame split across two reads, purely from
-segmentation. A golden taken over `read()` boundaries will flake. Goldens are taken over the reassembled stream or over
-parsed frames, and `contracts/` records that as a rule rather than leaving it to be rediscovered.
+segmentation. A golden taken over `read()` boundaries will flake. Goldens are taken over parsed frames, per §5.4's
+`AssertGoldenSSE`. `contracts/perplexity/README.md` does not record this rule today — its SSE coverage is the
+request field, the `EventType` enum and a non-goal note, nothing about read-boundary non-determinism or goldens —
+so writing it there is a Phase 5 obligation this design creates, not a rule already in place to be pointed at.
 
 ### 6.3 Pacing without wall-clock dependence
 
 Pacing is deterministic in the only sense that is achievable and the only sense that is useful:
 
-- Every gap is a **lower bound** declared by the scenario, honoured by the existing
-  `sleep(ctx, d, mode)` (`provider/clock.go:66`). Observed gaps are `d + ε`; the probe measured 121–122 ms for a
-  scripted 120 ms.
+- Every gap is a **lower bound** declared by the scenario, honoured by the existing `sleep(ctx, d, mode)` helper in
+  `provider/clock.go`. Observed gaps are `d + ε`; the probe measured 121–122 ms for a scripted 120 ms.
 - **No chunk's content depends on elapsed time.** The simulator never reads a clock to decide what to send, only to
   decide when. Bytes are identical whether the stream took 200 ms or 20 s, so a golden is stable across `DelayReal`
   and `DelaySkip` alike.
 - **`DelayMode` governs pacing**, so a 12 s heartbeat scenario costs nothing in a unit test under
   `testkit.WithSkippedDelays`, and the planned schedule is still in `outcome.stream.pace_ms` for the assertion. A test
   that must observe a real timeout runs under the default `DelayReal` — the same rule `DelaySkip` already carries.
-- **No fake clock.** The repository deliberately has none (`provider/clock.go:16`), and streaming does not change
-  that: a client deadline and a Temporal heartbeat are both observed by *bytes not arriving*, which no server-side
-  fake can produce.
+- **No fake clock.** The repository deliberately has none, and streaming does not change that: a client deadline
+  and a Temporal heartbeat are both observed by *bytes not arriving*, which no server-side fake can produce.
 
 ---
 
@@ -995,7 +1272,8 @@ Pacing is deterministic in the only sense that is achievable and the only sense 
 They are genuinely different and both are in scope, because the adopter's client uses the first and their migration
 target uses the second.
 
-**Chat completions (`GrammarDelta`)** — `POST /chat/completions`, `POST /v1/sonar`. Unnamed frames; the payload is a
+**Chat completions (`GrammarDelta`)** — `POST /chat/completions`, `POST /v1/sonar`, `POST /v1/chat/completions`
+(`NameSonar`'s `SonarRoutes()`, all three spellings). Unnamed frames; the payload is a
 `chat.completion.chunk` object; `usage` and `usage.cost` ride on the terminal chunk; the sequence closes with the bare
 token `[DONE]`.
 
@@ -1010,7 +1288,8 @@ data: [DONE]
 
 ```
 
-**Responses / Agent (`GrammarTyped`)** — `POST /v1/agent`, `POST /v1/responses`. Every frame carries an `event:` line
+**Responses / Agent (`GrammarTyped`)** — `POST /v1/agent`, `POST /v1/responses`, `POST /responses`
+(`NameAgent`'s `AgentRoutes()`, all three spellings). Every frame carries an `event:` line
 naming one of the fourteen published `EventType` members
 ([`contracts/perplexity/README.md`](../../contracts/perplexity/README.md#eventtype-streaming)), and the payload repeats
 the name in `type`. The terminal frame is `response.completed`, whose payload is the whole `ResponsesResponse` —
@@ -1028,7 +1307,13 @@ data: {"type":"response.completed","response":{"id":"resp_...","status":"complet
 
 ```
 
-**One mechanism serves both.** The split is the one the non-streaming path already makes: `provider` owns transport,
+**One mechanism serves both, and landing `GrammarTyped` is what gives the Agent entry a `stream:` key at all.**
+`PerplexityAgentProjection` carries no `Stream` field today — the Agent surface warns `CodeAgentStreamUnsupported`
+unconditionally (`provider/perplexity/agent.go`), which is why the preamble can say "the Agent surface has no policy
+knob" without contradiction. `GrammarTyped` landing second is what adds `Stream *scenario.StreamScript` to that
+projection and retires the unconditional warn in favour of the same `when_requested`/`StreamServe` switch Sonar
+already has; until then, `perplexity_agent` entries have no way to opt into streaming at all. The split is the one
+the non-streaming path already makes: `provider` owns transport,
 `provider/<name>` owns the wire contract. Concretely, everything in §3.2, §4 and §5 — `SSEEvent`, `EncodeSSE`,
 `Stream`, `executeStream`, all three fault kinds, `StreamOutcome`, the append-before-first-byte rule, every
 determinism property — is grammar-blind. The grammars differ in exactly two places, both inside a provider package:
@@ -1046,11 +1331,20 @@ Two consequences worth stating because they are the places a shared mechanism co
   surfaces, which is the entire reason for reconciling them now rather than after the migration.
 
 **Route reconciliation.** The adopter's client calls `/chat/completions` with `stream: true` and
-`model: sonar-deep-research` — already an accepted model (`provider/perplexity/request.go:100`). `GrammarDelta` on
+`model: sonar-deep-research`, already an accepted model in `validateSonarRequest`. `GrammarDelta` on
 `/chat/completions` and `/v1/sonar` is therefore the path that must land first; `GrammarTyped` on `/v1/agent` and
 `/v1/responses` lands second, before their migration rather than before their adoption. Exa's deferred SSE on
 `/search` and `/answer` stays deferred: no adopter code calls it, and unlike the `/agent/runs` claim in
-`contracts/exa/README.md`, that one is still true.
+`contracts/exa/README.md`, that one is still true. Exa also now serves `/agent/runs` routes for the async-job design
+(`provider/exa/handler.go`); those are a different surface again and are untouched by this document.
+
+**This split is not incidental — it is the route table's own boundary.** `GrammarDelta`'s three route spellings are
+exactly `NameSonar`'s (`"perplexity"`) `SonarRoutes()`, and `GrammarTyped`'s three route spellings are exactly
+`NameAgent`'s (`"perplexity_agent"`) `AgentRoutes()`. `Route.Entry`, a Phase 1/3 change, is what makes Sonar and the
+Agent API
+independent scenario entries with independent validators (`SonarValidator`, `AgentValidator`) and independent turn
+cursors rather than two route groups sharing one — see [§9](#9-validation-findings-this-adds) for why that is what
+makes the grammar computable at load time.
 
 ---
 
@@ -1072,21 +1366,19 @@ refuses to load, and no version gate can catch it. Reason 2 below is the decisiv
 
 **2. The premise is obsolete.** The note says streaming "means adding an event-sequence projection, and that is a
 scenario-schema version bump". That was written when `Providers` was a closed struct in `scenario` and every
-projection field lived there. The open-registry change moved projection bodies out: `scenario` keeps a turn's
-`respond:` as an opaque `yaml.Node` and the provider package decodes it (`scenario/model.go:602`). `stream:` is a
-projection field. The schema **envelope** — `version`, `sources`, `providers`, `turns`, `when`, `turn_key`, `fault` —
-gains nothing but three fault-kind constants and one optional `after_chunk`. There is no event-sequence projection in
-`scenario` to version.
+projection field lived there. The open-registry change moved projection bodies out: `scenario`'s `Turn` keeps
+`respond:` as an opaque `yaml.Node` and the provider package decodes it. `stream:` is a projection field. The schema
+**envelope** — `version`, `sources`, `providers`, `turns`, `when`, `turn_key`, `fault` — gains nothing but three
+fault-kind constants and one optional `after_chunk`. There is no event-sequence projection in `scenario` to version.
 
 **3. Nothing existing changes meaning.** Every added key is optional and absent from every shipped fixture. The one
 key that changes *shape* — `stream:` from scalar to mapping — is widened, not replaced: the scalar form still decodes,
-via the same scalar-or-mapping unmarshaler `SourceRef`, `ExaResult` and `PerplexityResult` already use
-(`scenario/model.go`). A schema
-version exists to signal "your file means something different now", and no file does.
+via the same scalar-or-mapping unmarshaler `SourceRef`, `ExaResult` and `PerplexityResult` already use in
+`scenario/model.go`. A schema version exists to signal "your file means something different now", and no file does.
 
 **4. Feature-level capability signals beat a file-level integer, and the repository already has them.** A v1 build
-meeting `kind: stream_disconnect` today produces `scenario.fault.kind.unknown` naming the kind
-(`scenario/validate.go:312`). `stream:` is the same story, and this build already demonstrates it: a scalar outside
+meeting `kind: stream_disconnect` today produces `scenario.fault.kind.unknown` naming the kind, raised by
+`scenario`'s validator. `stream:` is the same story, and this build already demonstrates it: a scalar outside
 the set it understands fails startup validation with `perplexity.stream.policy.unknown` addressed at
 `providers.perplexity.turns[0].respond.stream` — so a v1 build meeting `when_requested: stream` today fails with
 `perplexity.projection.invalid` at `providers.perplexity.turns[0].respond`, because the mapping form does not decode
@@ -1120,8 +1412,8 @@ All are load-time unless marked, so a bad streaming fixture fails at readiness r
 | `scenario.stream.answer_mismatch` | warning | concatenated `deltas` do not equal the projection's `answer` |
 | `scenario.fault.after_chunk.not_streaming` | error | `after_chunk` set on a kind that is not `stream_*` |
 | `scenario.fault.stream_mismatch` | error | a `stream_*` kind on an **entry whose policy is not `stream`**, or `truncate_body` on an **entry whose policy is `stream`** |
-| `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` exceeds the **smallest** chunk count any of the entry's turns will produce |
-| `stream.abort_unreachable` | error (per request) | the same, caught at request time for a hand-built entry that skipped validation |
+| `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` is **not less than** the smallest chunk count any of the entry's turns will produce |
+| `scenario.stream.abort_unreachable` | error (per request) | a claimed attempt cannot apply to this exchange's actual transport — a `stream_*` kind claimed by a request that will not stream (§4.2; the entry's policy is `stream` but this particular request did not ask for one), or the load-time `stream_mismatch` case reached at request time by a hand-built entry that skipped validation |
 | `perplexity.stream.done_ignored` | warning | `terminal.omit_done` declared on the typed grammar, which has no sentinel |
 
 ### `stream_mismatch` keys on the effective policy, not key presence
@@ -1130,8 +1422,9 @@ This is the correction that matters most for compatibility, and an earlier draft
 have surfaced in consumer repositories on upgrade day.
 
 That draft raised the error on the **presence** of a `stream:` key. But `stream:` is not a new key — Exa's shipped
-projection already carries it on every turn that uses it (`provider/exa/render.go:49`), and so does Perplexity's
-(`provider/perplexity/render.go:58`). Under presence-keying, this **already-valid v1 fixture** stops loading:
+projection already carries a `Stream scenario.StreamPolicy` field on every turn that uses it (`provider/exa/render.go`),
+and so does `PerplexityProjection.Stream` (`provider/perplexity/render.go`). Under presence-keying, this
+**already-valid v1 fixture** stops loading:
 
 ```yaml
 providers:
@@ -1158,34 +1451,42 @@ fixture whose author did nothing wrong.
 | `reject` | provider-shaped 4xx | error — nothing to cut | **valid** |
 | `stream` | SSE transcript | **valid** | error — see below |
 
-`truncate_body` is rejected only under `stream`, and for a real reason rather than tidiness: `provider/fault_exec.go`
-sets the full `Content-Length` before writing the prefix, which is correct for JSON and invalid for SSE, and a
-byte-offset cut lands mid-frame and produces a half-written `data:` line. That tests the consumer's *parser* rather
-than their *reconnect* logic. The SSE-aware equivalent is `stream_truncate` with `after_chunk`, which counts frames.
+`truncate_body` is rejected only under `stream`, and for a real reason rather than tidiness: `truncateBody` in
+`provider/fault_exec.go` sets the full `Content-Length` before writing the prefix, which is correct for JSON and
+invalid for SSE, and a byte-offset cut lands mid-frame and produces a half-written `data:` line. That tests the
+consumer's *parser* rather than their *reconnect* logic. The SSE-aware equivalent is `stream_truncate_chunk` with
+`after_chunk`, which counts frames rather than bytes.
 
 **Required regression fixture.** The scenario above ships as a loadable test case, asserting it still loads with no
 findings. The compatibility claim in §8 is otherwise only an intention, and the failure it guards against is
 invisible in this repository — it appears in someone else's test suite, after they upgrade.
 
-`scenario.stream.policy.unknown` **replaces** the per-provider codes this build already raises for the scalar form —
-`perplexity.stream.policy.unknown` (`provider/perplexity/handler.go`) and Exa's `exa.stream.policy.unknown`
-(`provider/exa/render.go`). Once `StreamScript` lives in `scenario` and owns the enum, one envelope-level code is
-the right home; until then the per-provider codes are the shipped behaviour, and a scenario asserting on them keeps
-working. Retiring them is part of landing this design, not a separate cleanup.
+`scenario.stream.policy.unknown` and `scenario.stream.policy.ignored` **retire** the per-provider codes this build
+raises today for the same conditions — Perplexity's `CodeStreamPolicyUnknown` / `CodeStreamPolicyIgnored` and Exa's
+own `exa.stream.policy.unknown` — because `StreamScript`'s `UnmarshalYAML` decodes and validates the policy once, in
+`scenario`, for both providers; a second, provider-local validation of the same enum is exactly the "second copy of
+this grammar is a second chance to disagree" the preamble already argues against for pacing. Retiring them is part
+of landing this design, not a separate cleanup, on the same terms as the finding-code rename below. On Exa, `ignored`
+is new behaviour rather than a rename: today's `exa/render.go` validates only unknown values on a later turn, not a
+value declared there at all, so a scenario that previously loaded silent now gets a warning it did not get before —
+worth calling out because it is the one place in this design where an existing valid fixture starts producing a
+finding it did not produce before, even though nothing about its *response* changes.
 
 **One provider code is misnamed and should be corrected in the same pass.** Every Perplexity stream finding is
 `perplexity.stream.*` except one:
 
-| Shipped code | Where | Should be |
+| Shipped code | Raised by | Status after this design |
 |---|---|---|
-| `perplexity.stream.unimplemented` | `provider/perplexity/request.go:74` | unchanged |
-| `perplexity.stream.policy.unknown` | `provider/perplexity/handler.go:295` | unchanged |
-| `perplexity.stream.policy.ignored` | `provider/perplexity/handler.go:301` | unchanged |
-| `perplexity.agent.stream.unsupported` | `provider/perplexity/agent.go:31` | `perplexity.stream.agent_unsupported` |
+| `perplexity.stream.unimplemented` | `validateSonarRequest` (`CodeStreamUnimplemented`) | unchanged |
+| `perplexity.stream.policy.unknown` | `streamPolicy`'s caller (`CodeStreamPolicyUnknown`) | retired — superseded by `scenario.stream.policy.unknown` |
+| `perplexity.stream.policy.ignored` | same (`CodeStreamPolicyIgnored`) | retired — superseded by `scenario.stream.policy.ignored` |
+| `perplexity.agent.stream.unsupported` | `handleAgent`'s field validation (`CodeAgentStreamUnsupported`) | renamed to `perplexity.stream.agent_unsupported` |
+| `exa.stream.policy.unknown` | Exa's `render.go` | retired — superseded by `scenario.stream.policy.unknown` |
 
-The odd one splits on the surface (`agent`) before the subject (`stream`), so a consumer filtering its journal for
-`perplexity.stream.` misses exactly the finding that says their Agent request could not stream. Exa's
-`exa.stream.policy.unknown` is the pattern to mirror: subject first, qualifier after.
+The odd one out splits on the surface (`agent`) before the subject (`stream`), so a consumer filtering its journal
+for `perplexity.stream.` misses exactly the finding that says their Agent request could not stream. Exa's
+`exa.stream.policy.unknown` — itself retired above — was the pattern to mirror: subject first, qualifier after; the
+renamed code keeps that ordering even after the code it was mirroring is gone.
 
 This is a **breaking change to a finding code** and must land with the rest of this design rather than on its own —
 a consumer asserting on the old spelling gets no deprecation window from a rename, and there is no reason to spend
@@ -1193,45 +1494,89 @@ two of those on one surface. It is worth doing at all only because every streami
 anyway; renaming it in isolation would be churn.
 
 `scenario.fault.after_chunk.out_of_range` is a load-time check because the chunk count is computable there: the
-grammar is fixed by the provider entry and the frame count is `1 + len(deltas) + 1 + terminal frames`. The provider
-packages' existing `ValidateProjections` (`provider/perplexity/handler.go:267`) is where it lives, since that is the
-layer that knows the grammar.
+grammar is fixed by the provider entry. `Route.Entry` (Phase 1/3) is why that is true without qualification —
+Sonar's `GrammarDelta` routes are exactly `NameSonar`'s (`"perplexity"`), Agent's `GrammarTyped` routes are exactly
+`NameAgent`'s (`"perplexity_agent"`), and the two are independent entries with independent `ValidateProjections`
+methods (`SonarValidator`, `AgentValidator`). No turn under one entry can answer a request routed to the other, so
+"the grammar is fixed by the provider entry" is not an approximation to be caught by a load-time coherence check —
+it is the route table.
+
+**The frame count, stated precisely because two sections of this document gave two different counts for the same
+sequence:** `1` (role) `+ len(deltas)` (content) `+ 1` (the terminal chunk, carrying `finish_reason` and `usage`
+together on `GrammarDelta`) `+ terminal frames`, where `terminal frames` is grammar-dependent, not a constant:
+`GrammarDelta` adds `1` unless `terminal.omit_done` is set, in which case `0`; `GrammarTyped` never adds one,
+because `[DONE]` is a chat-completions concept only and `OmitDone` has no effect there (§7). Combining
+`finish_reason` and `usage` on one chunk rather than two is a frame-level choice §10 records as simulator-chosen,
+not contract-verified — the count above is only as pinned as that choice is.
 
 **It is checked against the smallest count across the entry's turns, and that follows from the plan being per
-route.** `TurnFault` supplies one plan for the whole route (`provider/turn.go:90-101`), so a single `after_chunk: 4`
-may fire on whichever turn answers that call — a turn with three deltas, or one with nine. Validating against the
-declaring turn alone would pass a fixture that aborts past the end of a shorter sibling, and the symptom would be a
-stream that completed normally where the author scripted a disconnect: a fault that silently does nothing, which is
-the worst outcome for a test written to prove reconnect logic.
+route.** `TurnFault` supplies one plan for the whole route, so a single `after_chunk: 4` may fire on whichever turn
+answers that call — a turn with three deltas, or one with nine. Validating against the declaring turn alone would
+pass a fixture that aborts past the end of a shorter sibling, and the symptom would be a stream that completed
+normally where the author scripted a disconnect: a fault that silently does nothing, which is the worst outcome for
+a test written to prove reconnect logic.
 
 The minimum is the only bound that is correct for every turn the plan can reach. It is conservative — it rejects an
 `after_chunk` that would have been fine for the turn actually answering — and that is the right direction, because
 the alternative is a scenario whose meaning depends on which turn a fault happens to land on.
 
-### Why an entry-level policy makes `stream_mismatch` sufficient
+**The valid range is `0 <= after_chunk < chunk_count`, not `after_chunk <= chunk_count`.** "Exceeds" is ambiguous
+between those; the check must be `>=`, not `>`. `executeStream`'s loop fires the abort at `plan.AbortAt == i` for `i`
+in `[0, len(plan.Chunks))`; an `after_chunk` equal to the chunk count matches no index, so `executeStream` returns
+`StreamCompleted` for a stream the author scripted a disconnect into — the exact silent-no-op failure this whole
+validation exists to prevent, reached through an off-by-one instead of a missing check. The same bound applies to
+`stream_stall`: a stall "before chunk N" with `N == chunk_count` has no chunk to precede and never fires either: a
+stall wanting to pause after every scripted chunk uses `StreamTerminal.Pace`, not `after_chunk` pointed past the end.
+The upper end of the valid range (`after_chunk == chunk_count - 1`) is not a special case to reject — aborting on the
+final frame (which may be `[DONE]` itself) is a legitimate, useful script: everything the client needs to reconstruct
+the answer arrived, but the connection never confirms completion, which is its own edge a consumer's client should
+survive.
 
-With the policy per entry, a `stream_*` fault can no longer land on a non-streaming turn: either the entry's policy
+### What an entry-level policy makes impossible, and what it does not
+
+With the policy per entry, a `stream_*` fault can no longer land on a non-streaming *turn*: either the entry's policy
 is `stream` and every turn streams, or it is not and none do. The per-route plan and the per-entry policy are
-addressed at the *same* granularity, so the mismatch the earlier per-turn model allowed is not representable.
+addressed at the *same* granularity, so the turn-level mismatch the earlier per-turn model allowed is not
+representable, and a load-time coherence check across turns is unnecessary — this makes writing the incoherent
+fixture impossible rather than merely catching it.
 
-That is the substantive reason to prefer the entry-level model over a load-time coherence check across turns. A
-check would have caught the incoherent fixture; this makes writing one impossible.
+**It does not make every mismatch load-time detectable, and an earlier version of this section overstated that it
+did.** The policy answers "does this surface serve a stream when asked", not "does this call stream" — the preamble
+is explicit that a consumer sends `stream: true` on one call and `stream: false` on the next in the same lane, by
+design. A `stream_*` attempt claimed by a call that did not ask to stream is therefore still reachable under a
+fully valid, load-time-clean `stream`-policy entry: it depends on what a specific request's body says, which does
+not exist until the request arrives. §4.2 is where that case is handled — reported through
+`scenario.stream.abort_unreachable`, never silently served as a plain 200 — because it is the one shape this design
+cannot rule out by construction, only by reporting it every time it happens.
 
 ---
 
 ## 10. Contract fidelity
 
-The two grammars in §7 are reconstructed from the vendor's OpenAPI document and from the OpenAI-compatible dialect it
-mirrors. The `EventType` enum is verified — it is generated from `https://docs.perplexity.ai/openapi.json` into
-`contracts/perplexity/README.md`. **The frame-level shapes are not.** The OpenAPI document declares the event *names*
-and the response *schemas*; it does not pin the chunk envelope, whether `usage` rides on the `finish_reason` chunk or
-a separate one, or whether Perplexity emits `[DONE]`.
+**This is a Phase 5 prerequisite, in this order, before unit 1 — not background reading.** The rest of this document
+already depends on one frame-level choice this section has not pinned until now: §2, §7 and §9's frame-count formula
+all assume `finish_reason` and `usage` ride on the same terminal chunk on `GrammarDelta`, which this document adopts
+as the simulator's choice below. Everything downstream of that choice — the frame count, `after_chunk`'s valid
+range, every SSE golden — is only as verified as this section makes it.
 
-Those must therefore be recorded as `simulator-chosen` in `contracts/perplexity/provenance.yaml`, exactly as the Sonar
-non-422 error bodies already are, and corrected from a captured live response before this is called verified. That is
-the same discipline ADR-0002 applies, and the adopter's own backlog asks for it under contract-fidelity process. The
-one authority already in hand is the adopter's client code: what `src/pkg/agent/perplexity.go` actually parses is
-evidence of the real wire shape, and it should be read before the fixtures are frozen.
+1. **Regenerate the Perplexity SSE section from `https://docs.perplexity.ai/openapi.json`.** The `EventType` enum
+   already is generated from it, recorded in `contracts/perplexity/README.md`; the frame envelope, the chunk
+   sequence and which frame carries `usage` are not, and must go through the same generation-and-recording step
+   before this design's fixtures are treated as verified.
+2. **Read the adopter's `src/pkg/agent/perplexity.go` as evidence of the real wire shape.** It is the one authority
+   already in hand for what a live response actually contains, and it should be read before, not after, the
+   fixtures below are frozen — a fixture written first and checked against the client second inverts the order this
+   repository's own contract-fidelity process requires.
+3. **Record every frame-level choice the OpenAPI document does not pin as `simulator-chosen` in
+   `contracts/perplexity/provenance.yaml`**, exactly as the Sonar non-422 error bodies already are, and correct each
+   one from a captured live response before it is called verified. That is the same discipline ADR-0002 applies, and
+   the adopter's own backlog asks for it under contract-fidelity process.
+
+The two grammars in §7 are reconstructed from the vendor's OpenAPI document and from the OpenAI-compatible dialect it
+mirrors. The `EventType` enum is verified. **The frame-level shapes are not**, and step 1 above is what changes that.
+The OpenAPI document declares the event *names* and the response *schemas*; it does not pin the chunk envelope or
+whether Perplexity emits `[DONE]`, and — until step 1 runs — this document's own choice that `usage` rides on the
+same chunk as `finish_reason`, rather than a separate one, is itself simulator-chosen and provisional, not verified.
 
 Golden fixtures to add under `contracts/perplexity/`: `perplexity-sonar-stream.sse`,
 `perplexity-sonar-stream-disconnect.sse`, `perplexity-agent-stream.sse`, each with a provenance entry naming the
@@ -1250,7 +1595,7 @@ vendor API version it mirrors.
   Exa `/agent/runs`, Tavily `/research` — are a separate state machine and a separate design; they share nothing with
   this one but the fault catalogue.
 - **It does not serve HTTP/2.** `Hijacker` does not exist there, and the container serves cleartext HTTP/1.1 only.
-  The existing `closeBeforeHeaders` fallback (`provider/fault_exec.go:228`) already documents the same limit.
+  The existing `closeBeforeHeaders`'s no-`Hijacker` fallback already documents the same limit.
 - **It does not survive multiple replicas.** Stream state is per-request and holds nothing across requests, but the
   fault attempt counters a `transient-blip-then-retry` scenario depends on are per-process in-memory, so the retry
   reaching a second replica draws attempt 0 again and is disconnected forever. That is the same undocumented

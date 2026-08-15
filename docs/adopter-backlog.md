@@ -215,48 +215,50 @@ adopter's ability to author scenario YAML in Tier-1 that survives the rest of th
   aliases Phase 0 added — months of that being invisible ended the first time the check ran. Both directions were
   verified to fail on a deliberately broken table before being trusted.
 
-### Phase 2 — Revise the two design documents — ROUND 2 IN PROGRESS
+### Phase 2 — Revise the two design documents — DONE
 
-> **Round 1 did not pass its re-review.** Tally: 4 answered, 3 partly answered, 2 restated, 3 newly broken. The
-> open findings live at the top of each document; do not re-derive them from here.
+> **Both documents are closed out.** `docs/design/async-jobs.md` moved from "pending re-review" to **IMPLEMENTED**:
+> Phase 3 (A1–A7) shipped in v0.2.0 on 2026-08-15, the compiler and the test suite were the round-3 review, and the
+> document has now been reconciled against the shipped code — every NORMATIVE statement (decisions, YAML shapes,
+> finding codes and severities, ordering constraints, the route table, identifier derivation, HEAD and reset
+> semantics, §7.4, §8, §9, §10, §11's fan-out table, §12) was checked against `internal/jobs`, `provider/jobs.go`,
+> `provider/lane.go`, `scenario/model.go`, the shipped `scenarios/protocol/*.yaml`, `docs/scenario-schema.md` and
+> `git log v0.1.1..v0.2.0`; contradictions were corrected in place, superseded subsections were prefixed rather than
+> deleted, and what shipped beyond the original design (`GET /__admin/jobs`'s exact field set, `--max-jobs`,
+> `AssertPollSequence`'s `[]Entry` signature, `job.foreign_id`'s WARN condition, YAML alias resolution, lane-key
+> credential fingerprinting) is marked "Added at implementation".
 >
-> The two restated findings are the ones to be most careful with, because round 1 asserted a *proof* for one of
-> them. §7.3's reset reordering claimed to close the collision window "by construction" and does not — the window
-> is symmetric, and the reordering additionally collides with the all-or-nothing invariant at
-> `internal/admin/handler.go:307-326`. Closing it needs a reset epoch in the derivation tuple or a single lock over
-> both stores; that is a real design decision, not a wording fix.
+> `docs/design/streaming.md` went through the round-3 challenge re-review this section always required: two
+> independent adversarial reviews read the document fresh (B1), one writer answered every finding in place rather
+> than restating it (B2), and a third fresh reviewer re-verified every disposition against the current tree (B3).
+> **Verdict: PASS**, on the first B3 cycle — every round-3 blocker and major is answered consistently everywhere the
+> document touches the topic. Six minor/nit items survived that cycle (a leftover frame-shape wording in an
+> illustrative Go comment, a route-count drift now corrected to three spellings per surface, an unstated pacing
+> fold-in, an under-specified mirror case for `scenario.stream.abort_unreachable`, an inverted verb on
+> `faultHeader`, and an unstated consequence of `GrammarTyped` landing) — none was a decision ambiguity, and all six
+> are fixed in place in the same pass. **OPEN owner decisions: none, for either document.**
 >
-> Round 1 was also wrong about a prerequisite in a way worth remembering: it asserted that adding `create` to
-> `reservedEnvelopeKeys` would make `create.fault` loadable. That slice is read by nothing but a test — the
-> envelope split is a hardcoded switch. **`docs/scenario-schema.md:121` calls it "the authoritative list", which is
-> a pre-existing documentation lie that round 1 inherited without checking.** Worth fixing on its own account.
+> Both documents' own banners carry the full round-by-round trail (`streaming.md`'s "Review history" details block;
+> `async-jobs.md`'s "Review history (rounds 1–3)" details block) — that is the record of provenance, not this
+> section.
 >
-> Three findings from round 1 that survived scrutiny and are worth carrying forward:
->
-> - **`turn_key` resolving against the listener's primary entry is a live bug on shipped code**, not an async-only
->   one — `perplexity_agent`'s `turn_key:` is ignored today. Fixed by `Route.Entry`, which also fixes the
->   `Exchange.policy()` asymmetry §12 recorded. Both land in Phase 3's A2.
-> - **Two design decisions were reversed on evidence**, and each reversal is recorded with its reason: `HEAD` on a
->   poll route answers 405 rather than being advertised in `Allow` (a poll is a cursor advance, not a stateless
->   read), and the job bound refuses rather than evicting (an evicted job record costs correctness, where an
->   evicted journal entry costs only observability).
-> - **`diagnoseForeignID` was unbuildable for two independent reasons** — the `Faults` seam offers only a claiming
->   `Next()`, and a poll cannot reconstruct the create lane. Replaced with a shape check needing neither.
->
-> Phase 1 also made two statements in `streaming.md` §8 stale, since its argument rested on the strict-equality
-> version gate; §8 now records that the gate was widened and that its reason 1 is correspondingly weaker.
+> **Follow-up, 2026-08-15: a second doc-truth pass over `async-jobs.md` found the first pass's "every contradiction
+> corrected in place" claim was itself not fully true.** One blocker (§3.1's route-table example YAML had an
+> unconditional turn 0, which `scenario.turn.unreachable` rejects at load — it would not have loaded for a fixture
+> author who copied it) and roughly a dozen majors/minors survived the first pass: the phantom-job commit predicate
+> was stated as `EffectiveKind() == FaultNone` while the shipped `deliversBody` commits on three kinds, not one;
+> `job.id_collision`'s quoted message was the design-time draft rather than the shipped text; `GET /__admin/jobs`'s
+> shape was a bare array rather than the shipped `{jobs, bound}` wrapper with a declared order and a `501` path;
+> §2.6's finding-code table covered only `exa_agent_runs` and missed two of its own seven codes; §2 had no
+> `tavily_research` YAML example at all; and §3.1's `create:` prerequisites subsection was still written in future
+> tense with stale line numbers. All are fixed in place in `docs/design/async-jobs.md` as of this pass; none changed
+> a decision, only the record of what shipped. The lesson for the next design document: "verified against the
+> shipped code, section by section" needs an independent second reader even after the author believes it, for the
+> same reason self-review did not converge in rounds 1–2 above.
 
-docs/design/async-jobs.md and docs/design/streaming.md are both untracked, both came back needs-revision, and both are
-the specifications Phases 3 and 5 will be implemented from. Two blockers are internal contradictions where the
-document says one thing in one section and the opposite in another — an implementer will resolve those arbitrarily and
-the arbitration will be invisible until it is expensive. One of them breaks the streaming design's own falsifiable
-compatibility test in consumer repositories on upgrade day, which is the worst possible place to discover it. This is
-pure document work, it is cheap, and it can run in parallel with Phases 0 and 1; the only ordering constraint is that
-the async design's §12 dependency on per-route credentials is settled by Phase 1.
-
-**Unblocks:** Phase 3 (units A1-A7) and Phase 5 can begin from a specification that does not contradict itself.
-Verification is concrete: re-run the challenge review against the revised documents and confirm the blockers and
-majors are answered rather than restated.
+The findings list below is kept as the historical record of the original review and round 1, which is what round 2
+and round 3 (above) answered; every item in it is now either fixed in the shipped code (async-jobs) or answered in
+the document's prose (streaming) — none is open.
 
 - async-jobs BLOCKER: §3.1 asserts create and poll draw on separate fault budgets, but §2.5 specifies exactly one plan
   per route selected by the first turn declaring attempts, so both routes on one entry resolve the SAME plan. Follow the

@@ -1,6 +1,31 @@
 # Async job lifecycle
 
-> ## REVISED (round 2) — pending re-review
+> ## IMPLEMENTED — Phase 3 shipped in v0.2.0 (2026-08-15)
+>
+> This document is now the record of the async-job design **as built**, not a proposal awaiting another round of
+> review. The compiler and the test suite were the round-3 review: units A1–A7 (§11) all landed, `task check` was
+> green, and the async surfaces are live on the `exa` and `tavily` listeners today.
+>
+> **The code is authoritative.** Where anything below disagrees with `internal/jobs`, `provider/jobs.go`,
+> `provider/lane.go`, `scenario/alias.go`, `provider/exa/agentrun*.go`, `provider/tavily/research*.go`,
+> `internal/admin`, `internal/config`, `internal/server`, `testkit`, `scenario/model.go` or
+> `scenarios/protocol/*.yaml`, the disagreement is a defect in this document, never in the code. Read the source
+> before trusting a claim made here.
+>
+> **The Go blocks stay illustrative.** Round 3 (below) already demoted them from normative to illustrative, and
+> that has not changed now that the code exists: they are not being reconciled line-by-line against shipped
+> signatures, and they are not deleted, because they carry the reasoning that produced the shipped shape. Read them
+> for intent, not for a signature to depend on.
+>
+> **Verified against the shipped code on 2026-08-15**, section by section: the scenario YAML shapes and validation
+> findings (§2), the route table and the create/poll fault-key split (§3), the identifier derivation and the
+> `Route.Entry` fix (§5.1), HEAD semantics (§6), isolation and the three-store reset order (§7), the multi-replica
+> diagnostic (§8), the schema-versioning compatibility table (§9), the non-goals (§10), the implementation fan-out
+> (§11) and the companion corrections (§12). Every contradiction found in the process is corrected in place, with a
+> one-line "Shipped as: …" note where the deviation is worth explaining; everything that shipped without being
+> described here is added with a one-line "Added at implementation" note.
+>
+> <details><summary>Review history (rounds 1–3)</summary>
 >
 > Round 1 was re-reviewed and failed: one blocker, three majors. **Round 2 answers all of them**, and each fix is
 > recorded in place with the reasoning that produced it. Summary of what changed:
@@ -121,13 +146,15 @@
 > That re-review has now run, and the verdict is at the top of this banner.
 >
 > </details>
+>
+> </details>
 
 An addendum to [`package-design.md`](package-design.md) and [`extended-surfaces.md`](extended-surfaces.md). Where the
 three disagree, this file is newest and wins for the create-then-poll surfaces it defines; it changes nothing about
 the one-shot surfaces that already ship.
 
 It exists because the first adopter's client calls two create-then-poll APIs — Exa's `POST /agent/runs` plus
-`GET /agent/runs/{id}`, and Tavily's `POST /research` plus `GET /research/{id}` — and Servicesim models one-shot
+`GET /agent/runs/{id}`, and Tavily's `POST /research` plus `GET /research/{request_id}` — and Servicesim models one-shot
 request/response only. This is the highest-value gap in their backlog and the one with the largest blast radius if it
 is designed badly, because a job identifier minted by one request and presented by another is the first piece of
 *cross-request* state this simulator has ever held.
@@ -169,15 +196,28 @@ Both vendors do the same thing with different spellings:
 | | Exa | Tavily |
 |---|---|---|
 | Create | `POST /agent/runs` | `POST /research` |
-| Create response | `{"id": "...", "status": "running"}` | `{"request_id": "...", "status": "pending"}` |
-| Poll | `GET /agent/runs/{id}` | `GET /research/{id}` |
-| Poll response | same envelope, `status` advances, `output` appears at terminal | same |
-| Credential on create | `x-api-key` header | **key in the JSON body** |
-| Credential on poll | `x-api-key` header | **`Authorization: Bearer`** |
+| Create response | `{"id": "...", "status": "queued", ...}` | `{"request_id": "...", "status": "pending", ...}` |
+| Poll | `GET /agent/runs/{id}` | `GET /research/{request_id}` |
+| Poll response | same envelope, `status` advances, `output` appears at terminal | `status` advances, `content` appears at terminal, HTTP status is 202 while pending and 200 at terminal |
+| Credential on create | `x-api-key` header | `Authorization: Bearer`, **and also** a body `api_key` (§12 item 2) |
+| Credential on poll | `x-api-key` header | `Authorization: Bearer` only — no body to carry a key in |
 | Identifier shape | opaque; 32 lowercase hex matches Exa's house style | UUID, matching Tavily's `request_id` convention |
 
-The create response is an *envelope*: an identifier and an initial status, and nothing a scenario author would want
-to script. Everything interesting — the run's progress, its terminal payload, its failure — is on the poll.
+Shipped as: the Exa create's initial status is `queued`, not `running` — `AgentRunProjection`'s own lifecycle
+comment and `handleAgentRunCreate`'s `renderRunCreated` agree, and `TestAgentRunCreateThenPollToCompletion` asserts
+it. The Tavily credential row was corrected once already, in §12 item 2: the vendor documents `Authorization:
+Bearer` on both routes, and the shipped clients' body `api_key` is accepted **in addition to** it on the POST,
+never as its sole scheme — the difference between the two routes is which placements a GET has room to carry, not
+which scheme the vendor requires. The Exa credential row also applies to all three routes, not just create and
+poll: `authHeaders = []string{"authorization", "x-api-key"}` (`provider/exa/request.go`) is declared as
+`Route.Credentials` on `HEAD` as well.
+
+**Shipped as: the create response is not `{identifier, initial status}` and nothing else.** Both vendors' create
+bodies carry other required fields, derived from `Scenario.BaseTime()` and (for Tavily) echoed from the request —
+see the "Shipped as" note under [§4.3](#43-a-create-handler-end-to-end) for the exact field sets. The create
+response remains an *envelope* in the sense that matters here: none of those extra fields is something a scenario
+author can script, because a projection body alongside `turns:` is already a load error. Everything interesting —
+the run's progress, its terminal payload, its failure — is still on the poll.
 
 ### 1.2 What already fits, exactly
 
@@ -245,9 +285,13 @@ what they count.
 ## 2. The scenario YAML
 
 The async surface is **its own provider entry**, following the `perplexity` / `perplexity_agent` precedent exactly:
-independent `auth`, `validation`, `fault` and `turns`, resolved by the handler with
-`x.Deps.Scenario.Provider(NameAgentRuns)` rather than by listener name. A scenario that uses only the sync surfaces
-omits the entry and is unaffected.
+independent `auth`, `validation`, `fault` and `turns`, resolved by the handler through `x.Entry()` rather than by
+listener name. A scenario that uses only the sync surfaces omits the entry and is unaffected.
+
+Shipped as: the handler calls `x.Entry()` (`Exchange.Entry()`, [§5.1](#51-identifier-derivation)), not a hardcoded
+`x.Deps.Scenario.Provider(NameAgentRuns)` — the fix that makes `Route.Entry` actually resolve the second entry on a
+listener is what this same design needed for its own `turn_key` and `validation:` block to be read at all, so the
+async handlers use the general mechanism rather than a special case of it.
 
 **A turn of an async entry is one poll snapshot.** That sentence is the whole schema addition, and it adds no keys.
 
@@ -280,10 +324,20 @@ providers:
       - respond:                         # poll 3 and every poll after it
           status: completed
           output:
-            content: Report A states the finding.
-            citations: [source-a]
+            text: Report A states the finding.
+            grounding:
+              - field: answer
+                citations: [source-a]
+                confidence: high
           cost_dollars: {total: 0.045}
 ```
+
+Shipped as: `output` is `{text, structured, grounding}`, not `{content, citations}` — `AgentRunProjection.Output`
+is `*AgentOutputProjection{Text, Structured, Grounding}`, and each `grounding[]` entry is `{field, citations,
+confidence}` (`GroundingProjection`, resolved against the corpus exactly like `exa`'s own `output.grounding`), not
+a flat citation list on `output` itself. An earlier draft of this example used `output.content`/`output.citations`;
+that shape was never built, and `docs/scenario-schema.md`'s async section and `scenarios/protocol/happy.yaml` are
+both authoritative for the shipped one, which this example now matches.
 
 The YAML anchor is doing the de-duplication a `repeat:` key would otherwise do. That is deliberate — see
 [§2.5](#25-the-sugar-that-was-rejected).
@@ -330,13 +384,38 @@ behaviour under test. Servicesim does not decide the job is stuck; it simply nev
   exa_agent_runs:
     status: completed                    # single-shot form: one unconditional turn
     output:
-      content: Report A states the finding.
-      citations: [source-a]
+      text: Report A states the finding.
+      grounding:
+        - field: answer
+          citations: [source-a]
 ```
 
 A single-shot block normalises into exactly one unconditional turn, so the first poll is already terminal. The
 one-shot form is the zero-pending-poll job in the same way that a single projection is the length-1 conversation.
 Everything downstream sees one shape.
+
+**Added at implementation: `tavily_research` uses the same schema with different projection keys, and no example
+of it appeared anywhere in this section.** Every YAML example above is `exa_agent_runs`; an author copying one onto
+`tavily_research` would hit a strict-decode error, because the shapes are not interchangeable. The shipped
+`ResearchProjection` (`provider/tavily/research.go`) is:
+
+```yaml
+  tavily_research:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: in_progress}
+      - respond:
+          status: completed
+          content: The report states the finding.
+          sources: [source-a]
+          response_time: 1.2
+```
+
+`status` is one of `pending`/`in_progress`/`completed`/`failed`; there is no `cancelled` status and no Exa-style
+`error` object — a failed task says what happened through `content`, the same key a completed one uses. The poll's
+HTTP status is 202 while non-terminal and 200 once terminal (`ResearchProjection.HTTPStatus`), which has no Exa
+analogue: Exa's poll always answers 200 and carries the state in `status`. `docs/scenario-schema.md`'s async
+section and `scenarios/protocol/happy.yaml` are authoritative for this shape.
 
 ### 2.5 The sugar that was rejected
 
@@ -367,7 +446,10 @@ separate selectors. They are never one list read twice.
 
 ### 2.6 Validation the provider package owns
 
-`ValidateProjections` on an async entry runs before readiness and reports:
+Each async entry has its own validator — `AgentRunValidator` for `exa_agent_runs`, `ResearchValidator` for
+`tavily_research` — and the two do not check the same things.
+
+`AgentRunValidator.ValidateProjections` runs before readiness and reports:
 
 | Finding | Severity | Condition |
 |---|---|---|
@@ -376,8 +458,24 @@ separate selectors. They are never one list read twice.
 | `exa.agent_run.script_exhausted` | warning | no unconditional final turn: poll N+1 gets `scenario.no_matching_turn` and a 404 the author did not intend |
 | `exa.agent_run.body_predicate_on_poll` | warning | `body_contains` or `body_json` on a turn of an async entry; a GET carries no body, so the predicate can never match |
 | `exa.agent_run.completed_without_output` | warning | `status: completed` with no `output` |
+| `exa.agent_run.status.unknown` | error | a poll status outside the documented `queued`/`running`/`completed`/`failed`/`cancelled` set |
+| `exa.agent_run.stop_reason.unknown` | error | a `stop_reason` outside the documented enum |
 
-The last two are the ones a fixture author actually hits, and both are silent failures without a load-time check.
+The script/predicate pair are the ones a fixture author actually hits, and both are silent failures without a
+load-time check.
+
+`ResearchValidator.ValidateProjections` reports a smaller set, because Tavily's projection has no `stop_reason` and
+`tavily_research` has no equivalent check for an unconditional final turn or a body predicate on a poll:
+
+| Finding | Severity | Condition |
+|---|---|---|
+| `tavily.research.status.unknown` | error | a poll status outside `pending`/`in_progress`/`completed`/`failed` |
+| `tavily.research.completed_without_content` | warning | `status: completed` with no `content` |
+| `tavily.research.terminal_then_pending` | error | a non-terminal turn declared after a terminal one |
+
+`docs/scenario-schema.md`'s async section is the authoritative, kept-current list for both validators, sourced
+directly from `provider/exa/agentrun.go` and `provider/tavily/research.go`; this table exists so a reader does not
+have to leave this document to see the shape of the check.
 
 ---
 
@@ -389,8 +487,13 @@ The last two are the ones a fixture author actually hits, and both are silent fa
 |---|---|---|---|---|
 | exa | `POST /agent/runs` | `exa:agent_runs.create` | `create.fault` on the entry | — |
 | exa | `GET /agent/runs/{id}` | `exa:agent_runs.poll` | the first turn declaring `attempts` | `["path:id"]` |
+| exa | `HEAD /agent/runs/{id}` | `exa:agent_runs.head` | none — never claims an attempt | `["path:id"]` |
 | tavily | `POST /research` | `tavily:research.create` | `create.fault` on the entry | — |
 | tavily | `GET /research/{request_id}` | `tavily:research.poll` | the first turn declaring `attempts` | `["path:request_id"]` |
+| tavily | `HEAD /research/{request_id}` | `tavily:research.head` | none — never claims an attempt | `["path:request_id"]` |
+
+**Added at implementation:** `HEAD` on either provider is a fourth and fifth route, not a variant of the poll row.
+See [§6](#6-get-routes-on-a-post-shaped-mux) for why it needs its own `FaultKey` and never reaches `SelectTurnFor`.
 
 Create and poll draw on **separate** budgets, for the same reason `exa:search` and `exa:answer` do: a poll retry must
 not consume the create's retries, and a retry of one must not be answered from the other's plan.
@@ -404,9 +507,9 @@ Separate budgets take **two** things, and an earlier draft of this document supp
    would then rate-limit the create AND, separately, every job's first poll, which is not what its author wrote.
 
 The `Plan read from` column is that second half. It follows the shipped `answerFault` precedent exactly
-(`provider/exa/handler.go:64-87`): two routes on one entry already get two distinct plans there, by giving each route
-a selector that reads a *different location* in the scenario. `/search` reads the block-level `fault:`;
-`/answer` reads `answer.fault` inside the projection. Nothing new is being invented here.
+(`provider/exa/handler.go`'s `answerFault`): two routes on one entry already get two distinct plans there, by
+giving each route a selector that reads a *different location* in the scenario. `/search` reads the block-level
+`fault:`; `/answer` reads `answer.fault` inside the projection. Nothing new is being invented here.
 
 For an async entry the split falls out of the schema itself. [§2](#2-the-scenario-yaml) establishes that **a turn is
 one poll snapshot**, so a plan declared on a turn is unambiguously the *poll* plan — it is attached to the thing
@@ -418,9 +521,10 @@ polls are made of. The create call has no turn at all, so it needs its own key:
       fault:
         attempts:
           - {status: 429, retry_after: 1}
-          - {status: 200}
+          - {status: 201}           # the create's real status — see the note below
     turns:                           # each turn is a poll; a turn plan is the POLL plan
-      - fault:
+      - when: {call_index: 0}        # turn 0 must be conditional, or turn 1 is unreachable
+        fault:
           attempts:
             - {status: 200}
             - {status: 503}          # every job's SECOND poll fails
@@ -429,40 +533,63 @@ polls are made of. The create call has no turn at all, so it needs its own key:
       - respond: {status: completed}
 ```
 
+**Fixed in place, in this doc-truth pass** (2026-08-15): turn 0 above was unconditional in an earlier version of
+this example, which `scenario.validateProviderEntry` rejects at load as `scenario.turn.unreachable` — turn 0 having
+no `when` means turn 1 can never be selected. `docs/scenario-schema.md`'s equivalent example had this right; this
+one did not, and a fixture author copying it would have hit the load error immediately.
+
 Because the poll route's lane is per job ([§3.2](#32-routelanefrom)), that poll plan consumes **per job**: the
 `503` is every job's second poll, not whichever job happens to poll second globally.
 
+**Added at implementation: a kind-none attempt that names `status` pins the wire status, not just the create's
+success attempt above.** This is a general `Faults`/`execute` behaviour (`provider/fault_exec.go`'s `execute`
+applies `a.Status` whenever it is set, before it switches on `EffectiveKind`), not something this design added, but
+it bites specifically here because the async routes are the first ones whose baseline status is not a flat 200:
+Exa's create answers `201`, and a `tavily_research` poll answers `202` while non-terminal and `200` once terminal.
+A pass-through attempt written as `{status: 200}` — the pattern every earlier fault example in this repository
+uses, because every earlier route answers 200 — silently downgrades a create's `201` or a pending Tavily poll's
+`202` to `200` on that attempt, which is wrong and easy to miss because the body still renders correctly. The fix
+is to name the route's real status when pinning one is not the point (`{status: 201}` above), or to write the
+pass-through attempt with no `status` and no fault kind at all — `- {}` — which lets `execute` fall through to
+whatever the handler actually rendered. `docs/scenario-schema.md`'s async section documents this explicitly and is
+the authoritative statement of the rule; this paragraph exists so a reader of this design does not have to
+discover it by writing the wrong fixture first.
+
 `create.fault` is resolved by a `createFault` selector written next to the route that uses it — the same shape as
 `answerFault`, nil-safe on every hop, because it runs at composition time against a scenario that may not have been
-validated yet.
+validated yet. The poll route's own selector is the exported `provider.TurnFault(s, name)`, shared by both
+providers rather than reimplemented per package.
 
-**`create:` must be made an envelope key, or none of the above loads** — and the lever is not the one it looks like.
+**`create:` had to be made an envelope key, or none of the above would load** — and the lever was not the one it
+looked like at design time.
 
-`reservedEnvelopeKeys` (`scenario/model.go:115`) looks authoritative and is not: it is referenced by its own
-definition and by one test (`scenario/model_test.go:215`), and **the loader never reads it**. The envelope split is
-a hardcoded `switch key.Value` in `decodeProviderEntry` (`scenario/model.go:546-577`) whose `default:` arm sweeps
-everything else into the projection body. Adding `create` to the slice changes nothing.
+`reservedEnvelopeKeys` looked authoritative and was not: it was referenced by its own definition and by one test,
+and **the loader never read it**. The envelope split is a hardcoded `switch key.Value` in `decodeProviderEntry`
+(`scenario/model.go`) whose `default:` arm sweeps everything else into the projection body. Adding `create` to the
+slice alone would have changed nothing.
 
-The real prerequisites, all in `scenario`:
+**Shipped as:** all of the following landed together, in `scenario/model.go`:
 
 | Change | Where |
 |---|---|
-| a `keyCreate = "create"` const | beside the other `key*` consts, `scenario/model.go:105-110` |
-| a `case keyCreate:` arm with a strict decode | the switch at `scenario/model.go:546-577` |
-| a `Create *CreatePolicy` field | `ProviderEntry`, `scenario/model.go:158-199` — it has none today |
-| `Validate` and `HasFaults` follow-through | so a malformed `create.fault` fails at load, and a create-only plan still reports the scenario as having faults |
-| the slice updated too | `reservedEnvelopeKeys`, to keep its test honest |
+| `keyCreate = "create"` const | beside the other `key*` consts |
+| `case keyCreate:` arm with a strict decode | the switch in `decodeProviderEntry` |
+| `Create *CreatePolicy` field | on `ProviderEntry` |
+| `HasFaults` follow-through | `Scenario.HasFaults()` counts a create-only plan, so `create.fault` with no turn-level fault still reports the scenario as having faults |
+| the slice updated too | `reservedEnvelopeKeys`, keeping its own test honest |
 
-**Compatibility is worse than additive and must be stated plainly.** An older binary meeting a file with `create:`
-does *not* reject it cleanly — `KnownFields(true)` never sees the key, because the `default:` arm has already
-swept it into the projection body. What the author gets is `scenario.provider.body_with_turns`: *"move create inside
-a turn's `respond:`"* — the advice the paragraph above calls precisely wrong, now aimed at a key that cannot go
-there. That is a real forward-compatibility cost of this design, not a footnote, and it is the argument for landing
-the envelope key **before** adopters author async fixtures rather than after.
+**Shipped as: `Validate` did *not* get the follow-through the table above promised.** `scenario/validate.go`'s
+`validateProviderEntry` calls `validateFault` for a turn's fault and for the block-level fault, but never for
+`e.Create.Fault` — a malformed `create.fault` (an unknown attempt kind, a negative `retry_after`, an empty
+`attempts:` list) loads silently rather than failing at load the way a malformed turn-level fault does. This is a
+real gap, not a documentation slip: `HasFaults` reads `e.Create.Fault` and `Validate` does not, so the two halves
+of "follow-through" this design asked for landed unevenly.
 
-This is called out at length because it is invisible from the YAML. An implementer reading only §2 and §3.1 would
-write the selector, the route and the tests, and meet it at the first load — and the obvious fix, editing the slice,
-does nothing at all.
+**Compatibility is worse than additive, and stayed that way.** An older binary meeting a file with `create:` does
+*not* reject it cleanly — `KnownFields(true)` never sees the key, because the `default:` arm has already swept it
+into the projection body. What the author gets is `scenario.provider.body_with_turns`: *"move create inside a
+turn's `respond:`"* — advice aimed at a key that cannot go there. That is a real forward-compatibility cost, which
+is why the envelope key landed **before** adopters authored async fixtures rather than after.
 
 Note also that this is why the create plan is nested under `create:` rather than written as a second block-level
 `fault:`: a block-level `fault:` alongside `turns:` is already a load error
@@ -532,9 +659,11 @@ looking through their YAML for a `turn_key:` that is not there and cannot be add
 
 | Code | Field | Raised when |
 |---|---|---|
-| `job.id_invalid` | `id` | a `path:` extractor resolves to empty, or to a value `ValidJobID` rejects |
+| `job.id_invalid` | the wildcard's own name | a `path:` extractor resolves to empty, or to a value `ValidJobID` rejects |
 
-The field is the wildcard's own name (`id`), which is the thing the client actually got wrong — it is in the URL
+**Shipped as: the field is the wildcard's own name, not always `id`.** `pathFault(name)` (`provider/lane.go`) sets
+the field to whatever the extractor names — `id` for `exa_agent_runs`'s `path:id`, `request_id` for
+`tavily_research`'s `path:request_id` — which is the thing the client actually got wrong, since it is in the URL
 they sent. `appendLanePart` therefore takes the code and field to raise rather than assuming the `turn_key` pair.
 
 A poll lane key therefore reads:
@@ -553,6 +682,28 @@ Three properties of that string are load-bearing and all three already hold:
 - The namespace is the outermost component, so two tests polling the same job identifier never share a cursor.
 - Neither separator (`/`, `|`) can appear in the identifier — enforced, not assumed
   ([§7.1](#71-the-identifier-charset-is-load-bearing)).
+
+**Added at implementation: a credential-named or credential-shaped lane component is fingerprinted before it joins
+the key.** This design's own `path:id` contribution is never a credential, so it is unaffected by this directly —
+but it landed in the same lane-key code path (`turnLaneKey`, `provider/lane.go`) this design changed, on the
+argument that a lane key is exactly the kind of retained structure CLAUDE.md house rule 4 forbids a credential from
+reaching: it becomes `FaultDecision.Key`, then `journal.Entry.Outcome.FaultKey`, retained in the ring and served by
+`GET /__admin/requests`. A scenario's own `turn_key: [header:authorization]` or `turn_key: [body_json:api_key]`
+extractor — "route by which key was presented", the credential-rotation shape Phase 6 anticipates — is valid
+(`scenario.Validate` checks an extractor's form, never its value) and would otherwise write the raw credential into
+that retained key. `fingerprintLaneValue` and `fingerprintHeaderLaneValue` substitute a deterministic
+`redact.Fingerprint` for the value under two independent tests, by property name (`redact.IsCredentialHeader`, or
+any dotted `body_json` segment `redact.IsCredentialKey` flags) and by shape (whatever `redact.String` would itself
+change) — reusing the exact fingerprint `httpx.ObserveAll` already computed for `header:authorization` and
+`header:x-api-key` placements, so a lane component and `journal.Entry.Auth.Fingerprint` agree byte-for-byte.
+
+Does this touch anything [§5.1](#51-identifier-derivation) states? **No — verified, not merely asserted.** §5.1's
+derivation tuple names `lane.Key` as one of `mintID`'s inputs and is silent about what populates it; nothing in
+§5.1 claims a lane-key component is the credential's raw bytes, so there is nothing there to contradict. The two
+routes this design defines never put a credential in a `turn_key` or `Route.LaneFrom` extractor in the first
+place — `path:id`/`path:request_id` name a path wildcard, never a credential — so this mechanism is inert for
+`exa_agent_runs` and `tavily_research` specifically and only matters for a *scenario* that declares its own
+credential-bearing `turn_key` on the async entry, same as it would on any other multi-route entry.
 
 ### 3.3 What comes free once the lane is per job
 
@@ -717,18 +868,31 @@ So the bound is enforced and made **visible before it is reached**:
 | Signal | When | Severity |
 |---|---|---|
 | `job.limit_near` | a create takes a namespace past 80% of `MaxJobs` | warning, on the journal entry |
-| `job.limit_reached` | a create is refused | error, plus the provider-shaped 5xx |
+| `job.limit_reached` | a create is refused | error, plus the provider-shaped 503 |
 
-Both messages name the three remedies explicitly — `POST /__admin/reset`, per-test namespaces, or a higher bound —
-because the reader hitting this is debugging a suite that worked yesterday, and "namespace is at its job bound" on
-its own tells them what happened without telling them what to do.
+**Shipped as: only `job.limit_reached`'s message names all three remedies.** `CodeJobLimitReached`'s text
+(`provider/jobs.go`) reads "reset it with `POST /__admin/reset`, give each test its own namespace, or raise the
+bound" — all three. `CodeJobLimitNear`'s text names only the first two ("reset it or use per-test namespaces"),
+because raising the bound is not something a warning fired mid-suite can act on the same way; the create it warns
+about still succeeds. Both name the namespace and its occupancy so the reader knows which one to act on. The status
+is 503 specifically on both vendors (`provider/exa/errors.go`, `provider/tavily/errors.go`), not "5xx" generically.
 
 The 80% mark exists because the wall is otherwise reached with no warning on the request *before* the failing one.
 A suite creeping toward the bound over weeks gets a warning in its journal long before a create fails in CI.
 
+**Shipped as: `internal/jobs`'s exported shape differs from the block above in three ways, all illustrative per the
+banner.** `Stats{Count, Bound}` is defined, with `Near()` and `Full()` methods and a `HighWaterPercent = 80`
+constant `Near` reads against — the sketch above uses `Stats` as a return type and never defines it.
+`Store.Create` returns `(Stats, error)`, not `error` alone, so a caller can report occupancy on every path including
+a refusal. `Job` has no `TurnIndex` field — [§7.4](#74-optional-a-read-only-admin-listing) explains why: the poll
+cursor lives in the fault engine, which offers no non-claiming read, so there is nothing to populate it from.
+
 ### 4.2 `provider` additions
 
-`provider` gains one `Deps` field, one `Route` field, one constant, and two helpers. Nothing else moves.
+`provider` gains one `Deps` field, one `Route` field, one constant, and two helpers, at design time. **Shipped as:**
+two `Deps` fields (`Jobs`, `MaxJobs`); two `Route` fields (`Entry`, `LaneFrom`); one lane-extractor constant
+(`LaneFromPath`) plus `MaxJobIDLen` and five `CodeJob*` finding-code constants; and three helpers (`ValidJobID`,
+`MintJob`, `ResolveJob`). The illustrative count undersold the surface; every addition is still additive.
 
 ```go
 // Jobs records async-job identifiers so a later poll can resolve one. nil means
@@ -744,6 +908,22 @@ Jobs jobs.Store
 // MaxJobs bounds live jobs per namespace. Zero means jobs.DefaultMaxJobs.
 MaxJobs int
 ```
+
+**Shipped as: nil `Jobs` means NO job state, and `Normalized` does not substitute a registry.** The bullet above
+argued for the opposite and shipped code rejected it. `Deps.Jobs`'s own doc comment now reads: "nil means no job
+state at all: a create still derives and returns an identifier, and the poll that follows simply cannot resolve
+it. That is the same shape as a nil Faults... rather than a nil-check in every handler. `Normalized` does NOT
+substitute a registry, deliberately: a store created per Deps would be invisible shared state for anyone who built
+two Deps expecting one process, and the async surfaces are opt-in." `internal/server` and `testkit.NewJobs` wire a
+real registry explicitly instead. This is a real asymmetry with `Faults` — a nil `Faults` IS normalized into a
+counting no-op — and the two decisions read as inconsistent until the reason is stated: a no-op *fault* substitute
+is indistinguishable from "no faults declared," which is a legitimate scenario shape; a *silently per-Deps* job
+registry would let two handlers built from the same nil-Jobs `Deps` literal believe they share state when they do
+not, which is the opposite of what determinism promises. `MintJob` and `ResolveJob` both nil-check `x.Deps.Jobs`
+and degrade gracefully — a create still answers, the poll after it cannot resolve. Note this is unrelated to
+`internal/admin.Deps`, a different struct, whose own `normalized()` DOES substitute `jobs.NewRegistry(jobs.Limits{})`
+for a nil `Jobs` field — the admin surface has to answer `/__admin/jobs` for a zero-value `Deps` the same way it
+answers `/healthz`, which is a different obligation from the provider seam's.
 
 ```go
 // MintJob derives this request's job identifier, records it, and returns it.
@@ -780,7 +960,32 @@ func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (
 // mint a permanent map key from client-supplied text either. That is the whole
 // bound on lane growth: a lane exists only for a job that exists.
 func ResolveJob(x *Exchange, id string) (jobs.Job, bool)
+```
 
+**Shipped as: `ResolveJob` records a finding on exactly one of its miss paths, not both.** The block above claims
+"job.unknown for a miss, job.id_invalid for a malformed identifier"; the shipped function records nothing for
+either of those on its own. `job.id_invalid` (`CodeJobIDInvalid`) is never raised by `ResolveJob` — a malformed
+identifier just fails `ValidJobID` and falls straight through to `(jobs.Job{}, false)`, silently. `CodeJobIDInvalid`
+IS raised elsewhere, at two different severities depending on where the identifier came from: a WARNING from lane
+resolution's `pathFault`, before the handler ever runs, when a route's `LaneFrom` path extractor is empty or fails
+`ValidJobID` ([§3.2](#32-routelanefrom)'s table); and an ERROR from `MintJob` itself, only if the identifier IT
+derives somehow fails its own `ValidJobID` check — a defensive branch against a caller's encoder bug, not a request
+condition. There is no `job.unknown` code at all. The one finding `ResolveJob` raises is `CodeJobForeignID`
+(`job.foreign_id`), and only on the narrower condition its own godoc states: a well-formed, unresolved identifier
+in a namespace that has minted at least one job ([§8](#8-multi-replica-the-consequence-stated-explicitly)). A miss
+in a namespace that has minted nothing, and a miss whose identifier fails `ValidJobID`, both record nothing from
+`ResolveJob` itself — the first is an ordinary typo, the second is never this process's own identifier.
+
+**That is not the same as "a GET poll miss carries no warning at all."** The caller almost always adds one of its
+own: `handleAgentRunPoll`'s `runNotFound` (`provider/exa/agentrun_handler.go`) unconditionally raises
+`exa.agent_run.not_found`, and `handleResearchPoll` (`provider/tavily/research.go`) unconditionally raises
+`tavily.research.not_found`, on every miss regardless of what `ResolveJob` did or did not record — so a `GET` miss
+carries at least one warning always, and up to two (`job.foreign_id` plus the provider's own) when the identifier
+is well-formed in a namespace that has minted something. `HEAD`'s miss path is the one that is genuinely silent:
+`handleAgentRunHead` and `handleResearchHead` return a bare 404 with no `x.Warn` call of their own, so a `HEAD`
+miss records only what `ResolveJob` records, which may be nothing.
+
+```go
 // ValidJobID reports whether id is a short safe identifier: 1 to MaxJobIDLen
 // characters of ASCII letters, digits, '-' and '_'.
 //
@@ -835,10 +1040,19 @@ func handleAgentRunCreate(x *provider.Exchange) provider.Response {
 }
 ```
 
-The create response **body** is derived in full: the identifier, the vendor's initial status constant, and nothing
-else. A scenario cannot script it, and that is a deliberate v1 limitation rather than an oversight — a projection
-body alongside `turns:` is already a load error (`scenario.provider.body_with_turns`), so there is nowhere honest to
-put create-side body keys.
+The create response **body** is derived in full: nothing in it can be scripted by a scenario. That is a deliberate
+v1 limitation rather than an oversight — a projection body alongside `turns:` is already a load error
+(`scenario.provider.body_with_turns`), so there is nowhere honest to put create-side body keys.
+
+**Shipped as: "derived in full" is not "the identifier and the vendor's initial status constant, and nothing
+else."** Both vendors' create bodies carry more than that pair. Exa's `renderRunCreated`
+(`provider/exa/agentrun_handler.go`) renders `{id, status: "queued", stopReason: null, createdAt}` — `stopReason`
+has no `omitempty` because the contract documents it as present-and-null while queued, not absent, and `createdAt`
+is `Scenario.BaseTime()`. Tavily's `handleResearchCreate` (`provider/tavily/research.go`) renders
+`{request_id, created_at, status: "pending", input, model, response_time: 0}` — `input` is echoed from the request
+body and `model` is echoed too, defaulting to `"auto"` when the request omits it. None of these extra fields is
+scenario-scriptable — they are still fully derived, from `BaseTime` and the request rather than from `turns:` —
+but "identifier plus status and nothing else" undersells what a consumer actually receives.
 
 Note that `create:` itself is no longer hypothetical: [§3.1](#31-the-route-table) makes it a reserved envelope key
 carrying the create route's `fault:` plan, because create and poll need distinct plans and a turn can only speak for
@@ -847,49 +1061,57 @@ not needed for either vendor today.
 
 #### A faulted create must not leave a phantom job
 
-Faults are applied by `Handle` **after** the handler returns (`provider/handle.go:203-218`). A create handler that
-commits its record unconditionally therefore produces one on requests the client never receives an identifier for:
-a scripted `attempts: [{status: 429}, {status: 200}]` on the create route mints a job, returns a
-`FaultEligible` response, and `Handle` replaces it with a 429. The record survives; the client has no id for it.
+Faults are applied by `Handle` **after** the handler returns (`provider/handle.go`). A create handler that commits
+its record unconditionally therefore produces one on requests the client never receives an identifier for: a
+scripted `attempts: [{status: 429}, {status: 200}]` on the create route mints a job, returns a `FaultEligible`
+response, and `Handle` replaces it with a 429. The record survives; the client has no id for it.
 
 The cost is not cosmetic. Every faulted attempt consumes a slot from `MaxJobs`, so a plan with one retry burns two
 slots per usable job, and a bound of 256 becomes an effective 128 — reached sooner than any author computed, with
 `job.limit_reached` naming a number that does not match the jobs they can see.
 
 **`MintJob` commits the record only when the attempt it claims will actually serve.** It already claims the attempt,
-so the decision is in hand: `Exchange.Fault()` memoises on `x.claimed` (`provider/exchange.go:200-206`), so an early
-call here and `Handle`'s call at `provider/handle.go:206` return the same decision.
+so the decision is in hand: `Exchange.Fault()` memoises on `x.claimed` (`provider/exchange.go`), so an early call
+here and `Handle`'s own call return the same decision.
 
 **The predicate is not `FaultDecision.Faulted()`.** That is the obvious reach and it inverts the bug. `Faulted()` is
-`Attempt != nil && (EffectiveKind() != FaultNone || Delay > 0)` (`provider/deps.go:63-65`) — true for a pure
-`delay:` attempt with no fault kind, whose body **is** written after the sleep (`provider/fault_exec.go:100-112`).
-Skipping the record there hands the client a valid identifier that no record backs, so every subsequent poll returns
-the vendor's 404: the same failure as the phantom job, pointing the other way, and harder to spot because the create
-looked completely successful.
+`Attempt != nil && (EffectiveKind() != FaultNone || Delay > 0)` (`provider/deps.go`) — true for a pure `delay:`
+attempt with no fault kind, whose body **is** written after the sleep. Skipping the record there hands the client a
+valid identifier that no record backs, so every subsequent poll returns the vendor's 404: the same failure as the
+phantom job, pointing the other way, and harder to spot because the create looked completely successful.
 
-The correct predicate asks whether this attempt *replaces the body*, which is exactly what `EffectiveKind()`
-reports:
+The predicate asks whether this attempt *replaces the body*, and that is not answered by `EffectiveKind() ==
+FaultNone` alone:
 
 ```go
 serves := dec.Attempt == nil || dec.Attempt.EffectiveKind() == scenario.FaultNone
 ```
 
+**Shipped as: `deliversBody` (`provider/jobs.go`) commits on three kinds, not one — the sketch above was wrong in
+exactly the way the banner warns illustrative Go can be wrong.** The question is not "did `EffectiveKind()` land on
+`FaultNone`" but "does the client still receive what the handler rendered", and three kinds answer yes:
+
 | attempt | body written | commits? |
 |---|---|---|
 | none | `resp.Body` | yes |
-| `delay: 5s`, no kind | `resp.Body`, after the sleep | **yes** |
-| `{status: 200}` | `resp.Body` — `EffectiveKind()` only promotes at ≥400 (`scenario/fault.go:96`) | yes |
-| `extra_fields` only | merged `resp.Body` | yes |
+| `delay: 5s`, no kind (`FaultNone`) | `resp.Body`, after the sleep | yes |
+| `{status: 200}` | `resp.Body` — `EffectiveKind()` only promotes at ≥400 | yes |
+| `extra_fields` only (`FaultExtraFields`) | merged `resp.Body` | **yes** |
+| `wrong_content_type` (`FaultWrongContentType`) | `resp.Body`, under a wrong `Content-Type` header | **yes** |
 | `{status: 429}`, truncate, empty body, close | error or partial | no |
 
-Claiming the attempt inside the handler is established practice, not a new risk: `handleSearch` already claims in
-`selectProjection` before its own `codeRenderFailed` path (`provider/exa/handler.go:125-131`).
+The set is read directly off `execute`'s switch (`provider/fault_exec.go`): those three kinds are handled
+explicitly and fall through to writing `resp.Body`; everything else replaces or withholds it. An earlier version of
+this table's `extra_fields` row said "yes" while the predicate above it said `FaultNone` only — internally
+inconsistent, since `extra_fields` is never `FaultNone`. **Fixed in place, in this doc-truth pass** (2026-08-15).
 
-One honest limit: a client whose deadline fires *during* a scripted delay receives nothing
-(`provider/fault_exec.go:100-107` returns with `BytesWritten = 0`), yet the record is committed, because the fault
-decision said this attempt would serve and that was true when it was made. That is a job record for a response the
-client never read — not a phantom job in the sense above, and not fixable by any predicate evaluated before the
-write, since it depends on the client's own timeout.
+Claiming the attempt inside the handler is established practice, not a new risk: `handleSearch` already claims in
+`selectProjection` before its own `codeRenderFailed` path (`provider/exa/handler.go`).
+
+One honest limit: a client whose deadline fires *during* a scripted delay receives nothing, yet the record is
+committed, because the fault decision said this attempt would serve and that was true when it was made. That is a
+job record for a response the client never read — not a phantom job in the sense above, and not fixable by any
+predicate evaluated before the write, since it depends on the client's own timeout.
 
 The identifier is still derived from the claimed index, so this does not renumber anything: the retry that succeeds
 mints from index 1 and gets the identifier index 1 implies. Two consequences worth stating, because both are
@@ -992,6 +1214,19 @@ const (
 )
 ```
 
+**Shipped as: the poll wire is richer than this sketch, in ways worth naming explicitly.** `renderRunSnapshot`
+(`provider/exa/agentrun_handler.go`):
+
+- The status constant is spelled `cancelled` (two Ls), matching `contracts/exa/README.md` — the sketch's
+  `"canceled"` would fail `exa.agent_run.status.unknown` if copied into a fixture.
+- `costDollars` is emitted only when the snapshot `IsTerminal()`, not on every response as the comment above
+  claims; a non-terminal run has spent nothing yet and carries none.
+- `stopReason` is derived, not scripted directly: `null` while queued or running, and at terminal it defaults to
+  `schema_satisfied`/`error`/`cancelled` from the status unless the projection's own `stop_reason:` overrides it.
+- `usage: {agentComputeUnits, dataSources}` and `createdAt` (`Scenario.BaseTime()`) are rendered on every poll,
+  terminal or not — neither key exists on the sketch above.
+- There is no `omit_fields` key on the shipped `AgentRunProjection`; `OmitFields` above was never built.
+
 ### 4.5 Import edges
 
 Additive; no edge reverses and the acyclicity proof's labelling is unchanged.
@@ -1000,14 +1235,20 @@ Additive; no edge reverses and the acyclicity proof's labelling is unchanged.
 |---:|---|---|
 | 0 | `internal/jobs` | **new**; imports nothing in-module |
 | 3 | `provider` | `+ internal/jobs` (level 3 → 0, legal) |
-| 5 | `provider/exa`, `provider/tavily` | `+ internal/jobs` to name `jobs.Job` |
+| 5 | `provider/exa`, `provider/tavily` | consume `MintJob`/`ResolveJob`'s returned `jobs.Job` values |
 | 5 | `internal/admin` | `+ internal/jobs` for the scoped reset and the read-only listing |
 | 6 | `internal/server` | `+ internal/jobs` to construct the registry from `--max-jobs` |
-| 7 | `testkit` | `+ internal/jobs`; adds `type Job = jobs.Job` and `type Jobs = jobs.Store` to the alias set |
+| 7 | `testkit` | `+ internal/jobs`; adds `type Job = jobs.Job`, `type Jobs = jobs.Store` and `type JobStats = jobs.Stats` to the alias set |
 
-The alias set is closed under "types a consumer has to name", and `examples/adapter` owns the guard: its
-compile-time check must grow a `provider.Deps{Jobs: ...}` construction reading `job.ID` through the aliases, or the
-gap stays invisible until an adopter hits it.
+**Shipped as: `provider/exa` and `provider/tavily` do not import `internal/jobs` in non-test code.** Both handlers
+read fields off the `jobs.Job` value `MintJob` and `ResolveJob` return without ever naming the `jobs.Job` type
+themselves, so there is no import edge to add at level 5 for them — the row above described an edge that was never
+needed. `internal/admin`, `internal/server` and `testkit` do add the edge, as the table says.
+
+The alias set is closed under "types a consumer has to name", and the compile-time guard lives in `examples`
+(package `examples`, `examples/adapter.go` and `examples/async_test.go` — there is no `examples/adapter`
+directory): it builds a `provider.Deps{Jobs: testkit.NewJobs()}` reading `job.ID` through the aliases, so the gap
+does not stay invisible until an adopter hits it.
 
 ---
 
@@ -1053,12 +1294,13 @@ Tavily mints a bare `ids.UUIDv5(...)`, matching its documented `request_id`.
 
 #### `turn_key` must resolve against the route's entry, not the listener's
 
-The bullet above assumes a `turn_key` written on an async entry takes effect. **Today it does not**, and this is a
-prerequisite rather than a detail.
-
-`entryTurnKey` reads `x.Entry()` (`provider/lane.go:495`), which resolves by *listener* name —
-`Deps.Scenario.Provider(string(x.Provider))`, i.e. `"exa"` (`provider/exchange.go:268`). An `exa_agent_runs` entry is
-a second entry on the exa listener, so its `turn_key:` is never read. Two failure modes follow, and both are silent:
+**Shipped — this subsection describes a prerequisite that was met, not an open gap.** At design time, the bullet
+above assumed a `turn_key` written on an async entry takes effect, and it did not yet: `entryTurnKey` read
+`x.Entry()`, which resolved by *listener* name — `Deps.Scenario.Provider(string(x.Provider))`, i.e. `"exa"` — and an
+`exa_agent_runs` entry, being a second entry on the `exa` listener, never had its `turn_key:` read. `Exchange.Entry()`
+(`provider/exchange.go`) now honours `Route.Entry`, and `entryTurnKey` (`provider/lane.go`) resolves against it, so
+the async entries' own `turn_key:` is read. The reasoning below is kept because it is still the record of why the
+fix had to be the accessor and not one caller. Two failure modes followed, and both were silent:
 
 1. A `turn_key` on the async entry is **ignored**. The author writes "one lane per model", gets one lane for
    everything, and the only symptom is two jobs sharing a cursor.
@@ -1066,8 +1308,10 @@ a second entry on the exa listener, so its `turn_key:` is never read. Two failur
    extractor cannot resolve against a `GET` with no body, so **every poll** raises
    `scenario.turn_key_unresolved`. The fix for one problem manufactures the other.
 
-**This is not an async-only bug.** `perplexity_agent` is a second entry on the perplexity listener today, so its
-`turn_key:` is ignored right now, on shipped code. The async surfaces make it load-bearing rather than latent.
+**This was not an async-only bug.** `perplexity_agent`, a second entry on the perplexity listener, had its
+`turn_key:` ignored the same way on already-shipped code. The async surfaces made it load-bearing rather than
+latent, which is why fixing it landed as part of this design rather than as a separate follow-on — see
+"A behaviour change for `perplexity_agent`" below for what shipping the fix cost that surface.
 
 The fix keeps the single-resolution rule intact:
 
@@ -1097,38 +1341,51 @@ func (x *Exchange) Entry() *scenario.ProviderEntry {
 }
 ```
 
-Fixing the accessor rather than one caller is strictly cheaper and strictly safer. `Entry()` has five callers —
-`Exchange.policy()` (`provider/exchange.go:272`), `entryTurnKey` (`provider/lane.go:496`), and three provider
-handlers (`provider/exa/handler.go:116,147`, `provider/tavily/handler.go:179`). Patching only `entryTurnKey` would
-leave **three** ways to resolve an entry and fix one of them.
+Fixing the accessor rather than one caller is strictly cheaper and strictly safer. At design time `Entry()` had five
+callers: `Exchange.policy()`, `entryTurnKey`, two calls in `provider/exa/handler.go`, and one in
+`provider/tavily/handler.go`. Patching only `entryTurnKey` would have left **three** ways to resolve an entry and
+fixed one of them.
+
+Shipped as: fixing the accessor paid off exactly as argued. The async handlers this design adds — three call sites
+in `provider/exa/agentrun_handler.go`, three more in `provider/tavily/research.go` — call `x.Entry()` too
+([§2](#2-the-scenario-yaml)'s "resolved by the handler through `x.Entry()`"), for free, because they came after the
+fix rather than needing their own. `Exchange.Entry()` has eleven non-test callers today across `provider/lane.go`,
+`provider/exchange.go`, both `exa` handler files, both `tavily` files — every one of them reading the route's
+entry through the one accessor this design changed, not through six new copies of the listener-name fallback.
 
 #### A behaviour change for `perplexity_agent`, stated rather than implied
 
+**Shipped.** `provider/perplexity/handler.go`'s three Agent routes now declare `Entry: NameAgent`, so this
+subsection describes a change that has already happened, not one this design is about to cause. It is kept, not
+collapsed to a one-line note, because it is still the record of *why* the change was correct to make and what it
+cost — a reader auditing a lane-key or call-index difference in a `perplexity_agent` fixture written before this
+shipped needs exactly this reasoning, not just the fact that something moved.
+
 An earlier draft claimed "behaviour for shipped code is identical" and then, in the next sentence, applied
-`Route.Entry` to `perplexity_agent`. Both cannot be true. **`perplexity_agent` is shipped**
-(`provider/perplexity/handler.go:23`), its three routes sit on the `perplexity` listener, and today they resolve
-their entry by listener name — behaviour `provider/lane.go:404-408` documents deliberately:
+`Route.Entry` to `perplexity_agent`. Both cannot be true. **`perplexity_agent` was shipped** before `Route.Entry`
+existed, its three routes sat on the `perplexity` listener, and they resolved their entry by listener name — a rule
+`provider/lane.go`'s `turnLaneKey` and `entryTurnKey` used to document inline before the fix landed and their
+comments were rewritten to describe the new behaviour instead (the pre-fix wording no longer exists verbatim
+anywhere in the tree, which is exactly what a shipped fix should do to a comment describing the bug it closed):
 
 > The entry is the one named for this listener's provider. A listener serving a second scenario entry — Perplexity's
 > Agent surface is one — keys its lanes on the primary entry's `turn_key`.
 
-So a `turn_key:` written on the `perplexity` block currently subdivides the **agent** lane too. Giving the agent
-routes `Route.Entry = NameAgent` stops that. For a scenario that declares `turn_key` on `perplexity` *and* exercises
-the Agent surface, the lane key changes, and with it the call indices, the turn selected for a given call, every
-derived identifier, and `outcome.fault_key`. `Exchange.policy()` moves in the same step: the agent surface stops
-inheriting `perplexity`'s `validation:` block and reads its own.
+So a `turn_key:` written on the `perplexity` block used to subdivide the **agent** lane too. Giving the agent
+routes `Route.Entry = NameAgent` stopped that. For a scenario that declares `turn_key` on `perplexity` *and*
+exercises the Agent surface, the lane key changed, and with it the call indices, the turn selected for a given
+call, every derived identifier, and `outcome.fault_key`. `Exchange.policy()` moved in the same step: the agent
+surface stopped inheriting `perplexity`'s `validation:` block and reads its own now.
 
-**Ship it anyway, and own it.** The current behaviour is not a feature — it is an entry's own `turn_key:` being
-silently ignored, which is the silent-wrong-behaviour class this repository exists to eliminate. A consumer relying
-on it is relying on a bug, and the longer it ships the more expensive it is to correct. But §9's compatibility test
-must stop claiming what it cannot:
+**Shipped anyway, owned.** The old behaviour was not a feature — it was an entry's own `turn_key:` being silently
+ignored, which is the silent-wrong-behaviour class this repository exists to eliminate. A consumer relying on it
+was relying on a bug, and §9's compatibility test does not claim what it cannot:
 
-- §9's "every existing lane key is unchanged" line is amended to name this exception explicitly.
-- A regression fixture pins the **new** agent lane key, so the change is asserted rather than discovered.
-- The release notes name it as a behaviour change, not as a fix, because that is what a consumer experiences.
-
-The narrowness of the affected combination — `turn_key` on `perplexity`, plus use of the Agent surface — is a reason
-to be confident it is safe to ship, not a reason to leave it undocumented.
+- [§9](#9-schema-versioning-additive-to-version-1)'s "every existing lane key is unchanged" line names this
+  exception explicitly, in its own table's last row.
+- A regression fixture pins the **new** agent lane key.
+- The narrowness of the affected combination — `turn_key` on `perplexity`, plus use of the Agent surface — was the
+  reason it was safe to ship, not a reason to leave undocumented, and it is documented here and in §9.
 
 Every other existing route leaves `Route.Entry` empty and takes the branch it takes today.
 
@@ -1151,7 +1408,7 @@ Given the same scenario and the same request sequence, everything is reproduced:
 `journal.Entry.ArrivedAt`.
 
 **No testkit change is needed here.** An earlier draft asked for `id` and `request_id` to be added to
-`AssertGoldenJSON`'s default ignore set; `testkit/golden.go:59` already carries all three — `derivedIDPaths` is
+`AssertGoldenJSON`'s default ignore set; `testkit/golden.go`'s `derivedIDPaths` already carries all three —
 `{"requestId", "request_id", "id"}`. The reasoning still holds and is why it already works: the identifier folds in
 the call index by design, so a golden that pinned it would fail on the second create.
 
@@ -1216,8 +1473,12 @@ Refusing it bought a real fidelity divergence — RFC 9110 makes `HEAD` mandator
 nothing.
 
 A provider declares it in `Routes()` beside the others, which is also what registers its fault key — the engine's key
-set is built by `faults.New` from the routes it is handed (`internal/faults/engine.go`), so a key that never reaches
-that loop would make every HEAD collect a `fault.unknown_key` warning:
+set is built by `faults.New` from the routes it is handed (`internal/faults/engine.go`). **Shipped as: a HEAD never
+actually reaches `fault.unknown_key`, for a different reason than an unregistered key would suggest.** A `HEAD`
+response never sets `FaultEligible` (`handleAgentRunHead`, `handleResearchHead`), so `Handle` never calls `x.Fault()`
+for it at all — the warning this paragraph originally worried about would only fire on a route that claims an
+attempt with no matching key. Registering the key is still worth doing, because a HEAD's own budget (below) has to
+exist somewhere for the lane-key derivation to name, but the reason is not the warning:
 
 ```go
 // HEAD is a route of its own so it does NOT fall through to the GET handler,
@@ -1241,18 +1502,26 @@ contract no vendor page verifies.
 `headRoute` carries its own `FaultKey`, distinct from the poll route's. A `HEAD` must not draw on the poll budget
 for the same reason it must not advance the cursor.
 
-Because `HEAD` is genuinely served, `Allow` includes it and the async mux can reuse `allowHeader`'s GET→HEAD
-promotion (`internal/admin/handler.go:185-195`) rather than diverging from it. An earlier draft's divergence
-disappears along with the 405.
+Because `HEAD` is genuinely served, `Allow` includes it — matching the rule `internal/admin`'s own `allowHeader`
+states for its own GET→HEAD promotion, "HEAD is added wherever GET is answered", rather than diverging from it. The
+mechanism differs by package: `internal/admin`'s `allowHeader` promotes HEAD into the header for a route that never
+registered one, because ServeMux serves HEAD from a GET pattern regardless; `provider/mux.go`'s registration loop
+needs no such promotion here, because [§6](#6-get-routes-on-a-post-shaped-mux) has `HEAD /agent/runs/{id}` register
+as an explicit route of its own, so `paths[path]` collects `HEAD` the same way it collects any other declared
+method. Both arrive at the same `Allow` value; an earlier draft's divergence — 405 on `HEAD`, and no promotion of
+any kind — disappears along with the 405.
 
-The signature is `methodNotAllowed(spec MuxSpec, allow []string) Handler` (`provider/mux.go:69`), and every handler
-in `NewMux` is wrapped in `Handle(d, p, route, h)` — there is no bare `mux` variable and no `http.HandlerFunc` at
-this layer. An earlier draft's snippet matched neither, which would have sent an implementer looking for a seam that
-does not exist.
+The signature is `methodNotAllowed(spec MuxSpec, allow []string) Handler` (`provider/mux.go`), and every route
+handler in `NewMux`'s registration loop is wrapped in `Handle(d, p, route, h)` — there is no bare `mux` variable and
+no `http.HandlerFunc` at that layer. An earlier draft's snippet matched neither, which would have sent an
+implementer looking for a seam that does not exist.
 
-`contracts/` contains no occurrence of `HEAD` for any vendor, so nothing here is verified against a vendor page in
-either direction. That is why `headJob` answers only the question the *protocol* defines — existence — and invents
-nothing beyond it.
+No vendor page verifies `HEAD` for either surface, so nothing here is confirmed against live documentation in either
+direction — `contracts/exa/README.md` marks its `HEAD /agent/runs/{id}` row "canonical, simulated" rather than
+"verified" for exactly that reason, and `contracts/README.md` lists both `HEAD` routes as the two with no golden
+fixtures, because `HEAD` carries no body to pin. That is why `headJob` answers only the question the *protocol*
+defines — existence — and invents nothing beyond it. Authentication runs before the existence check on both
+providers' `HEAD` handlers, so a bad credential is a 401, not a 404 — the same order the GET and POST handlers use.
 
 Two hazards to keep in the mux test table rather than in a reviewer's head:
 
@@ -1335,17 +1604,27 @@ itself must not reset — a recursive wart — and a shared lock would put a mut
 dev-only operation while coupling two deliberately independent stores. Both spend real complexity defending a
 configuration the repository already tells people not to use.
 
-So the order stays as `internal/admin/handler.go:307-326` already has it, and for the reason recorded there rather
-than a new one:
+So the order stays as `Deps.resetNamespace` already has it, and for the reason recorded there rather than a new
+one:
 
 > Both capability checks run **before anything is dropped**, so a surface that can scope only some of the stores
-> scopes none of them. `admin.Deps` gains a `Jobs` field and a third capability check in the same shape.
+> scopes none of them.
 
 Jobs-first is mutually exclusive with that invariant: dropping jobs before checking whether the journal can scope
 would leave job state destroyed by a request that then returns 501 having "changed nothing".
 
+Shipped as: `admin.Deps` gains a `Jobs` field, but **not** a third asserted capability. `jobs.Store` declares
+`ResetIn` unconditionally as part of its interface ([§4.1](#41-internaljobs)) rather than as an optional capability
+a caller type-asserts for the way `namespacedFaults` and `journal.Namespaced` are — so `resetNamespace` still runs
+exactly two capability checks (`Faults`, then `journal.ResetIn`) before it drops anything, and `d.Jobs.ResetIn`
+runs unconditionally once both pass. An earlier draft of this paragraph said "a third capability check in the same
+shape"; that was never built, because `jobs.Store` has no optional-capability variant to check for — every
+implementation of the seam can scope a reset by construction, which is a stronger guarantee than the other two
+stores offer, not a matching one.
+
 **Make the violation self-explaining instead.** A documented precondition nobody rereads is worth little, so
-`job.id_collision` names the cause the operator can act on:
+`job.id_collision` names the cause the operator can act on. The design-time draft of that message pointed at the
+concurrent reset race this subsection is titled after:
 
 ```text
 job.id_collision: this identifier is already live in namespace "t-42".
@@ -1353,6 +1632,15 @@ The usual cause is POST /__admin/reset running while requests were still in
 flight in this namespace — reset is a local-development convenience, not a
 concurrency mechanism. Use one process or one namespace per parallel test.
 ```
+
+**Shipped as: a different message, pointing at the sequential cause instead.** `CodeJobIDCollision`'s shipped text
+(`provider/jobs.go`) reads: "job %q is already live in namespace %q; the usual cause is a reset that dropped the
+fault cursors without dropping the job records, so this create re-minted an identifier it had already used." That
+names the wiring bug the very next subsection exists to close — a `Sim.Reset()` or admin reset that drops cursors
+without dropping jobs — not the concurrent race the draft above was written against. Both are real causes of
+`ErrDuplicate`, but the shipped message leads with the one a single-process test suite actually hits; the race hint
+("reset is a local-development convenience, not a concurrency mechanism") lives only in this document and in
+`testkit.Sim.Reset`'s own godoc, not in the finding text.
 
 That converts the one reachable symptom into its own diagnosis at the moment it fires, which is the same job
 [§8](#8-multi-replica-the-consequence-stated-explicitly)'s `job.foreign_id` does for the multi-replica case. No race
@@ -1363,7 +1651,7 @@ test is required for a race that is out of contract; the sequential reset test a
 The argument above covers the *concurrent* window. There is a **sequential** path to the same collision that is
 squarely in contract, and it is the one most consumers will actually take.
 
-`testkit/server.go:561-564`:
+The pre-fix `testkit/server.go`:
 
 ```go
 func (s *Sim) Reset() {
@@ -1379,10 +1667,11 @@ claims index 0, re-mints the identifier it minted before the reset, and collides
 That is §7.3's own opening failure mode, reached **deterministically, on the documented happy path**. "Reset is not a
 concurrency mechanism" is a true statement that says nothing about it, because nothing here is concurrent.
 
-So `Sim.Reset()` resets all three stores, and its godoc's existing warning about racing an in-flight request stays as
-it is. This belongs in [§11](#11-implementation-fan-out)'s **A6** alongside the other `testkit` work — an earlier
-draft listed only the aliases, `Sim.Jobs()` and the poll-sequence assertion, and would have shipped a testkit whose
-`Reset` left the process in exactly the state this section forbids.
+**Shipped as:** `Sim.Reset()` (`testkit/server.go`) resets all three stores — `s.journal.Reset()`, `s.faults.Reset()`,
+`s.jobs.Reset()` — and its godoc's existing warning about racing an in-flight request stays as it is. This landed in
+[§11](#11-implementation-fan-out)'s **A6** alongside the other `testkit` work — an earlier draft listed only the
+aliases, `Sim.Jobs()` and the poll-sequence assertion, and would have shipped a testkit whose `Reset` left the
+process in exactly the state this section forbids.
 
 The general rule, worth stating once: **every surface that resets fault counters must reset jobs in the same call.**
 There are two such surfaces — the admin endpoint and `Sim.Reset()` — and a third would inherit the same obligation.
@@ -1398,11 +1687,29 @@ worth adding. It mutates nothing, so house rule 6 is untouched, and it is the fa
 this surface generates: "did the create I think I made actually happen here?" and "does *this replica* hold the job I
 am polling?" — which is the multi-replica diagnostic below.
 
-**Shipped as `{id, namespace, entry, create_index, created_at}`, with no `turn_index`.** The poll cursor lives in the
-fault engine's attempt counter, and that seam offers no non-claiming read (§8, "localCursor is not readable"), so
-there is no value to put behind a `turn_index` key without the listing itself claiming an attempt. `lane_key` is
-also absent, on house-rule-4 grounds: a lane key embeds a route's `turn_key` or `Route.LaneFrom` extractor values
-verbatim, which can include a credential a scenario author wrote into a `header:` or `body_json:` extractor.
+**Shipped as a wrapper object, not a bare array, and with more machinery than the sketch above implies.**
+`internal/admin/jobs.go`'s `JobsResponse` is `{jobs: [...], bound: <int>}`: each entry in `jobs` is
+`{id, namespace, entry, create_index, created_at}` — `turn_index` is absent, for the same reason given below — and
+`bound` is the process's per-namespace `--max-jobs` limit, alongside the list rather than folded into it, because
+it is a process-wide value and not a per-record one. Three more things the array-only sketch left out:
+
+- The listing is in a **declared total order** — namespace ascending, then entry, then create index, then id — and
+  that order is pinned by a test, not left to map iteration (CLAUDE.md house rule 2).
+- `?namespace=` absent or blank returns **every** namespace's jobs, not `"default"`'s; a job created with no
+  `/n/` prefix is still reachable with `?namespace=default`.
+- The wired job store is asserted for an optional `List() []jobs.Job` capability (`jobLister`), not added to
+  `jobs.Store` itself — `jobs.Store` is exported and consumers implement it (house rule 7), so adding a method
+  there would break every implementation outside this repository. A store that does not implement it answers
+  `501` with a message naming the reason, rather than an empty list that would read as "no jobs" instead of
+  "cannot answer".
+
+`turn_index` stays absent for the reason already given: the poll cursor lives in the fault engine's attempt
+counter, and that seam offers no non-claiming read (§8, "localCursor is not readable"), so there is no value to put
+behind the key without the listing itself claiming an attempt. `lane_key` is also absent, on house-rule-4 grounds:
+a lane key embeds a route's `turn_key` or `Route.LaneFrom` extractor values verbatim, which can include a
+credential a scenario author wrote into a `header:` or `body_json:` extractor — the `779d23c` fingerprinting fix
+([§3.2](#32-routelanefrom)) closes the leak in the retained lane key itself, but that does not make the field one
+worth taking on as a wire compatibility obligation for nothing a consumer currently needs.
 
 ---
 
@@ -1434,14 +1741,24 @@ that works, then 404s, then works. That is precisely the "silent divergence" the
    is supported only because it makes every request of one test land on one replica. It is not a fix; it is the same
    exemption with a load balancer holding it in place.
 
+**Shipped, 2026-08-15: items 2 and 3.** `internal/server` emits `servicesim.single_replica_required` unconditionally
+at info level before `server.ready`, with the exact hint text above (`internal/server/server.go`). `README.md`'s
+"Single replica by design" section and `docs/troubleshooting.md`'s replica-symptom table both carry the job-poll
+row — "`POST /agent/runs` then `GET /agent/runs/{id}` ... 'polls 404 intermittently'" — alongside the four
+pre-existing per-process hazards (`call_index` sequencing, journal entries, retry budgets, scoped reset). **Item 1
+does not apply to this repository**: Servicesim ships an image, not a Kubernetes manifest, so `replicas: 1` has no
+file to land in here — the deliverable is the README/troubleshooting language a consuming repository's own manifest
+review can point at, which is what shipped. Item 4 is documented in prose (README's "Single replica by design",
+the startup log's own hint text) rather than as a separate how-to; no consuming repository has asked for one yet.
+
 **Make the divergence self-diagnosing.** An earlier draft proposed recomputing the derivation for create indices
 `0 … min(localCursor + window, MaxJobs)` in the presented lane. **That cannot be built**, for two independent
 reasons, and both are worth recording so it is not proposed again:
 
 - **`localCursor` is not readable.** The `Faults` seam offers exactly `Next(key) FaultDecision` and `Reset()`
-  (`provider/deps.go:70-76`). `Next` *claims*. There is no non-claiming read, and adding one so that an error path
-  could peek would mean a 404 diagnostic advancing the very cursor whose sequencing is under test — the diagnostic
-  would corrupt the thing it exists to explain.
+  (`provider/deps.go`'s `Faults` interface). `Next` *claims*. There is no non-claiming read, and adding one so that
+  an error path could peek would mean a 404 diagnostic advancing the very cursor whose sequencing is under test —
+  the diagnostic would corrupt the thing it exists to explain.
 - **"the presented lane" is not obtainable from a poll.** A poll's lane is keyed on `path:id`, so reconstructing
   what a *create* would have minted needs the **create** lane key — which folds in any `turn_key` discriminators
   drawn from the create request's body. A poll has no body and never saw that request.
@@ -1477,7 +1794,8 @@ func diagnoseForeignID(x *Exchange, id string) bool {
 typed `jobs.Store` ([§4.2](#42-provider-additions)) and declares `Create`, `Lookup`, `ResetIn`, `Reset` and
 `StatsIn` — no such method, so it did not compile against its own seam. `StatsIn` already reports one namespace's
 job count and bound, which is exactly what this needs; a second accessor for the same number would be one more thing
-to keep in agreement. (`Stats` is used as a return type in §4.1 and never defined there. Define it.)
+to keep in agreement. (`Stats` was used as a return type in §4.1 and not defined there at the time this note was
+written; it is now — see §4.1's Shipped-as note.)
 
 **`ValidJobID` is a charset check, not a scheme check**, and the wording above is careful about that.
 [§7.1](#71-the-identifier-charset-is-load-bearing) defines it as `[A-Za-z0-9_-]{1,64}`, so `GET /agent/runs/typo`
@@ -1519,8 +1837,8 @@ Check it clause by clause against what this design actually changes:
 | new `respond:` keys (`status`, `output`, `error`) | the **undecoded `respond:` node**, owned by the provider package | none; `scenario` never sees them |
 | "a turn is a poll" | a reinterpretation of `call_index` **on new routes only** | none; no existing route has a per-job lane |
 | `Route.LaneFrom` and the `path:` extractor | **Go**, on `provider.Route` | none; the lane key changes only for routes that declare it, and every such route is new |
-| `Deps.Jobs`, `Deps.MaxJobs` | **Go**, with working defaults from `Normalized` | none |
-| explicit `HEAD` handler on poll paths | **Go**, in `NewMux` | none; no existing listener serves a GET route |
+| `Deps.Jobs`, `Deps.MaxJobs` | **Go**; `MaxJobs` defaults from `Normalized`, `Jobs` does not (§4.2's Shipped-as) | none |
+| a `HEAD` route declared per provider | **Go**, in each provider's `Routes()`, not in `NewMux` (§6's Shipped-as) | none; no existing listener serves a GET route |
 | `Route.Entry` on `perplexity_agent` | **Go**, on `provider.Route` | **NOT none — see below** |
 
 The third column is what actually matters for regression risk, so state it as a check to run rather than a claim to
@@ -1568,14 +1886,17 @@ None of those are in this design.
 
 ## 10. What this does not do
 
-- **No time-driven completion.** A job advances by poll count ([§5.3](#53-what-is-deliberately-not-deterministic--and-what-is-deliberately-not-time)).
-- **No create-side scripting.** The create response is `{identifier, initial status}`. `create:` as a reserved
-  envelope key is the additive migration path if a vendor ever needs more.
+- **No time-driven completion.** A job advances by poll count, never elapsed time — see
+  [§5.3](#53-what-is-deliberately-not-deterministic--and-what-is-deliberately-not-time).
+- **No create-side scripting.** The create response's fields are all derived — from `Scenario.BaseTime()` and, for
+  Tavily, echoed request fields (§4.3's Shipped-as note has the full field set for both vendors) — and none of them
+  can be set by a scenario's `turns:`. `create:` as a reserved envelope key is the additive migration path if a
+  vendor ever needs a scriptable create body.
 - **No list, cancel, events or delete routes.** Exa publishes `GET /agent/runs`, `POST /agent/runs/{id}/cancel`,
   `GET /agent/runs/{id}/events` and `DELETE /agent/runs/{id}`. Each is a bounded addition behind this same model —
-  cancel is a route with the same `LaneFrom` and a `canceled` status, events is the streaming surface and is deferred
-  with it — and none should be added speculatively. Unimplemented routes fall to the catch-all's provider-shaped 404,
-  which is loud enough.
+  cancel is a route with the same `LaneFrom` and a `cancelled` status (two Ls, matching the shipped enum), events is
+  the streaming surface and is deferred with it — and none should be added speculatively. Unimplemented routes fall
+  to the catch-all's provider-shaped 404, which is loud enough.
 - **No shared job state across replicas** ([§8](#8-multi-replica-the-consequence-stated-explicitly)).
 - **No per-turn or per-lane fault plans.** Still deferred, still one plan per route — but the poll route's plan is now
   per job *in effect*, because the lane is.
@@ -1584,32 +1905,64 @@ None of those are in this design.
 
 ## 11. Implementation fan-out
 
-| Unit | Owns | Depends on |
-|---|---|---|
-| **A1** | `internal/jobs`: `Job`, `Store`, `Registry`, `Limits`, bounds, `ResetIn`, race tests | — |
-| **A2** | `provider`: `Deps.Jobs`, `Deps.MaxJobs`, `Route.Entry` (incl. the `perplexity_agent` break, [§5.1](#51-identifier-derivation)), `Route.LaneFrom`, `LaneFromPath`, `ValidJobID`, `MintJob`, `ResolveJob`, `turnLaneKey` and `hasDiscriminator` changes, the served-`HEAD` route and its own fault key ([§6](#6-get-routes-on-a-post-shaped-mux)), mux table rows | A1 |
-| **A3** | `provider/exa`: routes, request validation, `RunProjection`, render, error envelopes, validator findings | A2 |
-| **A4** | `provider/tavily`: the same, plus per-route credential placement (see §12) | A2 |
-| **A5** | `internal/admin` scoped reset across three stores, optional `GET /__admin/jobs`; `internal/server` `--max-jobs` wiring and the single-replica startup log | A1, A2 |
-| **A6** | `testkit`: `Job`/`Jobs` aliases, `Sim.Jobs()`, a poll-sequence assertion, **`Sim.Reset()` dropping jobs with the cursors** ([§7.3](#73-reset-must-drop-cursors-and-jobs-together)), `examples/adapter` alias guard | A1–A5 |
-| **A7** | `scenarios/protocol/async-job.yaml` (completed / failed / stuck), `docs/scenario-schema.md` async section, `contracts/exa/README.md` correction, README + troubleshooting multi-replica sections | A3, A4 |
+Every row is done. `Shipped in` names the commit(s) on `main` between `v0.1.1` and `v0.2.0` (`git log --oneline
+v0.1.1..v0.2.0`) that landed it; short hashes, not full ones, because they are provenance for a reader with the
+repository open, not a pin.
 
-A1 and A2 are the critical path; A3 and A4 are independent of each other.
+| Unit | Owns | Depends on | Shipped in |
+|---|---|---|---|
+| **A1** | `internal/jobs`: `Job`, `Store`, `Registry`, `Limits`, bounds, `ResetIn`, race tests | — | `b905bc9` |
+| **A2** | `provider`: `Deps.Jobs`, `Deps.MaxJobs`, `Route.Entry` (incl. the `perplexity_agent` break, [§5.1](#51-identifier-derivation)), `Route.LaneFrom`, `LaneFromPath`, `ValidJobID`, `MintJob`, `ResolveJob`, `turnLaneKey` and `hasDiscriminator` changes, the served-`HEAD` route and its own fault key ([§6](#6-get-routes-on-a-post-shaped-mux)), mux table rows | A1 | `46bdfb1`, `6d653b7`, `7e9b14a`, `61521c8` |
+| **A3** | `provider/exa`: routes, request validation, `RunProjection`, render, error envelopes, validator findings | A2 | `0e6feaf` |
+| **A4** | `provider/tavily`: the same, plus per-route credential placement (see §12) | A2 | `85fceac` |
+| **A5** | `internal/admin` scoped reset across three stores, `GET /__admin/jobs`; `internal/server` `--max-jobs` wiring and the single-replica startup log | A1, A2 | `b1fc0e0` |
+| **A6** | `testkit`: `Job`/`Jobs`/`JobStats` aliases, `Sim.Jobs()`, `AssertPollSequence`, **`Sim.Reset()` dropping jobs with the cursors** ([§7.3](#73-reset-must-drop-cursors-and-jobs-together)), the `examples` package's alias guard | A1–A5 | `ccd6e17` |
+| **A7** | `scenarios/protocol/*.yaml` (async entries on every built-in, plus `async-failed`/`async-stuck`), `docs/scenario-schema.md` async section, README + troubleshooting multi-replica sections | A3, A4 | `fb7a44d`, `85c2b1e` |
 
-**A5 done, 2026-08-15** — matching `docs/adopter-backlog.md`'s marking for A1–A4. The known defect this unit exists
-to fix, scoped reset dropping cursors without dropping jobs (§7.3), is closed: `admin.Deps.Jobs`, three-store
-`resetAll`/`resetNamespace`, `GET /__admin/jobs`, `--max-jobs`/`SERVICESIM_MAX_JOBS`, and the unconditional
-`servicesim.single_replica_required` startup log all shipped together. A6 and A7 remain open.
+A1 and A2 were the critical path; A3 and A4 were independent of each other, and both landed.
+
+**A1–A4 done, 2026-08-15.** `internal/jobs` (A1) shipped first and alone, importing nothing in-module as designed.
+A2 shipped as four commits rather than one — entry resolution (`Route.Entry`, fixing `Exchange.Entry()` for every
+caller per [§5.1](#51-identifier-derivation)), `Route.LaneFrom` and the `path:` extractor, `MintJob`/`ResolveJob`
+wired into `Deps`, and the served-`HEAD` route last — which matches the design's own ordering: the entry fix has to
+land before `LaneFrom` can key a real per-job lane, and the job store has to exist before `HEAD` can resolve
+against it non-claiming. A3 and A4 each shipped as one commit apiece once A2 was in place.
+
+**A5 done, 2026-08-15.** The known defect this unit exists to fix, scoped reset dropping cursors without dropping
+jobs (§7.3), is closed: `admin.Deps.Jobs`, three-store `resetAll`/`resetNamespace`, `GET /__admin/jobs`,
+`--max-jobs`/`SERVICESIM_MAX_JOBS`, and the unconditional `servicesim.single_replica_required` startup log all
+shipped together. Two more commits landed after A5 and before A6, both completeness-pass items rather than fan-out
+rows of their own: `779d23c` fingerprints a credential-named or credential-shaped `turn_key`/`LaneFrom` value
+before it joins a lane key ([§3.2](#32-routelanefrom)'s `turnLaneKey`, CLAUDE.md house rule 4), and `21a3191` adds
+the `job.foreign_id` diagnostic ([§8](#8-multi-replica-the-consequence-stated-explicitly)) directly to
+`provider.ResolveJob` rather than as the separate `diagnoseForeignID` helper this design sketched.
 
 **A6 done, 2026-08-15.** `testkit.Job`, `testkit.Jobs`, `testkit.JobStats` (closing the alias set over `Store`'s
-own method set, per §4.5), `testkit.NewJobs`, `Sim.Jobs()`, `Namespace.Jobs()` and `testkit.AssertPollSequence`
-shipped together, confirming §7.3's `Sim.Reset()` behaviour rather than re-implementing it.
+own method set, per §4.5), `testkit.NewJobs` (bounded to `jobs.DefaultMaxJobs`), `Sim.Jobs()`, `Namespace.Jobs()`
+(returning the admin's declared total order and never nil) and `testkit.AssertPollSequence` shipped together,
+confirming §7.3's `Sim.Reset()` behaviour rather than re-implementing it.
 
-**A7 done, 2026-08-15.** `scenarios/protocol/*.yaml` gained `exa_agent_runs` and `tavily_research` entries on every
-built-in, plus two new built-ins (`async-failed`, `async-stuck`); `docs/scenario-schema.md` gained the async
+**Added at implementation: `AssertPollSequence`'s signature and refusal condition.**
+`func AssertPollSequence(tb testing.TB, entries []Entry, id string, wantStatuses ...int)` (`testkit/assertions.go`)
+filters `entries` down to the `GET` requests whose last path segment equals `id`, then requires both
+`Outcome.Status == wantStatuses[i]` and `Outcome.AttemptIndex == i` for each one in order. It refuses — `tb.Errorf`,
+not a panic — when those polls span more than one namespace: a job identifier is namespace-independent by design
+(§5.1), so reading one id across every namespace conflates two different jobs that merely share a name.
+
+**Added at implementation: `--max-jobs` / `SERVICESIM_MAX_JOBS`.** Named in passing three times above without its
+own paragraph: `internal/config` wires it with default `jobs.DefaultMaxJobs` (256, agreeing with `internal/jobs`'
+own default) and rejects a value below 1 at validation time — a stricter rule than `jobs.Limits`, which treats any
+non-positive `MaxJobs` as "use the default" rather than as an error, because a library caller building `Limits{}`
+by hand should get the default silently and a CLI flag typed wrong should not.
+
+**A7 done, 2026-08-15,** in two commits: `fb7a44d` shipped `scenarios/protocol/*.yaml` gaining `exa_agent_runs` and
+`tavily_research` entries on every built-in, plus two new built-ins (`async-failed`, `async-stuck`);
+`docs/scenario-schema.md` gained the async
 section this row promised; the README and `docs/troubleshooting.md` multi-replica sections gained the job row
 ("polls 404 intermittently") the design predicted in [§8](#8-multi-replica-the-consequence-stated-explicitly).
-Four corrections against this document were found in the process, three fixed in place and one left as historical:
+`85c2b1e`, the same day, is item 1 below: it fixes the YAML-alias defect the first commit's fixtures had just
+worked around. Four corrections against this document were found during A7; all four are fixed in place, the last
+one in this doc-truth pass:
 
 1. [§2.1](#21-two-pending-polls-then-completed)/[§2.5](#25-the-sugar-that-was-rejected) told fixture authors to
    de-duplicate the repeated pending snapshot with a YAML anchor/alias across turns (`respond: &pending` /
@@ -1621,28 +1974,35 @@ Four corrections against this document were found in the process, three fixed in
    anchor form has been restored to.
 2. [§3.1](#31-the-route-table)'s route table gave Tavily's poll as `GET /research/{id}` with `LaneFrom`
    `["path:id"]`; the shipped route is `GET /research/{request_id}` / `["path:request_id"]`. **Fixed in place.**
-3. §2.1's YAML example showed `output.content`/`output.citations`; the shipped Exa projection is `output.text` +
-   `output.grounding[]`. **Already flagged and left as illustrative** — see the note at the top of A7's spec.
-4. [§2.6](#26-validation-the-provider-package-owns)'s finding table names five of `AgentRunValidator`'s seven
-   codes — `exa.agent_run.status.unknown` and `exa.agent_run.stop_reason.unknown` are shipped and load-bearing but
-   were never added to that table. **Left as written**, marked historical by this note, rather than edited to
-   match code after the fact; the authoritative list is `docs/scenario-schema.md`'s async section, sourced from
-   `provider/exa/agentrun.go` directly.
+3. §2.1's and §2.4's YAML examples showed `output.content`/`output.citations`; the shipped Exa projection is
+   `output.text` + `output.grounding[]`, each entry `{field, citations, confidence}`. **Fixed in place, in this
+   doc-truth pass** (2026-08-15): both examples now match `AgentRunProjection`, `docs/scenario-schema.md`'s async
+   table and `scenarios/protocol/happy.yaml` exactly. A7's own spec had flagged this and left it for a later pass
+   rather than fixing it inline; this is that pass.
+4. [§2.6](#26-validation-the-provider-package-owns)'s finding table named only five of `AgentRunValidator`'s seven
+   codes and carried no `tavily_research` codes at all, under a heading that implied one validator served both
+   providers. **Fixed in place, in this doc-truth pass** (2026-08-15): the section now has one table per validator,
+   `exa.agent_run.status.unknown` and `exa.agent_run.stop_reason.unknown` are listed, and `ResearchValidator`'s
+   three codes are listed alongside a note that it has no equivalent to `script_exhausted` or
+   `body_predicate_on_poll`. `docs/scenario-schema.md`'s async section remains the authoritative, kept-current
+   list for both.
 
 ---
 
 ## 12. Companion corrections this design depends on
 
-Three already-verified defects block or contradict this work. **Two have since shipped**; they are kept here, marked,
-rather than deleted, because a reader coming to this design cold needs to know the dependency existed and was met —
-a silently-removed prerequisite reads as one that was never needed.
+Four already-verified defects blocked or contradicted this work. **All four have since shipped**; they are kept
+here, marked, rather than deleted, because a reader coming to this design cold needs to know the dependency existed
+and was met — a silently-removed prerequisite reads as one that was never needed.
 
-1. ~~**`contracts/exa/README.md` is wrong and must be corrected.**~~ **DONE — v0.1.1.** It stated that `/agent/runs`
-   is "not simulated: no C360 consumer uses it", and the adopter's client at `src/pkg/agent/exa.go` calls it. The
-   false clause was *struck rather than reworded*, on the grounds that whether some consumer calls a route is not
-   something a vendor-contract file can verify in either direction. The paragraph that followed it — that the
-   create-then-poll lifecycle "needs a different scenario shape than a single request/response projection" — is the
-   part that was right, and is what this document answers. (Backlog item #17.)
+1. ~~**`contracts/exa/README.md` is wrong and must be corrected.**~~ **DONE — `f7149af`.** It stated that
+   `/agent/runs` is "not simulated: no C360 consumer uses it", and the adopter's client at `src/pkg/agent/exa.go`
+   calls it. The false clause was *struck rather than reworded*, on the grounds that whether some consumer calls a
+   route is not something a vendor-contract file can verify in either direction. The paragraph that followed it —
+   that the create-then-poll lifecycle "needs a different scenario shape than a single request/response
+   projection" — is the part that was right, and is what this document answers. (Backlog item #17.) **Shipped as:**
+   this correction is the one row [§11](#11-implementation-fan-out)'s fan-out table leaves out — it landed in
+   `f7149af` between A4 and A5, not inside any unit's own `Shipped in` cell.
 2. ~~**Tavily currently returns 401 for a body-placed key.**~~ **DONE — v0.1.1 and Phase 1.** The body placement now
    authenticates on POST routes (v0.1.1), and `Route.Credentials` landed in Phase 1 with the precedence rule
    `auth.headers` > `Route.Credentials` > the package default, resolved once in `Exchange.AcceptedPlacements`.
@@ -1660,21 +2020,25 @@ a silently-removed prerequisite reads as one that was never needed.
    ```go
    // POST /research
    Credentials: []string{provider.PlacementAuthorization, provider.PlacementBodyAPIKey},
-   // GET /research/{id} — no body to carry a key in
+   // GET /research/{request_id} — no body to carry a key in
    Credentials: []string{provider.PlacementAuthorization},
    ```
 
    (Backlog item #16.)
-3. **The multi-replica warning is correct and undocumented.** Still open.
-   [§8](#8-multi-replica-the-consequence-stated-explicitly) is the documentation, and it is a deliverable of this
-   work rather than a note about it. (Backlog item #18.)
+3. ~~**The multi-replica warning is correct and undocumented.**~~ **DONE — v0.2.0.**
+   [§8](#8-multi-replica-the-consequence-stated-explicitly) is the documentation, and it shipped as this work's own
+   deliverable rather than a follow-on note: the unconditional `servicesim.single_replica_required` startup log,
+   `README.md`'s "Single replica by design" section and `docs/troubleshooting.md`'s replica-symptom table all carry
+   the async job-poll row §8 predicted. (Backlog item #18.)
 
-4. **Entry resolution by listener name is a live bug, and it is now in scope.** `Exchange.Entry()` resolves by
-   *listener*, so a second entry on one listener — `perplexity_agent` today, `exa_agent_runs` tomorrow — silently
-   inherits the primary entry's `validation:` block through `Exchange.policy()`, and never has its own `turn_key:`
-   read through `entryTurnKey`. An earlier draft recorded only the `policy()` half and called it out of scope; both
-   halves have the same root cause and are fixed by the same field, `Route.Entry`
-   ([§5.1](#51-identifier-derivation)). `authenticate` takes its entry explicitly and was never affected.
+4. ~~**Entry resolution by listener name is a live bug, and it is now in scope.**~~ **DONE — v0.2.0.**
+   `Exchange.Entry()` used to resolve by *listener*, so a second entry on one listener —
+   `perplexity_agent` at design time, `exa_agent_runs` and `tavily_research` since — silently inherited the primary
+   entry's `validation:` block through `Exchange.policy()`, and never had its own `turn_key:` read through
+   `entryTurnKey`. An earlier draft recorded only the `policy()` half and called it out of scope; both halves had the
+   same root cause and are fixed by the same field, `Route.Entry` ([§5.1](#51-identifier-derivation)), which now
+   ships on all six async routes — create, poll and `HEAD` on each of `exa_agent_runs` and `tavily_research` — and
+   on `perplexity_agent`. `authenticate` took its entry explicitly and was never affected.
 
-   It is in scope because this design is what makes it bite: `perplexity_agent` gets away with it today only because
-   nothing it declares depends on either lookup.
+   It was in scope because this design is what made it bite: `perplexity_agent` got away with it before only because
+   nothing it declared depended on either lookup.
