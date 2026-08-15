@@ -1595,6 +1595,10 @@ to fix, scoped reset dropping cursors without dropping jobs (§7.3), is closed: 
 `resetAll`/`resetNamespace`, `GET /__admin/jobs`, `--max-jobs`/`SERVICESIM_MAX_JOBS`, and the unconditional
 `servicesim.single_replica_required` startup log all shipped together. A6 and A7 remain open.
 
+**A6 done, 2026-08-15.** `testkit.Job`, `testkit.Jobs`, `testkit.JobStats` (closing the alias set over `Store`'s
+own method set, per §4.5), `testkit.NewJobs`, `Sim.Jobs()`, `Namespace.Jobs()` and `testkit.AssertPollSequence`
+shipped together, confirming §7.3's `Sim.Reset()` behaviour rather than re-implementing it. A7 remains open.
+
 ---
 
 ## 12. Companion corrections this design depends on

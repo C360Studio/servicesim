@@ -151,11 +151,19 @@ real vendor would reject, so a green status proves nothing. The assertions are o
 client from either a `*testkit.Sim` or a container. `testkit.WithScenarioYAML` keeps a single-purpose fixture inline
 next to the test; `testkit.WithScenarioFile` and `testkit.WithScenario` cover the rest.
 
+For the async create-then-poll surfaces (Exa agent runs, Tavily research), `sim.Jobs()` returns every live job
+record across every namespace, and `testkit.AssertPollSequence(t, sim.Requests(provider.Exa), id, 200, 200, 200)`
+asserts, from the journal alone, that a job's polls arrived in order from its own per-job lane — pass
+`ns.Requests(...)` when the test uses namespaces, because job identifiers repeat across namespaces by design.
+`testkit.NewJobs()` mirrors `testkit.NewFaults`: it is what a consumer wiring `provider.Deps` by hand passes as
+`Deps.Jobs`, and without it a create still answers but no poll can ever resolve.
+
 | Example file | What it shows |
 |---|---|
 | [`examples/adapter_test.go`](examples/adapter_test.go) | The canonical first test: prove the request was correct. |
 | [`examples/fusion_test.go`](examples/fusion_test.go) | Three providers at once, deduplication, and a 429 classified as retryable. |
 | [`examples/namespace_test.go`](examples/namespace_test.go) | Parallel subtests sharing one simulator, each in its own state lane. |
+| [`examples/async_test.go`](examples/async_test.go) | Create-then-poll through `testkit`, and the same flow wired by hand through `provider.Deps`. |
 
 ## As a container
 

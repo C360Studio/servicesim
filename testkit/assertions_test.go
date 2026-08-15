@@ -381,6 +381,293 @@ func TestAssertNamespacesIsolatedRefusesAVacuousComparison(t *testing.T) {
 	}
 }
 
+// exaPollScenario is the shape provider/exa/agentrun_test.go's asyncScenario
+// uses: two pending polls, then a terminal snapshot that also answers every
+// poll after it. Exa's poll HTTP status is 200 throughout — only the attempt
+// index moves — which is why the Exa case is where AssertPollSequence's
+// attempt-index half carries the assertion.
+const exaPollScenario = `
+version: 1
+name: testkit-exa-poll
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa_agent_runs:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: running}
+      - when: {call_index: 1}
+        respond: {status: running}
+      - respond:
+          status: completed
+          output:
+            text: done
+`
+
+// tavilyResearchPollScenario walks pending -> in_progress -> completed, verified
+// against provider/tavily/research.go: the poll's HTTP status VARIES with task
+// state (202 while pending or in progress, 200 once terminal).
+const tavilyResearchPollScenario = `
+version: 1
+name: testkit-tavily-research-poll
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  tavily_research:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - when: {call_index: 1}
+        respond: {status: in_progress}
+      - respond:
+          status: completed
+          content: done
+          sources: [source-a]
+`
+
+// createResearch issues the create call an adapter would issue against
+// Tavily's async research surface and returns the identifier it minted.
+func createResearch(tb testing.TB, sim *testkit.Sim, base string) string {
+	tb.Helper()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		base+"/research", strings.NewReader(`{"input":"research this"}`))
+	require.NoError(tb, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-key")
+
+	resp, err := sim.Client().Do(req)
+	require.NoError(tb, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(tb, http.StatusCreated, resp.StatusCode, "create failed")
+
+	var out struct {
+		RequestID string `json:"request_id"`
+	}
+	require.NoError(tb, json.NewDecoder(resp.Body).Decode(&out))
+	require.NotEmpty(tb, out.RequestID)
+	return out.RequestID
+}
+
+// requestJob issues a bare request of the given method against a job's poll
+// path, with the credential its provider documents. The caller reads nothing
+// off the response but its status code arriving without error;
+// [testkit.AssertPollSequence] reads the journal for everything else.
+func requestJob(tb testing.TB, sim *testkit.Sim, p provider.Name, method, path string) *http.Response {
+	tb.Helper()
+
+	req, err := http.NewRequestWithContext(context.Background(), method, path, nil)
+	require.NoError(tb, err)
+	if p == provider.Exa {
+		req.Header.Set("x-api-key", "test-key")
+	} else {
+		req.Header.Set("Authorization", "Bearer test-key")
+	}
+
+	resp, err := sim.Client().Do(req)
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// pollJob issues a bare GET against a job's poll path.
+func pollJob(tb testing.TB, sim *testkit.Sim, p provider.Name, path string) *http.Response {
+	tb.Helper()
+	return requestJob(tb, sim, p, http.MethodGet, path)
+}
+
+// headJob issues a bare HEAD against a job's poll path, to prove it draws on
+// no poll budget.
+func headJob(tb testing.TB, sim *testkit.Sim, p provider.Name, path string) *http.Response {
+	tb.Helper()
+	return requestJob(tb, sim, p, http.MethodHead, path)
+}
+
+// TestAssertPollSequence covers both providers acceptance criterion 58 names:
+// Tavily, where the HTTP status is the signal (202, 202, 200), and Exa, where
+// every poll answers 200 and only the attempt index moves — the case where
+// AssertPollSequence's attempt-index half is doing the work.
+func TestAssertPollSequence(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tavily research status tracks task state", func(t *testing.T) {
+		t.Parallel()
+
+		sim := testkit.Start(t, testkit.WithScenarioYAML(tavilyResearchPollScenario), testkit.WithProviders(provider.Tavily))
+		id := createResearch(t, sim, sim.URL(provider.Tavily))
+
+		for range 3 {
+			pollJob(t, sim, provider.Tavily, sim.URL(provider.Tavily)+"/research/"+id)
+		}
+
+		testkit.AssertPollSequence(t, sim.Requests(provider.Tavily), id,
+			http.StatusAccepted, http.StatusAccepted, http.StatusOK)
+	})
+
+	t.Run("exa agent run attempt indices carry the assertion", func(t *testing.T) {
+		t.Parallel()
+
+		sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProviders(provider.Exa))
+		id := createAgentRun(t, sim, sim.URL(provider.Exa))
+
+		for range 3 {
+			pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)
+		}
+
+		testkit.AssertPollSequence(t, sim.Requests(provider.Exa), id,
+			http.StatusOK, http.StatusOK, http.StatusOK)
+	})
+}
+
+// TestAssertPollSequenceIgnoresHeadAndOtherJobs is the negative half: a HEAD
+// between polls and a poll of a different id in the same namespace must not
+// shift this job's sequence, because each draws on its own per-job lane.
+func TestAssertPollSequenceIgnoresHeadAndOtherJobs(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProviders(provider.Exa))
+	id := createAgentRun(t, sim, sim.URL(provider.Exa))
+	// other lands at call_index 1 of the SAME lane as id (call_index 0), which is
+	// why this NotEqual holds. It is not general: two creates in DIFFERENT
+	// namespaces at the same call index mint the identical id, because job
+	// identifiers carry no namespace component (see
+	// TestSimJobsAndNamespaceJobs). Moving this second create into another
+	// namespace to "strengthen" the test would make it collide with id instead.
+	other := createAgentRun(t, sim, sim.URL(provider.Exa))
+	require.NotEqual(t, id, other, "two creates must mint different identifiers")
+
+	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)    // id's attempt 0
+	headJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)    // must not consume a poll
+	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+other) // other's poll, not id's
+	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)    // id's attempt 1
+	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)    // id's attempt 2
+
+	testkit.AssertPollSequence(t, sim.Requests(provider.Exa), id, http.StatusOK, http.StatusOK, http.StatusOK)
+}
+
+// TestAssertPollSequenceFailsOnWrongStatus proves the assertion actually
+// checks what it claims to, using the existing failing-TB pattern, and that
+// its failure message carries the evidence table a developer needs to debug
+// it: the observed (method, path, namespace, status, attempt_index) rows.
+func TestAssertPollSequenceFailsOnWrongStatus(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProviders(provider.Exa))
+	id := createAgentRun(t, sim, sim.URL(provider.Exa))
+	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)
+
+	stub := &stubTB{}
+	testkit.AssertPollSequence(stub, sim.Requests(provider.Exa), id, http.StatusTooManyRequests)
+	assert.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), "want status 429")
+	assert.Contains(t, stub.Message(), "observed polls:")
+	assert.Contains(t, stub.Message(), "attempt_index=0")
+	assert.Contains(t, stub.Message(), `ns="default"`)
+}
+
+// TestAssertPollSequenceFailsOnWrongCount covers the branch
+// TestAssertPollSequenceFailsOnWrongStatus does not reach: a count mismatch,
+// which must fail before any per-poll status or attempt-index comparison
+// runs, and must carry the same evidence table.
+func TestAssertPollSequenceFailsOnWrongCount(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProviders(provider.Exa))
+	id := createAgentRun(t, sim, sim.URL(provider.Exa))
+	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)
+
+	stub := &stubTB{}
+	testkit.AssertPollSequence(stub, sim.Requests(provider.Exa), id, http.StatusOK, http.StatusOK)
+	assert.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), "recorded 1 polls, want 2")
+	assert.Contains(t, stub.Message(), "observed polls:")
+}
+
+// TestAssertPollSequenceRejectsCrossNamespaceCollision pins the fix for the
+// namespace-conflation bug: job identifiers carry no namespace component, so
+// two namespaces that each create at the same call index mint the identical
+// id — exactly the per-test-namespace idiom [testkit.Sim.NamespaceFor]
+// exists to support. Reading such an id across the whole Sim must report the
+// ambiguity rather than silently merge the two jobs' polls into one
+// sequence; reading it through either single [*testkit.Namespace] view must
+// work normally.
+func TestAssertPollSequenceRejectsCrossNamespaceCollision(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProviders(provider.Exa))
+	alpha := sim.Namespace(t, "alpha")
+	beta := sim.Namespace(t, "beta")
+
+	alphaID := createAgentRun(t, sim, alpha.URL(provider.Exa))
+	betaID := createAgentRun(t, sim, beta.URL(provider.Exa))
+	require.Equal(t, alphaID, betaID, "same call index, no namespace component: ids collide by design")
+	id := alphaID
+
+	pollJob(t, sim, provider.Exa, alpha.URL(provider.Exa)+"/agent/runs/"+id)
+	pollJob(t, sim, provider.Exa, beta.URL(provider.Exa)+"/agent/runs/"+id)
+	pollJob(t, sim, provider.Exa, alpha.URL(provider.Exa)+"/agent/runs/"+id)
+
+	// Scoped to one namespace, the assertion sees only that lane's polls and
+	// passes: alpha claimed attempts 0 and 1, in order.
+	testkit.AssertPollSequence(t, alpha.Requests(provider.Exa), id, http.StatusOK, http.StatusOK)
+	testkit.AssertPollSequence(t, beta.Requests(provider.Exa), id, http.StatusOK)
+
+	// Read across the whole Sim, the same id's polls span two namespaces.
+	// That must fail loudly, not merge into a plausible-looking sequence of
+	// three.
+	stub := &stubTB{}
+	testkit.AssertPollSequence(stub, sim.Requests(provider.Exa), id, http.StatusOK, http.StatusOK, http.StatusOK)
+	require.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), "different namespaces")
+	assert.Contains(t, stub.Message(), "alpha")
+	assert.Contains(t, stub.Message(), "beta")
+}
+
+// fakePollEntry hand-seeds one journal entry for AssertPollSequence to read,
+// standing in for a live Sim when the shape under test — an attempt-index gap
+// with everything else about the entries correct — cannot be produced by
+// driving one: every route this repository serves hands out consecutive
+// attempt indices to a job's own polls, so the only way to exercise the
+// AttemptIndex half of the check in isolation from the count and status
+// checks is to construct entries directly. That the assertion takes entries
+// rather than a Sim is what makes this possible from outside the module.
+func fakePollEntry(path string, status, attemptIndex int) testkit.Entry {
+	return testkit.Entry{
+		Provider: string(provider.Exa),
+		Method:   http.MethodGet,
+		Path:     path,
+		Outcome:  testkit.Outcome{Status: status, AttemptIndex: attemptIndex},
+	}
+}
+
+// TestAssertPollSequencePinsAttemptIndex is the mutation this assertion's
+// suite was missing: every test reachable by driving a real Sim happens to
+// have attempt indices 0..n-1 whenever the count and statuses are right, so
+// deleting the "|| e.Outcome.AttemptIndex != i" half of the check left every
+// existing test green. Three hand-seeded entries with correct statuses but
+// attempt indices 0, 2, 1 (a duplicate and a gap, never produced by a real
+// per-job lane) close that gap: the count matches, every status matches, and
+// only the attempt-index leg can fail it.
+func TestAssertPollSequencePinsAttemptIndex(t *testing.T) {
+	t.Parallel()
+
+	const path = "/n/default/agent/runs/run_fake"
+	entries := []testkit.Entry{
+		fakePollEntry(path, http.StatusOK, 0),
+		fakePollEntry(path, http.StatusOK, 2),
+		fakePollEntry(path, http.StatusOK, 1),
+	}
+
+	stub := &stubTB{}
+	testkit.AssertPollSequence(stub, entries, "run_fake", http.StatusOK, http.StatusOK, http.StatusOK)
+	require.True(t, stub.Failed(), "count and every status matched; only attempt_index could have failed this")
+	assert.Contains(t, stub.Message(), "attempt_index")
+}
+
 // TestAssertNamespacesIsolatedReportsABrokenCursor drives the detector that
 // matters: a namespace whose claimed attempt indices are not 0, 1, 2 … has had a
 // call served somewhere else.

@@ -2,6 +2,8 @@ package testkit_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -81,6 +83,38 @@ providers:
     results:
       - source: source-a
 `
+
+// jobsScenario is Exa's async agent-run surface with no pending turn: the
+// zero-poll degenerate case (design §2.4), which is enough to mint a job
+// record without needing a poll loop to exercise Sim.Jobs and Namespace.Jobs.
+const jobsScenario = `
+version: 1
+name: testkit-jobs
+providers:
+  exa_agent_runs:
+    status: completed
+    output:
+      text: done
+`
+
+// createAgentRun issues the create call an adapter would issue against Exa's
+// async surface and returns the identifier it minted.
+func createAgentRun(tb testing.TB, sim *testkit.Sim, base string) string {
+	tb.Helper()
+
+	req := newRequest(context.Background(), tb, base+"/agent/runs", provider.Exa, `{"query":"report a"}`)
+	resp, err := sim.Client().Do(req)
+	require.NoError(tb, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(tb, http.StatusCreated, resp.StatusCode, "create failed")
+
+	var out struct {
+		ID string `json:"id"`
+	}
+	require.NoError(tb, json.NewDecoder(resp.Body).Decode(&out))
+	require.NotEmpty(tb, out.ID)
+	return out.ID
+}
 
 // search issues the vendor request an adapter would issue, with a credential in
 // the placement each provider documents.
@@ -278,6 +312,72 @@ func TestResetClearsTheJournalAndTheFaultCounters(t *testing.T) {
 	// first attempt rather than continuing into the success.
 	again := search(t, sim, provider.Exa, "/search", `{"query":"report a"}`)
 	assert.Equal(t, http.StatusTooManyRequests, again.StatusCode)
+}
+
+// TestSimJobsAndNamespaceJobs covers the consumer-facing half of the async job
+// surface: a create's record is visible through Sim.Jobs in the declared
+// (namespace, entry, create_index, id) order, Namespace.Jobs is the same view
+// filtered to one lane, and Reset drops jobs and cursors together — §7.3's
+// invariant checked from the consumer's side: a create straight after Reset
+// must re-mint the same identifier rather than fail with job.id_collision.
+func TestSimJobsAndNamespaceJobs(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithScenarioYAML(jobsScenario), testkit.WithProviders(provider.Exa))
+	alpha := sim.Namespace(t, "alpha")
+	beta := sim.Namespace(t, "beta")
+
+	// alphaID and betaID are, in fact, THE SAME STRING: both creates land at
+	// call_index 0 of their namespace's own lane, and a job id derives from
+	// (seed key, entry, lane key, call index) with no namespace component —
+	// ids are unique within a namespace and deliberately not across them. The
+	// assertions below never compare alphaID with betaID for that reason; do
+	// not add a require.NotEqual here, it would fail for a reason unrelated
+	// to whatever this test is meant to pin.
+	alphaID := createAgentRun(t, sim, alpha.URL(provider.Exa))
+	betaID := createAgentRun(t, sim, beta.URL(provider.Exa))
+	require.Equal(t, alphaID, betaID, "same call index, same lane key, no namespace component: ids collide by design")
+
+	all := sim.Jobs()
+	require.Len(t, all, 2, "one live job per namespace")
+	assert.Equal(t, "alpha", all[0].Namespace, "namespace ascending is the declared order")
+	assert.Equal(t, alphaID, all[0].ID)
+	assert.Equal(t, "beta", all[1].Namespace)
+	assert.Equal(t, betaID, all[1].ID)
+
+	alphaJobs := alpha.Jobs()
+	require.Len(t, alphaJobs, 1)
+	assert.Equal(t, alphaID, alphaJobs[0].ID)
+
+	betaJobs := beta.Jobs()
+	require.Len(t, betaJobs, 1)
+	assert.Equal(t, betaID, betaJobs[0].ID)
+
+	// A second create in an otherwise-untouched namespace pins the third
+	// ordering key List() promises: create_index. alpha and beta already
+	// prove the namespace key sorts ascending; gamma proves that within one
+	// namespace, declared order follows creation order too.
+	gamma := sim.Namespace(t, "gamma")
+	gammaFirst := createAgentRun(t, sim, gamma.URL(provider.Exa))
+	gammaSecond := createAgentRun(t, sim, gamma.URL(provider.Exa))
+	require.NotEqual(t, gammaFirst, gammaSecond, "distinct call indices in one lane mint distinct ids")
+
+	gammaJobs := gamma.Jobs()
+	require.Len(t, gammaJobs, 2)
+	assert.Equal(t, 0, gammaJobs[0].CreateIndex)
+	assert.Equal(t, gammaFirst, gammaJobs[0].ID)
+	assert.Equal(t, 1, gammaJobs[1].CreateIndex)
+	assert.Equal(t, gammaSecond, gammaJobs[1].ID)
+
+	sim.Reset()
+	assert.Empty(t, sim.Jobs(), "Reset drops every namespace's job records")
+
+	// The cursor Reset rewound and the record it dropped move together, so the
+	// next create in the same namespace re-mints the SAME identifier rather
+	// than colliding with a record that should no longer exist.
+	again := createAgentRun(t, sim, alpha.URL(provider.Exa))
+	assert.Equal(t, alphaID, again, "identifiers derive from the call index, which Reset also rewound")
+	require.Len(t, sim.Jobs(), 1)
 }
 
 // TestNewFaultsWiresAConsumerBuiltDeps is why NewFaults exists: without it the
@@ -539,6 +639,115 @@ func TestJournalAliasIsImplementable(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, testkit.OutcomeFault, entries[0].Outcome.Kind)
 	assert.Equal(t, 1, own.Stats().Stored)
+}
+
+// ownJobs proves the Jobs alias is implementable from outside this module:
+// every method names only aliased types (Job, JobStats).
+type ownJobs struct {
+	mu   sync.Mutex
+	jobs map[string]map[string]testkit.Job
+}
+
+// errOwnJobsDuplicate mirrors jobs.ErrDuplicate closely enough for this test's
+// purposes: an own Store implementation is free to define its own sentinel.
+var errOwnJobsDuplicate = errors.New("ownJobs: identifier already live in this namespace")
+
+func (o *ownJobs) namespaceOf(namespace string) string {
+	if namespace == "" {
+		return provider.DefaultNamespace
+	}
+	return namespace
+}
+
+func (o *ownJobs) Create(j testkit.Job) (testkit.JobStats, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	ns := o.namespaceOf(j.Namespace)
+	j.Namespace = ns
+	if o.jobs == nil {
+		o.jobs = map[string]map[string]testkit.Job{}
+	}
+	if _, exists := o.jobs[ns][j.ID]; exists {
+		return testkit.JobStats{Count: len(o.jobs[ns])}, errOwnJobsDuplicate
+	}
+	if o.jobs[ns] == nil {
+		o.jobs[ns] = map[string]testkit.Job{}
+	}
+	o.jobs[ns][j.ID] = j
+	return testkit.JobStats{Count: len(o.jobs[ns])}, nil
+}
+
+func (o *ownJobs) Lookup(namespace, id string) (testkit.Job, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	j, ok := o.jobs[o.namespaceOf(namespace)][id]
+	return j, ok
+}
+
+func (o *ownJobs) StatsIn(namespace string) testkit.JobStats {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	return testkit.JobStats{Count: len(o.jobs[o.namespaceOf(namespace)])}
+}
+
+func (o *ownJobs) ResetIn(namespace string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	delete(o.jobs, o.namespaceOf(namespace))
+}
+
+func (o *ownJobs) Reset() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	clear(o.jobs)
+}
+
+var _ testkit.Jobs = (*ownJobs)(nil)
+
+// TestJobsAliasIsImplementable is the compile-time half of the job alias set:
+// a consumer must be able to name every type provider.Deps.Jobs requires
+// (testkit.Jobs, and testkit.Job and testkit.JobStats from its method set) and
+// wire its own store in place of testkit.NewJobs. The runtime half is a real
+// create followed by a real poll, both answered from the own store.
+func TestJobsAliasIsImplementable(t *testing.T) {
+	t.Parallel()
+
+	s, _, err := scenario.Parse([]byte(jobsScenario))
+	require.NoError(t, err)
+
+	own := &ownJobs{}
+	srv := httptest.NewServer(exa.New(provider.Deps{Scenario: s, Faults: testkit.NewFaults(s), Jobs: own}))
+	t.Cleanup(srv.Close)
+
+	createReq := newRequest(context.Background(), t, srv.URL+"/agent/runs", provider.Exa, `{"query":"report a"}`)
+	createResp, err := srv.Client().Do(createReq)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	var out struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&out))
+	require.NoError(t, createResp.Body.Close())
+
+	job, found := own.Lookup(provider.DefaultNamespace, out.ID)
+	require.True(t, found, "the create must leave a record the own store can resolve")
+	assert.Equal(t, out.ID, job.ID)
+
+	pollReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		srv.URL+"/agent/runs/"+out.ID, nil)
+	require.NoError(t, err)
+	pollReq.Header.Set("x-api-key", "test-key")
+
+	pollResp, err := srv.Client().Do(pollReq)
+	require.NoError(t, err)
+	require.NoError(t, pollResp.Body.Close())
+	assert.Equal(t, http.StatusOK, pollResp.StatusCode, "the own store must resolve the poll too")
 }
 
 // searchIn issues the vendor request an adapter would issue against a base URL

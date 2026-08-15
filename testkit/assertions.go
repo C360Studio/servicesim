@@ -2,7 +2,9 @@ package testkit
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -364,6 +366,116 @@ func cursorKeys(entries []Entry) []string {
 		}
 	}
 	return slices.Sorted(maps.Keys(seen))
+}
+
+// AssertPollSequence asserts that one job's polls, read from the journal
+// alone, are exactly wantStatuses in order.
+//
+// entries is the journal slice to read — [Sim.Requests] for the whole process,
+// or [Namespace.Requests] for one lane. It takes entries rather than a *Sim for
+// the same reason [AssertOverlapped] and [AssertJSONBody] take an [Entry]:
+// the caller chooses the scope, and a caller with its own [Journal]
+// implementation can still use it. From those it keeps the GET entries whose
+// path's last segment equals id (job identifiers are drawn from
+// [A-Za-z0-9_-], so no decoding question arises), in the order given, which
+// for both Requests methods is arrival order. Any such GET counts, including
+// one a route failed to match — a poll of a path that merely ends in this id
+// but was never a real job route still consumes a slot in the sequence, and a
+// wrong count is how that shows up.
+//
+// Pass one namespace's entries when the test uses namespaces. [Job]
+// identifiers are namespace-independent by design — unique within a
+// namespace, deliberately not across them — so the identical id can be live
+// in two namespaces at once, which is exactly what happens when two
+// namespaces each create at the same call index: the per-test-namespace idiom
+// [Sim.NamespaceFor] exists to support that. Passing the whole Sim's entries
+// is fine as long as the id turns out not to be live elsewhere — if it is,
+// AssertPollSequence reports the ambiguity and refuses to merge the two jobs'
+// polls into one sequence, rather than silently mis-scoring both.
+//
+// It requires exactly len(wantStatuses) such entries, and for entry i requires
+// both e.Outcome.Status == wantStatuses[i] AND e.Outcome.AttemptIndex == i. The
+// attempt-index half is the point: it is what proves the polls drew
+// consecutive positions from the one per-job lane a create and its polls
+// share — the create-then-poll correlation — so that nothing else (a HEAD, a
+// poll of a different id, a request the route rejected) consumed one of this
+// job's polls. HEAD is already excluded by the method filter.
+//
+// The journal retains request bodies, not response bodies, so the vendor's
+// own `status` string in the poll response is not something this assertion
+// can read; the HTTP status and the cursor position are, and together they
+// pin the same lifecycle a consumer's poll loop observes.
+func AssertPollSequence(tb testing.TB, entries []Entry, id string, wantStatuses ...int) {
+	tb.Helper()
+
+	var polls []Entry
+	for _, e := range entries {
+		if e.Method != http.MethodGet {
+			continue
+		}
+		if lastPathSegment(e.Path) != id {
+			continue
+		}
+		polls = append(polls, e)
+	}
+
+	if lanes := pollLanes(polls); len(lanes) > 1 {
+		tb.Errorf("job %q was polled in %d different namespaces (%s): job identifiers are "+
+			"namespace-independent by design, so reading this id across every namespace is ambiguous; pass "+
+			"one Namespace's Requests instead\n%s",
+			id, len(lanes), strings.Join(lanes, ", "), pollTable(polls))
+		return
+	}
+
+	if len(polls) != len(wantStatuses) {
+		tb.Errorf("job %q recorded %d polls, want %d\n%s",
+			id, len(polls), len(wantStatuses), pollTable(polls))
+		return
+	}
+	for i, e := range polls {
+		if e.Outcome.Status != wantStatuses[i] || e.Outcome.AttemptIndex != i {
+			tb.Errorf("job %q poll %d: got status %d attempt_index %d, want status %d attempt_index %d\n%s",
+				id, i, e.Outcome.Status, e.Outcome.AttemptIndex, wantStatuses[i], i, pollTable(polls))
+			return
+		}
+	}
+}
+
+// pollLanes returns the distinct, sorted namespaces the given poll entries
+// were recorded in. AssertPollSequence uses it to detect when an id's polls
+// came from more than one namespace, which means they are two different
+// jobs that merely happen to share an identifier.
+func pollLanes(entries []Entry) []string {
+	seen := map[string]bool{}
+	for _, e := range entries {
+		seen[laneOf(e)] = true
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
+// lastPathSegment returns the final "/"-delimited segment of path, which is
+// where a job identifier appears on every poll route this repository serves.
+func lastPathSegment(path string) string {
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
+// pollTable renders the observed (method, path, namespace, status,
+// attempt_index) rows for an AssertPollSequence failure, the same way
+// AssertNamespacesIsolated's failures name the entries they compared
+// against. The namespace column is what makes a cross-namespace id
+// collision (see AssertPollSequence's doc comment) diagnosable from the
+// failure output instead of just from the count.
+func pollTable(entries []Entry) string {
+	var b strings.Builder
+	b.WriteString("observed polls:")
+	for _, e := range entries {
+		fmt.Fprintf(&b, "\n  %s %s ns=%q status=%d attempt_index=%d",
+			e.Method, e.Path, laneOf(e), e.Outcome.Status, e.Outcome.AttemptIndex)
+	}
+	return b.String()
 }
 
 // laneOf returns the namespace an entry was recorded in, reading an empty one as

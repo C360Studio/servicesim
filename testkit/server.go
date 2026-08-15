@@ -81,6 +81,47 @@ const (
 	SeverityError = journal.SeverityError
 )
 
+// The job alias set. A job is the create-then-poll record an async surface
+// mints, and a consumer needs to name it wherever [Sim.Jobs] hands one back or
+// its own provider.Deps.Jobs implementation has to satisfy the store contract.
+
+// Job is one create-then-poll record: what a create minted, and what a later
+// poll in the same namespace resolves. [Sim.Jobs] and [Namespace.Jobs] return
+// these.
+type Job = jobs.Job
+
+// Jobs is the job-store contract the provider seam consumes. A consumer
+// wiring provider.Deps by hand passes one, and an implementation of its own is
+// nameable through this alias, on the same terms as [Journal].
+//
+// The two failure sentinels Create can report — a duplicate id, and a
+// namespace at its bound — are not reachable from outside this module: they
+// are internal/jobs.ErrDuplicate and internal/jobs.ErrLimit, and that
+// package is not importable. Whatever error an own implementation's Create
+// returns instead, the provider seam reports it as job.limit_reached with a
+// generic message rather than matching it to a specific finding code — do
+// not expect a testkit.ErrJobDuplicate to exist to compare against.
+type Jobs = jobs.Store
+
+// JobStats reports one namespace's job occupancy against its bound. It is
+// part of the [Jobs] method set — Create and StatsIn both return it — so a
+// consumer cannot implement Jobs without naming it.
+type JobStats = jobs.Stats
+
+// NewJobs returns an in-process job store bounded to 256 live jobs per
+// namespace — jobs.DefaultMaxJobs, the same default the binary uses — wired
+// the way [Start] already wires one. It exists because internal/jobs is not
+// importable from another module, and without it a consumer building
+// provider.Deps by hand gets a nil Deps.Jobs: a create still answers, but no
+// poll can ever resolve the identifier it returned — see [provider.Deps]'s
+// Jobs field.
+//
+//	s, _, _ := scenario.Parse(src)
+//	h := exa.New(provider.Deps{Scenario: s, Faults: testkit.NewFaults(s), Jobs: testkit.NewJobs()})
+func NewJobs() Jobs {
+	return jobs.NewRegistry(jobs.Limits{})
+}
+
 // defaultJournalCapacity is how many entries a Sim retains before the oldest is
 // dropped. It matches the binary's default so a test and a container disagree
 // about nothing.
@@ -501,6 +542,13 @@ func (s *Sim) Requests(p provider.Name) []Entry {
 	return requestsOf(s.journal.Snapshot(), p)
 }
 
+// Jobs returns every live job record across every namespace, in the same
+// declared order GET /__admin/jobs uses: namespace, then entry, then create
+// index, then id.
+func (s *Sim) Jobs() []Job {
+	return s.jobs.List()
+}
+
 // requestsOf filters entries to one provider and orders them by arrival
 // sequence. The sort is stable, so entries a journal handed back in completion
 // order keep that order among themselves if two ever shared a sequence number.
@@ -765,6 +813,21 @@ func (ns *Namespace) Requests(p provider.Name) []Entry {
 func (ns *Namespace) AwaitRequests(tb testing.TB, p provider.Name, n int) []Entry {
 	tb.Helper()
 	return await(tb, p, n, ns.name, ns.Requests)
+}
+
+// Jobs returns this namespace's live job records, filtered from [Sim.Jobs] and
+// so in the same declared order. It is never nil, matching [Sim.Jobs]: an
+// empty namespace reports an empty slice, not nil, so a consumer comparing
+// against []testkit.Job{} or JSON-encoding the result sees the same shape
+// either view returns.
+func (ns *Namespace) Jobs() []Job {
+	out := make([]Job, 0)
+	for _, j := range ns.sim.jobs.List() {
+		if j.Namespace == ns.name {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // dropped reports how many entries this namespace's journal evicted. An
