@@ -709,6 +709,9 @@ every poll after it — the same fallback rule that already means "keep returnin
 single-shot block — one unconditional turn — is the **zero-poll** case: the job is already terminal on its first
 poll.
 
+A repeated snapshot can be written once and reused with a YAML anchor and alias, exactly as anywhere else in the
+file: `respond: &pending {status: running}` on one turn, `respond: *pending` on the next.
+
 | Provider entry | Routes served |
 |---|---|
 | `exa_agent_runs` | `POST /agent/runs` (create), `GET /agent/runs/{id}` (poll), `HEAD /agent/runs/{id}` (existence only) |

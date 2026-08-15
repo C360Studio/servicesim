@@ -546,6 +546,21 @@ func (p *Providers) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
 		return nil
 	}
+
+	// Resolve every alias in the tree before anything downstream retains a raw
+	// *yaml.Node. decodeProviderEntry, decodeTurns, normalizeRespond and every
+	// nested auth/validation/create/turn_key node all descend from value and are
+	// all retained un-decoded — see resolveAliases' doc comment for why an
+	// AliasNode cannot survive past this point. A self-referencing anchor or a
+	// pathological fan-out is reported here, at load time, rather than
+	// surfacing later as a stack overflow or a strict-decode error whose
+	// message names the wrong symptom.
+	var err error
+	value, err = resolveAliases(value)
+	if err != nil {
+		return fmt.Errorf("providers: %w", err)
+	}
+
 	if value.Kind != yaml.MappingNode {
 		return fmt.Errorf("providers: line %d: expected a mapping of provider name to provider block, got a %s",
 			value.Line, nodeKindName(value.Kind))

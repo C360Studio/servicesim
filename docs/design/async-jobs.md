@@ -288,14 +288,9 @@ providers:
 The YAML anchor is doing the de-duplication a `repeat:` key would otherwise do. That is deliberate — see
 [§2.5](#25-the-sugar-that-was-rejected).
 
-**Correction, 2026-08-15: this anchor does not load.** `scenario.decodeTurns` decodes each turn list item
-independently, and `DecodeStrict` re-marshals *only that one node* before feeding it to a strict decoder
-(`scenario/model.go`, `DecodeStrict`'s doc comment: "the node is re-encoded and fed to a strict decoder"). An
-anchor defined in one turn is absent from a later turn's re-encoded bytes, so the alias fails to resolve —
-verified with `scenario.Parse` on this exact shape: `yaml: unknown anchor 'pending' referenced`. Fixture authors
-should write the repeated snapshot out literally, once per turn, as the built-in scenarios in
-`scenarios/protocol/*.yaml` do. `docs/scenario-schema.md`'s async section does not show the anchor form for the
-same reason.
+This anchor loads: `Providers.UnmarshalYAML` resolves every alias in the providers tree into a deep copy before any
+raw node is retained; it briefly did not, because retained nodes were re-marshalled and strict-decoded one turn at
+a time (`scenario/alias.go`).
 
 The terminal turn is unconditional and therefore also answers polls 4, 5, 6…, which is what every real job API does:
 a finished run keeps returning its result. Nothing special-cases it; it is the existing fallback rule.
@@ -352,9 +347,9 @@ Everything downstream sees one shape.
   reconciliation is where a fixture author's mental model breaks.
 - It would change what `call_index` means for existing files the moment the two are combined, which is a
   version-2 event ([§9](#9-schema-versioning-additive-to-version-1)) bought for syntax.
-- YAML anchors are standard and were the intended solution to the duplication — but do not work across turns in
-  this loader ([§2.1's correction](#21-two-pending-polls-then-completed)); a fixture author writes the repeated
-  snapshot out literally instead.
+- YAML anchors are standard and are the intended solution to the duplication, and they do work across turns in this
+  loader ([§2.1](#21-two-pending-polls-then-completed)); `repeat:` would only duplicate a mechanism that already
+  exists.
 
 `fault:` on an async entry keeps the documented rule: a plan is registered **per route**, the first turn declaring
 non-empty `attempts:` supplies it, and it starts consuming from that route's first request.
@@ -1618,8 +1613,12 @@ Four corrections against this document were found in the process, three fixed in
 
 1. [§2.1](#21-two-pending-polls-then-completed)/[§2.5](#25-the-sugar-that-was-rejected) told fixture authors to
    de-duplicate the repeated pending snapshot with a YAML anchor/alias across turns (`respond: &pending` /
-   `respond: *pending`). It does not load: `scenario.decodeTurns` re-marshals each turn independently, so an
-   alias whose anchor lives in a different turn is unresolvable. **Fixed in place**, with the verified error text.
+   `respond: *pending`). It did not load: `scenario.decodeTurns` re-marshalled each turn independently, so an
+   alias whose anchor lived in a different turn was unresolvable. **Fixed in place** at the time, by rewriting
+   §2.1/§2.5 to tell fixture authors to write the snapshot out literally instead, with the verified error text.
+   **Superseded, same day:** that was documenting a real defect, not a permanent limitation, and the defect is now
+   fixed in the loader itself (`scenario/alias.go`) rather than worked around in fixtures — see §2.1, which the
+   anchor form has been restored to.
 2. [§3.1](#31-the-route-table)'s route table gave Tavily's poll as `GET /research/{id}` with `LaneFrom`
    `["path:id"]`; the shipped route is `GET /research/{request_id}` / `["path:request_id"]`. **Fixed in place.**
 3. §2.1's YAML example showed `output.content`/`output.citations`; the shipped Exa projection is `output.text` +
