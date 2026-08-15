@@ -4,10 +4,14 @@ The first adopter reviewed Servicesim against their target architecture and retu
 their own client code. This document is the durable record of that backlog, the evidence-based status of each item,
 the phased plan, and the decisions already taken. It exists so the work can be picked up cold.
 
-Recorded 2026-08-15, against **v0.1.1**. Phases 0, 1 and 2 are done; everything from Phase 3 on is open.
+Recorded 2026-08-15, against **v0.1.1**. Phases 0 and 1 are shipped. **Phase 2 is in round 2**; everything from
+Phase 3 on is open.
 
-Phase 2 was document work: both design documents now answer their review findings and are marked
-**REVISED — pending re-review**. The re-review is the gate on Phase 3 and Phase 5 starting.
+Phase 2 round 1 revised both design documents; the re-review that gates Phase 3 and Phase 5 returned
+**still needs revision** — one blocker per document, plus three majors on async-jobs. Two of those are defects the
+round-1 revision *introduced*. Both documents are back to **DRAFT — DO NOT IMPLEMENT**, and each carries its open
+findings at the top. The lesson worth keeping: a revision written by the same author who will also judge it is not
+a review, and round 1 self-certified two findings it had restated rather than answered.
 
 ## Decisions already taken
 
@@ -139,10 +143,23 @@ adopter's ability to author scenario YAML in Tier-1 that survives the rest of th
   aliases Phase 0 added — months of that being invisible ended the first time the check ran. Both directions were
   verified to fail on a deliberately broken table before being trusted.
 
-### Phase 2 — Revise the two design documents against the challenge findings — DONE, pending re-review
+### Phase 2 — Revise the two design documents against the challenge findings — ROUND 2 IN PROGRESS
 
-> All ten items answered. Both documents now read **REVISED — pending re-review** instead of
-> **DRAFT — DO NOT IMPLEMENT**. Three findings from this pass are worth carrying forward:
+> **Round 1 did not pass its re-review.** Tally: 4 answered, 3 partly answered, 2 restated, 3 newly broken. The
+> open findings live at the top of each document; do not re-derive them from here.
+>
+> The two restated findings are the ones to be most careful with, because round 1 asserted a *proof* for one of
+> them. §7.3's reset reordering claimed to close the collision window "by construction" and does not — the window
+> is symmetric, and the reordering additionally collides with the all-or-nothing invariant at
+> `internal/admin/handler.go:307-326`. Closing it needs a reset epoch in the derivation tuple or a single lock over
+> both stores; that is a real design decision, not a wording fix.
+>
+> Round 1 was also wrong about a prerequisite in a way worth remembering: it asserted that adding `create` to
+> `reservedEnvelopeKeys` would make `create.fault` loadable. That slice is read by nothing but a test — the
+> envelope split is a hardcoded switch. **`docs/scenario-schema.md:121` calls it "the authoritative list", which is
+> a pre-existing documentation lie that round 1 inherited without checking.** Worth fixing on its own account.
+>
+> Three findings from round 1 that survived scrutiny and are worth carrying forward:
 >
 > - **`turn_key` resolving against the listener's primary entry is a live bug on shipped code**, not an async-only
 >   one — `perplexity_agent`'s `turn_key:` is ignored today. Fixed by `Route.Entry`, which also fixes the

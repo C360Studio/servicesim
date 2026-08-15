@@ -1,9 +1,37 @@
 # SSE streaming
 
-> ## REVISED — pending re-review
+> ## ⚠ DRAFT — DO NOT IMPLEMENT FROM THIS YET
 >
-> An adversarial review returned **needs-revision** on 2026-08-15 with one blocker and one major. Both were answered
-> in Phase 2 of the adopter plan:
+> **Re-review 2026-08-15 (round 2): still needs revision. One blocker open.**
+>
+> The Phase 2 revision answered the compatibility finding and failed the suppression one. Open:
+>
+> - **Blocker — §4.3 still performs the operation §4.4 forbids.** §4.4 says suppression is decided before the
+>   append and that "`execute` does not re-derive it"; §4.3's code block, unrevised, still contains
+>   `resp = suppressStream(resp)` inside `execute`. §4.2's early-journal condition and its deferred close both read
+>   the *outer* `resp`, which that local reassignment never touches — so a suppressed stream still journals a fully
+>   planned `Outcome.Stream` and still stamps `client_gone`. The finding verbatim.
+> - **Major — "effective policy" is per turn; the plan it is checked against is per route.** `TurnFault` returns the
+>   first turn declaring `attempts` (`provider/turn.go:90-101`), so a `stream_disconnect` declared on a streaming
+>   turn 0 can land on a non-streaming turn 3, leave `resp.Stream == nil`, and fall through to `writeResponse`
+>   silently. Load-time validation passes both. `after_chunk.out_of_range` is likewise undefined about *which*
+>   turn's chunk count. This is the async blocker's shape, reintroduced by the streaming fix.
+> - **Major — the preamble and §4.1 disagree about which policies are per turn.** The preamble says `warn` and
+>   `reject` stay provider-level; §4.1 switches on the *selected* turn's projection. Shipped code is turn-0-only for
+>   all three (`provider/exa/handler.go:252-264`, `provider/perplexity/handler.go:312-327`).
+> - Minors: `warnOnce` does not exist; §3.1 cites a non-existent `decodeRefOrMapping`; §2's `DecodeStrict` line
+>   reference is wrong; §4.2's `defer` references variables declared after the existing defer at
+>   `provider/handle.go:164` and the required hoist is unstated.
+>
+> **Answered in round 1 and still sound:** the compatibility blocker. `stream: warn` + `truncate_body` stays
+> loadable, §9's table keys on effective policy in both directions, and the regression fixture is the right guard.
+>
+> Implementation is Phase 5 and remains gated.
+>
+> <details><summary>Round-1 revision notes (superseded by the above)</summary>
+>
+> An adversarial review returned **needs-revision** on 2026-08-15 with one blocker and one major. The round-1
+> revision claimed both were answered:
 >
 > - ~~**Blocker:** §9 raises `scenario.fault.stream_mismatch` on the *presence* of a `stream:` key, which would fire
 >   against Exa's already-shipped projection.~~ **Answered.** Both directions now key on the **effective policy**:
@@ -18,9 +46,9 @@
 > widened to a range**, so that reason is now weaker and says so; and §9 records that
 > `perplexity.agent.stream.unsupported` is misnamed against every other `perplexity.stream.*` code.
 >
-> **Still a design, not an instruction to start.** The plan's own verification step for Phase 2 is to re-run the
-> adversarial review against the revised text and confirm the findings are *answered* rather than *restated*. That
-> has not been done yet. Implementation is Phase 5 and is gated on it.
+> That re-review has now run, and the verdict is at the top of this banner.
+>
+> </details>
 
 An addendum to [`package-design.md`](package-design.md) and
 [`extended-surfaces.md`](extended-surfaces.md). Where the three disagree, this file is newest and wins for streaming

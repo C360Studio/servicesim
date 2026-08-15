@@ -118,7 +118,12 @@ Inside a provider block, **six** keys are reserved. Everything else in the block
 `extra_fields` is **not** in that list, even though it reads like envelope machinery. Every provider projection
 declares its own `extra_fields`, so the key is left in the body and behaves identically in a single-shot block and
 in a turn's `respond:` — which is what makes the two forms literally the same thing rather than two forms with a
-silent difference. The authoritative list is `reservedEnvelopeKeys` in `scenario/model.go`.
+silent difference.
+
+The authoritative list is the `switch key.Value` in `decodeProviderEntry` (`scenario/model.go`): a key with a `case`
+arm is envelope, and everything reaching `default:` is projection body. The `reservedEnvelopeKeys` slice beside it
+names the same keys for a test to assert against, but **the loader does not read it** — adding a key there does not
+make that key envelope. Both have to change together, and the switch is the one that decides.
 
 ### The single-shot form
 

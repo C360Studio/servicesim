@@ -1,9 +1,53 @@
 # Async job lifecycle
 
-> ## REVISED — pending re-review
+> ## ⚠ DRAFT — DO NOT IMPLEMENT FROM THIS YET
 >
-> An adversarial review returned **needs-revision** on 2026-08-15 with one blocker and five majors. All were
-> answered in Phase 2 of the adopter plan:
+> **Re-review 2026-08-15 (round 2): still needs revision. One blocker open, three majors.**
+>
+> The Phase 2 revision answered three findings, partly answered three, and introduced two new defects. Open:
+>
+> - **Blocker — §7.3's "closes the window by construction" is false, and jobs-first breaks a shipped invariant.**
+>   The window is symmetric: under jobs → faults → journal, a create that claims index *i* before the reset and
+>   commits after it collides exactly as before — reversing the order only changes *which* index collides, and the
+>   k>0 case is *harder* to diagnose because no reset is near the failing request. Only a reset epoch in the
+>   derivation tuple, or resetting jobs and faults under one lock, actually closes it. Separately, "jobs strictly
+>   first" is mutually exclusive with `internal/admin/handler.go:307-326`, which deliberately runs both capability
+>   checks before dropping anything so that a store which cannot scope drops nothing — dropping jobs first means a
+>   later 501 leaves job state already destroyed.
+> - **Major — the `create:` prerequisite names a lever that does not exist.** `reservedEnvelopeKeys`
+>   (`scenario/model.go:115`) is read by nothing but a test; the envelope split is a hardcoded `switch key.Value`
+>   at `scenario/model.go:546-577` whose `default:` sweeps everything else into the projection body. Adding
+>   `create` to that slice is a no-op. The real prerequisites — a `keyCreate` const, a `case` arm with a strict
+>   decode, a `Create` field on `ProviderEntry`, and the `Validate`/`HasFaults` follow-through — are unstated. The
+>   paragraph also claims `KnownFields(true)` gives an older binary a loud rejection; it does not, it gives
+>   `body_with_turns`, which the previous paragraph calls "precisely the wrong advice".
+> - **Major — the phantom-job fix names a predicate that does not exist, and the nearest real one inverts the bug.**
+>   `FaultDecision` exposes only `Faulted()` (`provider/deps.go:63-65`), which is true when `Delay > 0` even with no
+>   fault kind. Using it would skip the record for a pure `delay:` attempt whose body IS written — handing the
+>   client a valid identifier no record backs, so every poll 404s. The correct predicate is
+>   `dec.Attempt == nil || dec.Attempt.EffectiveKind() == scenario.FaultNone`. (The mechanism is otherwise
+>   available: `Exchange.Fault()` memoises on `x.claimed`, `provider/exchange.go:200-206`.)
+> - **Major — `diagnoseForeignID` does not compile against §4.1 and hides its third cause.** `Deps.Jobs` is a
+>   `jobs.Store`, which declares no `CountIn`; `StatsIn` already reports the count. And `ValidJobID` is a charset
+>   check (`[A-Za-z0-9_-]{1,64}`), not a scheme check, so `GET /agent/runs/typo` raises `job.foreign_id` and an
+>   error-level log blaming replicas. The most common real cause — a stale or hand-written fixture id — is never
+>   named.
+> - Also open: `Route.Entry` fixes `entryTurnKey` and `policy()` but leaves `Exchange.Entry()` resolving by listener
+>   name with three live callers (`provider/exa/handler.go:116,147`, `provider/tavily/handler.go:179`), and §12
+>   still calls the `policy()` asymmetry out of scope while §5.1 says it is fixed. Minors: `job.limit_reached` vs
+>   `job.limit_exceeded` for one condition; §7.3 repeats a paragraph verbatim; §6's `mux.HandleFunc` snippet matches
+>   no real signature; §6's stated reason for refusing HEAD is contradicted by §4.2's own non-claiming `ResolveJob`.
+>
+> **Answered in round 1 and still sound:** the fault-budget blocker (§3.1's `Plan read from` column is correctly
+> grounded in `answerFault`, `provider/exa/handler.go:42-49` vs `:55-86`); the registry refusing rather than
+> evicting, with the 80% warning; the HEAD cursor-advance diagnosis; and the four documentation minors.
+>
+> Implementation is Phase 3 and remains gated.
+>
+> <details><summary>Round-1 revision notes (superseded by the above)</summary>
+>
+> An adversarial review returned **needs-revision** on 2026-08-15 with one blocker and five majors. The round-1
+> revision claimed all were answered:
 >
 > - ~~**Blocker:** §3.1 asserts create and poll draw on separate fault budgets, while §2.5 specifies exactly one
 >   plan per route.~~ **Answered.** Separate budgets need two things and the draft supplied one: separate fault keys
@@ -27,9 +71,9 @@
 >   reasons it was unbuildable. The bound **refuses rather than evicts**, deliberately, with a `job.limit_near`
 >   warning at 80%; §4.1 explains why FIFO eviction is right for the journal ring and wrong here.
 >
-> **Still a design, not an instruction to start.** The plan's own verification step for Phase 2 is to re-run the
-> adversarial review against the revised text and confirm the findings are *answered* rather than *restated*. That
-> has not been done yet. Implementation is Phase 3 and is gated on it.
+> That re-review has now run, and the verdict is at the top of this banner.
+>
+> </details>
 
 An addendum to [`package-design.md`](package-design.md) and [`extended-surfaces.md`](extended-surfaces.md). Where the
 three disagree, this file is newest and wins for the create-then-poll surfaces it defines; it changes nothing about
@@ -334,9 +378,24 @@ polls are made of. The create call has no turn at all, so it needs its own key:
 Because the poll route's lane is per job ([§3.2](#32-routelanefrom)), that poll plan consumes **per job**: the
 `503` is every job's second poll, not whichever job happens to poll second globally.
 
-`create.fault` is a reserved envelope key on an async entry, resolved by a `createFault` selector written next to the
-route that uses it — the same shape as `answerFault`, nil-safe on every hop, because it runs at composition time
-against a scenario that may not have been validated yet.
+`create.fault` is resolved by a `createFault` selector written next to the route that uses it — the same shape as
+`answerFault`, nil-safe on every hop, because it runs at composition time against a scenario that may not have been
+validated yet.
+
+**`create` must be added to `reservedEnvelopeKeys` (`scenario/model.go:115`), or none of the above loads.** That list
+is `{kind, auth, validation, fault, turns, turn_key}` today. Everything not in it is stripped as a projection body,
+so a `create:` block alongside `turns:` lands in `strayKeys` and raises `scenario.provider.body_with_turns` —
+"move create inside a turn's respond:", which is precisely the wrong advice, and the entry never loads.
+
+The change is one entry in one slice and it is additive: no existing file uses the key, and `KnownFields(true)`
+means an older binary meeting a newer file rejects it loudly rather than misreading it. It belongs to A2 alongside
+`Route.Entry`, and is called out here because it is invisible from the YAML — an implementer reading only §2 and
+§3.1 would write the selector, the route and the tests, and discover it at the first load.
+
+Note also that this is why the create plan is nested under `create:` rather than written as a second block-level
+`fault:`: a block-level `fault:` alongside `turns:` is already a load error
+(`scenario.provider.fault_with_turns`), and it is the right error — in the multi-turn form there is genuinely no way
+to tell which route a bare `fault:` meant. Nesting makes the route explicit in the key itself.
 
 ### 3.2 `Route.LaneFrom`
 
