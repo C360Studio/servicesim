@@ -166,6 +166,39 @@ func TestAssertNoCredentialLeak(t *testing.T) {
 	assert.Contains(t, stub.Message(), "leaked")
 }
 
+// TestAssertNoCredentialLeakCatchesTurnKeyLaneKey pins that outcome.fault_key
+// really is in leakFields' scan, using a turn_key extractor whose credential
+// name is nested and array-indexed (body_json:api_keys.0) — the exact shape
+// provider/lane.go's fingerprinting fix has to cover, since the array index
+// "0" is never a credential name by itself. Before that fix this scenario put
+// the raw literal into outcome.fault_key; this test would have caught it.
+func TestAssertNoCredentialLeakCatchesTurnKeyLaneKey(t *testing.T) {
+	t.Parallel()
+
+	const laneKeyYAML = `
+version: 1
+name: lane-key-credential
+providers:
+  exa:
+    turn_key: ["body_json:api_keys.0"]
+    turns:
+      - respond:
+          results: []
+`
+	sim := testkit.Start(t, testkit.WithScenarioYAML(laneKeyYAML), testkit.WithProviders(provider.Exa))
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		sim.URL(provider.Exa)+"/search", strings.NewReader(`{"api_keys":["sk-live-lane-leak"]}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := sim.Client().Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	testkit.AssertNoCredentialLeak(t, sim, "sk-live-lane-leak")
+}
+
 func TestAssertJSONBody(t *testing.T) {
 	t.Parallel()
 

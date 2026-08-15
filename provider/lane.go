@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/c360studio/servicesim/internal/redact"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -411,6 +412,54 @@ func resolveLane(x *Exchange, p lanePrefix) {
 // CodeTurnKeyUnresolved, leaving the lane named by the route and the extractors
 // that did resolve. The request is still served — loudly, in the journal, rather
 // than silently in a lane the author did not intend.
+//
+// A credential-bearing extractor is fingerprinted, not written verbatim.
+// "route by which key was presented" (Phase 6's credential-rotation scenario) is
+// a legitimate reason to write turn_key: [header:authorization] or
+// [body_json:api_key], and scenario.Validate accepts both — it checks an
+// extractor's FORM, never what its value turns out to be. But this key becomes
+// FaultDecision.Key, then journal.Entry.Outcome.FaultKey, which is retained in
+// the ring, served by GET /__admin/requests and logged as fault_key: a lane key
+// is exactly the kind of retained structure CLAUDE.md house rule 4 says a
+// credential must never reach by any path. So the value is replaced with
+// redact.Fingerprint(value) — or, for a header placement httpx already
+// fingerprinted, the SAME fingerprint — before it is joined into the key,
+// under either of two independent tests:
+//
+//   - By NAME: a header (redact.IsCredentialHeader) or a body_json path with
+//     any dotted segment naming a credential (pathHasCredentialSegment) —
+//     "api_key", "auth.token", a nested "credentials.secret", or an array
+//     under one such as "api_keys.0". Checking every segment, not just the
+//     last, matches redact.JSON's own subtree-masking semantics: a credential
+//     name masks everything under it, index included.
+//   - By SHAPE: even when the property name gives no hint, a value that
+//     redact.String would itself change (an "sk-…" vendor key, a "Bearer …"
+//     token, an embedded "password=…" pair) is fingerprinted too — the same
+//     class redact.JSONBytes already masks in bodies by shape rather than by
+//     name. This runs on the isolated extractor value, before it is joined
+//     into the composed key, which is what makes it actually work: applying
+//     redact.String to the WHOLE composed key at journal.Redact cannot
+//     reliably find a pair buried inside it, because its leftmost match
+//     consumes the route prefix ("exa:search|...") as a pair's name and
+//     swallows the rest as its value.
+//
+// Two properties survive every substitution: discrimination (two different
+// credentials still name two different lanes, because Fingerprint is a
+// deterministic, domain-separated SHA-256 prefix with no clock and no
+// randomness — the rotation use case keeps working, and unlike masking to a
+// fixed string, two different inputs practically never fingerprint the same)
+// and correlatability with the journal's own auth.fingerprint. For
+// header:authorization and header:x-api-key specifically, the lane reuses the
+// exact AuthPlacement.Fingerprint httpx.ObserveAll already computed for x.Auth
+// (looked up by authPlacementFingerprint), so the two are byte-identical for
+// the same request — httpx trims the header and, for Authorization, strips the
+// scheme before fingerprinting, and reusing its answer is what makes the lane
+// agree rather than merely resemble it. Any other credential-named header
+// (x-exa-api-key and the like, which httpx.ExtractCredentials does not
+// recognise as a placement) and every body_json case fingerprint
+// strings.TrimSpace(value) directly. The extractor label itself is left alone
+// ("header:authorization=<fp>"), so a reader of outcome.fault_key still sees
+// WHICH extractor contributed.
 func turnLaneKey(x *Exchange) string {
 	scenarioExtractors := entryTurnKey(x).Extractors()
 
@@ -454,12 +503,22 @@ func turnLaneKey(x *Exchange) string {
 			}
 			path := strings.TrimPrefix(extractor, scenario.TurnKeyBodyJSONPrefix)
 			value, ok := lookupLaneJSON(decoded, path)
+			if ok {
+				// See the fingerprintLaneValue doc comment for the two independent
+				// tests (by name, by shape) that decide whether value survives
+				// verbatim. CLAUDE.md house rule 4.
+				value = fingerprintLaneValue(value, pathHasCredentialSegment(path))
+			}
 			parts = appendLanePart(x, parts, extractor, value, ok, turnKeyFault)
 
 		case strings.HasPrefix(extractor, scenario.TurnKeyHeaderPrefix):
 			name := strings.TrimPrefix(extractor, scenario.TurnKeyHeaderPrefix)
 			value := x.Request.Header.Get(name)
-			parts = appendLanePart(x, parts, extractor, value, value != "", turnKeyFault)
+			ok := value != ""
+			if ok {
+				value = fingerprintHeaderLaneValue(x, name, value)
+			}
+			parts = appendLanePart(x, parts, extractor, value, ok, turnKeyFault)
 
 		case strings.HasPrefix(extractor, LaneFromPath):
 			name := strings.TrimPrefix(extractor, LaneFromPath)
@@ -567,6 +626,89 @@ func decodeLaneBody(raw []byte) any {
 		return nil
 	}
 	return v
+}
+
+// pathHasCredentialSegment reports whether any dotted segment of a body_json
+// extractor path names a credential — not only the last. redact.JSON masks a
+// credential-named property's WHOLE subtree (redact.go redactValue: "masked ||
+// IsCredentialKey(key)" propagates down), so a nested "credentials.primary" and
+// an array element under "api_keys.0" are both credentials even though their
+// final segment ("primary", the numeric index "0") is not a credential name by
+// itself. Checking every segment is what keeps this test and redact.JSON's
+// agreeing about which values are sensitive.
+func pathHasCredentialSegment(path string) bool {
+	for _, seg := range strings.Split(path, ".") {
+		if redact.IsCredentialKey(seg) {
+			return true
+		}
+	}
+	return false
+}
+
+// fingerprintLaneValue substitutes value's fingerprint for a body_json
+// extractor's contribution when byName reports the path is credential-named,
+// or — independently — when the value itself is shaped like a credential no
+// matter what property it came from. See turnLaneKey's doc comment for why
+// both tests exist and why the shape test runs here, on the isolated value,
+// rather than on the composed key.
+func fingerprintLaneValue(value string, byName bool) string {
+	if byName || laneValueLooksLikeCredential(value) {
+		return redact.Fingerprint(value)
+	}
+	return value
+}
+
+// laneValueLooksLikeCredential reports whether redact.String would change
+// value — the same by-shape test (a vendor key prefix, a "Bearer …" token, an
+// embedded "name=value" pair, URL userinfo) redact.String and redact.JSON
+// already apply elsewhere in this repository.
+func laneValueLooksLikeCredential(value string) bool {
+	return value != "" && redact.String(value) != value
+}
+
+// fingerprintHeaderLaneValue substitutes a credential header's fingerprint for
+// its lane-key contribution.
+//
+// For authorization and x-api-key — the two placements httpx.ExtractCredentials
+// recognises — it reuses the exact fingerprint httpx.ObserveAll already
+// computed onto x.Auth, via authPlacementFingerprint, so the lane component and
+// journal.Entry.Auth.Fingerprint are byte-identical for the same request rather
+// than merely both derived from it. Any other credential-named header
+// (x-exa-api-key and the like, no recognised placement) falls back to
+// fingerprinting strings.TrimSpace(value) directly — trimmed to match
+// httpx.ExtractCredentials' own normalisation, so incidental leading or
+// trailing whitespace does not open a second lane for one credential.
+//
+// A header whose name gives no hint is still checked by shape, the same
+// independent test the body_json case runs, so a value like "token=SENTINEL"
+// under an unlisted header name is caught too.
+func fingerprintHeaderLaneValue(x *Exchange, name, value string) string {
+	switch {
+	case redact.IsCredentialHeader(name):
+		if fp, ok := authPlacementFingerprint(x, name); ok {
+			return fp
+		}
+		return redact.Fingerprint(strings.TrimSpace(value))
+	case laneValueLooksLikeCredential(value):
+		return redact.Fingerprint(value)
+	default:
+		return value
+	}
+}
+
+// authPlacementFingerprint looks up the fingerprint httpx.ObserveAll already
+// computed for a credential header placement, so a lane key's component and
+// entry.Auth.Fingerprint agree byte-for-byte for authorization and x-api-key.
+// x.Auth is populated before resolveLane runs (provider/handle.go), so the
+// placement is already there by the time turnLaneKey asks for it.
+func authPlacementFingerprint(x *Exchange, name string) (string, bool) {
+	lower := strings.ToLower(name)
+	for _, p := range x.Auth.Placements {
+		if p.Header == lower {
+			return p.Fingerprint, true
+		}
+	}
+	return "", false
 }
 
 // lookupLaneJSON walks a dotted path over a decoded JSON value, treating a

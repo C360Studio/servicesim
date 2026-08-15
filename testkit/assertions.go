@@ -116,6 +116,12 @@ func leakFields(e Entry) []leakField {
 		{"body", string(e.Body)},
 		{"body_parse_error", e.BodyParseError},
 		{"outcome.label", e.Outcome.Label},
+		// outcome.fault_key is the turn_key extractor's composed lane key
+		// (provider/lane.go turnLaneKey). A credential-named extractor is
+		// fingerprinted there, and journal.Redact masks a credential-shaped one
+		// as a second pass, but this scan exists precisely so a consumer's suite
+		// does not have to trust either of those in isolation.
+		{"outcome.fault_key", e.Outcome.FaultKey},
 	}
 	// Sorted, not map order: a failure message must name the same header on every
 	// run, and Go randomises map iteration.

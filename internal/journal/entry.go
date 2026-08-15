@@ -338,17 +338,36 @@ func ResetIn(j Journal, namespace string) bool {
 
 // Redact returns a copy of e with every credential-bearing value masked:
 //
-//	Headers            -> redact.Headers
-//	Query              -> redact.Query
-//	Body               -> redact.JSONBytes (which redacts even a non-JSON body)
-//	BodyParseError     -> redact.String
-//	Findings[].Message -> redact.String
-//	Path               -> redact.String
+//	Headers             -> redact.Headers
+//	Query               -> redact.Query
+//	Body                -> redact.JSONBytes (which redacts even a non-JSON body)
+//	BodyParseError      -> redact.String
+//	Findings[].Message  -> redact.String
+//	Path                -> redact.String
+//	Outcome.FaultKey    -> redact.String
 //
-// Path is not in the package design's list because r.URL.Path cannot carry
-// userinfo. It is masked anyway: unmatched traffic is journaled, its path is
-// client-chosen free text, and redact.String is identity on every path this
-// simulator routes.
+// Path cannot carry userinfo (r.URL.Path never does), but is masked anyway:
+// unmatched traffic is journaled, its path is client-chosen free text, and
+// redact.String is identity on every path this simulator routes, so the pass
+// costs nothing.
+//
+// Outcome.FaultKey is the turn lane a request was served in — Route.FaultKey
+// plus one "<extractor>=<value>" part per turn_key extractor that resolved
+// (provider/lane.go turnLaneKey). turnLaneKey itself now closes both the
+// credential-NAMED case (a header or body_json extractor whose NAME looks
+// like a credential — turn_key: [header:authorization] and friends, a
+// legitimate credential-rotation shape scenario.Validate accepts) and the
+// credential-SHAPED case (a value that looks like a credential — vendor key,
+// Bearer token, embedded name=value pair — regardless of what property it
+// came from), fingerprinting each in isolation before it is joined into the
+// key. Applying redact.String to the whole composed key here, after the join,
+// cannot reliably repeat that shape check: its leftmost name=value match
+// consumes the route prefix ("exa:search|...") as a pair's name and swallows
+// everything after it as the value, so a pair buried further into the key is
+// never reached. This call is therefore belt-and-braces for whatever
+// hand-built FaultDecision.Key does not go through turnLaneKey's own checks,
+// not the primary defence — that lives in provider/lane.go, which is where a
+// gap in this class of leak must be fixed.
 //
 // It is idempotent, which is what allows provider.Handle to call it before
 // logging and Append to call it again at the storage boundary. Every text field
@@ -381,6 +400,9 @@ func Redact(e Entry) Entry {
 			findings[i].Message = redact.String(findings[i].Message)
 		}
 		e.Findings = findings
+	}
+	if e.Outcome.FaultKey != "" {
+		e.Outcome.FaultKey = redact.String(e.Outcome.FaultKey)
 	}
 	// Placements hold fingerprints, never values, so there is nothing here to
 	// mask. It is still rebuilt, because this function promises to share no

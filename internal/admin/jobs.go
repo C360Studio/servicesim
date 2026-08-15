@@ -22,14 +22,15 @@ import (
 //     non-claiming read (docs/design/async-jobs.md §8, "localCursor is not
 //     readable"). Exposing a stale copy here would invite exactly the
 //     derivation this listing must not attempt.
-//   - LaneKey, which the record does hold, is not served, and this is a
-//     house-rule-4 decision rather than an oversight. A lane key embeds
-//     whatever a route's turn_key or
-//     Route.LaneFrom extractors resolved verbatim — including a
-//     "header:authorization" or "body_json:api_key" value a scenario author
-//     wrote, which scenario validation does not refuse and nothing redacts.
-//     A structure served over HTTP is the wrong place to find that out, so
-//     the listing carries no lane key at all.
+//   - LaneKey, which the record does hold, is not served, and this remains a
+//     house-rule-4 decision rather than an oversight even now that
+//     provider/lane.go fingerprints a credential-named or credential-shaped
+//     turn_key extractor at composition time. A structure served over HTTP is
+//     still the wrong place to learn "was this lane keyed on a credential" —
+//     the fingerprinting fix closes the leak, it does not make the field a
+//     public one, and a wire response is a compatibility obligation (CLAUDE.md
+//     house rule 7) this repository does not want to take on for a field
+//     nothing currently needs. So the listing carries no lane key at all.
 type JobSummary struct {
 	// ID is the identifier the create returned and a poll presents.
 	ID string `json:"id"`

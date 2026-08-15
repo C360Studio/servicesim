@@ -91,7 +91,7 @@ imports anything not listed.
 | 1 | `internal/journal` | `internal/redact` |
 | 2 | `internal/httpx` | `internal/journal` |
 | 2 | `scenarios` | `scenario` |
-| 3 | `provider` | `scenario`, `internal/journal`, `internal/httpx` |
+| 3 | `provider` | `scenario`, `internal/journal`, `internal/httpx`, `internal/redact` |
 | 4 | `internal/faults` | `scenario`, `provider` |
 | 5 | `provider/exa` | `scenario`, `provider`, `internal/httpx`, `internal/wire`, `internal/ids`, `internal/journal` |
 | 5 | `provider/tavily` | same as `provider/exa` |
@@ -1554,11 +1554,20 @@ func NewDiscard() Journal
 
 // Redact returns a copy of e with every credential-bearing value masked:
 //
-//	Headers        -> redact.Headers
-//	Query          -> redact.Query
-//	Body           -> redact.JSONBytes (which redacts even a non-JSON body)
-//	BodyParseError -> redact.String
+//	Headers            -> redact.Headers
+//	Path               -> redact.String
+//	Query              -> redact.Query
+//	Body               -> redact.JSONBytes (which redacts even a non-JSON body)
+//	BodyParseError     -> redact.String
 //	Findings[].Message -> redact.String
+//	Outcome.FaultKey   -> redact.String
+//
+// Outcome.FaultKey is the turn_key lane key (provider/lane.go turnLaneKey).
+// turnLaneKey itself fingerprints a credential-NAMED or credential-SHAPED
+// extractor value at composition time, before the key ever reaches Outcome, so
+// by the time this pass runs the key should already carry no credential; this
+// pass is belt-and-braces for whatever future extractor form does not go
+// through turnLaneKey's own checks.
 //
 // It is idempotent, which is what allows provider.Handle to call it before
 // logging and Append to call it again at the storage boundary. Every text field

@@ -192,3 +192,51 @@ func TestEntry_WarningsAndErrors(t *testing.T) {
 		t.Errorf("Warnings() on an entry with no findings = %+v, want nil", got)
 	}
 }
+
+// TestRedact_MasksCredentialShapedFaultKey is the belt-and-braces half of the
+// turn_key credential fix (provider/lane.go turnLaneKey fingerprints a
+// credential-NAMED extractor at composition time; this covers the case that
+// escapes it — a body_json extractor on a field whose NAME gives no hint, but
+// whose VALUE is credential-shaped). Outcome.FaultKey is the one field Redact
+// used not to touch at all: house rule 4 says a credential must not survive by
+// ANY path, and a lane key is a path nothing else on this list closes.
+func TestRedact_MasksCredentialShapedFaultKey(t *testing.T) {
+	t.Parallel()
+
+	got := journal.Redact(journal.Entry{
+		Outcome: journal.Outcome{FaultKey: "exa:search|body_json:notes=" + secret},
+	})
+
+	assertMasked(t, "outcome.fault_key", got.Outcome.FaultKey, secret)
+}
+
+// TestRedact_OrdinaryFaultKeysAreUnchanged pins the property the fix
+// specification demands: redact.String, applied to Outcome.FaultKey, must be
+// the identity function on an everyday lane key. A turn_key extractor's own
+// "<name>=<value>" shape (colon- and equals-delimited, pipe-joined) is exactly
+// the shape redact.String's free-text matchers look for, so this is the test
+// that would have caught it if the matchers over-fired on a shape they were
+// never meant to touch.
+func TestRedact_OrdinaryFaultKeysAreUnchanged(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{"a header extractor naming an ordinary field", "exa:search|header:x-role=admin"},
+		{"a body_json extractor naming an ordinary field", "tavily:search|body_json:topic=news"},
+		{"a LaneFromPath job identifier", "exa:agent_runs_poll|path:id=run_0123abcd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := journal.Redact(journal.Entry{Outcome: journal.Outcome{FaultKey: tt.key}})
+			if got.Outcome.FaultKey != tt.key {
+				t.Errorf("Redact changed an ordinary fault key:\n got: %q\nwant: %q (unchanged)",
+					got.Outcome.FaultKey, tt.key)
+			}
+		})
+	}
+}

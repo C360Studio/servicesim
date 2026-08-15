@@ -859,6 +859,59 @@ func TestRequestLogIsStructuredAndCredentialFree(t *testing.T) {
 	require.NotContains(t, logs.String(), "Bearer ")
 }
 
+// TestCredentialTurnKeyNeverReachesLogsOrAdmin is the log-and-admin half of the
+// turn_key credential fix (provider/lane.go turnLaneKey, internal/journal
+// Redact): a scenario may legitimately key its cursor on which credential was
+// presented (turn_key: [header:authorization]), and the raw token composed into
+// the lane key must not survive by ANY path — not the structured log line, and
+// not GET /__admin/requests, which serves the journal this process retained.
+// provider/exa's TestAgentRunCreateCredentialTurnKeyNeverLeaksTheToken covers the
+// journal entry and the job registry directly; this is the whole-process path
+// for the two surfaces that only exist once a real Server is running.
+func TestCredentialTurnKeyNeverReachesLogsOrAdmin(t *testing.T) {
+	t.Parallel()
+
+	const sentinel = "Bearer sk-live-SENTINEL"
+	args := writeScenario(t, `
+version: 1
+name: header-auth-turn-key
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa:
+    turn_key: ["header:authorization"]
+    results:
+      - source: source-a
+`)
+
+	var logs logBuffer
+	cfg := testConfig(t, args...)
+	h := start(t, cfg, NewLogger(cfg, &logs))
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"http://"+h.Addr(string(provider.Exa))+"/search", strings.NewReader(`{"query":"report a"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", sentinel)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.NotContains(t, logs.String(), "SENTINEL",
+		"a credential composed into a turn_key lane must never reach a log line")
+
+	status, journalBody := get(t, h.Addr(SurfaceAdmin), "/__admin/requests")
+	require.Equal(t, http.StatusOK, status)
+	require.NotContains(t, string(journalBody), "SENTINEL",
+		"a credential composed into a turn_key lane must never reach the admin API")
+	require.Contains(t, string(journalBody), `"fault_key":"exa:search|header:authorization=`,
+		"the fault key must still be present, fingerprinted rather than dropped")
+}
+
 // TestNewLoggerHonoursFormat covers the one configuration knob that changes the
 // shape of every line: CI reads JSON, a developer reads text.
 func TestNewLoggerHonoursFormat(t *testing.T) {

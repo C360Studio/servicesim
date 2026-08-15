@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/internal/journal"
+	"github.com/c360studio/servicesim/internal/redact"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -1037,6 +1038,307 @@ func TestTurnKeyHeaderExtractor(t *testing.T) {
 		mux.ServeHTTP(httptest.NewRecorder(), r)
 	}
 	require.Equal(t, []string{"exa:search|header:X-Role=planner", "exa:search|header:X-Role=critic"}, keys)
+}
+
+// headerAuthKeyYAML keys the cursor on the Authorization header — a legitimate
+// credential-rotation shape (Phase 6: "route by which key was presented"). It is
+// what TestTurnKeyCredentialHeaderIsFingerprinted proves does not leak the token.
+const headerAuthKeyYAML = `
+version: 1
+name: header-auth-key
+providers:
+  exa:
+    turn_key: ["header:authorization"]
+    turns:
+      - respond:
+          answer: only
+`
+
+// bodyAPIKeyYAML keys the cursor on a body_json property whose name is itself a
+// credential — the body_json sibling of headerAuthKeyYAML.
+const bodyAPIKeyYAML = `
+version: 1
+name: body-api-key
+providers:
+  exa:
+    turn_key: ["body_json:api_key"]
+    turns:
+      - respond:
+          answer: only
+`
+
+// laneKeysFor posts one request per credential in creds against src, using post
+// to set the header or the body_json property named by field, and returns the
+// lane key each drew.
+func laneKeysFor(t *testing.T, src, field string, creds []string) []string {
+	t.Helper()
+
+	var keys []string
+	mux := NewMux(Deps{Scenario: mustScenario(t, src)}, Exa, laneSpec(func(x *Exchange) Response {
+		keys = append(keys, x.Lane().Key)
+		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
+	}))
+
+	for _, cred := range creds {
+		body := `{}`
+		if field == "body" {
+			body = `{"api_key":"` + cred + `"}`
+		}
+		r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(body))
+		if field == "header" {
+			r.Header.Set("Authorization", cred)
+		}
+		mux.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	return keys
+}
+
+// TestTurnKeyCredentialHeaderIsFingerprinted is house rule 4 applied to
+// turn_key: a scenario may legitimately key its cursor on "which credential was
+// presented" (header:authorization, body_json:api_key), but the lane key that
+// names the cursor must never carry the raw credential — it is retained in the
+// journal's outcome.fault_key, which journal.Redact does not otherwise touch,
+// and served over GET /__admin/requests.
+//
+// The fix substitutes a fingerprint for a credential-named extractor's value at
+// composition time, in provider/lane.go turnLaneKey. That keeps the two
+// properties a rotation scenario needs: discrimination (two credentials still
+// name two lanes, deterministically — Fingerprint has no clock and no
+// randomness) without ever writing the credential itself.
+//
+// For header:authorization specifically, the fingerprint is credential.go
+// AuthPlacement.Fingerprint — httpx.ObserveAll's own answer, with the "Bearer "
+// scheme already stripped — not redact.Fingerprint of the raw header. The two
+// differ (fingerprinting "Bearer sk-live-X" and fingerprinting "sk-live-X"
+// produce different hex strings), and only the placement's answer lets a lane
+// key component be checked against journal.Entry.Auth.Fingerprint for the same
+// request, which this test also does.
+func TestTurnKeyCredentialHeaderIsFingerprinted(t *testing.T) {
+	t.Parallel()
+
+	const credA = "sk-live-SENTINEL-A"
+	const credB = "sk-live-SENTINEL-B"
+	const tokenA = "Bearer " + credA
+	const tokenB = "Bearer " + credB
+
+	j := journal.NewRing(8, 8192)
+	d := Deps{Journal: j, Scenario: mustScenario(t, headerAuthKeyYAML)}
+	var keys []string
+	mux := NewMux(d, Exa, laneSpec(func(x *Exchange) Response {
+		keys = append(keys, x.Lane().Key)
+		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
+	}))
+
+	for _, tok := range []string{tokenA, tokenB, tokenA} {
+		r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{}`))
+		r.Header.Set("Authorization", tok)
+		mux.ServeHTTP(httptest.NewRecorder(), r)
+	}
+
+	wantA := "exa:search|header:authorization=" + redact.Fingerprint(credA)
+	wantB := "exa:search|header:authorization=" + redact.Fingerprint(credB)
+	require.Equal(t, []string{wantA, wantB, wantA}, keys,
+		"the same credential must always name the same lane, deterministically")
+
+	for _, key := range keys {
+		require.NotContains(t, key, "SENTINEL", "the raw credential must never appear in a lane key")
+	}
+	require.NotEqual(t, wantA, wantB, "two different credentials must still name two different lanes")
+
+	// The lane key's fingerprint component must be the SAME string
+	// journal.Entry.Auth.Fingerprint reports for the same request — not merely
+	// derived from the same credential.
+	entries := j.Snapshot()
+	require.Len(t, entries, 3)
+	for i, entry := range entries {
+		require.True(t, entry.Auth.Present)
+		require.Contains(t, keys[i], "header:authorization="+entry.Auth.Fingerprint)
+	}
+}
+
+// TestTurnKeyCredentialBodyJSONIsFingerprinted is the body_json sibling of
+// TestTurnKeyCredentialHeaderIsFingerprinted: a credential-NAMED property is
+// fingerprinted the same way a credential-named header is.
+func TestTurnKeyCredentialBodyJSONIsFingerprinted(t *testing.T) {
+	t.Parallel()
+
+	const keyA = "sk-live-SENTINEL-A"
+	const keyB = "sk-live-SENTINEL-B"
+
+	keys := laneKeysFor(t, bodyAPIKeyYAML, "body", []string{keyA, keyB, keyA})
+
+	wantA := "exa:search|body_json:api_key=" + redact.Fingerprint(keyA)
+	wantB := "exa:search|body_json:api_key=" + redact.Fingerprint(keyB)
+	require.Equal(t, []string{wantA, wantB, wantA}, keys)
+
+	for _, key := range keys {
+		require.NotContains(t, key, "SENTINEL")
+	}
+	require.NotEqual(t, wantA, wantB)
+}
+
+// laneKeyFor posts one request against src carrying body against a
+// single-route mux and returns the lane key the request drew.
+func laneKeyFor(t *testing.T, src, body string) string {
+	t.Helper()
+
+	var got string
+	mux := NewMux(Deps{Scenario: mustScenario(t, src)}, Exa, laneSpec(func(x *Exchange) Response {
+		got = x.Lane().Key
+		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
+	}))
+	r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(body))
+	mux.ServeHTTP(httptest.NewRecorder(), r)
+	return got
+}
+
+// TestTurnKeyCredentialBodyJSONNestedSegmentIsFingerprinted proves the
+// credential-name check reads every dotted segment of a body_json path, not
+// only the last: "credentials.primary" is a credential because "credentials"
+// is, even though "primary" alone is not, and "api_keys.0" is a credential
+// because "api_keys" is, even though the array index "0" never matches a
+// credential name. Both must fingerprint like the flat body_json:api_key case.
+func TestTurnKeyCredentialBodyJSONNestedSegmentIsFingerprinted(t *testing.T) {
+	t.Parallel()
+
+	const secretYAML = `
+version: 1
+name: nested-credential
+providers:
+  exa:
+    turn_key: ["body_json:credentials.primary"]
+    turns:
+      - respond:
+          answer: only
+`
+	const arrayYAML = `
+version: 1
+name: array-credential
+providers:
+  exa:
+    turn_key: ["body_json:api_keys.0"]
+    turns:
+      - respond:
+          answer: only
+`
+	const sentinel = "hunter2-SENTINEL"
+
+	nested := laneKeyFor(t, secretYAML, `{"credentials":{"primary":"`+sentinel+`"}}`)
+	require.Equal(t, "exa:search|body_json:credentials.primary="+redact.Fingerprint(sentinel), nested)
+	require.NotContains(t, nested, "SENTINEL")
+
+	arr := laneKeyFor(t, arrayYAML, `{"api_keys":["`+sentinel+`"]}`)
+	require.Equal(t, "exa:search|body_json:api_keys.0="+redact.Fingerprint(sentinel), arr)
+	require.NotContains(t, arr, "SENTINEL")
+}
+
+// TestTurnKeyCredentialShapedValueIsFingerprinted proves the independent
+// by-shape test: an extractor whose NAME gives no hint at all — header:x-trace,
+// body_json:notes — still has its value fingerprinted when the value itself is
+// shaped like a credential (an embedded "name=value" pair, here). This is what
+// keeps journal.Entry.Outcome.FaultKey from carrying a credential quoted inside
+// an ordinary-looking field, without relying on journal.Redact's whole-key
+// pass, which cannot reliably find a pair buried inside the composed key (see
+// turnLaneKey's doc comment).
+func TestTurnKeyCredentialShapedValueIsFingerprinted(t *testing.T) {
+	t.Parallel()
+
+	t.Run("header:x-trace", func(t *testing.T) {
+		t.Parallel()
+		const traceYAML = `
+version: 1
+name: shaped-header
+providers:
+  exa:
+    turn_key: ["header:x-trace"]
+    turns:
+      - respond:
+          answer: only
+`
+		var got string
+		mux := NewMux(Deps{Scenario: mustScenario(t, traceYAML)}, Exa, laneSpec(func(x *Exchange) Response {
+			got = x.Lane().Key
+			return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
+		}))
+		r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{}`))
+		r.Header.Set("X-Trace", "token=SENTINEL")
+		mux.ServeHTTP(httptest.NewRecorder(), r)
+
+		require.Equal(t, "exa:search|header:x-trace="+redact.Fingerprint("token=SENTINEL"), got)
+		require.NotContains(t, got, "SENTINEL")
+	})
+
+	t.Run("body_json:notes", func(t *testing.T) {
+		t.Parallel()
+		const notesYAML = `
+version: 1
+name: shaped-body
+providers:
+  exa:
+    turn_key: ["body_json:notes"]
+    turns:
+      - respond:
+          answer: only
+`
+		got := laneKeyFor(t, notesYAML, `{"notes":"password=SENTINEL"}`)
+		require.Equal(t, "exa:search|body_json:notes="+redact.Fingerprint("password=SENTINEL"), got)
+		require.NotContains(t, got, "SENTINEL")
+	})
+}
+
+// TestTurnKeyOrdinaryExtractorsAreUnaffected pins the three fixture shapes the
+// fix specification calls out by name: an ordinary (non-credential-named,
+// non-credential-shaped) header or body_json extractor, and a LaneFromPath
+// value, must keep composing their lane key exactly as before — the
+// fingerprinting fix in turnLaneKey must touch only a value whose extractor
+// name looks like a credential (any dotted segment of a body_json path, or the
+// header name) or whose value is itself credential-shaped.
+func TestTurnKeyOrdinaryExtractorsAreUnaffected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("header:x-role", func(t *testing.T) {
+		t.Parallel()
+
+		var got string
+		mux := NewMux(Deps{Scenario: mustScenario(t, `
+version: 1
+name: ordinary-header
+providers:
+  exa:
+    turn_key: ["header:x-role"]
+    turns:
+      - respond:
+          answer: only
+`)}, Exa, laneSpec(func(x *Exchange) Response {
+			got = x.Lane().Key
+			return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
+		}))
+		r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{}`))
+		r.Header.Set("x-role", "admin")
+		mux.ServeHTTP(httptest.NewRecorder(), r)
+		require.Equal(t, "exa:search|header:x-role=admin", got)
+	})
+
+	t.Run("body_json:topic", func(t *testing.T) {
+		t.Parallel()
+		var got string
+		mux := NewMux(Deps{Scenario: mustScenario(t, `
+version: 1
+name: ordinary-body
+providers:
+  exa:
+    turn_key: ["body_json:topic"]
+    turns:
+      - respond:
+          answer: only
+`)}, Exa, laneSpec(func(x *Exchange) Response {
+			got = x.Lane().Key
+			return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
+		}))
+		r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{"topic":"news"}`))
+		mux.ServeHTTP(httptest.NewRecorder(), r)
+		require.Equal(t, "exa:search|body_json:topic=news", got)
+	})
 }
 
 // TestTurnKeyWithoutRouteStillNamesTheRoute is the decision this file exists to

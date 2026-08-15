@@ -306,6 +306,23 @@ Extractors are evaluated in the order written and joined into one key:
 Each contribution carries its own extractor name, so `["header:a", "header:b"]` keeps `a: x` and `b: x` in
 different lanes rather than merging them on the shared value `x`.
 
+A `header:<name>` or `body_json:<path>` extractor whose name looks like a credential — `header:authorization`,
+`header:x-api-key`, `body_json:api_key`, a nested `body_json:credentials.primary` or an indexed
+`body_json:api_keys.0` — is a legitimate way to key a lane on "which credential was presented", the shape a
+credential-rotation scenario needs. It contributes its **fingerprint**, never its value: the request that
+presented `key-a` and the request that presented `key-b` still land in two different lanes, deterministically,
+but the credential itself never reaches `outcome.fault_key`, the journal, `GET /__admin/requests` or the process
+log. The same substitution happens, independently of the extractor's name, whenever the resolved value is itself
+shaped like a credential — a vendor key, a `Bearer …` token, an embedded `name=value` pair — so a field with no
+credential-sounding name still cannot carry one into the lane key.
+
+For `header:authorization` and `header:x-api-key`, the fingerprint is the exact one `auth.fingerprint` reports
+elsewhere in the journal for the same request — the two are computed from the same credential and can be compared
+directly. Every other credential-named or credential-shaped extractor fingerprints its own resolved value the same
+way, which is a *different* input than `auth.fingerprint` (it covers headers `auth.fingerprint` does not observe,
+and body properties, which have no `auth.fingerprint` counterpart at all), so only the two Authorization-family
+headers are byte-comparable to it.
+
 **The route is always part of the lane.** `turn_key` adds discriminators to the route; it cannot replace it, and
 omitting `route` from the list does not remove it. Writing `route` explicitly is equally legal and is de-duplicated
 rather than doubled, so `["route", "body_json:model"]` and `["body_json:model"]` name the same lane. This is not

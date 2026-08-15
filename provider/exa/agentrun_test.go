@@ -131,6 +131,67 @@ func TestAgentRunCreateThenPollToCompletion(t *testing.T) {
 	assert.Equal(t, StatusCompleted, again["status"])
 }
 
+// TestAgentRunCreateCredentialTurnKeyNeverLeaksTheToken is the async half of the
+// turn_key credential fix (provider/lane.go turnLaneKey, internal/journal Redact):
+// a scenario may legitimately key the create route's lane on which credential
+// was presented (turn_key: [header:authorization] — Phase 6's credential-rotation
+// shape), and the raw token must not survive that choice by ANY path
+// (CLAUDE.md house rule 4). This is the end-to-end path through provider.Handle,
+// so it also proves the async surface specifically: MintJob copies x.Lane().Key
+// into jobs.Job.LaneKey verbatim, and that record is never redacted (it is never
+// served — see internal/admin/jobs.go's JobSummary doc comment), so the
+// fingerprinting has to happen at composition or the registry itself leaks.
+func TestAgentRunCreateCredentialTurnKeyNeverLeaksTheToken(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+version: 1
+name: agent-run-header-auth-key
+providers:
+  exa_agent_runs:
+    turn_key: ["header:authorization"]
+    turns:
+      - respond: {status: completed}
+`
+	const sentinel = "Bearer sk-live-SENTINEL"
+
+	store := jobs.NewRegistry(jobs.Limits{})
+	s := newSimWithJobs(t, src, store)
+
+	rec := s.do(request{
+		method:  http.MethodPost,
+		path:    "/agent/runs",
+		body:    `{"query":"find it"}`,
+		headers: map[string]string{"Authorization": sentinel},
+		noAuth:  true, // the header above IS the credential under test
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, "create failed: %s", rec.Body.String())
+
+	var out struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+
+	entries := s.journal.Snapshot()
+	require.Len(t, entries, 1)
+	entry := entries[0]
+
+	require.NotContains(t, entry.Outcome.FaultKey, "SENTINEL",
+		"the credential must not survive into the journal's outcome.fault_key")
+	require.Contains(t, entry.Outcome.FaultKey, "header:authorization=",
+		"the extractor must still name which discriminator contributed")
+
+	encoded, err := json.Marshal(entry)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "SENTINEL",
+		"the credential must not survive anywhere in the entry's wire encoding")
+
+	job, found := store.Lookup(provider.DefaultNamespace, out.ID)
+	require.True(t, found, "the create must leave a record a poll can resolve")
+	require.NotContains(t, job.LaneKey, "SENTINEL",
+		"the credential must not survive into the job registry, which is never redacted")
+}
+
 // Two runs polled in one namespace must not share a cursor. This is the failure
 // Route.LaneFrom exists to prevent, and it is invisible without two runs in
 // flight at once.
