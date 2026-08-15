@@ -1,10 +1,29 @@
 # SSE streaming
 
-> ## ⚠ DRAFT — DO NOT IMPLEMENT FROM THIS YET
+> ## REVISED (round 2) — pending re-review
 >
-> **Re-review 2026-08-15 (round 2): still needs revision. One blocker open.**
+> Round 1 was re-reviewed and failed: one blocker, two majors. **Round 2 answers all of them.** Summary:
 >
-> The Phase 2 revision answered the compatibility finding and failed the suppression one. Open:
+> - **Suppression (blocker).** Round 1 added §4.4 saying `execute` does not re-derive suppression, and left §4.3
+>   doing exactly that. §4.2 now decides it before `faultOutcome` and before the journal condition, so
+>   `resp.Stream != nil` means "this exchange **will** stream" everywhere downstream; §4.3 is a single branch with
+>   no `suppressesStream` call and a note explaining why adding one back would reintroduce the defect. The two
+>   declarations that must be hoisted above the existing defer (`provider/handle.go:164`) are now stated.
+> - **Per-turn policy vs per-route plan (major).** Resolved by making the **policy entry-level and the content per
+>   turn**, which is what shipped code already does and, more importantly, all it *can* do: rejection must happen
+>   before turn selection claims an attempt (`rejectStream` at `provider/perplexity/handler.go:210`,
+>   `SelectTurnFor` at `:220`), so a per-turn policy could never be honoured. This dissolves the mismatch rather
+>   than validating against it — either the entry streams and every turn does, or none does. `after_chunk` is
+>   bounded by the smallest chunk count across the entry's turns, since the plan is per route.
+> - **Preamble vs §4.1 (major).** Both now say the same thing, and it matches shipped behaviour.
+> - Minors: `warnOnce` replaced with a plain `Warn` (no such helper exists; the `closed` guard already bounds it);
+>   `decodeRefOrMapping` corrected to `(*SourceRef).UnmarshalYAML` (`scenario/model.go:407`); `DecodeStrict` line
+>   reference corrected to `:824`.
+>
+> **Still a design, not an instruction to start.** Round 2 has not itself been re-reviewed, and round 1 shipped a
+> restated finding while claiming completion. Implementation is Phase 5 and is gated on that step.
+>
+> <details><summary>Round-1 findings, all now addressed above</summary>
 >
 > - **Blocker — §4.3 still performs the operation §4.4 forbids.** §4.4 says suppression is decided before the
 >   append and that "`execute` does not re-derive it"; §4.3's code block, unrevised, still contains
@@ -26,12 +45,10 @@
 > **Answered in round 1 and still sound:** the compatibility blocker. `stream: warn` + `truncate_body` stays
 > loadable, §9's table keys on effective policy in both directions, and the regression fixture is the right guard.
 >
-> Implementation is Phase 5 and remains gated.
+> ---
 >
-> <details><summary>Round-1 revision notes (superseded by the above)</summary>
->
-> An adversarial review returned **needs-revision** on 2026-08-15 with one blocker and one major. The round-1
-> revision claimed both were answered:
+> And the round-1 revision notes those findings were written against. The original adversarial review returned
+> **needs-revision** on 2026-08-15 with one blocker and one major; round 1 claimed both were answered:
 >
 > - ~~**Blocker:** §9 raises `scenario.fault.stream_mismatch` on the *presence* of a `stream:` key, which would fire
 >   against Exa's already-shipped projection.~~ **Answered.** Both directions now key on the **effective policy**:
@@ -74,8 +91,29 @@ before turn selection claims a fault attempt; Sonar warns `perplexity.stream.pol
 `stream:` written on any later turn. The Agent surface has no policy knob and always warns.
 
 So those codes survive as the `warn` default, and what this design adds is the third value — `stream`, which serves
-the scripted sequence. That value is genuinely per turn, because the turn is what carries the `deltas:`; `warn` and
-`reject` stay provider-level for the reason above. See [§2](#2-scenario-yaml) and
+the scripted sequence.
+
+**The policy is per ENTRY; the content is per TURN.** That split is forced, not a simplification:
+
+- **Policy — `warn`, `reject`, `stream` — is read once from the entry**, exactly as shipped code already does
+  (`provider/exa/handler.go:252-264`, `provider/perplexity/handler.go:312-327`, both turn 0). The reason is in the
+  shipped godoc and is a hard ordering constraint: the policy decides whether a request is *rejected*, and rejection
+  must happen before turn selection claims an attempt, or a refused request eats a retry budget. `rejectStream` runs
+  at `provider/perplexity/handler.go:210`; `SelectTurnFor` at `:220`. **A policy that varied per turn could never be
+  honoured** — you cannot reject a request on the strength of a turn you have not selected without the selection
+  itself consuming the attempt the rejection must not consume.
+- **`deltas:` are per turn**, necessarily: they are the answer, and each turn has its own.
+
+An earlier draft had `stream` per turn and the other two per entry, which is unimplementable for the reason above
+and left the preamble, §4.1 and shipped code each saying something different.
+
+Per-turn policy is also **unnecessary**, which is the part worth internalising before anyone proposes it again. The
+key is named `when_requested`: it answers "when the client asks for a stream, what do we do". That is a property of
+the surface, not of call position. A consumer who wants call 1 streamed and call 3 not **sends `stream: true` and
+then `stream: false`** — the variation already lives in the client's request, which is the thing under test. The
+scenario never needed to encode it.
+
+See [§2](#2-scenario-yaml) and
 [§8](#8-schema-versioning).
 
 ---
@@ -182,7 +220,7 @@ Rules that make this shape work:
   another when it does not — which is precisely the bug an adopter's spend-attribution test would be unable to see.
 - **A scalar is still accepted.** `stream: warn` and `stream: reject` keep parsing, decoded as
   `{when_requested: warn}`. This is the `SourceRef` scalar-or-mapping pattern the repository already uses
-  (`scenario/model.go`, `DecodeStrict` at line 741), so every existing Exa fixture stays valid byte for byte.
+  (`scenario/model.go`, `DecodeStrict` at line 824), so every existing Exa fixture stays valid byte for byte.
 - **Declaring `deltas:` implies `when_requested: stream`.** Writing the script and forgetting the switch would
   otherwise serve a JSON body and a warning, silently.
 - **A turn with no `stream:` block keeps today's behaviour** — `warn` — so no existing scenario changes meaning.
@@ -273,6 +311,12 @@ type StreamScript struct {
 	// Policy is the YAML key "when_requested". Empty means StreamServe when
 	// Deltas is non-empty and StreamWarn otherwise: writing a script and
 	// forgetting the switch must not silently serve JSON.
+	//
+	// Only the FIRST turn's Policy is read — it is a property of the provider
+	// entry, not of the call position, because rejection has to be decided
+	// before turn selection claims an attempt. A Policy on any later turn raises
+	// scenario.stream.policy.ignored rather than being dropped in silence. Deltas
+	// below are the opposite: genuinely per turn, since they are the answer.
 	Policy StreamPolicy `yaml:"when_requested,omitempty"`
 
 	// Pace is the default minimum gap before every chunk. Zero writes the whole
@@ -291,7 +335,8 @@ type StreamScript struct {
 
 // UnmarshalYAML accepts the scalar shorthand, so `stream: warn` — the form every
 // existing Exa fixture uses — keeps parsing as {when_requested: warn}. The mapping
-// branch decodes strictly, exactly as decodeRefOrMapping does.
+// branch decodes strictly, following the scalar-or-mapping pattern
+// (*SourceRef).UnmarshalYAML already uses (scenario/model.go:407).
 func (s *StreamScript) UnmarshalYAML(value *yaml.Node) error
 
 // EffectivePolicy applies the "deltas imply stream" default. Nil-safe.
@@ -483,14 +528,24 @@ turn selection are untouched, so a rejected request still consumes no attempt (�
 		Status: http.StatusOK, Body: body, Label: "perplexity.sonar.ok",
 		FaultEligible: true, FaultBody: faultBody(SurfaceSonar),
 	}
+	// streamPolicy(entry) — the ENTRY's policy, read from turn 0, not the
+	// selected turn's. This is the same call rejectStream already makes at
+	// provider/perplexity/handler.go:210, before SelectTurnFor. Reading the
+	// selected turn here would let `reject` and `stream` disagree about the same
+	// request, since one is decided before turn selection and the other after.
 	if wantsStream(x) {
-		switch p.Stream.EffectivePolicy() {
+		switch streamPolicy(entry) {
 		case scenario.StreamServe:
+			// The DELTAS come from the selected turn's projection; only the policy
+			// is entry-level. p is that turn.
 			resp.Stream = renderSonarStream(x, &p, model) // *provider.Stream, GrammarDelta
 			resp.Label = "perplexity.sonar.stream"
 			resp.Header = streamHeader()
 		case scenario.StreamReject:
-			return errorResponse(SurfaceSonar, http.StatusBadRequest, "streaming is not enabled for this turn")
+			// Unreachable: rejectStream already returned before turn selection.
+			// Kept as a total switch so a future policy value cannot fall silently
+			// into the warn default.
+			return errorResponse(SurfaceSonar, http.StatusBadRequest, "streaming is not enabled for this provider")
 		default:
 			x.Warn(CodeStreamUnimplemented, "body.stream", "...") // unchanged today's behaviour
 		}
@@ -501,6 +556,24 @@ turn selection are untouched, so a rejected request still consumes no attempt (�
 ### 4.2 `Handle` — one condition widens
 
 ```go
+	dec := x.decision
+
+	// Suppression is decided HERE — before faultOutcome, before the journal
+	// condition, before anything else reads resp.Stream. A fault that replaces
+	// the stream with an ordinary JSON error means this exchange DOES NOT
+	// STREAM, and every reader below has to see that: the early-journal
+	// condition, the planned Outcome.Stream, and the deferred close.
+	//
+	// Deciding it inside execute instead — which an earlier draft did — leaves
+	// every one of those readers looking at the outer resp, which execute's
+	// local reassignment never touches. The entry then advertises a full stream
+	// plan (chunk count, bytes, usage, cost) for a stream nobody writes, and the
+	// deferred close stamps client_gone on it, blaming the client for a fault
+	// the scenario scripted.
+	if dec.Attempt != nil && suppressesStream(dec.Attempt.EffectiveKind()) {
+		resp = suppressStream(resp) // drop Stream, restore the JSON Content-Type
+	}
+
 	out := faultOutcome(dec, resp)
 	// ...
 	if out.Aborted || resp.Stream != nil {
@@ -510,10 +583,18 @@ turn selection are untouched, so a rejected request still consumes no attempt (�
 	entry.Outcome = execute(r.Context(), w, dec.Attempt, resp, d.DelayMode, out, closer)
 ```
 
-This is a two-word change and it is the same invariant, stated more generally. Today's rule is "journal before the
-socket is touched destructively". A stream makes the client an observer from the first flush, so the rule becomes
-**journal before the client can observe anything the handler is about to do**. The aborting case was always the
-special case; streaming is the general one.
+The journal condition itself is a two-word change and is the same invariant, stated more generally. Today's rule is
+"journal before the socket is touched destructively". A stream makes the client an observer from the first flush, so
+the rule becomes **journal before the client can observe anything the handler is about to do**. The aborting case was
+always the special case; streaming is the general one.
+
+`resp.Stream != nil` therefore means "this exchange **will** stream", never "this turn declares a stream". By the
+time anything reads it, suppression has already been applied.
+
+**Two declarations must be hoisted.** The deferred fallback below references `resp` and `closer`, and in shipped code
+`resp` is declared at `provider/handle.go:199` — 35 lines *after* the existing defer at `:164`. Both become `var`
+declarations above that defer, and `resp := h(x)` becomes `resp = h(x)`. This is easy to miss because the code reads
+correctly in isolation and fails to compile only once assembled.
 
 `closer` is new. It is how `execute` reports the *observed* close back without importing anything:
 
@@ -529,7 +610,12 @@ special case; streaming is the general one.
 		}
 		closed = true
 		if !journal.CloseStreamIn(d.Journal, x.lane.Namespace, x.Seq, c) {
-			warnOnce(d.Logger, "journal.stream_not_amendable")
+			// Plain Warn, not a warn-once helper: no such helper exists in this
+			// repository, and the `closed` guard above already makes this at most
+			// one line per request. A consumer whose Journal does not implement
+			// StreamCloser wants the line every time, because every entry it
+			// affects is one that will stay "open" forever.
+			d.Logger.Warn("journal.stream_not_amendable", slog.Uint64("seq", x.Seq))
 		}
 	}
 
@@ -555,18 +641,22 @@ func execute(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttemp
 	// time-to-first-byte, which is what a consumer's connect timeout observes.
 	// ... existing delay block, verbatim ...
 
-	switch {
-	case resp.Stream == nil:
-		// Everything below this line is today's code, untouched.
-	case a != nil && suppressesStream(a.EffectiveKind()):
-		resp = suppressStream(resp) // drop Stream, restore the JSON Content-Type
-		// falls through to today's code
-	default:
+	// One branch, not a switch. execute does not decide suppression and cannot
+	// tell that it happened: Handle applied it before this was called, so a
+	// suppressed stream arrives with Stream already nil and takes the ordinary
+	// path below exactly as any non-streaming response does.
+	if resp.Stream != nil {
 		return executeStream(ctx, w, a, resp, mode, out, closer)
 	}
 	// ... existing switch on EffectiveKind, unchanged ...
 }
 ```
+
+Note what is *absent*: there is no `suppressesStream` call here. It is the single most likely thing for an
+implementer to add back, because the fault kind is right there in `a` and the check reads naturally at this point.
+It belongs in `Handle` ([§4.2](#42-handle--one-condition-widens)), and putting a second copy here would reintroduce
+the exact defect this design already shipped once — two derivations of one decision, where the copy that runs later
+is invisible to everything that already read the earlier one.
 
 `executeStream` is the only genuinely new machinery, and it is small:
 
@@ -637,12 +727,13 @@ served by today's code path against `Response.Body` and `Response.FaultBody`.
 (`provider/fault_exec.go:186–190`), so `text/event-stream` would otherwise leak onto a JSON error body — a fidelity
 bug that would teach a consumer to parse the wrong thing.
 
-`truncate_body` is the one non-streaming kind that is **rejected at load** on a turn whose effective policy is
-`stream` (`scenario.fault.stream_mismatch`), naming `stream_truncate_chunk` as the streaming spelling. Silently
-reinterpreting it would be the wrong kind of helpful. The mirror check applies too: a `stream_*` kind on a turn whose
-effective policy is *not* `stream` is a load-time error.
+`truncate_body` is the one non-streaming kind that is **rejected at load** on an entry whose policy is `stream`
+(`scenario.fault.stream_mismatch`), naming `stream_truncate_chunk` as the streaming spelling. Silently
+reinterpreting it would be the wrong kind of helpful. The mirror check applies too: a `stream_*` kind on an entry
+whose policy is *not* `stream` is a load-time error.
 
-Both checks key on the **effective policy**, never on the presence of a `stream:` key — `warn` and `reject` declare a
+Both checks key on the entry's **effective policy**, never on the presence of a `stream:` key — `warn` and `reject`
+declare a
 policy and produce no stream, so `truncate_body` remains valid with them. See
 [§9](#9-validation-findings-this-adds) for why that distinction is load-bearing and for the fixture that guards it.
 
@@ -994,15 +1085,16 @@ All are load-time unless marked, so a bad streaming fixture fails at readiness r
 | Code | Severity | Raised when |
 |---|---|---|
 | `scenario.stream.policy.unknown` | error | `when_requested` is not `warn`, `reject` or `stream` |
-| `scenario.stream.deltas_empty` | error | policy is `stream` and `deltas` is empty |
+| `scenario.stream.policy.ignored` | warning | `when_requested` declared on a turn after the first — the policy is per entry, so a later one is never read (this is the shipped `perplexity.stream.policy.ignored`, generalised) |
+| `scenario.stream.deltas_empty` | error | the entry's policy is `stream` and **some turn** declares no `deltas` — that turn would serve an empty stream |
 | `scenario.stream.answer_mismatch` | warning | concatenated `deltas` do not equal the projection's `answer` |
 | `scenario.fault.after_chunk.not_streaming` | error | `after_chunk` set on a kind that is not `stream_*` |
-| `scenario.fault.stream_mismatch` | error | a `stream_*` kind on a turn whose **effective policy is not `stream`**, or `truncate_body` on one whose **effective policy is `stream`** |
-| `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` exceeds the chunk count the provider's grammar will produce |
+| `scenario.fault.stream_mismatch` | error | a `stream_*` kind on an **entry whose policy is not `stream`**, or `truncate_body` on an **entry whose policy is `stream`** |
+| `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` exceeds the **smallest** chunk count any of the entry's turns will produce |
 | `stream.abort_unreachable` | error (per request) | the same, caught at request time for a hand-built entry that skipped validation |
 | `perplexity.stream.done_ignored` | warning | `terminal.omit_done` declared on the typed grammar, which has no sentinel |
 
-#### `stream_mismatch` keys on the effective policy, never on key presence
+#### `stream_mismatch` keys on the entry's effective policy, never on key presence
 
 This is the correction that matters most for compatibility, and an earlier draft got it wrong in a way that would
 have surfaced in consumer repositories on upgrade day.
@@ -1026,9 +1118,10 @@ definition — so truncating its bytes is exactly as meaningful as it was before
 would break §8's central promise that nothing existing changes meaning, in every adopting repository at once, for a
 fixture whose author did nothing wrong.
 
-**The distinction is declared-policy versus produced-outcome:**
+**The distinction is declared-policy versus produced-outcome**, and the policy is the ENTRY's — read once from turn
+0, as shipped code already does — so one row describes every turn on that route:
 
-| Effective policy | Produces | `stream_*` kinds | `truncate_body` |
+| Entry policy | Produces | `stream_*` kinds | `truncate_body` |
 |---|---|---|---|
 | absent (default `warn`) | JSON body | error — nothing to cut | **valid** |
 | `warn` | JSON body | error — nothing to cut | **valid** |
@@ -1073,6 +1166,26 @@ anyway; renaming it in isolation would be churn.
 grammar is fixed by the provider entry and the frame count is `1 + len(deltas) + 1 + terminal frames`. The provider
 packages' existing `ValidateProjections` (`provider/perplexity/handler.go:267`) is where it lives, since that is the
 layer that knows the grammar.
+
+**It is checked against the smallest count across the entry's turns, and that follows from the plan being per
+route.** `TurnFault` supplies one plan for the whole route (`provider/turn.go:90-101`), so a single `after_chunk: 4`
+may fire on whichever turn answers that call — a turn with three deltas, or one with nine. Validating against the
+declaring turn alone would pass a fixture that aborts past the end of a shorter sibling, and the symptom would be a
+stream that completed normally where the author scripted a disconnect: a fault that silently does nothing, which is
+the worst outcome for a test written to prove reconnect logic.
+
+The minimum is the only bound that is correct for every turn the plan can reach. It is conservative — it rejects an
+`after_chunk` that would have been fine for the turn actually answering — and that is the right direction, because
+the alternative is a scenario whose meaning depends on which turn a fault happens to land on.
+
+#### Why an entry-level policy makes `stream_mismatch` sufficient
+
+With the policy per entry, a `stream_*` fault can no longer land on a non-streaming turn: either the entry's policy
+is `stream` and every turn streams, or it is not and none do. The per-route plan and the per-entry policy are
+addressed at the *same* granularity, so the mismatch the earlier per-turn model allowed is not representable.
+
+That is the substantive reason to prefer the entry-level model over a load-time coherence check across turns. A
+check would have caught the incoherent fixture; this makes writing one impossible.
 
 ---
 

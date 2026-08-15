@@ -1,10 +1,35 @@
 # Async job lifecycle
 
-> ## ⚠ DRAFT — DO NOT IMPLEMENT FROM THIS YET
+> ## REVISED (round 2) — pending re-review
 >
-> **Re-review 2026-08-15 (round 2): still needs revision. One blocker open, three majors.**
+> Round 1 was re-reviewed and failed: one blocker, three majors. **Round 2 answers all of them**, and each fix is
+> recorded in place with the reasoning that produced it. Summary of what changed:
 >
-> The Phase 2 revision answered three findings, partly answered three, and introduced two new defects. Open:
+> - **Reset window (blocker).** Round 1's reordering claimed to close the collision window "by construction" and did
+>   not — the window is symmetric, and jobs-first additionally collided with the all-or-nothing invariant at
+>   `internal/admin/handler.go:307-326`. Reverted. The race is **out of contract** (house rule 6: reset is a
+>   local-development convenience, not a concurrency mechanism), and `job.id_collision` now names that cause so the
+>   precondition is discoverable when violated instead of only in a document.
+> - **`create:` prerequisite (major).** Round 1 named the wrong lever. `reservedEnvelopeKeys` is read by nothing but
+>   a test; the envelope split is a hardcoded switch. §3.1 now lists the real changes and states the forward-
+>   compatibility cost plainly — an older binary gives `body_with_turns`, not a clean rejection.
+> - **Phantom job (major).** `FaultDecision.Faulted()` is true for a pure `delay:` whose body IS written, so using it
+>   would have inverted the bug. The predicate is `EffectiveKind() == FaultNone`, with the case table and the one
+>   honest limit (a client deadline during a delay) written out.
+> - **`diagnoseForeignID` (major).** Now uses the existing `StatsIn` rather than a `CountIn` the seam never declared,
+>   names its third and likeliest cause (a stale or hand-written id), stops describing a charset check as a scheme
+>   check, and logs at WARN.
+> - **`Route.Entry`.** `Exchange.Entry()` itself honours it, which fixes `policy()` and `entryTurnKey` together
+>   rather than one of three call sites; §12 no longer calls it out of scope.
+> - **HEAD.** Reversed again, and this one is worth reading: round 1's 405 was justified by a claim that a
+>   non-claiming resolution "exists nowhere else", which §4.2's own `ResolveJob` contradicts. `HEAD` is now served
+>   properly, on its own fault key, and the divergence from `allowHeader` disappears with it.
+>
+> **Still a design, not an instruction to start.** Round 2 has not itself been re-reviewed. Given round 1 shipped two
+> restated findings and two new defects while claiming to be complete, that step is not optional. Implementation is
+> Phase 3 and is gated on it.
+>
+> <details><summary>Round-1 findings, all now addressed above</summary>
 >
 > - **Blocker — §7.3's "closes the window by construction" is false, and jobs-first breaks a shipped invariant.**
 >   The window is symmetric: under jobs → faults → journal, a create that claims index *i* before the reset and
@@ -42,12 +67,10 @@
 > grounded in `answerFault`, `provider/exa/handler.go:42-49` vs `:55-86`); the registry refusing rather than
 > evicting, with the 80% warning; the HEAD cursor-advance diagnosis; and the four documentation minors.
 >
-> Implementation is Phase 3 and remains gated.
+> ---
 >
-> <details><summary>Round-1 revision notes (superseded by the above)</summary>
->
-> An adversarial review returned **needs-revision** on 2026-08-15 with one blocker and five majors. The round-1
-> revision claimed all were answered:
+> And the round-1 revision notes those findings were written against. The original adversarial review returned
+> **needs-revision** on 2026-08-15 with one blocker and five majors; round 1 claimed all were answered:
 >
 > - ~~**Blocker:** §3.1 asserts create and poll draw on separate fault budgets, while §2.5 specifies exactly one
 >   plan per route.~~ **Answered.** Separate budgets need two things and the draft supplied one: separate fault keys
@@ -98,9 +121,10 @@ design and are quoted at the point of use:
    exactly as the existing table does: `POST /agent/runs/run_abc` yields the wrapped 405 with `Allow: GET`, and
    `/agent/runs/run_abc/events` and `/agent/runs/` both fall to the catch-all. `{id}` is single-segment and does not
    match empty. No new registration shape is needed.
-2. **A `GET` pattern also serves `HEAD`.** `HEAD /agent/runs/run_abc` returned 200 from the `GET` handler. The
-   existing `Allow` computation would therefore advertise `GET` on a path that also answers `HEAD`. One-line fix in
-   `NewMux`; see [§6](#6-get-routes-on-a-post-shaped-mux).
+2. **A `GET` pattern also serves `HEAD`.** `HEAD /agent/runs/run_abc` returned 200 from the `GET` handler — which
+   means it ran turn selection and advanced the job's poll cursor for a request whose body is discarded. That is the
+   real consequence, and it is larger than the `Allow` header question it was first noticed through; a dedicated
+   non-claiming handler is needed. See [§6](#6-get-routes-on-a-post-shaped-mux).
 3. **`PathValue` returns the percent-DECODED segment.** `GET /agent/runs/run%2Fabc` produced
    `r.PathValue("id") == "run/abc"` — a literal `/` inside a single path segment. The lane key joins its namespace
    with `/`, so an unvalidated path value reaching a lane key can be re-split into a different `(namespace, key)`
@@ -382,15 +406,33 @@ Because the poll route's lane is per job ([§3.2](#32-routelanefrom)), that poll
 `answerFault`, nil-safe on every hop, because it runs at composition time against a scenario that may not have been
 validated yet.
 
-**`create` must be added to `reservedEnvelopeKeys` (`scenario/model.go:115`), or none of the above loads.** That list
-is `{kind, auth, validation, fault, turns, turn_key}` today. Everything not in it is stripped as a projection body,
-so a `create:` block alongside `turns:` lands in `strayKeys` and raises `scenario.provider.body_with_turns` —
-"move create inside a turn's respond:", which is precisely the wrong advice, and the entry never loads.
+**`create:` must be made an envelope key, or none of the above loads** — and the lever is not the one it looks like.
 
-The change is one entry in one slice and it is additive: no existing file uses the key, and `KnownFields(true)`
-means an older binary meeting a newer file rejects it loudly rather than misreading it. It belongs to A2 alongside
-`Route.Entry`, and is called out here because it is invisible from the YAML — an implementer reading only §2 and
-§3.1 would write the selector, the route and the tests, and discover it at the first load.
+`reservedEnvelopeKeys` (`scenario/model.go:115`) looks authoritative and is not: it is referenced by its own
+definition and by one test (`scenario/model_test.go:215`), and **the loader never reads it**. The envelope split is
+a hardcoded `switch key.Value` in `decodeProviderEntry` (`scenario/model.go:546-577`) whose `default:` arm sweeps
+everything else into the projection body. Adding `create` to the slice changes nothing.
+
+The real prerequisites, all in `scenario`:
+
+| Change | Where |
+|---|---|
+| a `keyCreate = "create"` const | beside the other `key*` consts, `scenario/model.go:105-110` |
+| a `case keyCreate:` arm with a strict decode | the switch at `scenario/model.go:546-577` |
+| a `Create *CreatePolicy` field | `ProviderEntry`, `scenario/model.go:158-199` — it has none today |
+| `Validate` and `HasFaults` follow-through | so a malformed `create.fault` fails at load, and a create-only plan still reports the scenario as having faults |
+| the slice updated too | `reservedEnvelopeKeys`, to keep its test honest |
+
+**Compatibility is worse than additive and must be stated plainly.** An older binary meeting a file with `create:`
+does *not* reject it cleanly — `KnownFields(true)` never sees the key, because the `default:` arm has already
+swept it into the projection body. What the author gets is `scenario.provider.body_with_turns`: *"move create inside
+a turn's `respond:`"* — the advice the paragraph above calls precisely wrong, now aimed at a key that cannot go
+there. That is a real forward-compatibility cost of this design, not a footnote, and it is the argument for landing
+the envelope key **before** adopters author async fixtures rather than after.
+
+This is called out at length because it is invisible from the YAML. An implementer reading only §2 and §3.1 would
+write the selector, the route and the tests, and meet it at the first load — and the obvious fix, editing the slice,
+does nothing at all.
 
 Note also that this is why the create plan is nested under `create:` rather than written as a second block-level
 `fault:`: a block-level `fault:` alongside `turns:` is already a load error
@@ -688,7 +730,7 @@ MaxJobs int
 // "run_" is cosmetic rather than load-bearing.
 //
 // The finding is recorded and (nil, false) returned when the registry refuses:
-// job.limit_exceeded for a bound breach, job.id_collision for a duplicate.
+// job.limit_reached for a bound breach, job.id_collision for a duplicate.
 func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (jobs.Job, bool)
 
 // ResolveJob returns the job a poll addresses, or false with the finding
@@ -785,9 +827,39 @@ slots per usable job, and a bound of 256 becomes an effective 128 — reached so
 `job.limit_reached` naming a number that does not match the jobs they can see.
 
 **`MintJob` commits the record only when the attempt it claims will actually serve.** It already claims the attempt,
-so the decision is in hand at that point — `x.Fault()` says whether this attempt is a serving one or one `Handle`
-will replace. When it will be replaced, `MintJob` claims the index (so the plan advances exactly as scripted and the
-retry gets attempt 1) and returns without writing a record.
+so the decision is in hand: `Exchange.Fault()` memoises on `x.claimed` (`provider/exchange.go:200-206`), so an early
+call here and `Handle`'s call at `provider/handle.go:206` return the same decision.
+
+**The predicate is not `FaultDecision.Faulted()`.** That is the obvious reach and it inverts the bug. `Faulted()` is
+`Attempt != nil && (EffectiveKind() != FaultNone || Delay > 0)` (`provider/deps.go:63-65`) — true for a pure
+`delay:` attempt with no fault kind, whose body **is** written after the sleep (`provider/fault_exec.go:100-112`).
+Skipping the record there hands the client a valid identifier that no record backs, so every subsequent poll returns
+the vendor's 404: the same failure as the phantom job, pointing the other way, and harder to spot because the create
+looked completely successful.
+
+The correct predicate asks whether this attempt *replaces the body*, which is exactly what `EffectiveKind()`
+reports:
+
+```go
+serves := dec.Attempt == nil || dec.Attempt.EffectiveKind() == scenario.FaultNone
+```
+
+| attempt | body written | commits? |
+|---|---|---|
+| none | `resp.Body` | yes |
+| `delay: 5s`, no kind | `resp.Body`, after the sleep | **yes** |
+| `{status: 200}` | `resp.Body` — `EffectiveKind()` only promotes at ≥400 (`scenario/fault.go:96`) | yes |
+| `extra_fields` only | merged `resp.Body` | yes |
+| `{status: 429}`, truncate, empty body, close | error or partial | no |
+
+Claiming the attempt inside the handler is established practice, not a new risk: `handleSearch` already claims in
+`selectProjection` before its own `codeRenderFailed` path (`provider/exa/handler.go:125-131`).
+
+One honest limit: a client whose deadline fires *during* a scripted delay receives nothing
+(`provider/fault_exec.go:100-107` returns with `BytesWritten = 0`), yet the record is committed, because the fault
+decision said this attempt would serve and that was true when it was made. That is a job record for a response the
+client never read — not a phantom job in the sense above, and not fixable by any predicate evaluated before the
+write, since it depends on the client's own timeout.
 
 The identifier is still derived from the claimed index, so this does not renumber anything: the retry that succeeds
 mints from index 1 and gets the identifier index 1 implies. Two consequences worth stating, because both are
@@ -796,8 +868,9 @@ deliberate:
 - Identifiers are **not** dense across a faulted create. A plan that faults the first attempt produces a first live
   job whose identifier derives from index 1. That is correct — the identifier tuple includes the attempt, exactly as
   it already does for every other faulted route — and it is why goldens ignore derived identifiers ([§5.2](#52-replay)).
-- The record is committed before the response is written but after the fault decision is known. There is no window
-  in which a record exists for a response that will be replaced.
+- The record is committed before the response is written but after the fault decision is known, so no record is
+  created for a response the *scenario* replaces. The client-deadline case above is the one exception, and it is
+  stated rather than claimed away.
 
 ### 4.4 A poll handler, end to end
 
@@ -980,13 +1053,33 @@ The fix keeps the single-resolution rule intact:
 Entry string
 ```
 
-`entryTurnKey` then resolves `x.Route.Entry` when set and the listener name otherwise. `exa_agent_runs` and
-`perplexity_agent` declare theirs; every existing route leaves it empty and is unaffected.
+**`Exchange.Entry()` itself honours it** — not `entryTurnKey` alone:
 
-The `Exchange.policy()` asymmetry recorded in [§12](#12-companion-corrections-this-design-depends-on) — validation
-policy also resolved by listener name — has the same root cause and is fixed by the same field. Doing both at once is
-cheap; doing one and leaving the other means the next reader has to rediscover which of the two entry lookups is the
-broken one.
+```go
+// Entry returns the scenario provider entry this request is served from:
+// Route.Entry when the route names one, and the listener's own provider name
+// otherwise.
+func (x *Exchange) Entry() *scenario.ProviderEntry {
+	if x.Route.Entry != "" {
+		return x.Deps.Scenario.Provider(x.Route.Entry)
+	}
+	return x.Deps.Scenario.Provider(string(x.Provider))
+}
+```
+
+Fixing the accessor rather than one caller is strictly cheaper and strictly safer. `Entry()` has five callers —
+`Exchange.policy()` (`provider/exchange.go:272`), `entryTurnKey` (`provider/lane.go:496`), and three provider
+handlers (`provider/exa/handler.go:116,147`, `provider/tavily/handler.go:179`). Patching only `entryTurnKey` would
+leave **three** ways to resolve an entry and fix one of them, and the three handler call sites would keep the old
+behaviour for no stated reason. Nothing bites there today only because no route that would set `Route.Entry` has a
+handler calling `x.Entry()` — a coincidence of the current route table, not an invariant anyone is maintaining.
+
+Behaviour for shipped code is identical: every existing route leaves `Route.Entry` empty and takes the same branch it
+takes now. `exa_agent_runs`, `tavily_research` and `perplexity_agent` declare theirs.
+
+This fixes the `Exchange.policy()` asymmetry recorded in
+[§12](#12-companion-corrections-this-design-depends-on) as a side effect rather than as separate work, and it lets
+the async handlers call `x.Entry()` instead of hardcoding `Provider(NameAgentRuns)`.
 
 ### 5.2 Replay
 
@@ -1044,41 +1137,55 @@ What already works, verified ([§0](#0-mechanics-verified-against-the-toolchain-
 - `readRequest` already tolerates an absent body — "an absent body is not a finding here" — so a GET needs no
   special case.
 
-The one change: **register `HEAD` explicitly, and answer it 405.**
+The one change: **register `HEAD` explicitly, bound to a handler that resolves the job without claiming an
+attempt.**
 
-An earlier draft did the opposite — it added `HEAD` to the `Allow` header on the grounds that a `GET` pattern already
-serves it, so advertising only `GET` would be a lie. The observation is correct and the conclusion was wrong, because
-of what a poll *is*.
+The problem it solves is real. `HEAD /agent/runs/{id}` reaches the GET handler (Go routes it there from a `GET`
+pattern), which runs `SelectTurnFor` end to end. That **claims an attempt and advances the job's poll cursor**, and
+then `net/http` discards the body. A client sending one `HEAD` to check whether a run exists silently consumes a
+poll: the response its next real `GET` receives is the one the scenario wrote for the poll after that. The author
+sees a job reach `completed` a poll early, with nothing in the journal explaining why — because from the journal's
+point of view a poll did happen. That is a scripted sequence changing meaning based on a method the scenario never
+mentioned.
 
-`HEAD /agent/runs/{id}` reaches the GET handler (Go routes it there from a `GET` pattern), which runs
-`SelectTurnFor` end to end. That **claims an attempt and advances the job's poll cursor**, and then `net/http`
-discards the body. A client sending one `HEAD` to check whether a run exists silently consumes a poll: the response
-its next real `GET` receives is the one the scenario wrote for the poll after that. The author sees a job reach
-`completed` a poll early, with nothing in the journal explaining why — because from the journal's point of view a
-poll did happen.
-
-That is a scripted sequence changing meaning based on a method the scenario never mentioned, which is the failure
-class this simulator exists to remove. It outranks the `Allow` fidelity point.
+Two drafts got the *fix* wrong in opposite directions. The first advertised `HEAD` in `Allow` and left it reaching
+the GET handler — the bug above, announced. The second registered `HEAD` to a 405, arguing that serving it properly
+"would need a non-claiming turn resolution that exists nowhere else". **That reason was false**:
+[§4.2](#42-provider-additions) specifies `ResolveJob`, which claims no attempt, and existence is all a `HEAD` needs.
+Refusing it bought a real fidelity divergence — RFC 9110 makes `HEAD` mandatory wherever `GET` is served — for
+nothing.
 
 ```go
-// HEAD is registered explicitly so it does NOT fall through to the GET handler.
-// A GET pattern serves HEAD by default, and for a poll route that would claim an
-// attempt and advance the job cursor for a request that returns no body.
-mux.HandleFunc("HEAD "+pollPath, methodNotAllowed("GET"))
+// HEAD is registered explicitly so it does NOT fall through to the GET handler,
+// which would claim an attempt and advance the job cursor for a request whose
+// body net/http discards.
+//
+// ResolveJob claims nothing, so this answers the question a HEAD actually asks —
+// does this job exist — at the same statuses GET uses, and leaves the poll
+// sequence exactly where it was.
+inner.Handle("HEAD "+path, Handle(d, p, headRoute, headJob(spec)))
 ```
 
-**This is where the async mux deliberately diverges from `internal/admin/handler.go:187.** That helper adds `HEAD`
-to `Allow` wherever `GET` is answered, and it is right to: the admin routes are stateless reads, so serving `HEAD`
-from the `GET` pattern costs nothing. A poll is not a stateless read — it is a cursor advance — so the async routes
-must not reuse `allowHeader`'s promotion. `Allow` on a poll path is `GET`, with no `HEAD`.
+`headJob` looks the job up with `ResolveJob`, returns `404` when it is absent and `200` with the streaming-free
+header set when it is present, and writes no body. It never selects a turn, so it cannot report *status* — which is
+correct: a client that wants the status sends `GET`, and a `HEAD` that guessed at one would be inventing a wire
+contract no vendor page verifies.
 
-The divergence is worth stating rather than quietly implementing, because the next person to notice the duplication
-will otherwise "fix" it by reaching for the shared helper and reintroduce the bug.
+`headRoute` carries its own `FaultKey`, distinct from the poll route's. A `HEAD` must not draw on the poll budget
+for the same reason it must not advance the cursor.
 
-Serving `HEAD` properly — same headers as `GET`, no body, no cursor advance — is not attempted. It would need a
-non-claiming turn resolution that exists nowhere else and would have exactly one caller, and no vendor contract in
-`contracts/` verifies that either vendor answers `HEAD` at all. If an adopter demonstrates a client that sends it,
-that is a contract question first (house rule 1), not a mux question.
+Because `HEAD` is genuinely served, `Allow` includes it and the async mux can reuse `allowHeader`'s GET→HEAD
+promotion (`internal/admin/handler.go:185-195`) rather than diverging from it. An earlier draft's divergence
+disappears along with the 405.
+
+The signature is `methodNotAllowed(spec MuxSpec, allow []string) Handler` (`provider/mux.go:69`), and every handler
+in `NewMux` is wrapped in `Handle(d, p, route, h)` — there is no bare `mux` variable and no `http.HandlerFunc` at
+this layer. An earlier draft's snippet matched neither, which would have sent an implementer looking for a seam that
+does not exist.
+
+`contracts/` contains no occurrence of `HEAD` for any vendor, so nothing here is verified against a vendor page in
+either direction. That is why `headJob` answers only the question the *protocol* defines — existence — and invents
+nothing beyond it.
 
 Two hazards to keep in the mux test table rather than in a reviewer's head:
 
@@ -1089,10 +1196,11 @@ Two hazards to keep in the mux test table rather than in a reviewer's head:
 - Percent-encoding. `GET /agent/runs/run%2Fabc` yields `PathValue("id") == "run/abc"`. Every route that feeds a path
   value into a lane key must validate it first; see [§7.1](#71-the-identifier-charset-is-load-bearing).
 
-`provider/mux_test.go`'s table grows five rows: `GET /agent/runs/{id}` 200, `POST` 405 with `Allow: GET`, the
-percent-encoded identifier rejected, `HEAD` 405, and — the one that actually guards the bug — **a `HEAD` followed by
-a `GET`, asserting the `GET` receives poll 0**. A test that only checks `HEAD`'s status code would still pass if the
-405 were later removed and the cursor advance came back.
+`provider/mux_test.go`'s table grows five rows: `GET /agent/runs/{id}` 200, `POST` 405 with `Allow: GET, HEAD`, the
+percent-encoded identifier rejected, `HEAD` 200 on a live job and 404 on an unknown one, and — the one that actually
+guards the bug — **a `HEAD` followed by a `GET`, asserting the `GET` receives poll 0**. A test that only checked
+`HEAD`'s status code would still pass if the dedicated handler were later removed and the cursor advance came back,
+because `HEAD` reaching the GET handler also returns 200.
 
 ---
 
@@ -1135,30 +1243,53 @@ before the reset, and collide with a live record — `ErrDuplicate`, surfaced as
 provider-shaped 500 on a request the author expected to succeed. If jobs dropped and cursors survived, every
 identifier in the namespace would 404 while the create kept advancing.
 
-**Jobs are dropped first — strictly before the fault cursors.** An earlier draft specified journal → faults → jobs,
-which opens the exact window the invariant exists to close. The three stores are not reset atomically with respect
-to an in-flight request, so between step 2 and step 3 the cursors are back at 0 while the job records they minted
-are still live. A create arriving in that window claims index 0, re-mints a live identifier and 500s — the precise
-failure described in the paragraph above, produced by the order meant to prevent it.
+#### Ordering cannot close the window, and does not have to
 
-Reversing it closes the window rather than narrowing it. With jobs gone first, a create arriving mid-reset either
-finds a stale cursor and mints an identifier no record holds (harmless — the record is created by that same call),
-or finds a fresh cursor and mints from index 0 into an empty store. Neither collides. The reachable interleavings
-are safe by construction, not merely unlikely:
+An earlier draft reordered the drops to jobs → faults → journal and claimed that closed the window "by
+construction". It does not. **The window is symmetric.** A create C is three steps — claim index *i*, mint id(*i*),
+commit the record — and a reset is three non-atomic drops. Under jobs-first:
 
-> `resetNamespace` calls **jobs → faults → journal**.
+> C claims *i*=0 → reset drops jobs (C has not committed yet) → reset drops faults, cursor→0 → C commits id(0) →
+> the next create claims 0 and mints id(0) → **`ErrDuplicate`, `job.id_collision`, 500.**
 
-`admin.Deps` gains a `Jobs` field, with the same "the wired store does not isolate namespaces" refusal path the
-other two already have.
+Identical failure, reached by straddling the other pair of steps. Worse, if the cursor was at *k*>0 the collision
+surfaces *k* creates later, with no reset anywhere near the failing request — a harder diagnosis than the order it
+replaced. Reordering only changes which index collides.
 
-**This needs a race test, not a unit test.** The failure only appears when a create runs concurrently with a reset,
-and it is exactly the kind of ordering bug that a sequential test asserts nothing about. The test spawns creates in
-a loop against a namespace being reset concurrently and asserts no `job.id_collision` finding appears in the
-journal, under `-race`.
+Closing it for real needs a reset epoch folded into the derivation tuple, or jobs and faults dropped under one lock.
+**Neither is worth buying**, because the window only exists when a reset races live traffic in the same namespace,
+and that is already outside this simulator's contract:
 
-`Registry.ResetIn` returns the namespace's slots to the `MaxJobs` budget, for the same reason
-`faults.Engine.ResetIn` and `journal.Ring.ResetIn` return theirs: a suite that runs more tests than the bound
-depends on teardown handing slots back.
+> `POST /__admin/reset` is a local-development convenience, not a concurrency mechanism. Parallel test suites start
+> separate processes or containers.
+
+That is house rule 6, and it predates this design. An epoch counter would add per-namespace state that the reset
+itself must not reset — a recursive wart — and a shared lock would put a mutex on the create path to protect a
+dev-only operation while coupling two deliberately independent stores. Both spend real complexity defending a
+configuration the repository already tells people not to use.
+
+So the order stays as `internal/admin/handler.go:307-326` already has it, and for the reason recorded there rather
+than a new one:
+
+> Both capability checks run **before anything is dropped**, so a surface that can scope only some of the stores
+> scopes none of them. `admin.Deps` gains a `Jobs` field and a third capability check in the same shape.
+
+Jobs-first is mutually exclusive with that invariant: dropping jobs before checking whether the journal can scope
+would leave job state destroyed by a request that then returns 501 having "changed nothing".
+
+**Make the violation self-explaining instead.** A documented precondition nobody rereads is worth little, so
+`job.id_collision` names the cause the operator can act on:
+
+```text
+job.id_collision: this identifier is already live in namespace "t-42".
+The usual cause is POST /__admin/reset running while requests were still in
+flight in this namespace — reset is a local-development convenience, not a
+concurrency mechanism. Use one process or one namespace per parallel test.
+```
+
+That converts the one reachable symptom into its own diagnosis at the moment it fires, which is the same job
+[§8](#8-multi-replica-the-consequence-stated-explicitly)'s `job.foreign_id` does for the multi-replica case. No race
+test is required for a race that is out of contract; the sequential reset test asserts the slots come back.
 
 `Registry.ResetIn` returns the namespace's slots to the `MaxJobs` budget, for the same reason
 `faults.Engine.ResetIn` and `journal.Ring.ResetIn` return theirs: a suite that runs more tests than the bound
@@ -1217,30 +1348,45 @@ The replacement needs neither, because the question does not actually require a 
 mint this id?" is a **shape** question, and `ValidJobID` already answers it:
 
 ```go
-// diagnoseForeignID reports whether id is well-formed for this provider's
-// scheme but held by no record in this namespace — the signature of another
-// replica having minted it, or of a reset having dropped it.
+// diagnoseForeignID reports whether id is SHAPED like one this provider mints
+// but is held by no record in this namespace.
 //
 // It changes nothing about the RESPONSE, which is still the vendor's 404. It
-// adds a named finding and one error-level log line, so an intermittent 404
-// names its own cause instead of looking like a consumer bug.
+// adds a named finding and a log line, so an intermittent 404 carries a hint
+// instead of looking like a consumer bug.
 //
-// It needs no cursor and no create lane: a shape check plus "this namespace
-// holds at least one record" is enough to separate "your client sent a
-// malformed id" from "this id is real and this process is not the one that
-// minted it". The cost is one charset scan, not a bounded number of SHA-256s.
+// It needs no cursor and no create lane, which is why it is buildable at all:
+// a shape check plus "this namespace has minted something" is enough to
+// separate "that is not one of our identifiers" from "that could be one of
+// ours". The cost is one charset scan, not a bounded number of SHA-256s.
+//
+// It CANNOT tell which of three things happened, and must not pretend to:
+// another replica minted it, a reset dropped it, or the client sent an
+// identifier this process never minted at all — a stale one carried between
+// tests, or one hand-written into a fixture. In a test suite the third is the
+// likeliest, so the finding names all three and the log line is a WARNING.
 func diagnoseForeignID(x *Exchange, id string) bool {
-	return ValidJobID(id) && x.Deps.Jobs.CountIn(x.Lane().Namespace) > 0
+	stats, ok := x.Deps.Jobs.StatsIn(x.Lane().Namespace)
+	return ValidJobID(id) && ok && stats.Count > 0
 }
 ```
 
-`Registry.CountIn` is the one addition, and [§7.4](#74-optional-a-read-only-admin-listing)'s listing needs the same
-traversal. The `> 0` guard is what keeps a client's typo from being reported as a replica problem: a process that has
-minted nothing has no opinion about whose id this is.
+**It uses the existing `StatsIn`, not a new `CountIn`.** An earlier draft called `CountIn` on `Deps.Jobs`, which is
+typed `jobs.Store` ([§4.2](#42-provider-additions)) and declares `Create`, `Lookup`, `ResetIn`, `Reset` and
+`StatsIn` — no such method, so it did not compile against its own seam. `StatsIn` already reports one namespace's
+job count and bound, which is exactly what this needs; a second accessor for the same number would be one more thing
+to keep in agreement. (`Stats` is used as a return type in §4.1 and never defined there. Define it.)
 
-It cannot distinguish "another replica minted it" from "a reset dropped it", and does not try — the finding names
-both, exactly as the original wording did. A diagnostic that named one cause with false confidence would be worse
-than one that names two and lets the reader pick.
+**`ValidJobID` is a charset check, not a scheme check**, and the wording above is careful about that.
+[§7.1](#71-the-identifier-charset-is-load-bearing) defines it as `[A-Za-z0-9_-]{1,64}`, so `GET /agent/runs/typo`
+in a namespace holding one job satisfies it. Tightening it to the real schemes — Exa's `run_` + 32 hex, Tavily's
+UUID — would sharpen the diagnostic considerably, and is worth doing if it is cheap; but the finding must be honest
+at whatever precision it has, because an error-level line blaming replica count for a typo'd fixture id sends a
+reader to their deployment when the problem is in their test.
+
+For that reason the log line is `WARN`, not `ERROR`. The multi-replica case it was written for is real, but it is
+not the most common way to reach this code path in a suite that runs one process — which is every supported
+configuration.
 
 A hit raises `job.foreign_id` on the journal entry and logs `servicesim.job_foreign` at error level with the hint
 above. It is a diagnostic, not a correctness mechanism — the response is unchanged — and it is what converts a silent
@@ -1265,7 +1411,7 @@ Check it clause by clause against what this design actually changes:
 | "a turn is a poll" | a reinterpretation of `call_index` **on new routes only** | none; no existing route has a per-job lane |
 | `Route.LaneFrom` and the `path:` extractor | **Go**, on `provider.Route` | none; the lane key changes only for routes that declare it, and every such route is new |
 | `Deps.Jobs`, `Deps.MaxJobs` | **Go**, with working defaults from `Normalized` | none |
-| explicit `HEAD` → 405 on poll paths | **Go**, in `NewMux` | none; no existing listener serves a GET route |
+| explicit `HEAD` handler on poll paths | **Go**, in `NewMux` | none; no existing listener serves a GET route |
 
 The last row of the third column is the one that actually matters for regression risk, so state it as a check to run
 rather than a claim to believe: **no existing lane key changes, therefore no existing call index changes, therefore
@@ -1360,8 +1506,12 @@ a silently-removed prerequisite reads as one that was never needed.
    [§8](#8-multi-replica-the-consequence-stated-explicitly) is the documentation, and it is a deliverable of this
    work rather than a note about it. (Backlog item #18.)
 
-One pre-existing asymmetry is worth recording while this surface is being built, though fixing it is out of scope:
-`Exchange.policy()` resolves the validation policy by *listener* name, so a second entry on one listener —
-`perplexity_agent` today, `exa_agent_runs` tomorrow — silently inherits the primary entry's `validation:` block.
-`authenticate` takes its entry explicitly and is unaffected. The async handlers above pass the entry explicitly
-everywhere for this reason.
+4. **Entry resolution by listener name is a live bug, and it is now in scope.** `Exchange.Entry()` resolves by
+   *listener*, so a second entry on one listener — `perplexity_agent` today, `exa_agent_runs` tomorrow — silently
+   inherits the primary entry's `validation:` block through `Exchange.policy()`, and never has its own `turn_key:`
+   read through `entryTurnKey`. An earlier draft recorded only the `policy()` half and called it out of scope; both
+   halves have the same root cause and are fixed by the same field, `Route.Entry`
+   ([§5.1](#51-identifier-derivation)). `authenticate` takes its entry explicitly and was never affected.
+
+   It is in scope because this design is what makes it bite: `perplexity_agent` gets away with it today only because
+   nothing it declares depends on either lookup.
