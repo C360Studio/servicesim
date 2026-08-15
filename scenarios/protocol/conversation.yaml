@@ -36,6 +36,8 @@ sources:
 
 providers:
 
+  # This file's script is about the Perplexity Agent's multi-turn form; /contents,
+  # /findSimilar and /extract are left to their D-a/D-b defaults, unexercised.
   exa:
     results:
       - source: source-a

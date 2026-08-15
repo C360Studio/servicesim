@@ -101,10 +101,11 @@ func TestGolden_ResearchCompleted(t *testing.T) {
 	require.Equal(t, goldenBytes(t, "tavily-research-completed.json"), rec.Body.String())
 }
 
-// TestGolden_ResearchFailed pins a terminal failure at 200. See
-// contracts/tavily/provenance.yaml's tavily-research-failed.json entry: the
-// README's two tables disagree on whether created_at belongs on a failed task,
-// and this golden reflects what the simulator actually renders.
+// TestGolden_ResearchFailed pins a terminal failure at 200: exactly
+// request_id, status and response_time, with no created_at, content or
+// sources — verified 2026-08-15 against
+// <https://docs.tavily.com/documentation/api-reference/endpoint/research-get>. // servicesim:allow-live-host
+// See contracts/tavily/provenance.yaml's tavily-research-failed.json entry.
 func TestGolden_ResearchFailed(t *testing.T) {
 	t.Parallel()
 

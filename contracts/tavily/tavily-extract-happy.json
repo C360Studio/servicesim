@@ -1,0 +1,25 @@
+{
+  "results": [
+    {
+      "url": "https://example.test/report-a",
+      "raw_content": "Report A finds that deterministic simulators remove flakiness from adapter test suites. Full text follows.",
+      "images": [
+        "https://example.test/report-a/figure-1.png"
+      ],
+      "favicon": "https://example.test/favicon.ico"
+    },
+    {
+      "url": "https://example.test/report-b",
+      "raw_content": "Report B corroborates Report A across a second dataset.",
+      "images": [
+        "https://example.test/report-b/cover.png"
+      ]
+    }
+  ],
+  "failed_results": [],
+  "response_time": 1.42,
+  "usage": {
+    "credits": 1
+  },
+  "request_id": "123e4567-e89b-12d3-a456-426614174111"
+}

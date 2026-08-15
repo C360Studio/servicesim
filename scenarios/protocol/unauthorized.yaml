@@ -32,6 +32,14 @@ providers:
       answer: Report A states the finding.
       citations:
         - source-a
+    # /contents and /findSimilar are never rendered either — `auth:` is a
+    # property of the whole exa entry, so it rejects every route this listener
+    # serves, not just /search. find_similar's results are declared anyway, for
+    # the same reason answer's content is above: flipping mode: reject to
+    # required turns this file into a working scenario for every route at once.
+    find_similar:
+      results:
+        - source: source-a
 
   tavily:
     auth:
@@ -41,6 +49,8 @@ providers:
     results:
       - source: source-a
         score: 0.98
+    # /extract is rejected by the same block-level auth; no `extract:` block
+    # is needed to prove that, since D-a would resolve it from results above.
 
   perplexity:
     auth:

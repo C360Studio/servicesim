@@ -406,9 +406,12 @@ Defaults are **per route**, because the real vendors vary placement per route:
 
 | Provider | Route | Accepts by default |
 |---|---|---|
-| Exa | `POST /search`, `POST /answer` | `authorization`, `x-api-key` |
-| Tavily | `POST /search` | `authorization`, `body:api_key` |
+| Exa | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar` | `authorization`, `x-api-key` |
+| Tavily | `POST /search`, `POST /research`, `POST /extract` | `authorization`, `body:api_key` — D2's reasoning is client-level, not endpoint-level: a client that sends the key as a body property on its POSTs sends it on every one of them. See `contracts/tavily/README.md`'s "POST /extract" § "Auth". |
 | Perplexity | all six routes | `authorization` |
+
+(The two Exa agent-run routes and Tavily's `GET /research/{request_id}` poll are omitted from this table as a
+pre-existing gap — see their own route godoc for credentials.)
 
 A route with a JSON body can take the key in that body; a `GET` has nowhere to put one and takes a header instead.
 Servicesim models that per route rather than per provider, so a provider whose POST and GET differ is expressible.
@@ -579,17 +582,19 @@ a well-shaped empty success.
 
 ### `exa`
 
-Served on `POST /search` and `POST /answer`.
+Served on `POST /search`, `POST /answer`, `POST /contents` and `POST /findSimilar`.
 
 | Key | Type | Renders to |
 |---|---|---|
 | `request_id` | string | `requestId`. Defaults to 32 lowercase hex characters derived from the seed. |
-| `results` | list of ExaResult | `results[]`, truncated to the request's `numResults` (default 10) in declaration order. |
+| `results` | list of ExaResult | `results[]`, truncated to the request's `numResults` (default 10) in declaration order. Also the lookup table `/contents` resolves requested `ids`/`urls` against — see "`/contents`: a fetch-shaped route (D-a)" below. |
 | `cost_dollars` | `{total, neural}` | `costDollars`, which a real Exa response always carries and which is emitted even when the scenario declares none. `total` is required within the object. |
 | `output` | `{content, grounding}` | The structured-output branch, emitted only when the request supplied `outputSchema`. Each `grounding` entry is `{field, citations, confidence}` where `confidence` is `low`, `medium` or `high`. |
 | `resolved_search_type` | string | `resolvedSearchType`, emitted only when the scenario asks for it. Deprecated upstream. |
 | `context` | string | `context`, emitted only when the scenario asks for it. Deprecated upstream. |
 | `answer` | ExaAnswer | The `POST /answer` response: `{fault, answer, citations, cost_dollars, extra_fields}`. Absent means `/answer` returns an empty answer with no citations. Its `fault` is `/answer`'s own attempt budget, kept separate so an `/answer` call cannot consume `/search`'s retries. |
+| `contents` | ExaContents | The `POST /contents` route's own knobs: `{fault, statuses, cost_dollars, extra_fields}`. It declares no `results` of its own — see below. |
+| `find_similar` | ExaFindSimilar | The `POST /findSimilar` route: `{fault, results, cost_dollars, context, extra_fields}`. Unlike `contents`, it carries its own `results` — see below. |
 | `stream` | `warn` \| `reject` | Behaviour for a request carrying `"stream": true`. `warn` (default) records a journal warning and serves the ordinary JSON body; `reject` returns a provider-shaped 400. Streaming itself is out of scope. |
 | `extra_fields` | map | Merged into the top-level response object. |
 
@@ -607,19 +612,71 @@ ExaResult:
 | `omit_fields` | list of string | Drops named fields that would otherwise be present, for tests asserting a consumer fails on a missing required field. It is also the only way to reach the "publishedDate absent" state, since a source with no date renders an explicit null. |
 | `extra_fields` | map | Merged into this result entry. |
 
+#### `/contents`: a fetch-shaped route (D-a)
+
+`POST /contents` is "give me these documents", not a relevance query, so its response is a **pure function of the
+request and the scenario**, not a scripted `results` list. For each identifier the request names — every `ids[]`
+element, then every `urls[]` element, in request order — the simulator resolves it two ways in order: first
+against the *selected turn's own* `results` (above), keyed by a result's source URL or its declared `id`; then
+against the corpus, by an exact `scenario.Source.URL` match. A resolved identifier renders one `ExaResult` and a
+`statuses[]` entry `{id, status: "success"}` (no `source` key — both vendor examples omit it); an identifier that
+resolves to nothing renders no result and `statuses[]` `{id, status: "error", error: {tag: CRAWL_NOT_FOUND,
+httpStatusCode: 404}}` (`http_status_code` in a `contents.statuses` override — see the ExaContents table below).
+Whether **any** requested identifier resolves at all is decided from this default resolution, *before*
+`contents.statuses` overrides apply — a scenario that forces every requested identifier to `status: error` still
+gets a 200 with `results: []`, not a 400, because each of them resolved first. If **no** requested identifier
+resolves at all, the whole response is the documented 400 `NO_CONTENT_FOUND` instead of a 200 with an empty
+`results[]`. A request element that is present but not a real URL (e.g. `"not a url"`) is not parsed as a URL —
+it simply fails to resolve like any other unmatched identifier, and does **not** raise `INVALID_URLS`; that tag is
+reserved for a non-string or empty array element (`exa.contents.item.invalid`), checked at request-validation
+time, before resolution runs.
+
+This is what makes `search -> contents` work on the built-in `happy` scenario with **no `contents:` block at
+all**: the URLs `/search` returns are corpus URLs, so a `/contents` call naming one of them resolves through the
+corpus fallback on its own.
+
+ExaContents:
+
+| Key | Type | Renders to |
+|---|---|---|
+| `fault` | fault plan | `/contents`' own attempt budget (`exa:contents`), independent of `/search`'s, `/answer`'s and `/findSimilar`'s. |
+| `statuses` | list of `{id, status, source, error}` | Overrides D-a's computed status for one requested identifier, matched by the identifier exactly as the request sent it. `status: error` drops that identifier's result even if it had resolved. An override naming an identifier the request did not send raises `exa.contents.status_unrequested` (warning) and is not rendered. `error` is `{tag, http_status_code}`. |
+| `cost_dollars` | `{total, neural}` | `costDollars`, same shape as `/search`'s. |
+| `extra_fields` | map | Merged into the top-level `/contents` response object. |
+
+#### `/findSimilar`: a relevance route (D-b), and deprecated upstream
+
+Unlike `/contents`, `POST /findSimilar` **is** a relevance route: its results are exactly what `find_similar`
+declares, rendered through the identical `ExaResult` shape and truncated to `numResults` the same way `/search`
+is — a second projection over the same renderer, not a request-driven lookup. The vendor's own OpenAPI spec marks
+the operation `deprecated: true` in favour of `/search`; Servicesim simulates it anyway, because a client written
+before the deprecation is still production traffic and rejecting valid traffic is worse than serving a deprecated
+route (see `contracts/exa/README.md`'s "POST /findSimilar" section).
+
+ExaFindSimilar:
+
+| Key | Type | Renders to |
+|---|---|---|
+| `fault` | fault plan | `/findSimilar`'s own attempt budget (`exa:find_similar`), independent of the other three routes'. |
+| `results` | list of ExaResult | `results[]`, its own list — reusing `/search`'s `results` here would silently break the moment the two scenarios diverge. |
+| `cost_dollars` | `{total, neural}` | `costDollars`. |
+| `context` | string | `context`, emitted only when the scenario asks for it. Deprecated upstream, same as `exa`'s own top-level `context`. |
+| `extra_fields` | map | Merged into the top-level `/findSimilar` response object. |
+
 ### `tavily`
 
-Served on `POST /search`.
+Served on `POST /search` and `POST /extract`.
 
 | Key | Type | Renders to |
 |---|---|---|
 | `request_id` | string | `request_id`. Defaults to a derived UUID, matching Tavily's documented example. |
 | `answer` | string | `answer`, **gated on the request's `include_answer`**. The key is always emitted; when the request did not ask for an answer, or the scenario declares none, it renders an explicit `null`. |
 | `images` | list of `{url, description}` | `images[]`, gated on `include_images`. Items are objects, never bare URL strings. |
-| `results` | list of TavilyResult | `results[]`, truncated to the request's `max_results` (default 5) in declaration order. |
+| `results` | list of TavilyResult | `results[]`, truncated to the request's `max_results` (default 5) in declaration order. Also the lookup table `/extract` resolves requested `urls` against — see "`/extract`: a fetch-shaped route (D-a)" below. |
 | `response_time` | number | `response_time`. A JSON **number**, not a string. |
 | `auto_parameters` | map | `auto_parameters`. |
-| `usage` | `{credits}` | `usage`, gated on the request's `include_usage`. |
+| `usage` | `{credits}` | `usage`, gated on the request's `include_usage` — for `/search`. `/extract` reads this same key but gates it differently; see "`/extract`: a fetch-shaped route" below. |
+| `extract` | TavilyExtract | The `POST /extract` route's own knobs: `{fault, failed_results, extra_fields}`. It declares no `results` of its own — see below. |
 | `extra_fields` | map | Merged into the top-level response object. |
 
 TavilyResult:
@@ -635,6 +692,38 @@ TavilyResult:
 | `images` | list of `{url, description}` | `results[].images`, gated on `include_images`. |
 | `omit_fields` | list of string | Drops named fields from this entry. |
 | `extra_fields` | map | Merged into this result entry. |
+
+#### `/extract`: a fetch-shaped route (D-a)
+
+The same mechanism as Exa's `/contents`, applied to Tavily's shape. `POST /extract`'s response is a pure function
+of the request's `urls` (a single string or an array — both accepted) and the scenario: each requested URL is
+resolved first against the selected turn's own `results` (above), keyed by a result's source URL or its declared
+`id`, then against the corpus by exact URL match, in that order and in request order. A resolved URL renders one
+extracted result; an unresolved URL renders no result and a `failed_results[]` entry `{url, error}`, where `error`
+defaults to a fixed, simulator-chosen string (`contracts/tavily/README.md` documents `failed_results[].error` only
+as free text, with no vendor enum). Unlike `/contents`, there is no all-failed 400 branch: a `/extract` call where
+every URL fails still answers 200, with `results: []` and every URL in `failed_results[]`.
+
+As with `search -> contents`, this is what makes `search -> extract` work on the built-in `happy` scenario with no
+`extract:` block: `/search`'s results are corpus URLs, so `/extract` resolves them through the corpus fallback.
+
+A resolved result's own fields render as follows. `raw_content` is the result's own `raw_content` override if
+declared, else (when resolved through the turn's `results:`) the source's `text`, then that result's `content`,
+then the source's first snippet — or (when resolved through the corpus fallback) the source's `text`, then its
+first snippet. `images` is **always** an array of bare URL strings here, unlike `/search`'s own `images[]`, which
+is an array of `{url, description}` objects — `contracts/tavily/README.md`'s `/extract` response table documents
+`results[].images` as `array[string]`; gated on the request's `include_images` the same way `favicon` is gated on
+`include_favicon`. `usage.credits` is emitted when the request sends `include_usage: true` **or** the resolved
+turn's top-level `usage` key (the same one `/search` renders) is declared — either is sufficient (D-f), unlike
+`/search`'s own request-only gating on that field.
+
+TavilyExtract:
+
+| Key | Type | Renders to |
+|---|---|---|
+| `fault` | fault plan | `/extract`'s own attempt budget (`tavily:extract`), independent of `/search`'s. |
+| `failed_results` | list of `{url, error}` | Forces one requested URL to render as a failure, overriding D-a's ordinary resolution even for a URL that would otherwise have resolved. Matched by exact URL. An entry naming a URL the request did not send raises `tavily.extract.failure_unrequested` (warning) and is not rendered. `error` defaults to the fixed not-found text when omitted. |
+| `extra_fields` | map | Merged into the top-level `/extract` response object, independent of `/search`'s top-level `extra_fields`. |
 
 ### `perplexity`
 
@@ -739,14 +828,15 @@ and `response_time`).
 | Key | Type | Renders to |
 |---|---|---|
 | `status` | `pending` \| `in_progress` \| `completed` \| `failed` | `status`. Empty means `pending`. `completed` and `failed` are terminal — there is no `cancelled` on this surface, unlike Exa's. Also selects the poll's HTTP status: `202` while pending or in progress, `200` once terminal. |
-| `content` | string or object | `content`, emitted only at a terminal status. Deliberately untyped: the vendor renders either a report string or a structured object, depending on whether the create supplied `output_schema`, and a scenario must be able to produce both. |
-| `sources` | list of source reference | `sources[]`, emitted only at a terminal status. |
+| `content` | string or object | `content`, emitted only at `completed` — not at `failed`, even though both are terminal. Deliberately untyped: the vendor renders either a report string or a structured object, depending on whether the create supplied `output_schema`, and a scenario must be able to produce both. |
+| `sources` | list of source reference | `sources[]`, emitted only at `completed` — not at `failed`. |
 | `response_time` | number | `response_time`. Zero unless declared — nothing on a response path ever reads a real clock. |
 | `extra_fields` | map | Merged into the top-level response object. |
 
 Both polls also carry a `createdAt`/`created_at` string, sourced from `time.base` like the create body's — not a
 projection key, so there is nothing to declare. Exa's `createdAt` appears on every poll; Tavily's `created_at`
-appears only once the task reaches a terminal status, matching contracts/tavily/README.md's poll-status table.
+appears only once the task reaches `completed` — a `failed` poll carries none, matching
+contracts/tavily/README.md's poll-status table (`failed`: `request_id`, `status`, `response_time` only).
 
 **`create` is the create route's own attempt budget.** It is nested rather than a second block-level `fault:`,
 because a block-level `fault:` alongside `turns:` is already a load error and, in the multi-turn form, there is
@@ -843,7 +933,8 @@ are the gates worth knowing before you conclude a projection was ignored:
 
 | Gate | Effect |
 |---|---|
-| Exa `numResults` (default 10), Tavily `max_results` (default 5) | Truncate `results[]` in declaration order. Nothing is ever sorted by relevance. |
+| Exa `numResults` (default 10), Tavily `max_results` (default 5) | Truncate `results[]` in declaration order. Nothing is ever sorted by relevance. Also applies to `/findSimilar`'s own `numResults`, over `find_similar.results`. |
+| Exa `/contents` `ids`/`urls`, Tavily `/extract` `urls` | Decide which corpus/results entries are rendered at all (D-a), not just how many — see the "fetch-shaped route" sections above. A `contents:`/`extract:` block never lists results directly. |
 | Exa `outputSchema` | Without it, a declared `output:` is not emitted. |
 | Exa `text` on `/answer` | Without it, citations carry no `text` key. |
 | Tavily `include_answer` | Without it, `answer` is `null` however the scenario declares it. |

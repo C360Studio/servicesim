@@ -51,9 +51,10 @@ var implementedProviders = []string{
 // undecoded node whose type only its provider package knows — so a typo in a
 // built-in would otherwise survive until provider.ValidateScenario runs.
 var documentedProjectionKeys = map[string]map[string]bool{
-	"exa": keySet("request_id", "results", "cost_dollars", "output", "answer", "stream", "extra_fields"),
+	"exa": keySet("request_id", "results", "cost_dollars", "output", "answer", "contents", "find_similar",
+		"stream", "resolved_search_type", "context", "extra_fields"),
 	"tavily": keySet("request_id", "answer", "images", "results", "response_time",
-		"auto_parameters", "usage", "extra_fields"),
+		"auto_parameters", "usage", "extract", "extra_fields"),
 	"perplexity": keySet("completion_id", "created", "model", "answer", "finish_reason",
 		"citations", "search_results", "usage", "images", "related_questions", "extra_fields"),
 	"perplexity_agent": keySet("response_id", "message_id", "model", "status", "answer", "queries",
@@ -482,7 +483,12 @@ func TestAsyncFailed_BothSurfacesReachATerminalFailure(t *testing.T) {
 
 	taskFailed := asyncPoll(t, sim, provider.Tavily, "/research/"+tavilyID, tavilyHeaders)
 	assert.Equal(t, "failed", taskFailed["status"])
-	assert.NotEmpty(t, taskFailed["content"], "the failure is explained where this surface has to explain it")
+	// Verified 2026-08-15 against the vendor's research-get reference: a failed
+	// poll carries ONLY the three common fields. content and sources are gated
+	// on completed alone, so a failed task has nowhere on this surface to say
+	// what went wrong — a consumer's failure branch has the status and nothing
+	// else to read.
+	assert.NotContains(t, taskFailed, "content", "a failed poll must not carry content; only a completed one does")
 }
 
 // TestAsyncStuck_NeitherSurfaceEverTerminates is the regression test for the

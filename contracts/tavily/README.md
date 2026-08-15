@@ -217,7 +217,8 @@ This is the single most important thing on this surface and the easiest to get w
 | Task state | HTTP status | Body carries |
 |---|---|---|
 | `pending`, `in_progress` | **202 Accepted** | `request_id`, `status`, `response_time` |
-| `completed`, `failed` | **200 OK** | the above plus `created_at`, `content`, `sources` |
+| `completed` | **200 OK** | the above plus `created_at`, `content`, `sources` |
+| `failed` | **200 OK** | `request_id`, `status`, `response_time` only — no additional fields (corrected 2026-08-15, verified against <https://docs.tavily.com/documentation/api-reference/endpoint/research-get>, "Failed Tasks Only: no additional fields beyond the three common fields") |
 
 A poll is therefore **not** a constant 200 with a status field — the HTTP status is itself part of the contract, and
 a client may well branch on it before parsing. Emitting 200 throughout would let a consumer's `202 == still working`
@@ -309,19 +310,27 @@ fetched directly and returns **HTTP 404**, so it is a stale reference, not a sou
 below come from its own page, matching the pattern this file already records for `/search`: every documented
 status uses its own fully-shown example rather than deferring to a shared reference.
 
-**Status: canonical, verified, NOT YET SIMULATED (Phase 4).** Nothing in this section claims the route is
-registered by the binary; `contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth
-for that.
+**Status: canonical, verified, simulated.** Implemented on `provider/tavily`, exercised by
+`provider/tavily/extract_test.go` and `provider/tavily/extract_golden_test.go`, with fixtures in this directory.
+`contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth for what the binary
+registers.
 
 ### Auth
 
-**Bearer token in the `Authorization` header only**, per the page's own auth description
-("`Bearer <token>`, where `<token>` is your Tavily API key"). **The page does not document a body-placed
-`api_key` field for `/extract`, and neither fetch of it found one.** This is a real difference from `/search`,
-where this file already records that a body `api_key` is not vendor-documented either but IS accepted because
-observed client code sends it there. No such observed client behaviour has been recorded for `/extract` — do not
-carry the `/search` body acceptance across to this route without separate evidence. See "Open questions for the
-adopter" below.
+The page's own auth description documents **Bearer token in the `Authorization` header only**
+("`Bearer <token>`, where `<token>` is your Tavily API key"), and does not document a body-placed `api_key`
+field for `/extract` — neither fetch of it found one.
+
+**Servicesim accepts a body-placed `api_key` on `/extract` anyway, the same as `/search` and `/research`.**
+Decision D2 (`docs/adopter-backlog.md`, "Decisions already taken") was made on CLIENT-level evidence, not
+endpoint-level evidence: the recorded observation is that a consumer's production client sends the key as a
+body property on its POSTs, and the placement is a property of the client, not of the endpoint. A client that
+sends it on `/search` sends it on `/extract` too. `/research` already extended acceptance by exactly this
+reasoning, with no more direct evidence for `/research` than existed here, and rejecting it on `/extract` alone
+recreates the Phase 0 failure — a simulator that 401s traffic the live API serves — the day the adopter's
+client calls this route. The vendor documentation still records Bearer only, unchanged by this decision. See
+"Open questions for the adopter" below, which still asks the adopter to confirm their client's actual
+behaviour on this route.
 
 ### Request
 
@@ -420,9 +429,11 @@ route.
 
 ### What is NOT verified, and must not be invented
 
-1. **Whether a body-placed `api_key` authenticates `/extract`.** Not documented (same as `/search`), and — unlike
-   `/search` — not evidenced by any observed client code either. Treat `/extract` as Bearer-header-only until a
-   client is observed doing otherwise; do not extend the `/search` finding across routes by assumption.
+1. **Whether the live API itself authenticates a body-placed `api_key` on `/extract`.** Not documented (same as
+   `/search`), and — unlike `/search` — not directly evidenced by observed client code on THIS route. Servicesim
+   accepts it anyway, per the "Auth" section above: D2's evidence is that a client sends the key as a body
+   property on its POSTs generally, not that any specific route was observed doing so, and `/extract` is a POST.
+   This is a statement about what the vendor's own page does not say, not about what Servicesim does.
 2. **`request_id`'s format.**
 3. **`failed_results[].error`'s possible values** — documented only as free text, with no enum or set of causes
    listed.
@@ -440,8 +451,8 @@ body-placed `api_key`. The adopter's client (`src/pkg/agent/`) is not in this re
 be run as part of this verification pass. Ask the adopter:
 
 1. **Does your client send a body-placed `api_key` on `POST /extract`, the way D2 already established it does on
-   `POST /search`?** If yes, this file's Bearer-only recording above is incomplete for `/extract` the same way the
-   pre-D2 `/search` recording was, and needs the same fix.
+   `POST /search`?** If yes, this confirms the acceptance already recorded above. If no, the acceptance recorded
+   above is broader than the client needs and can be revisited.
 2. **Does your client send `chunks_per_source` without `query`?** The vendor page does not document the result.
 3. **Does your client rely on `usage.credits` being present when `include_usage` is unset**, or only when set?
    This file records it as conditional on `include_usage`, inferred rather than read verbatim on the field itself.

@@ -124,6 +124,18 @@ func (s *sim) answer(body string) *httptest.ResponseRecorder {
 	return s.do(request{path: "/answer", body: body})
 }
 
+// contents posts a /contents body with the default credential.
+func (s *sim) contents(body string) *httptest.ResponseRecorder {
+	s.t.Helper()
+	return s.do(request{path: "/contents", body: body})
+}
+
+// findSimilar posts a /findSimilar body with the default credential.
+func (s *sim) findSimilar(body string) *httptest.ResponseRecorder {
+	s.t.Helper()
+	return s.do(request{path: "/findSimilar", body: body})
+}
+
 // findings returns the journal findings of the most recent request.
 func (s *sim) findings() []journal.Finding {
 	s.t.Helper()
@@ -237,9 +249,11 @@ func TestRoutes_DeclareSeparateFaultBudgets(t *testing.T) {
 	t.Parallel()
 
 	routes := Routes()
-	require.Len(t, routes, 5)
+	require.Len(t, routes, 7)
 	assert.Equal(t, patternSearch, routes[0].Pattern)
 	assert.Equal(t, patternAnswer, routes[1].Pattern)
+	assert.Equal(t, patternContents, routes[2].Pattern)
+	assert.Equal(t, patternFindSimilar, routes[3].Pattern)
 	assert.NotEqual(t, routes[0].FaultKey, routes[1].FaultKey,
 		"an /answer call must not consume /search's retry budget")
 
@@ -261,7 +275,7 @@ func TestRoutes_DeclareSeparateFaultBudgets(t *testing.T) {
 	for _, r := range AgentRunRoutes() {
 		assert.Equal(t, NameAgentRuns, r.Entry, "%s resolves the wrong scenario entry", r.Pattern)
 	}
-	for _, r := range []provider.Route{RouteSearch(), RouteAnswer()} {
+	for _, r := range []provider.Route{RouteSearch(), RouteAnswer(), RouteContents(), RouteFindSimilar()} {
 		assert.Empty(t, r.Entry, "%s is the listener's own entry", r.Pattern)
 	}
 }
@@ -1087,6 +1101,71 @@ providers:
 	assert.Equal(t, "providers.exa.turns[0].respond.results[0].score", findings[0].Path)
 }
 
+// TestValidator_ReportsAnAcceptedButNeverEmittedScoreOnFindSimilar is the
+// find_similar.results[] analogue of TestValidator_ReportsAnAcceptedButNeverE
+// mittedScore: FindSimilarProjection.Results reuses the same ResultProjection
+// type and renderResult, so the identical authoring mistake under
+// find_similar.results must raise the same warning /search's own results[]
+// does, not be silently swallowed.
+func TestValidator_ReportsAnAcceptedButNeverEmittedScoreOnFindSimilar(t *testing.T) {
+	t.Parallel()
+
+	s, _, err := scenario.Parse([]byte(`
+version: 1
+name: exa-find-similar-score
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa:
+    find_similar:
+      results:
+        - source: source-a
+          score: 0.95
+`))
+	require.NoError(t, err)
+
+	findings := Validator{}.ValidateProjections(s, s.Provider(providerName))
+	require.Len(t, findings, 1)
+	assert.Equal(t, codeScoreNotEmitted, findings[0].Code)
+	assert.Equal(t, scenario.SeverityWarning, findings[0].Severity)
+	assert.Equal(t, "providers.exa.turns[0].respond.find_similar.results[0].score", findings[0].Path)
+}
+
+// TestValidator_ReportsAContentsStatusOutsideTheDocumentedEnum is the D-g
+// analogue of TestValidator_ReportsAnAcceptedButNeverEmittedScore: statuses[]
+// carries only two documented status values, and an override outside them is
+// accepted (a fault-injection author may want it) but flagged, following
+// codeConfidenceUnknown's precedent.
+func TestValidator_ReportsAContentsStatusOutsideTheDocumentedEnum(t *testing.T) {
+	t.Parallel()
+
+	s, _, err := scenario.Parse([]byte(`
+version: 1
+name: exa-contents-bad-status
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa:
+    results:
+      - source: source-a
+    contents:
+      statuses:
+        - id: https://example.test/report-a
+          status: err
+`))
+	require.NoError(t, err)
+
+	findings := Validator{}.ValidateProjections(s, s.Provider(providerName))
+	require.Len(t, findings, 1)
+	assert.Equal(t, codeContentsStatusInvalid, findings[0].Code)
+	assert.Equal(t, scenario.SeverityWarning, findings[0].Severity)
+	assert.Equal(t, "providers.exa.turns[0].respond.contents.statuses[0].status", findings[0].Path)
+}
+
 func TestValidator_RejectsAnUnknownSourceReferenceBeforeReadiness(t *testing.T) {
 	t.Parallel()
 
@@ -1203,4 +1282,26 @@ func TestNew_ZeroDepsServesAWellShapedEmptySuccess(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	assert.Empty(t, got.Results)
 	assert.Regexp(t, hex32, got.RequestID)
+}
+
+// TestNew_ZeroDepsContentsIsNoContentFoundNotEmptySuccess documents the one
+// route where a zero Deps' well-shaped-empty-success rule does not hold: D-g's
+// NO_CONTENT_FOUND branch fires whenever no requested identifier resolves, and
+// a zero Deps has no corpus for anything to resolve against.
+func TestNew_ZeroDepsContentsIsNoContentFoundNotEmptySuccess(t *testing.T) {
+	t.Parallel()
+
+	handler := New(provider.Deps{})
+	req := httptest.NewRequest(http.MethodPost, "/contents",
+		bytes.NewBufferString(`{"urls":["https://example.test/report-a"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-key")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+	var got ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, TagNoContentFound, got.Tag)
 }

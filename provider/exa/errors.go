@@ -40,6 +40,20 @@ const (
 	// /search analogue. It is the "the model could not answer" path, and a
 	// research product's error handling is incomplete without it.
 	TagUnableToGenerateResponse = "UNABLE_TO_GENERATE_RESPONSE"
+
+	// TagInvalidURLs is /contents-specific, documented by name only (400,
+	// "One or more URLs/IDs are in an invalid format") with no example body —
+	// contracts/exa/README.md's "POST /contents" § Error bodies. The message
+	// text is the vendor's own documented wording, quoted verbatim as
+	// messageInvalidURLs; contracts/exa/exa-contents-400-invalid-urls.json pins
+	// it, and its provenance entry records the tag-without-body reasoning.
+	TagInvalidURLs = "INVALID_URLS"
+
+	// TagNoContentFound is /contents-specific, documented by name only (400,
+	// "No contents could be found for the given URLs"), emitted per D-a/D-g when
+	// NO requested identifier resolves against the turn's projection or the
+	// corpus.
+	TagNoContentFound = "NO_CONTENT_FOUND"
 )
 
 // defaultRateLimitMessage is Exa's documented 429 body text, reproduced verbatim
@@ -62,6 +76,8 @@ const (
 	messageMethodNotAllowed   = "Method Not Allowed"
 	messageUnableToGenerate   = "Unable to generate a response"
 	messageInvalidJSONSchema  = "Invalid JSON schema supplied in outputSchema"
+	messageInvalidURLs        = "One or more URLs/IDs are in an invalid format"
+	messageNoContentFound     = "No contents could be found for the given URLs"
 )
 
 // errorBody renders the error envelope for status. A 429 gets the reduced
@@ -204,6 +220,15 @@ func classifyCode(code, message string) (int, string, string) {
 
 	case codeOutputSchemaDepth, codeOutputSchemaProperties:
 		return http.StatusBadRequest, TagInvalidJSONSchema, messageInvalidJSONSchema
+
+	case codeContentsItemInvalid:
+		// D-g: INVALID_URLS is documented by name for a malformed id/url on
+		// /contents. Every other tag-specific branch here puts a fixed
+		// provider-shaped message on the wire and leaves the precise element and
+		// reason in the journal (the finding this switch dispatched on); this one
+		// now matches that pattern rather than echoing the finding's own message
+		// onto the wire.
+		return http.StatusBadRequest, TagInvalidURLs, messageInvalidURLs
 
 	default:
 		return http.StatusBadRequest, TagInvalidRequestBody, message

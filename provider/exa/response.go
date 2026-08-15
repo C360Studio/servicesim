@@ -176,5 +176,71 @@ type Citation struct {
 // validation error message. "neural" is not a member.
 var SearchTypes = []string{"auto", "fast", "instant", "deep-lite", "deep", "deep-reasoning"}
 
-// Categories is the request `category` enum. Two members contain a space.
+// Categories is the request `category` enum. Two members contain a space. It is
+// shared by /search's `category` and /findSimilar's, which document the same
+// six values.
 var Categories = []string{"company", "publication", "news", "personal site", "financial report", "people"}
+
+// ContentsResponse is the POST /contents response body. Unlike /search and
+// /findSimilar it is not a relevance-ranked list: results[] and statuses[] are a
+// pure function of the request's ids/urls and the resolution D-a describes, see
+// contents.go.
+//
+// It carries no Context field, unlike SearchResponse and FindSimilarResponse.
+// contracts/exa/README.md documents a deprecated top-level `context` on
+// /contents too (§ Response table, "no example value shown"), but the
+// projection has no matching knob to ask for it with — see item 6 of that
+// section's "NOT verified" list. Adding one is a parity gap worth closing if a
+// consumer ever needs it, not an omission this route's design deliberately
+// makes.
+type ContentsResponse struct {
+	RequestID string   `json:"requestId"`
+	Results   []Result `json:"results"`
+
+	// Statuses is documented "yes" always present — one element per requested
+	// identifier, in request order, whether it resolved or not.
+	Statuses []ContentsStatus `json:"statuses"`
+
+	CostDollars CostDollars `json:"costDollars"`
+}
+
+// ContentsStatus is one element of /contents' statuses[], echoing one requested
+// identifier and what became of it.
+type ContentsStatus struct {
+	// ID echoes the requested identifier verbatim — the id or url as sent, not a
+	// resolved document id.
+	ID     string `json:"id"`
+	Status string `json:"status"`
+
+	// Source is documented present-but-conditional: both vendor success examples
+	// omit it even on status: success, so the default rendering omits it too.
+	Source string `json:"source,omitempty"`
+
+	// Error is present only when Status is "error" — both vendor success
+	// examples omit the key entirely rather than sending error: null.
+	Error *ContentsStatusError `json:"error,omitempty"`
+}
+
+// ContentsStatusError is one statuses[].error object.
+type ContentsStatusError struct {
+	Tag string `json:"tag"`
+
+	// HTTPStatusCode has no `omitempty`: the contract types it
+	// anyOf[{integer,100-599}, null], and UNSUPPORTED_URL's documented row gives
+	// no code at all — the null branch a consumer must be able to see.
+	HTTPStatusCode *int `json:"httpStatusCode"`
+}
+
+// FindSimilarResponse is the POST /findSimilar response body. It is a relevance
+// route like /search, over its own results and cost, per D-b: a second
+// projection over the same result renderer, not a fetch-shaped route like
+// /contents.
+type FindSimilarResponse struct {
+	RequestID string `json:"requestId"`
+
+	// Context is deprecated per the vendor's own OpenAPI spec and, like
+	// /search's Context, is emitted only when the scenario asks for it.
+	Context     *string     `json:"context,omitempty"`
+	Results     []Result    `json:"results"`
+	CostDollars CostDollars `json:"costDollars"`
+}

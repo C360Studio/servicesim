@@ -67,6 +67,13 @@ const (
 	CodeReasoningEffort = "perplexity.reasoning_effort.invalid"
 	CodeRecencyFilter   = "perplexity.search_recency_filter.invalid"
 
+	// CodeStreamMode is raised when stream_mode names a value outside its
+	// full|concise enum. It is a distinct code from [CodeStreamUnimplemented]
+	// because the two report different things: this one is ordinary field
+	// validation, unimplemented is a warning that a feature this build does not
+	// simulate was requested.
+	CodeStreamMode = "perplexity.stream_mode.invalid"
+
 	// CodeStreamUnimplemented is raised, as a warning, for stream: true. Streaming
 	// is a plan non-goal; the request still receives the ordinary non-streaming
 	// body. It warns rather than staying silent because a consumer must not be
@@ -248,9 +255,10 @@ func validateSonarRequest(x *provider.Exchange) string {
 	validateNumericRange(x, "temperature", CodeTemperature, 0, 2)
 	validateNumericRange(x, "top_p", CodeTopP, 0, 1)
 	validateMaxTokens(x)
-	validateEnum(x, "search_mode", CodeSearchMode, SearchModes)
-	validateEnum(x, "reasoning_effort", CodeReasoningEffort, ReasoningEfforts)
-	validateEnum(x, "search_recency_filter", CodeRecencyFilter, RecencyFilters)
+	validateNullableEnum(x, "search_mode", CodeSearchMode, SearchModes)
+	validateNullableEnum(x, "reasoning_effort", CodeReasoningEffort, ReasoningEfforts)
+	validateNullableEnum(x, "search_recency_filter", CodeRecencyFilter, RecencyFilters)
+	validateEnum(x, "stream_mode", CodeStreamMode, StreamModes)
 
 	if stream, ok := x.Bool("stream"); ok && stream {
 		x.Warn(CodeStreamUnimplemented, "body.stream",
@@ -346,12 +354,38 @@ func validateMaxTokens(x *provider.Exchange) {
 	}
 }
 
-// validateEnum checks an optional string property against an enum.
+// validateEnum checks an optional string property against an enum. A present
+// JSON null fails the same as any other non-member value: the specification
+// documents this property as a bare enum, not `enum | null`, so stream_mode is
+// the one Sonar enum this build validates with it (see
+// [validateNullableEnum]).
 func validateEnum(x *provider.Exchange, key, code string, members []string) {
 	if !x.Has(key) {
 		return
 	}
 	v, ok := x.String(key)
+	if !ok || !slices.Contains(members, v) {
+		x.Fail(code, "body."+key, "%s must be one of %s", key, strings.Join(members, ", "))
+	}
+}
+
+// validateNullableEnum checks an optional string property against an enum,
+// treating an explicit JSON null exactly like absence.
+//
+// search_mode, reasoning_effort and search_recency_filter are documented
+// `enum | null`, unlike stream_mode's bare enum: an explicit null is
+// documented-valid input, not merely an absent key, and x.Has is true for a
+// present-null property because it only checks map membership. Without this,
+// a null here would fall through to x.String's type assertion and fail as if
+// it were a wrong-type value. This follows the presentNonNull precedent
+// provider/exa introduced for its `anyOf[<type>, null]` fields rather than
+// inventing a second idiom for the same shape.
+func validateNullableEnum(x *provider.Exchange, key, code string, members []string) {
+	raw, present := x.Body[key]
+	if !present || raw == nil {
+		return
+	}
+	v, ok := raw.(string)
 	if !ok || !slices.Contains(members, v) {
 		x.Fail(code, "body."+key, "%s must be one of %s", key, strings.Join(members, ", "))
 	}

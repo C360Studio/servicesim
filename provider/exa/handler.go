@@ -35,7 +35,10 @@ const (
 // It is a function, not a package-level var, so no consumer can mutate the route
 // table of a package it merely imported.
 func Routes() []provider.Route {
-	return append([]provider.Route{RouteSearch(), RouteAnswer()}, AgentRunRoutes()...)
+	return append(
+		[]provider.Route{RouteSearch(), RouteAnswer(), RouteContents(), RouteFindSimilar()},
+		AgentRunRoutes()...,
+	)
 }
 
 // RouteSearch returns POST /search, keyed "exa:search". Its plan is the provider
@@ -88,7 +91,10 @@ func answerFault(s *scenario.Scenario) *scenario.Fault {
 
 // New returns the Exa handler, built with provider.NewMux over Routes(). The
 // zero Deps is usable: it serves well-shaped empty successes with no journal, no
-// faults and a real clock.
+// faults and a real clock — except POST /contents, whose D-g NO_CONTENT_FOUND
+// branch fires on a zero Deps' empty corpus exactly as it would on any
+// scenario where no requested identifier resolves, answering 400 rather than
+// a 200 with results: [].
 //
 // A zero Deps means no faults *even if the Scenario declares them* — pass
 // testkit.NewFaults(s) as Deps.Faults, or use testkit.Start, to get the
@@ -98,11 +104,13 @@ func New(deps provider.Deps) http.Handler {
 	return provider.NewMux(deps, provider.Exa, provider.MuxSpec{
 		Routes: Routes(),
 		Handlers: map[string]provider.Handler{
-			patternSearch:    handleSearch,
-			patternAnswer:    handleAnswer,
-			patternRunCreate: handleAgentRunCreate,
-			patternRunPoll:   handleAgentRunPoll,
-			patternRunHead:   handleAgentRunHead,
+			patternSearch:      handleSearch,
+			patternAnswer:      handleAnswer,
+			patternContents:    handleContents,
+			patternFindSimilar: handleFindSimilar,
+			patternRunCreate:   handleAgentRunCreate,
+			patternRunPoll:     handleAgentRunPoll,
+			patternRunHead:     handleAgentRunHead,
 		},
 		NotFound:         handleNotFound,
 		MethodNotAllowed: func(_ []string) provider.Handler { return handleMethodNotAllowed },

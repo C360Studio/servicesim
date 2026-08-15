@@ -91,12 +91,33 @@ func TestSonarRequestValidation(t *testing.T) {
 		{name: "search_mode is an enum",
 			request:    `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"search_mode":"telepathy"}`,
 			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeSearchMode},
+		{name: "search_mode accepts explicit null, per its documented enum | null type",
+			request:    `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"search_mode":null}`,
+			wantStatus: http.StatusOK},
 		{name: "reasoning_effort is an enum",
 			request:    `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"maximum"}`,
 			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeReasoningEffort},
+		{name: "reasoning_effort accepts explicit null, per its documented enum | null type",
+			request:    `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"reasoning_effort":null}`,
+			wantStatus: http.StatusOK},
 		{name: "search_recency_filter is an enum",
 			request:    `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"search_recency_filter":"fortnight"}`,
 			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeRecencyFilter},
+		{name: "search_recency_filter accepts explicit null, per its documented enum | null type",
+			request:    `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"search_recency_filter":null}`,
+			wantStatus: http.StatusOK},
+		{name: "stream_mode accepts full",
+			request:    `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"stream_mode":"full"}`,
+			wantStatus: http.StatusOK},
+		{name: "stream_mode accepts concise",
+			request:    `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"stream_mode":"concise"}`,
+			wantStatus: http.StatusOK},
+		{name: "stream_mode is an enum",
+			request:    `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"stream_mode":"verbose"}`,
+			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeStreamMode},
+		{name: "stream_mode rejects explicit null, unlike its nullable siblings",
+			request:    `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"stream_mode":null}`,
+			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeStreamMode},
 		{name: "streaming is flagged, not rejected",
 			request:    `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"stream":true}`,
 			wantStatus: http.StatusOK, wantCode: CodeStreamUnimplemented},
@@ -121,6 +142,63 @@ func TestSonarRequestValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStreamModeValidatesOnEverySpelling proves stream_mode is checked by the
+// shared validator every Sonar alias calls, not just the canonical route.
+func TestStreamModeValidatesOnEverySpelling(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"/v1/sonar", "/chat/completions", "/v1/chat/completions"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			s := newSim(t, mustScenario(t, sonarScenario))
+
+			resp, body := s.do(t, http.MethodPost, path,
+				`{"model":"sonar","messages":[{"role":"user","content":"hi"}],"stream_mode":"verbose"}`)
+			require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, "body: %s", body)
+			require.True(t, hasCode(s.findings(t), CodeStreamMode), "findings: %+v", s.findings(t))
+		})
+	}
+}
+
+// TestNullableEnumsAcceptNullOnEverySpelling proves search_mode,
+// reasoning_effort and search_recency_filter — each documented `enum | null`,
+// unlike stream_mode's bare enum — treat an explicit JSON null as absence on
+// every Sonar alias, not just the canonical route.
+func TestNullableEnumsAcceptNullOnEverySpelling(t *testing.T) {
+	t.Parallel()
+
+	fields := []string{"search_mode", "reasoning_effort", "search_recency_filter"}
+	paths := []string{"/v1/sonar", "/chat/completions", "/v1/chat/completions"}
+
+	for _, field := range fields {
+		for _, path := range paths {
+			t.Run(field+" "+path, func(t *testing.T) {
+				t.Parallel()
+				s := newSim(t, mustScenario(t, sonarScenario))
+
+				request := `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"` + field + `":null}`
+				resp, body := s.do(t, http.MethodPost, path, request)
+				require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+			})
+		}
+	}
+}
+
+// TestStreamModeRendersFastAPIMessage pins the 422 detail entry CodeStreamMode
+// renders, proving validationErrorMessage's row for it — otherwise unexercised —
+// reaches the wire in FastAPI's own vocabulary rather than a Servicesim-authored
+// sentence.
+func TestStreamModeRendersFastAPIMessage(t *testing.T) {
+	t.Parallel()
+	s := newSim(t, mustScenario(t, sonarScenario))
+
+	resp, body := s.do(t, http.MethodPost, "/v1/sonar",
+		`{"model":"sonar","messages":[{"role":"user","content":"hi"}],"stream_mode":"verbose"}`)
+	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, "body: %s", body)
+	require.Contains(t, string(body), `"msg":"Input should be 'full' or 'concise'"`)
+	require.Contains(t, string(body), `"type":"enum"`)
 }
 
 // TestMalformedBodyReportsOnlyTheDecodeError guards against the noise a naive

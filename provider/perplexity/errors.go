@@ -127,6 +127,7 @@ var validationErrorMessage = map[string][2]string{
 	CodeSearchMode:      {"Input should be 'web', 'academic' or 'sec'", "enum"},
 	CodeReasoningEffort: {"Input should be 'minimal', 'low', 'medium' or 'high'", "enum"},
 	CodeRecencyFilter:   {"Input should be 'hour', 'day', 'week', 'month' or 'year'", "enum"},
+	CodeStreamMode:      {"Input should be 'full' or 'concise'", "enum"},
 
 	CodeInputMissing:      {"Field required", "missing"},
 	CodeInputInvalid:      {"Input should be a valid string or list", "value_error"},

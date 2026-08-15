@@ -32,6 +32,8 @@ sources:
 
 providers:
 
+  # This file is about an unrecognised provider name; /contents, /findSimilar
+  # and /extract are left to their D-a/D-b defaults, unexercised.
   exa:
     results:
       - source: source-a

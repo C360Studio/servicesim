@@ -124,6 +124,24 @@ check "POST :8081/answer (exa)" \
       -H 'content-type: application/json' -H 'x-api-key: smoke-test-key' \
       -d '{"query":"smoke"}')" "200"
 
+# Phase 4's three synchronous routes. D-a means /contents and /extract need no
+# scenario authoring: happy's /search results are corpus URLs, so naming one
+# resolves through the corpus fallback with no `contents:`/`extract:` block.
+check "POST :8081/contents (exa)" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${EXA_PORT}/contents" \
+      -H 'content-type: application/json' -H 'x-api-key: smoke-test-key' \
+      -d '{"urls":["https://example.test/report-a"]}')" "200"
+
+check "POST :8081/findSimilar (exa)" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${EXA_PORT}/findSimilar" \
+      -H 'content-type: application/json' -H 'x-api-key: smoke-test-key' \
+      -d '{"url":"https://example.test/report-a"}')" "200"
+
+check "POST :8082/extract (tavily)" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${TAVILY_PORT}/extract" \
+      -H 'content-type: application/json' -H 'authorization: Bearer smoke-test-key' \
+      -d '{"urls":["https://example.test/report-a"]}')" "200"
+
 # The async create routes. The image's default scenario is `happy`, which
 # declares both async entries (scenarios/protocol/happy.yaml), so a create
 # against either one mints a job and answers 201.

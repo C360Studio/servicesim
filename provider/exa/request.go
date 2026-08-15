@@ -426,6 +426,23 @@ func validateUnknownFields(x *provider.Exchange, known map[string]bool) {
 	}
 }
 
+// presentNonNull returns x.Body[key] and whether it is present and not JSON
+// null.
+//
+// Every optional /contents request field, and most of /findSimilar's, is
+// documented `anyOf[<type>, null]` (D-d): an explicit JSON null is
+// documented-valid input, not merely an absent key, and a validator that type-
+// asserts a raw nil value would reject it as a type error. Callers on those two
+// routes use this instead of a bare `x.Body[key]` presence check so that null
+// is treated exactly like absence — accepted, never rejected.
+func presentNonNull(x *provider.Exchange, key string) (any, bool) {
+	raw, present := x.Body[key]
+	if !present || raw == nil {
+		return nil, false
+	}
+	return raw, true
+}
+
 // requestedNumResults returns how many results this request asks for, applying
 // the documented default of ten. Truncation takes the first N in scenario
 // declaration order; nothing is ever sorted by relevance.

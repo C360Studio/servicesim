@@ -68,6 +68,9 @@ sources:
 
 providers:
 
+  # This file's overlap arrangement is about dedup/corroboration, not the new
+  # Phase 4 routes, so /contents, /findSimilar and /extract are left to their
+  # D-a/D-b defaults with no dedicated sub-key below.
   exa:
     results:
       - source: source-a

@@ -1,0 +1,16 @@
+{
+  "results": [
+    {
+      "url": "https://example.test/report-a",
+      "raw_content": "Report A full text."
+    }
+  ],
+  "failed_results": [
+    {
+      "url": "https://example.test/blocked",
+      "error": "Robots.txt disallows crawling this URL."
+    }
+  ],
+  "response_time": 0.87,
+  "request_id": "5c2a0b4d-3e6f-5b8c-ad1e-2f3a4b5c6d7e"
+}

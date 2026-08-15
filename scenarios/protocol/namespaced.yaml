@@ -54,6 +54,8 @@ sources:
 
 providers:
 
+  # This file's lane story is about turn_key on the Sonar route; /contents,
+  # /findSimilar and /extract are left to their D-a/D-b defaults, unexercised.
   exa:
     results:
       - source: source-a

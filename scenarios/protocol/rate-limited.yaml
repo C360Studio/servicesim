@@ -48,6 +48,27 @@ providers:
       answer: Report A states the finding.
       citations:
         - source-a
+    # /contents and /findSimilar are separate routes too (exa:contents,
+    # exa:find_similar), each with its own retry budget independent of /search
+    # and /answer's above.
+    contents:
+      fault:
+        attempts:
+          - status: 429
+            retry_after: 1
+            error: Rate limit exceeded.
+            tag: RATE_LIMIT
+          - status: 200
+    find_similar:
+      fault:
+        attempts:
+          - status: 429
+            retry_after: 1
+            error: Rate limit exceeded.
+            tag: RATE_LIMIT
+          - status: 200
+      results:
+        - source: source-a
 
   tavily:
     fault:
@@ -61,6 +82,15 @@ providers:
     results:
       - source: source-a
         score: 0.98
+    # /extract draws on its own budget (tavily:extract), independent of
+    # /search's above.
+    extract:
+      fault:
+        attempts:
+          - status: 429
+            retry_after: 1
+            error: Rate limit exceeded.
+          - status: 200
 
   perplexity:
     fault:

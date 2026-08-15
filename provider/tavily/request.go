@@ -431,6 +431,35 @@ func invalidCode(field string) string {
 	return Name + "." + field + ".invalid"
 }
 
+// describeAcceptedPlacements renders a route's accepted credential placements
+// for a finding message, e.g. "Authorization: Bearer or a body api_key". It
+// exists so checkAuth's messages describe what the SERVING route actually
+// accepts (acceptedPlacements' own precedence: scenario auth.headers, then
+// Route.Credentials, then the package default) rather than a fixed phrase that
+// is wrong for a route narrower than the default, such as the research GET
+// polls (researchPollPlacements).
+func describeAcceptedPlacements(accepted []string) string {
+	parts := make([]string, 0, len(accepted))
+	for _, p := range accepted {
+		switch p {
+		case provider.PlacementAuthorization:
+			parts = append(parts, "Authorization: Bearer")
+		case PlacementBodyAPIKey:
+			parts = append(parts, "a body api_key")
+		default:
+			parts = append(parts, p)
+		}
+	}
+	switch len(parts) {
+	case 0:
+		return "a credential"
+	case 1:
+		return parts[0]
+	default:
+		return strings.Join(parts[:len(parts)-1], ", ") + " or " + parts[len(parts)-1]
+	}
+}
+
 // quoteAlternatives renders an enum as the vendor's own error text does:
 // 'a', 'b' or 'c'.
 func quoteAlternatives(values []string) string {
@@ -448,10 +477,15 @@ func quoteAlternatives(values []string) string {
 	}
 }
 
-// checkAuth applies §6.4's rule for Tavily: either the documented
-// Authorization: Bearer header or a body api_key authenticates, an x-api-key is
-// seen and journaled but does not, and the scenario's AuthPolicy overrides the
-// mode, the expected key and the accepted placements.
+// checkAuth applies §6.4's rule for Tavily: on the default route, either the
+// documented Authorization: Bearer header or a body api_key authenticates; a
+// narrower route (its own Route.Credentials, e.g. the research GET polls'
+// Bearer-only researchPollPlacements) or a
+// scenario's AuthPolicy can shrink or replace that set. An x-api-key is seen
+// and journaled but never authenticates. Every finding message this raises is
+// derived from the route's own accepted set (describeAcceptedPlacements), not
+// a fixed phrase, so a narrowed route never tells a caller a placement it will
+// still 401.
 //
 // Two placements authenticate rather than one because the vendor's
 // documentation and observed client code disagree: the OpenAPI security scheme
@@ -463,7 +497,8 @@ func quoteAlternatives(values []string) string {
 // journal's auth observation names it and tavily.api_key.in_body flags it.
 func checkAuth(x *provider.Exchange, entry *scenario.ProviderEntry) {
 	policy := authPolicy(entry)
-	presented := presentedCredentials(x, acceptedPlacements(x, policy))
+	accepted := acceptedPlacements(x, policy)
+	presented := presentedCredentials(x, accepted)
 
 	if policy.Mode == scenario.AuthReject {
 		// Deliberately a mismatch rather than a missing credential: something
@@ -473,8 +508,12 @@ func checkAuth(x *provider.Exchange, entry *scenario.ProviderEntry) {
 	}
 	if len(presented) == 0 {
 		if policy.Mode != scenario.AuthOptional {
+			// Derived from the route's own accepted set — not a hardcoded
+			// "Bearer or a body api_key" — so a Bearer-only route like the
+			// research GET polls never tells a caller a placement it will
+			// still 401.
 			x.Fail(CodeAuthMissing, "authorization",
-				"Authorization: Bearer or a body api_key is required")
+				"%s is required", describeAcceptedPlacements(accepted))
 		}
 		return
 	}
@@ -515,7 +554,7 @@ func presentedCredentials(x *provider.Exchange, accepted []string) []httpx.Crede
 		}
 		if cred.Header == "x-api-key" {
 			x.Warn(CodeAuthWrongHeader, "x-api-key",
-				"x-api-key is not accepted; only Authorization: Bearer or a body api_key authenticates")
+				"x-api-key is not accepted; only %s authenticates", describeAcceptedPlacements(accepted))
 		}
 	}
 

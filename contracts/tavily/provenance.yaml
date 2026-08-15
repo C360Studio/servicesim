@@ -91,7 +91,12 @@ goldens:
     verified: 2026-08-14
     note: >-
       Reproduced verbatim. No Retry-After header is documented, so none is
-      emitted.
+      emitted. Reused byte-for-byte by POST /extract's rate-limit fault test
+      (provider/tavily's TestGolden_ExtractRateLimited): faultBody's
+      status-to-message mapping is shared across every route on this
+      provider, so the envelope does not vary by route — only the attempt
+      budget it is drawn from does (tavily:extract, a separate counter from
+      tavily:search).
 
   - golden: tavily-432.json
     endpoint: POST /search
@@ -186,23 +191,22 @@ goldens:
   - golden: tavily-research-failed.json
     endpoint: GET /research/{request_id}
     status: 200
-    kind: simulator-chosen
+    kind: vendor-documented
     documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/research-get
     verified: 2026-08-15
     note: >-
-      A terminal failure. Two tables in contracts/tavily/README.md's async
-      section disagree with each other on this exact case: the poll-status-code
-      table says "completed, failed" both carry created_at/content/sources,
-      while the GET response field table marks all three "completed only". No
-      failure/error body shape is documented anywhere for this surface — and,
-      unlike this note's earlier draft claimed, Exa's agent-run `error` object
-      is not vendor-documented either (see contracts/exa/provenance.yaml's
-      exa-agent-runs-failed.json entry); both providers are equally unverified
-      on their terminal-failure shape. Servicesim emits
-      created_at (matching the first table) with content and sources both
-      absent because the scenario declares neither, which happens to satisfy
-      the second table for those two fields. Flagged rather than resolved
-      unilaterally; see this unit's report.
+      A terminal failure carries ONLY request_id, status and response_time —
+      no created_at, no content, no sources. Corrected 2026-08-15: the
+      poll-status-code table in contracts/tavily/README.md previously read
+      "completed, failed" both carry created_at/content/sources, which
+      disagreed with the GET response field table below it (all three marked
+      "completed only") and with the page's own prose, "Failed Tasks Only: no
+      additional fields beyond the three common fields". The README row is now
+      corrected to match; this is a wire change from what Servicesim emitted
+      before today (a spurious created_at on every failed poll), released an
+      hour after v0.2.0 shipped the route — see the next tag's release note.
+      No failure/error body shape beyond the three common fields is documented
+      for this surface; there is nothing else to render.
 
   - golden: tavily-research-404.json
     endpoint: GET /research/{request_id}, an identifier this process never minted
@@ -228,3 +232,86 @@ goldens:
       status. The message names the bound and the remedy (POST /__admin/reset, a
       fresh namespace, or raising the bound) — the wire text itself does not
       name the --max-jobs flag.
+
+  - golden: tavily-extract-happy.json
+    endpoint: POST /extract
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/extract
+    verified: 2026-08-15
+    note: >-
+      Two requested URLs, resolved by D-a's two-step lookup: report-a is named
+      by this turn's own /search-shaped `results:` entry, whose raw_content and
+      images overrides win; report-b is corpus-only and resolves purely by
+      exact scenario.Source.URL match, picking up its corpus text and single
+      Image field. Field names, required-ness and the field ORDER (url,
+      raw_content, images, favicon; results, failed_results, response_time,
+      usage, request_id) are vendor-documented per this file's "POST /extract"
+      section, all of it inferred rather than a declared `required` list — the
+      page's schema carries none. results[].images is an array of BARE URL
+      STRINGS, not the {url, description} objects /search uses for the same
+      field name on the same provider — the single most likely implementation
+      mistake on this route. usage.credits is simulator-chosen (1, the
+      documented basic-depth cost) because the scenario declares no usage
+      block of its own; request_id and response_time are both scenario
+      overrides, not derived, so this golden carries no digest to audit.
+
+  - golden: tavily-extract-empty.json
+    endpoint: POST /extract
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/extract
+    verified: 2026-08-15
+    note: >-
+      Every requested URL is unresolvable: results is an empty array (never
+      null, never omitted — same convention /search's images/results carry),
+      and failed_results carries one entry per requested URL in request
+      order. The envelope shape (results, failed_results always present) is
+      vendor-documented as inferred; the error TEXT,
+      "No content found at the requested URL.", is Servicesim's own choice —
+      failed_results[].error is documented only as free text with no enum or
+      set of causes (this file's "What is NOT verified" §3).
+
+  - golden: tavily-extract-partial-failure.json
+    endpoint: POST /extract
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/extract
+    verified: 2026-08-15
+    note: >-
+      One resolvable URL and one URL a projection's `extract.failed_results`
+      override forces to fail with its own error text, overriding whatever
+      D-a's ordinary lookup would otherwise have produced for it. This is the
+      per-URL-failure golden the unit's deliverables list calls for. The
+      envelope shape is vendor-documented (as above); the specific error text
+      is scenario-authored, which is exactly the point of the override
+      mechanism — a scenario author picks a plausible failure reason from
+      nothing, because the vendor documents none.
+
+  - golden: tavily-extract-400.json
+    endpoint: POST /extract
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/extract
+    verified: 2026-08-15
+    note: >-
+      A missing `urls` — the one required field. The {detail: {error}}
+      envelope is vendor-documented and exact; the message text is
+      Servicesim's own, matching this package's convention for every other
+      "Missing X" 400 on this provider (see tavily-400.json's entry).
+
+  - golden: tavily-extract-401.json
+    endpoint: POST /extract
+    status: 401
+    kind: vendor-documented
+    documentation_url: https://docs.tavily.com/documentation/api-reference/endpoint/extract
+    verified: 2026-08-15
+    note: >-
+      Byte-identical to tavily-401.json: /extract's own page reprints the same
+      401 example text as /search's. Recorded as its own entry, the same
+      pattern tavily-research-404.json already uses for a body that happens to
+      match a sibling route's, because provenance is per (route, status), not
+      per unique byte string. What differs on this route is not the body but
+      which credential placements reach it at all: /extract accepts Bearer
+      only (see this file's "POST /extract" § "Auth"), unlike /search's
+      additional body-placed api_key.

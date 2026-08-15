@@ -20,9 +20,9 @@ const Name = "tavily"
 // which scenario field a key maps to.
 const FaultKeySearch = "tavily:search"
 
-// PatternSearch is the ServeMux pattern for the one documented route. Its path
-// collides with Exa's, which is why each provider gets a listener of its own
-// rather than a shared mux with a host-based hack.
+// PatternSearch is the ServeMux pattern for POST /search. Its path collides
+// with Exa's, which is why each provider gets a listener of its own rather
+// than a shared mux with a host-based hack.
 const PatternSearch = "POST /search"
 
 // Routes returns the routes this provider serves, in registration order. Each
@@ -33,7 +33,7 @@ const PatternSearch = "POST /search"
 // It is a function, not a package-level var, so no consumer can mutate the
 // route table of a package it merely imported.
 func Routes() []provider.Route {
-	return append([]provider.Route{RouteSearch()}, ResearchRoutes()...)
+	return append([]provider.Route{RouteSearch(), RouteExtract()}, ResearchRoutes()...)
 }
 
 // RouteSearch returns POST /search, keyed "tavily:search".
@@ -63,6 +63,7 @@ func New(deps provider.Deps) http.Handler {
 		Routes: Routes(),
 		Handlers: map[string]provider.Handler{
 			PatternSearch:         handleSearch,
+			PatternExtract:        handleExtract,
 			PatternResearchCreate: handleResearchCreate,
 			PatternResearchPoll:   handleResearchPoll,
 			PatternResearchHead:   handleResearchHead,
@@ -167,6 +168,15 @@ func checkProjection(path string, p *Projection) []scenario.Finding {
 				add(scenario.SeverityError, "tavily.image.url.missing",
 					fmt.Sprintf("%s.images[%d].url", at, j),
 					"an images entry is an object with a url; a bare string is not the documented shape")
+			}
+		}
+	}
+	if p.Extract != nil {
+		for i, fr := range p.Extract.FailedResults {
+			if fr.URL == "" {
+				add(scenario.SeverityError, "tavily.extract.failed_results.url.missing",
+					fmt.Sprintf("%s.extract.failed_results[%d].url", path, i),
+					"a failed_results entry must name the url it forces to fail")
 			}
 		}
 	}

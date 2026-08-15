@@ -232,12 +232,24 @@ func TestTavilyResponseTimeIsANumber(t *testing.T) {
 }
 
 // TestTavilyResultsCarryScore is the deliberate counterpart to
-// TestExaResultsCarryNoScore: Tavily's result schema does declare score, and it
-// is required, so dropping it here would be just as wrong as adding it to Exa.
+// TestExaResultsCarryNoScore: POST /search's result schema does declare score,
+// and it is required, so dropping it here would be just as wrong as adding it
+// to Exa.
+//
+// It is scoped to POST /search goldens via their provenance Endpoint, not to
+// every Tavily fixture: POST /extract shares the "results" field NAME for an
+// entirely different, vendor-documented object shape (url, raw_content,
+// images, favicon — no score at all, see contracts/tavily/README.md's
+// "POST /extract" § "Response"), and an unscoped walk would wrongly demand a
+// field /extract's own contract never lists.
 func TestTavilyResultsCarryScore(t *testing.T) {
 	t.Parallel()
 
+	records := provenance(t, contracts.Tavily)
 	for _, golden := range goldens(t, contracts.Tavily) {
+		if records[golden.Name].Endpoint != "POST /search" {
+			continue
+		}
 		body := decode(t, golden)
 		results, ok := body["results"].([]any)
 		if !ok {

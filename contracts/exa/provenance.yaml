@@ -251,22 +251,19 @@ goldens:
       vendor example) — see that section before changing this fixture.
       costDollars.dataSources is not emitted here because the scenario did not
       declare one, which is also the documented default. Separately:
-      output.structured is OMITTED on this fixture rather than emitted as
-      null, because provider/exa/agentrun_handler.go's outputWire declares its
-      Structured field `any` with a `json:"structured,omitempty"` tag, and this
-      run's scenario supplied no outputSchema. contracts/exa/README.md's
-      response-fields table
-      instead documents `output.structured` as `object|null`, "null when no
-      schema was supplied" — an omitted key is not the same wire shape as a
-      present null, and a consumer decoding with `json.Unmarshal` into a struct
-      cannot tell "no schema" from "vendor added a field" the way it could with
-      an explicit null. This is a real disagreement between the code and the
-      README (the authority) discovered while auditing this fixture; it is
-      reported rather than silently reconciled either direction, and is why
-      this entry stays simulator-chosen instead of vendor-documented until it
-      is resolved — track it as a follow-up to emit output.structured: null
-      explicitly (or to correct the README if null turns out not to be
-      accurate) rather than editing this golden to paper over it.
+      output.structured now renders explicit null on this fixture, matching
+      contracts/exa/README.md's response-fields table, which documents
+      output.structured as object|null, "null when no schema was supplied".
+      A prior pass of this fixture omitted the key instead, because
+      provider/exa/agentrun_handler.go's outputWire declared its Structured
+      field with the json tag structured,omitempty; that was a real
+      disagreement between the code and the README (the authority), and the
+      fix — dropping omitempty so a nil interface value renders JSON null —
+      is what changed this golden on 2026-08-15 as part of Phase 4. This
+      entry stays simulator-chosen because output.structured being an
+      explicit null in the absence of a captured example run (as opposed to
+      merely present-vs-absent) is Servicesim's reading of the field-table
+      wording, not a vendor-observed response.
 
   - golden: exa-agent-runs-failed.json
     endpoint: GET /agent/runs/{id}
@@ -315,3 +312,200 @@ goldens:
       (POST /__admin/reset, a fresh namespace, or raising the bound), which is
       the part a consumer's test failure output actually needs to be
       actionable — the wire text itself does not name the --max-jobs flag.
+
+  - golden: exa-contents-happy.json
+    endpoint: POST /contents
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/get-contents
+    verified: 2026-08-15
+    note: >-
+      D-a's resolution mechanism, not a vendor-quoted example: two requested
+      URLs resolved against the turn's own results (the same list /search
+      renders from), each yielding a "success" status entry with no `source`
+      key — both vendor success examples on this page omit it even on
+      status: success, which is why the default rendering omits it too. The
+      result object fields (title, url, id, publishedDate, author, text,
+      image, favicon) are the same SearchResultOutput family /search's own
+      happy golden documents; nothing here is /contents-specific except the
+      statuses[] array and the absence of highlights/highlightScores/summary,
+      which this fixture's projection never declared. results[].text is
+      rendered regardless of the request's own text option — simulator-chosen
+      per D-c, unlike /answer's citations[].text, which IS gated on the
+      request's text flag. costDollars.total is read directly from the
+      scenario projection's contents.cost_dollars key — this response field IS
+      verified present on /contents (unlike the Agent API's inference), but
+      the numeric value 0.003 is Servicesim's own, not the page's example
+      (0.003 shown there is illustrative, not a documented constant).
+
+  - golden: exa-contents-empty.json
+    endpoint: POST /contents
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-15
+    note: >-
+      D-g's NO_CONTENT_FOUND branch: every requested identifier failed to
+      resolve. The tag and its message are quoted from the error-codes page's
+      NO_CONTENT_FOUND row ("No contents could be found for the given URLs"),
+      but that page names the tag without an example body, so the envelope
+      shape ({requestId, error, tag}, the same flat family every other Exa
+      error uses) and the decision to return 400 here rather than a 200 with
+      an empty results[] are both simulator-chosen — see handleContents'
+      godoc and the NO_CONTENT_FOUND branch comment in provider/exa/contents.go
+      for why this direction was picked: the branch fires against the
+      request's DEFAULT resolution, before any contents.statuses override
+      runs, so a scripted per-URL failure for the request's only identifier
+      is never reinterpreted as "nothing here at all".
+
+  - golden: exa-contents-per-url-failure.json
+    endpoint: POST /contents
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-15
+    note: >-
+      Pins the mechanism the /contents section states explicitly: "a
+      CRAWL_NOT_FOUND on one requested URL out of ten does not make the
+      overall response non-200". One of two requested URLs resolves and
+      renders normally; the other renders no result and a statuses[] entry
+      carrying CRAWL_NOT_FOUND (a documented /contents-specific tag) with
+      httpStatusCode 404. CRAWL_NOT_FOUND is a vendor-documented tag; using it
+      as this simulator's own default for "the corpus has nothing under this
+      identifier" is Servicesim's choice, since the page names the tag
+      without a captured statuses[] example.
+
+  - golden: exa-contents-400.json
+    endpoint: POST /contents
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/get-contents
+    verified: 2026-08-15
+    note: >-
+      D-d's one required-field failure: neither ids nor urls sent. The page
+      states "Exactly one of ids or urls is required" but prints no example
+      error body for violating it, so the envelope is the shared flat
+      {requestId, error, tag} family and the message is this simulator's own
+      finding text rather than a vendor string.
+
+  - golden: exa-contents-400-invalid-urls.json
+    endpoint: POST /contents
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-15
+    note: >-
+      The error-codes page names INVALID_URLS by tag and its exact message
+      text ("One or more URLs/IDs are in an invalid format") for a malformed
+      id/url on /contents, but shows no example body — the same
+      named-but-not-exemplified status this file already records for
+      NO_CONTENT_FOUND. The tag and message are the vendor's own documented
+      wording, quoted verbatim; the envelope ({requestId, error, tag}, the
+      same flat family every other Exa error uses) and the choice of which
+      malformed shape triggers it (a non-string or empty ids/urls element,
+      D-g) are this simulator's own, not vendor-exemplified.
+
+  - golden: exa-contents-401.json
+    endpoint: POST /contents
+    status: 401
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-15
+    note: >-
+      Fail-closed, identical in shape to exa-search-401.json: 401 is named
+      among /contents' documented statuses on the coding-agents guide's
+      Request-Level Errors table, but no example body is shown, so the
+      envelope and message text are the same reconstruction /search's 401
+      golden already uses.
+
+  - golden: exa-contents-429.json
+    endpoint: POST /contents
+    status: 429
+    kind: vendor-documented
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-15
+    note: >-
+      Reproduced verbatim, identical to exa-search-429.json: /contents shares
+      the cross-endpoint rate-limit body ({error} only, no requestId and no
+      tag) the error-codes page documents once for every Exa route. kind is
+      vendor-documented on the same basis as exa-contents-400.json and
+      exa-contents-401.json are simulator-chosen despite all three sharing the
+      "assumed by cross-reference, not independently re-quoted for /contents"
+      caveat in this page's Error bodies section: unlike 400 and 401, which
+      have no vendor example body to quote at all (their message text here is
+      this simulator's own reconstruction), 429's BYTES are the vendor's own
+      verbatim text, cited by name as applying to /contents on the coding-agent
+      guide's Request-Level Errors table. kind records the bytes' authorship;
+      the note above records that its applicability to this specific route is
+      inferred by cross-reference rather than independently confirmed.
+
+  - golden: exa-find-similar-happy.json
+    endpoint: POST /findSimilar
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    verified: 2026-08-15
+    note: >-
+      D-b: a relevance route rendered exactly like /search, from its own
+      find_similar.results over the same SearchResultOutput family (verified
+      by $ref name and analogy to /search in contracts/exa/README.md's
+      findSimilar section, not independently re-read component-by-component
+      for this route). results[].text is rendered regardless of the request's
+      own text option, same as /contents and /search — simulator-chosen per
+      D-c. costDollars is read from the OpenAPI spec's CostDollarsOutput $ref,
+      present on this route per the schema; the numeric value 0.004 is
+      Servicesim's own, not a vendor example (the spec shows no findSimilar
+      response example at all).
+
+  - golden: exa-find-similar-empty.json
+    endpoint: POST /findSimilar
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    verified: 2026-08-15
+    note: >-
+      Zero-result success, following /search's own empty golden: results
+      stays an empty array rather than null, and costDollars stays present,
+      matching the shared SearchResultOutput/CostDollarsOutput schemas this
+      route's $refs point at.
+
+  - golden: exa-find-similar-400.json
+    endpoint: POST /findSimilar
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    verified: 2026-08-15
+    note: >-
+      `url` is the one required field the spec names (minLength 3); no
+      request-level error example exists for this route in either the spec or
+      a prose page, so the envelope and message text follow the same flat
+      {requestId, error, tag} shape and simulator-reconstructed wording every
+      other Exa validation error on this file uses.
+
+  - golden: exa-find-similar-401.json
+    endpoint: POST /findSimilar
+    status: 401
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-15
+    note: >-
+      Fail-closed, identical in shape to exa-search-401.json. This route's own
+      HTTP error set is recorded NOT VERIFIED in contracts/exa/README.md's
+      findSimilar section; 401 and the shared credential headers are assumed
+      by cross-reference to /search and /contents, not independently
+      confirmed for /findSimilar.
+
+  - golden: exa-find-similar-429.json
+    endpoint: POST /findSimilar
+    status: 429
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/reference/error-codes
+    verified: 2026-08-15
+    note: >-
+      Same reduced {error}-only body every other Exa route uses on this
+      status. Marked simulator-chosen rather than vendor-documented, unlike
+      exa-search-429.json and exa-contents-429.json: this route's HTTP error
+      set is recorded NOT VERIFIED for findSimilar specifically, so applying
+      the cross-endpoint 429 shape here is this simulator's inference from
+      the other two routes, not an independently confirmed reading for this
+      one.

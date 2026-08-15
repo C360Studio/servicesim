@@ -450,7 +450,7 @@ func TestRoutesDeclareTheFaultKeyAndSelector(t *testing.T) {
 	t.Parallel()
 
 	routes := Routes()
-	require.Len(t, routes, 4)
+	require.Len(t, routes, 5)
 	require.Equal(t, PatternSearch, routes[0].Pattern)
 	require.Equal(t, FaultKeySearch, routes[0].FaultKey)
 
@@ -480,6 +480,15 @@ func TestRoutesDeclareTheFaultKeyAndSelector(t *testing.T) {
 		[]string{provider.PlacementAuthorization},
 		byPattern[PatternResearchPoll].Credentials,
 		"a GET has no body to carry a key in")
+
+	// /extract accepts the same two placements /search and /research do:
+	// contracts/tavily/README.md "POST /extract" § "Auth" records D2's
+	// client-level reasoning — the placement is a property of the client, not
+	// of the endpoint — carried across to this route.
+	require.Equal(t,
+		[]string{provider.PlacementAuthorization, PlacementBodyAPIKey},
+		byPattern[PatternExtract].Credentials,
+		"a body api_key authenticates /extract, same as /search and /research")
 
 	for _, p := range []string{PatternResearchCreate, PatternResearchPoll, PatternResearchHead} {
 		require.Equal(t, NameResearch, byPattern[p].Entry, "%s resolves the wrong scenario entry", p)
@@ -577,6 +586,19 @@ providers:
       - description: no url here
 `,
 			wantCode: "tavily.image.url.missing",
+		},
+		{
+			name: "an extract.failed_results entry with no url",
+			src: `
+version: 1
+name: bad
+providers:
+  tavily:
+    extract:
+      failed_results:
+        - error: forced failure with nothing to key it on
+`,
+			wantCode: "tavily.extract.failed_results.url.missing",
 		},
 	}
 

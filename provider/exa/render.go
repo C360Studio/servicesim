@@ -44,6 +44,19 @@ type Projection struct {
 	// this listener whether or not a scenario has anything to say through it.
 	Answer *AnswerProjection `yaml:"answer,omitempty"`
 
+	// Contents projects the POST /contents endpoint's own knobs: its fault plan,
+	// per-identifier status overrides and cost. It declares no `results` of its
+	// own — D-a is that /contents renders by resolving each requested id/url
+	// against THIS projection's own Results (above) and then the corpus, so the
+	// same `search:` fixture that answers /search also answers /contents with no
+	// extra authoring.
+	Contents *ContentsProjection `yaml:"contents,omitempty"`
+
+	// FindSimilar projects the POST /findSimilar endpoint. Unlike Contents, it IS
+	// a relevance route — D-b — so it carries its own Results, rendered through
+	// the same renderResult as /search.
+	FindSimilar *FindSimilarProjection `yaml:"find_similar,omitempty"`
+
 	// Stream selects the behaviour for a request carrying "stream": true.
 	// Defaults to StreamWarn: a journal warning plus the ordinary JSON body.
 	Stream scenario.StreamPolicy `yaml:"stream,omitempty"`
@@ -171,8 +184,83 @@ type AnswerProjection struct {
 	ExtraFields scenario.ExtraFields `yaml:"extra_fields,omitempty"`
 }
 
+// ContentsProjection projects the POST /contents endpoint. It carries no
+// `results` of its own — see Projection.Contents — only the route's own fault
+// plan, per-identifier status overrides and cost.
+type ContentsProjection struct {
+	// Fault is /contents' own attempt budget, kept separate from /search's
+	// block-level `fault:` and from /findSimilar's, following the answerFault
+	// precedent: a retry of one route must not consume another's budget.
+	Fault *scenario.Fault `yaml:"fault,omitempty"`
+
+	// Statuses overrides the status D-a's resolution would otherwise compute for
+	// one identifier, matched by ID against what the request actually sent. An
+	// override naming an identifier the request did not send raises
+	// exa.contents.status_unrequested and is not rendered — see
+	// resolveContentsIdentifier.
+	Statuses []ContentsStatusProjection `yaml:"statuses,omitempty"`
+
+	CostDollars *CostProjection      `yaml:"cost_dollars,omitempty"`
+	ExtraFields scenario.ExtraFields `yaml:"extra_fields,omitempty"`
+}
+
+// ContentsStatusProjection overrides one statuses[] entry, matched by ID.
+type ContentsStatusProjection struct {
+	// ID must match a requested identifier exactly (the raw ids[]/urls[]
+	// element), not a resolved document id.
+	ID string `yaml:"id"`
+
+	// Status overrides the computed status ("success" or "error"). Empty keeps
+	// whatever D-a's resolution computed. Setting it to "error" drops the
+	// identifier's entry from results[] even if it had resolved, because a
+	// vendor statuses[].error is what "this one did not come back" means.
+	Status string `yaml:"status,omitempty"`
+
+	// Source overrides statuses[].source (`cached` or `crawled`). The computed
+	// default omits this key, matching both vendor success examples.
+	Source string `yaml:"source,omitempty"`
+
+	Error *ContentsStatusErrorProjection `yaml:"error,omitempty"`
+}
+
+// ContentsStatusErrorProjection projects one statuses[].error object.
+type ContentsStatusErrorProjection struct {
+	// Tag should be one of the six documented CRAWL_*/SOURCE_*/UNSUPPORTED_URL
+	// values; ValidateProjections does not enforce the enum, since an author
+	// scripting a fault-injection scenario may deliberately want an unknown tag.
+	Tag string `yaml:"tag,omitempty"`
+
+	// HTTPStatusCode is a pointer so the projection can express the documented
+	// null case (UNSUPPORTED_URL's row gives no code) as well as omission
+	// (defaults to 404, matching D-a's CRAWL_NOT_FOUND default).
+	HTTPStatusCode *int `yaml:"http_status_code,omitempty"`
+}
+
+// FindSimilarProjection projects the POST /findSimilar endpoint. Per D-b it is
+// a relevance route rendered exactly like /search — a second projection over
+// the same renderResult — not a fetch-shaped route like /contents.
+type FindSimilarProjection struct {
+	// Fault is /findSimilar's own attempt budget, independent of /search's,
+	// /answer's and /contents'.
+	Fault *scenario.Fault `yaml:"fault,omitempty"`
+
+	Results []ResultProjection `yaml:"results,omitempty"`
+
+	CostDollars *CostProjection `yaml:"cost_dollars,omitempty"`
+
+	// Context projects the deprecated top-level `context` field, emitted only
+	// when the scenario asks for it — the same rule Projection.Context applies
+	// for /search.
+	Context *string `yaml:"context,omitempty"`
+
+	ExtraFields scenario.ExtraFields `yaml:"extra_fields,omitempty"`
+}
+
 // groundingConfidences is the documented confidence enum.
 var groundingConfidences = []string{"low", "medium", "high"}
+
+// contentsStatusValues is statuses[].status's documented enum.
+var contentsStatusValues = []string{contentsStatusSuccess, contentsStatusError}
 
 // renderSearch projects the scenario into a /search response body.
 //
@@ -205,6 +293,36 @@ func renderSearch(x *provider.Exchange, p *Projection, requestID string) ([]byte
 		resp.Output = renderOutput(p.Output)
 	}
 	return wire.Render(resp, p.ExtraFields)
+}
+
+// renderFindSimilar projects the scenario into a /findSimilar response body.
+//
+// D-b: this is a relevance route, scripted and rendered exactly like /search —
+// a second projection over renderResult — not resolved from the request the
+// way /contents is. It shares /search's numResults bounds (1-100, default 10):
+// the contract records the same range and default for both.
+func renderFindSimilar(x *provider.Exchange, p *Projection, requestID string) ([]byte, error) {
+	fs := p.FindSimilar
+	if fs == nil {
+		fs = &FindSimilarProjection{}
+	}
+
+	limit := requestedNumResults(x)
+	results := make([]Result, 0, len(fs.Results))
+	for i := range fs.Results {
+		if len(results) >= limit {
+			break
+		}
+		results = append(results, renderResult(&fs.Results[i]))
+	}
+
+	resp := FindSimilarResponse{
+		RequestID:   requestID,
+		Context:     fs.Context,
+		Results:     results,
+		CostDollars: renderCost(fs.CostDollars),
+	}
+	return wire.Render(resp, fs.ExtraFields)
 }
 
 // renderAnswer projects the scenario into an /answer response body.
@@ -324,13 +442,16 @@ func orNull(n scenario.Nullable) scenario.Nullable {
 
 // Validation-time finding codes. These are raised once at load, not per request.
 const (
-	codeProjectionInvalid = "exa.projection.invalid"
-	codeScoreNotEmitted   = "exa.result.score.not_emitted"
-	codeStreamPolicy      = "exa.stream.policy.unknown"
-	codeConfidenceUnknown = "exa.output.grounding.confidence.unknown"
-	codeAnswerFaultEmpty  = "exa.answer.fault.attempts.empty"
-	codeRenderFailed      = "exa.render.failed"
-	codeSourceUnresolved  = "exa.source.unresolved"
+	codeProjectionInvalid     = "exa.projection.invalid"
+	codeScoreNotEmitted       = "exa.result.score.not_emitted"
+	codeStreamPolicy          = "exa.stream.policy.unknown"
+	codeConfidenceUnknown     = "exa.output.grounding.confidence.unknown"
+	codeAnswerFaultEmpty      = "exa.answer.fault.attempts.empty"
+	codeContentsFaultEmpty    = "exa.contents.fault.attempts.empty"
+	codeFindSimilarFaultEmpty = "exa.find_similar.fault.attempts.empty"
+	codeRenderFailed          = "exa.render.failed"
+	codeSourceUnresolved      = "exa.source.unresolved"
+	codeContentsStatusInvalid = "exa.contents.statuses.status.invalid"
 )
 
 // Validator decodes and checks Exa projection bodies at startup. It implements
@@ -403,21 +524,16 @@ func validateProjection(p *Projection, path string) []scenario.Finding {
 		})
 	}
 
-	for i := range p.Results {
-		if p.Results[i].Score == nil {
-			continue
-		}
-		findings = append(findings, scenario.Finding{
-			Severity: scenario.SeverityWarning,
-			Code:     codeScoreNotEmitted,
-			Path:     fmt.Sprintf("%s.results[%d].score", path, i),
-			Message: "Exa's result schema has no top-level score field, so this value is accepted and never " +
-				"emitted; the only score-like field is highlight_scores",
-		})
+	findings = append(findings, validateResultScores(p.Results, path+".results")...)
+	if p.FindSimilar != nil {
+		findings = append(findings, validateResultScores(p.FindSimilar.Results, path+".find_similar.results")...)
 	}
 
 	if p.Output != nil {
 		findings = append(findings, validateGrounding(p.Output, path)...)
+	}
+	if p.Contents != nil {
+		findings = append(findings, validateContentsStatuses(p.Contents, path)...)
 	}
 	if p.Answer != nil && p.Answer.Fault != nil && !p.Answer.Fault.HasAttempts() {
 		findings = append(findings, scenario.Finding{
@@ -425,6 +541,66 @@ func validateProjection(p *Projection, path string) []scenario.Finding {
 			Code:     codeAnswerFaultEmpty,
 			Path:     path + ".answer.fault.attempts",
 			Message:  "a fault plan must declare at least one attempt",
+		})
+	}
+	if p.Contents != nil && p.Contents.Fault != nil && !p.Contents.Fault.HasAttempts() {
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityError,
+			Code:     codeContentsFaultEmpty,
+			Path:     path + ".contents.fault.attempts",
+			Message:  "a fault plan must declare at least one attempt",
+		})
+	}
+	if p.FindSimilar != nil && p.FindSimilar.Fault != nil && !p.FindSimilar.Fault.HasAttempts() {
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityError,
+			Code:     codeFindSimilarFaultEmpty,
+			Path:     path + ".find_similar.fault.attempts",
+			Message:  "a fault plan must declare at least one attempt",
+		})
+	}
+	return findings
+}
+
+// validateResultScores raises exa.result.score.not_emitted for every result in
+// results that sets Score, addressed at resultsPath — a caller-supplied prefix
+// so the same check covers both /search's results[] and /findSimilar's own
+// find_similar.results[], which reuse the identical ResultProjection type and
+// would otherwise silently swallow the same authoring mistake without warning.
+func validateResultScores(results []ResultProjection, resultsPath string) []scenario.Finding {
+	var findings []scenario.Finding
+	for i := range results {
+		if results[i].Score == nil {
+			continue
+		}
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityWarning,
+			Code:     codeScoreNotEmitted,
+			Path:     fmt.Sprintf("%s[%d].score", resultsPath, i),
+			Message: "Exa's result schema has no top-level score field, so this value is accepted and never " +
+				"emitted; the only score-like field is highlight_scores",
+		})
+	}
+	return findings
+}
+
+// validateContentsStatuses flags a contents.statuses override whose status is
+// outside the documented success|error enum. It is a warning, not a rejection,
+// following codeConfidenceUnknown's precedent: a scenario author scripting
+// fault injection may want an off-enum value on purpose, and this is
+// scenario-authoring time, not request-handling time.
+func validateContentsStatuses(cp *ContentsProjection, path string) []scenario.Finding {
+	var findings []scenario.Finding
+	for i, st := range cp.Statuses {
+		if st.Status == "" || slices.Contains(contentsStatusValues, st.Status) {
+			continue
+		}
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityWarning,
+			Code:     codeContentsStatusInvalid,
+			Path:     fmt.Sprintf("%s.contents.statuses[%d].status", path, i),
+			Message: fmt.Sprintf("status %q is outside the documented enum (success, error) and is emitted verbatim",
+				st.Status),
 		})
 	}
 	return findings

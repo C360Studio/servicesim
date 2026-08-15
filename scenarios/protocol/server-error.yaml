@@ -39,6 +39,24 @@ providers:
       answer: Report A states the finding.
       citations:
         - source-a
+    # Own budgets, own permanent 500s: a retry of /contents or /findSimilar
+    # must not be answered from /search's or /answer's counters.
+    contents:
+      fault:
+        after: repeat_last
+        attempts:
+          - status: 500
+            error: Internal server error.
+            tag: INTERNAL
+    find_similar:
+      fault:
+        after: repeat_last
+        attempts:
+          - status: 500
+            error: Internal server error.
+            tag: INTERNAL
+      results:
+        - source: source-a
 
   tavily:
     fault:
@@ -50,6 +68,13 @@ providers:
     results:
       - source: source-a
         score: 0.98
+    # /extract's own permanent 500, on its own budget.
+    extract:
+      fault:
+        after: repeat_last
+        attempts:
+          - status: 500
+            error: Internal server error.
 
   perplexity:
     fault:

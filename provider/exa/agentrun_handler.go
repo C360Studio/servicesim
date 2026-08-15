@@ -349,8 +349,13 @@ type runWire struct {
 }
 
 type outputWire struct {
-	Text       string      `json:"text,omitempty"`
-	Structured any         `json:"structured,omitempty"`
+	Text string `json:"text,omitempty"`
+
+	// Structured has no `omitempty`: contracts/exa/README.md documents
+	// output.structured as `object|null`, "null when no schema was supplied" —
+	// present and explicitly null, not absent. encoding/json renders a nil `any`
+	// as JSON null, which is exactly the wire shape the contract promises.
+	Structured any         `json:"structured"`
 	Grounding  []Grounding `json:"grounding,omitempty"`
 }
 

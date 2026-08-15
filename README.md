@@ -79,8 +79,8 @@ preserving each vendor's real path requires a separate port per provider.
 | Listener | Port | Routes |
 |---|---:|---|
 | admin | `8080` | `GET /healthz`, `GET /readyz`, `GET /__admin/requests`, `GET /__admin/namespaces`, `GET /__admin/scenario`, `GET /__admin/jobs`, `POST /__admin/reset` |
-| exa | `8081` | `POST /search`, `POST /answer` |
-| tavily | `8082` | `POST /search` |
+| exa | `8081` | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar` |
+| tavily | `8082` | `POST /search`, `POST /extract` |
 | perplexity | `8083` | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/agent`, `POST /v1/responses` |
 
 `/chat/completions` and `/v1/responses` are aliases the OpenAI SDK produces when pointed at Perplexity — same
@@ -352,7 +352,7 @@ product-specific corpora belong in your own repository.
 |---|---|
 | `happy` | The baseline: a well-formed 200 from every provider parses into your own model. |
 | `empty-results` | Zero results in a well-shaped envelope is handled as "no results", not as an error. |
-| `async-failed` | An Exa agent run and a Tavily research task each reach a terminal `failed` status, so your failure branch reads the error detail rather than mis-parsing it as success. |
+| `async-failed` | An Exa agent run and a Tavily research task each reach a terminal `failed` status — Exa's poll carries an `error` object with the detail, Tavily's carries none beyond the status itself — so your failure branch handles both shapes rather than mis-parsing either as success. |
 | `async-stuck` | An Exa agent run and a Tavily research task never terminate, so your own poll timeout — not Servicesim — is what ends the loop. |
 | `unauthorized` | A 401 in each vendor's own error envelope is surfaced as an auth failure and is not retried. |
 | `rate-limited` | A 429 with `Retry-After`, then success — backoff and retry work, and the retry is counted. |

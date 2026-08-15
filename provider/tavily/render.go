@@ -54,6 +54,12 @@ type Projection struct {
 	// Usage is emitted only when the request set include_usage: true.
 	Usage *UsageProjection `yaml:"usage,omitempty"`
 
+	// Extract projects POST /extract's own concerns — its attempt budget and
+	// any per-URL failure overrides. Absent means every requested URL resolves
+	// through D-a's ordinary lookup (this turn's Results, then the corpus)
+	// with no forced failures. See extract.go.
+	Extract *ExtractProjection `yaml:"extract,omitempty"`
+
 	ExtraFields scenario.ExtraFields `yaml:"extra_fields,omitempty"`
 }
 

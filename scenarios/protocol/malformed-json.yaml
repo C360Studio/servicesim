@@ -40,6 +40,24 @@ providers:
       answer: Report A states the finding.
       citations:
         - source-a
+    # /contents and /findSimilar each get their own always-on truncated body,
+    # on their own fault budgets, so a retry of either stays malformed too.
+    contents:
+      fault:
+        after: repeat_last
+        attempts:
+          - kind: invalid_json
+            status: 200
+            raw_body: '{"requestId":"00000000000000000000000000000000","results":[{"title":"Report A",'
+    find_similar:
+      fault:
+        after: repeat_last
+        attempts:
+          - kind: invalid_json
+            status: 200
+            raw_body: '{"requestId":"00000000000000000000000000000000","results":[{"title":"Report A",'
+      results:
+        - source: source-a
 
   tavily:
     fault:
@@ -52,6 +70,14 @@ providers:
     results:
       - source: source-a
         score: 0.98
+    # /extract's own always-on truncated body, on its own budget.
+    extract:
+      fault:
+        after: repeat_last
+        attempts:
+          - kind: invalid_json
+            status: 200
+            raw_body: '{"results":[{"url":"https://example.test/report-a",'
 
   perplexity:
     fault:

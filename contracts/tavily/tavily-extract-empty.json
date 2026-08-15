@@ -1,0 +1,15 @@
+{
+  "results": [],
+  "failed_results": [
+    {
+      "url": "https://example.test/missing-a",
+      "error": "No content found at the requested URL."
+    },
+    {
+      "url": "https://example.test/missing-b",
+      "error": "No content found at the requested URL."
+    }
+  ],
+  "response_time": 0.5,
+  "request_id": "4b1f9a3c-2d5e-5a7b-9c0d-1e2f3a4b5c6d"
+}

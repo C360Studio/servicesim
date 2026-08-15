@@ -46,6 +46,22 @@ providers:
       answer: Report A states the finding.
       citations:
         - source-a
+    # /contents' own envelope-level extra fields; its per-result tolerance is
+    # already covered by results[].extra_fields above, since D-a resolves
+    # /contents against this same results list.
+    contents:
+      extra_fields:
+        crawlEngineVersion: unreleased-3
+    # /findSimilar has its own results list (D-b), so it needs its own
+    # result-level extra_fields to prove the same per-result tolerance.
+    find_similar:
+      results:
+        - source: source-a
+          extra_fields:
+            relevanceExplanation: An unreleased field describing why this ranked first.
+      extra_fields:
+        experimentalRanking:
+          variant: b
 
   tavily:
     extra_fields:
@@ -59,6 +75,14 @@ providers:
         extra_fields:
           chunk_count: 3
           experimental_relevance: 0.77
+    # /extract's own envelope-level extra fields, independent of /search's
+    # top-level extra_fields above — the same relationship AnswerProjection's
+    # ExtraFields has to Exa's. Per-result tolerance is already covered by
+    # results[].extra_fields above, since D-a resolves /extract from the same
+    # results list.
+    extract:
+      extra_fields:
+        experimental_extraction_model: unreleased-model-x
 
   perplexity:
     extra_fields:

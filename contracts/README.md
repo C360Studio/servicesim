@@ -6,8 +6,8 @@ derived from and the date the shape was verified.
 
 | Provider | Contract | Verified | Base URL simulated |
 |---|---|---|---|
-| Exa | [`exa/README.md`](exa/README.md) | 2026-08-15 | `POST /search`, `POST /answer`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
-| Tavily | [`tavily/README.md`](tavily/README.md) | 2026-08-15 | `POST /search`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
+| Exa | [`exa/README.md`](exa/README.md) | 2026-08-15 | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
+| Tavily | [`tavily/README.md`](tavily/README.md) | 2026-08-15 | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
 | Perplexity | [`perplexity/README.md`](perplexity/README.md) | 2026-08-14 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
 
 Every route in that column has golden fixtures in this directory, except the two `HEAD` routes: `HEAD` carries no
@@ -33,10 +33,7 @@ cannot tell whether it was considered and declined or never looked at — which 
 
 | Provider | Endpoint | Status | Why |
 |---|---|---|---|
-| Exa | `/contents` | verified 2026-08-15 against <https://exa.ai/docs/reference/get-contents>; simulation scheduled (Phase 4) | See `contracts/exa/README.md`'s "POST /contents" section for the full recorded shape. |
-| Exa | `/findSimilar` | verified 2026-08-15 against <https://exa.ai/docs/exa-spec.yaml> (vendor marks the route `deprecated: true`); simulation scheduled (Phase 4) | The vendor's own OpenAPI spec documents this route in full and steers callers toward `/search` instead. See `contracts/exa/README.md`'s "POST /findSimilar" section for the full recorded shape and the correction to this row's earlier "no documentation found" claim. |
 | Exa | `/agent/runs` lifecycle beyond create and poll | NOT SIMULATED | Create and poll ARE simulated — see the table above. The rest of the lifecycle (listing all runs, `/agent/runs/{id}/events`, `/agent/runs/{id}/cancel`, and deleting a run) has no verified contract and is not simulated. Paths here are written without a method on purpose: the index guard reads a backticked method-plus-path as a claim that the route IS simulated. |
-| Tavily | `/extract` | verified 2026-08-15 against <https://docs.tavily.com/documentation/api-reference/endpoint/extract>; simulation scheduled (Phase 4) | See `contracts/tavily/README.md`'s "POST /extract" section for the full recorded shape. |
 
 "Scheduled for verification" means exactly that: the vendor documentation has not been fetched, dated and recorded
 under [the one rule](../CONTRIBUTING.md#the-one-rule-that-matters-most), so nothing here asserts a method, a request

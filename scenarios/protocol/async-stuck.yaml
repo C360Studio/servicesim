@@ -31,6 +31,8 @@ sources:
 
 providers:
 
+  # This file is about the async lifecycle; /contents, /findSimilar and
+  # /extract are left to their D-a/D-b defaults, unexercised.
   exa:
     results:
       - source: source-a

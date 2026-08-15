@@ -1,0 +1,5 @@
+{
+  "detail": {
+    "error": "Missing urls. 'urls' is a required string or array of strings."
+  }
+}

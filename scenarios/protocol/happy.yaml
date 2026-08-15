@@ -64,6 +64,18 @@ providers:
         - source-b
       cost_dollars:
         total: 0.01
+    # POST /contents needs no authoring at all here (D-a): the URLs /search
+    # returns above are corpus URLs, so a `/contents {"urls":[...]}` call naming
+    # either one resolves against the corpus fallback with no `contents:` block.
+    # POST /findSimilar IS a relevance route (D-b), not a fetch-shaped one, so
+    # unlike /contents it needs its own `results:` — reusing /search's would be
+    # silently wrong once the two diverge.
+    find_similar:
+      results:
+        - source: source-a
+        - source: source-b
+      cost_dollars:
+        total: 0.004
 
   tavily:
     answer: A short synthesis of Report A and Report B.
@@ -76,6 +88,10 @@ providers:
         score: 0.71
     usage:
       credits: 1
+    # POST /extract needs no authoring either, for the identical D-a reason:
+    # the results above are corpus URLs, and /extract resolves a requested URL
+    # against this turn's results first, then the corpus, with no `extract:`
+    # block required.
 
   perplexity:
     answer: A grounded answer citing Report A and Report B.

@@ -19,6 +19,15 @@ providers:
     answer:
       answer: I found no sources for that query.
       citations: []
+    # This scenario declares no `sources:` at all, so /contents' D-a resolution
+    # (this turn's results, then the corpus) finds nothing for ANY requested
+    # identifier — the documented NO_CONTENT_FOUND 400 (D-g), not a 200 with an
+    # empty results[]. That is /contents' own version of "nothing here" and
+    # needs no `contents:` block to produce.
+    find_similar:
+      results: []
+      cost_dollars:
+        total: 0
 
   tavily:
     # An explicit empty string, not an absent key: absent renders JSON null,
@@ -28,6 +37,10 @@ providers:
     results: []
     usage:
       credits: 1
+    # No `extract:` block needed either: with no sources and no results, D-a's
+    # resolution fails every requested URL, so /extract answers 200 with
+    # results: [] and one failed_results entry per requested URL — its own
+    # well-shaped "nothing here" envelope.
 
   perplexity:
     answer: I found no sources for that query.

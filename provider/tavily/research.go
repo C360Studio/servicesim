@@ -128,9 +128,25 @@ func (p *ResearchProjection) EffectiveStatus() string {
 	return p.Status
 }
 
-// IsTerminal reports whether this snapshot ends the task.
+// IsTerminal reports whether this snapshot ends the task. Both completed and
+// failed are terminal for the purpose of the HTTP status code (202 while the
+// task is live, 200 once it stops) and for the "does not un-complete" check —
+// see [ResearchProjection.IsCompleted] for the narrower, fields-gating
+// question of which terminal state this is.
 func (p *ResearchProjection) IsTerminal() bool {
 	return terminalResearch[p.EffectiveStatus()]
+}
+
+// IsCompleted reports whether this snapshot is specifically the completed
+// terminal state, as opposed to failed. Verified 2026-08-15 against
+// contracts/tavily/README.md's research poll section, § The poll's status
+// code varies with the task state, and its field table: created_at, content
+// and sources appear on a completed poll but NOT on a failed one, even though
+// both are 200 OK. Gating those three fields on
+// [ResearchProjection.IsTerminal] instead — which this package did before
+// today — rendered a spurious created_at on every failed poll.
+func (p *ResearchProjection) IsCompleted() bool {
+	return p.EffectiveStatus() == StatusCompleted
 }
 
 // HTTPStatus is the status code a poll returns for this snapshot.
@@ -326,10 +342,12 @@ func knownResearchModel(v string) bool {
 
 // renderResearchSnapshot renders one poll body.
 //
-// A non-terminal task carries only request_id, status and response_time; the
-// completed fields — including created_at — appear at a terminal status. That
-// is the vendor's documented split (contracts/tavily/README.md's poll-status
-// table) and it pairs with the 202/200 status code.
+// A non-terminal task carries only request_id, status and response_time. The
+// completed fields — created_at, content and sources — appear ONLY at
+// `completed`, not at `failed`: both are 200 OK (IsTerminal), but the
+// documented field table gates the three extra fields on IsCompleted alone.
+// contracts/tavily/README.md records this split, verified 2026-08-15 against
+// <https://docs.tavily.com/documentation/api-reference/endpoint/research-get>. // servicesim:allow-live-host
 func renderResearchSnapshot(x *provider.Exchange, p *ResearchProjection, id string) ([]byte, error) {
 	out := researchPollWire{
 		RequestID:    id,
@@ -340,7 +358,7 @@ func renderResearchSnapshot(x *provider.Exchange, p *ResearchProjection, id stri
 		out.ResponseTime = *p.ResponseTime
 	}
 
-	if p.IsTerminal() {
+	if p.IsCompleted() {
 		out.CreatedAt = x.Deps.Scenario.BaseTime().UTC().Format(scenario.PublishedAtLayout)
 		out.Content = p.Content
 		for _, ref := range p.Sources {

@@ -8,8 +8,9 @@ version: 1
 name: async-failed
 description: >-
   A well-formed 200 from every synchronous surface, and a run/task on each
-  async surface that reaches a terminal failed status, carrying the failure
-  detail a consumer's error branch reads.
+  async surface that reaches a terminal failed status — Exa's `error` object
+  carries the detail; Tavily's failed poll carries none, which a consumer's
+  failure branch must handle too.
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -26,6 +27,8 @@ sources:
 
 providers:
 
+  # This file is about the async lifecycle; /contents, /findSimilar and
+  # /extract are left to their D-a/D-b defaults, unexercised.
   exa:
     results:
       - source: source-a
@@ -72,16 +75,17 @@ providers:
             code: AGENT_RUN_FAILED
             message: The run could not be completed.
 
-  # Tavily documents no distinct error shape for a failed task. The verified
-  # contract (contracts/tavily/README.md, "The poll's status code varies with
-  # the task state") lists `content` and `sources` as what a terminal poll
-  # carries for BOTH completed and failed — there is no separate error object,
-  # and ResearchProjection has no field for one. `content` is used to say what
-  # happened, because it is the only place this surface has to say it.
+  # Tavily documents no distinct error shape for a failed task, and — per the
+  # vendor's research-get reference, re-verified 2026-08-15 (see
+  # contracts/tavily/README.md) — a failed poll carries ONLY the three common
+  # fields (request_id, status, response_time); `content` and `sources` are
+  # gated on `completed` alone, not on every terminal status the way an
+  # earlier reading of this file assumed. There is nowhere on this surface for
+  # a failed task to say what went wrong; a consumer's failure branch has the
+  # status code and nothing else to read.
   tavily_research:
     turns:
       - when: {call_index: 0}
         respond: {status: pending}
       - respond:
           status: failed
-          content: The research task failed before producing a report.

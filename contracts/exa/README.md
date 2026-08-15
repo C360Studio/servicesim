@@ -22,8 +22,8 @@ the live contract canary reports drift.
 |---|---|---|---|
 | `POST` | `/search` | canonical, simulated | Base URL <https://api.exa.ai>. Confirmed on both the OpenAPI-backed reference page and the coding-agents guide. |
 | `POST` | `/answer` | canonical, simulated | Separate documented endpoint at <https://exa.ai/docs/reference/answer>. Same auth. Request: query (string, required), stream, text, outputSchema. Response: answer (string\|object), citations[] (title,url,publishedDate,author,id,image,text), requestId, costDollars. The plan doc does not mention /answer at all. |
-| `POST` | `/contents` | canonical, verified 2026-08-15, NOT YET SIMULATED (Phase 4) | See the "POST /contents" section below. |
-| `POST` | `/findSimilar` | canonical per the live OpenAPI spec, DEPRECATED by the vendor, verified 2026-08-15, NOT YET SIMULATED | See the "POST /findSimilar" section below. The vendor's own OpenAPI spec documents this route in full and marks it `deprecated: true`, steering callers to `/search` instead; a prose reference page for it 404s, which is why an earlier pass wrongly recorded "no documentation found". |
+| `POST` | `/contents` | canonical, verified 2026-08-15, simulated | See the "POST /contents" section below. |
+| `POST` | `/findSimilar` | canonical per the live OpenAPI spec, DEPRECATED by the vendor, verified 2026-08-15, simulated | See the "POST /findSimilar" section below. The vendor's own OpenAPI spec documents this route in full and marks it `deprecated: true`, steering callers to `/search` instead; a prose reference page for it 404s, which is why an earlier pass wrongly recorded "no documentation found". |
 | `POST` | `/agent/runs` | canonical, simulated | Create-then-poll create route. See the "Exa Agent API" section at the end of this file. |
 | `GET` | `/agent/runs/{id}` | canonical, simulated | Poll route. |
 | `HEAD` | `/agent/runs/{id}` | canonical, simulated | Existence check; claims no turn or attempt. |
@@ -493,9 +493,10 @@ Sources:
   Specification" entry), `title: Exa Public API`, `version: 2.0.0`. Confirmed as canonical for `/contents` and used
   above for the `anyOf [<type>, null]` nullability and the `entities`/`extras`/`statuses` schemas below.
 
-**Status: canonical, verified, NOT YET SIMULATED (Phase 4).** Nothing in this section claims the route is
-registered by the binary; `contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth
-for that.
+**Status: canonical, verified, simulated.** Implemented on `provider/exa`, exercised by
+`provider/exa/contents_test.go` and `provider/exa/contents_golden_test.go`, with fixtures in this directory.
+`contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth for what the binary
+registers.
 
 ### Auth
 
@@ -679,12 +680,14 @@ Sources:
   index (`llms.txt`). That page states verbatim: "The raw OpenAPI specs are the source of truth for request and
   response schemas."
 
-**Status: canonical per the live OpenAPI spec, DEPRECATED by the vendor, NOT YET SIMULATED.** The spec marks the
+**Status: canonical per the live OpenAPI spec, DEPRECATED by the vendor, simulated.** The spec marks the
 operation `deprecated: true` with `x-exa-lifecycle: deprecated`. Its description, verbatim: "Find links similar to
 the provided URL and optionally retrieve their contents. Deprecated: prefer `/search` with a query describing the
-source." Given the vendor's own steer toward `/search`, whether to simulate this route at all — rather than only
-recording its contract — is a decision for the adopter; see "Open questions for the adopter" at the end of this
-section.
+source." Given the vendor's own steer toward `/search`, whether to simulate this route at all was a decision for
+the adopter; per D-b (`docs/adopter-backlog.md`, Phase 4) it is simulated anyway — Phase 0's lesson is that
+rejecting valid production traffic is the worst failure a simulator can produce, and a client written before the
+deprecation is still production traffic. See "Open questions for the adopter" at the end of this section for what
+remains unconfirmed about whether the adopter's client actually calls it.
 
 ### Request
 

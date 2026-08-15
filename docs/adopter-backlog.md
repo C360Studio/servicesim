@@ -395,29 +395,61 @@ surface both consume, and delivers the documented single-replica exemption (task
   verified live that N-pending-then-completed and one-429-then-200 are already expressible per route and per namespace
   with the existing attempt model. What was missing was only id issuance and correlation, which A1-A4 supply.
 
-### Phase 4 — The remaining synchronous routes
+### Phase 4 — The remaining synchronous routes — DONE
 
-Purely additive: a new route cannot invalidate a fixture recorded against an existing one, which is why these come
-after the expensive-later async work despite the adopter listing some of them earlier. The real prerequisite is
-contract verification, not code — contracts/exa/README.md:23 explicitly declines to assert /contents' route shape, and
-/findSimilar and /extract have no contract at all — so the verification pass has no code dependency and should start
-during Phase 3. These depend on Phase 1's route-addressable turn model, not on Phase 3, so they can run in parallel
-with the async work once Phase 1 lands.
+Purely additive: a new route cannot invalidate a fixture recorded against an existing one, which is why these came
+after the expensive-later async work despite the adopter listing some of them earlier. The real prerequisite was
+contract verification, not code — contracts/exa/README.md's earlier text explicitly declined to assert /contents'
+route shape, and /findSimilar and /extract had no contract at all. Verification and implementation both landed in
+this pass, run as three parallel provider units (U-EXA, U-TAV, U-PPLX) plus a sequential composition step (U-COMP)
+that wired the built-ins, docs and image smoke once all three landed.
 
-**Unblocks:** The rest of the adopter's Tier-1 inner loop: their client's full Exa surface (/search, /contents,
-/findSimilar) and Tavily surface (/search, /extract) dispatch identically against the simulator.
+**Unblocked:** The rest of the adopter's Tier-1 inner loop — their client's full Exa surface (/search, /contents,
+/findSimilar) and Tavily surface (/search, /extract) now dispatch identically against the simulator.
 
-- Exa POST /contents — contract verification first, then implementation, then a provenance entry recording what the
-  shape was derived from.
-- Exa POST /findSimilar — response shape is the /search result array, so implementation is close to a second
-  projection over the existing renderer (provider/exa/render.go:182-208). The contract work is the real cost.
-- Tavily POST /extract — same pattern; contracts/tavily/README.md currently has a single-row endpoint table containing
-  only /search.
-- costDollars.total on both new Exa routes from their first release, for the same expensive-later reason as A3.
-- Wire the stream_mode full|concise enum, which has been declared and unused since v0.1.0
-  (provider/perplexity/request.go:121-122 is its only reference) while contracts/perplexity/README.md:283 claims
-  /v1/sonar gets full request validation. Small, but stream_mode changes which events the vendor emits, so Phase 5 has
-  to validate it anyway.
+- Exa POST /contents — **DONE.** Verified against `https://exa.ai/docs/reference/get-contents` and the vendor's own
+  `exa-spec.yaml`, both 2026-08-15; implemented as a fetch-shaped route (D-a): each requested `ids`/`urls` element
+  resolves against the selected turn's own `results`, then the corpus, in request order, with no results list of
+  its own. `NO_CONTENT_FOUND` (400) fires when no requested identifier resolves at all; a per-identifier
+  `CRAWL_NOT_FOUND` in `statuses[]` otherwise. Goldens: happy, empty, per-URL-failure, 400 (neither `ids` nor
+  `urls`), 400 (`INVALID_URLS`), 401, 429 — `contracts/exa/`. Along the way, `output.structured` was also fixed to
+  render an explicit `null` rather than being dropped by `omitempty`, matching the contract's `object|null`.
+- Exa POST /findSimilar — **DONE.** Verified against the vendor's `exa-spec.yaml` (a prose reference page 404s; the
+  spec was the actual source of truth, confirming CONTRIBUTING.md's "prefer a machine-readable OpenAPI document"
+  guidance the hard way). Implemented as a relevance route (D-b), a second projection over the same result
+  renderer `/search` uses, with its own `find_similar:` results and its own fault budget. Simulated despite the
+  vendor's `deprecated: true` marking, on the same "do not reject valid production traffic" reasoning as decision
+  D1 for Exa `/answer`. Goldens: happy, empty, 400, 401, 429 — `contracts/exa/`.
+- Tavily POST /extract — **DONE.** Verified against `https://docs.tavily.com/documentation/api-reference/endpoint/extract`,
+  2026-08-15. Same fetch-shaped pattern as `/contents`: requested `urls` (string or array, both accepted) resolve
+  against the turn's `results`, then the corpus; an unresolved URL renders a `failed_results[]` entry rather than a
+  top-level error, so an all-failed request still answers 200. Auth now shares `/search`'s and `/research`'s D2
+  placement set (`Authorization: Bearer` or a body `api_key`) rather than the Bearer-only reading first recorded:
+  D2's evidence is client-level, not endpoint-level — a client that sends the key as a body property on its POSTs
+  sends it on `/extract` too, and narrowing this one route alone recreates the Phase 0 failure a simulator must
+  never have. The `tavily.api_key.in_body` warning still raises and `auth.headers` overrides still work; the
+  vendor documentation still records Bearer only, and the adopter question asking them to confirm their client's
+  behaviour stays open (see the contract's "Open questions for the adopter"). Goldens: happy, empty,
+  partial-failure, 400, 401 — `contracts/tavily/`.
+  Alongside the new route, a real defect surfaced and was fixed in the same pass: a `failed` research poll (the
+  async surface Phase 3 shipped) was rendering `created_at` on every terminal status; the verified contract says
+  only `completed` carries it. Fixed, golden and the one disagreeing README row corrected with citation and date.
+- costDollars.total on both new Exa routes from their first release — **DONE**, avoiding the expensive-later
+  fixture rewrite A3 warned about.
+- Wire the stream_mode full|concise enum — **DONE.** `provider/perplexity/request.go`'s already-declared
+  `StreamModes` constant is now enforced on `/v1/sonar` and every alias, with the same enum-error style as
+  `search_mode`/`reasoning_effort`/`search_recency_filter`, unblocking Phase 5's need to validate it before adding
+  the streaming behaviour it selects between.
+
+`docs/scenario-schema.md` documents the three new sub-keys (`exa.contents`, `exa.find_similar`, `tavily.extract`),
+the D-a fetch-shaped-route echo rule and the D-b relevance-route distinction. Every built-in scenario under
+`scenarios/protocol/` gained the new sub-keys where its own behaviour has an analogue (own fault budgets on
+`rate-limited`/`server-error`/`malformed-json`, `extra_fields` tolerance on `extra-fields`, and a documenting
+comment everywhere D-a already covers the case with no authoring, as on `happy`); `documentedProjectionKeys` in
+`scenarios/scenarios_test.go` was extended to match. `scripts/image-smoke.sh` gained a 200 check for each of the
+three routes against the shipped `happy` scenario. `contracts/README.md`'s index table now lists all three routes
+in both directions (`scripts/check-docs.sh` proves it), and their "NOT YET SIMULATED" rows are gone from the
+not-simulated table; the two provider contract files' own status lines read "simulated".
 
 ### Phase 5 — SSE streaming for the Perplexity deep-research path
 
