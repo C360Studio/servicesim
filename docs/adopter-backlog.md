@@ -33,7 +33,8 @@ contract from the vendor's openapi.json first, with every simulator-chosen frame
 provenance. Build unit 1 and let the compiler settle the mechanical layer, as Phase 3 did; do not open a fourth
 prose round. Also worth doing first, cheaply: tell the adopter v0.2.0 exists, and hand them the seven D7 questions
 now inlined in `contracts/tavily/README.md` and `contracts/exa/README.md` ("Open questions for the adopter") — the
-`/extract` body-`api_key` and `/findSimilar`-still-called answers decide whether two Phase 4 choices stand.
+answers about the `/extract` body `api_key` and whether they still call `/findSimilar` decide whether two Phase 4
+choices stand.
 
 ### What closed today, beyond A5–A7
 
