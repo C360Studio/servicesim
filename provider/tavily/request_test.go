@@ -271,8 +271,8 @@ func TestAPIKeyFindingDoesNotQuoteValue(t *testing.T) {
 	rec := post(t, newHandler(t, validationScenario, ring),
 		"/search", `{"query":"a","api_key":"`+secret+`"}`, bearer)
 
-	// An api_key in the body is not authentication, and the request still had a
-	// Bearer credential, so it succeeds — flagged, not rejected.
+	// An api_key in the body authenticates and is flagged, never rejected; this
+	// request presented a Bearer credential as well.
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, findingCodes(t, ring), CodeAPIKeyInBody)
 
@@ -286,14 +286,85 @@ func TestAPIKeyFindingDoesNotQuoteValue(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), secret)
 }
 
-// TestAuthentication covers §6.4: Authorization: Bearer is the only documented
-// placement, an x-api-key is seen and journaled without authenticating, and the
-// scenario's AuthPolicy overrides all of it.
+// TestBodyAPIKeyAuthenticates is the adopter-reported defect made assertable.
+// A client that sends its key as a body property on POSTs — which the real
+// Tavily API accepts — was answered 401 auth.missing, which sends the consumer
+// hunting a bug in code that works in production.
+//
+// The three properties asserted together are the whole fix: the request is
+// served, the placement stays visible in the journal (both as the auth
+// observation and as a warning-severity finding, so AssertNoErrors passes), and
+// the credential still does not survive the round trip.
+func TestBodyAPIKeyAuthenticates(t *testing.T) {
+	t.Parallel()
+
+	const secret = "tvly-body-placed-key"
+
+	ring := journal.NewRing(8, 1<<16)
+	rec := post(t, newHandler(t, validationScenario, ring),
+		"/search", `{"query":"report a","api_key":"`+secret+`"}`, "")
+
+	require.Equal(t, http.StatusOK, rec.Code, "a body-placed api_key must authenticate")
+
+	entries := ring.Snapshot()
+	require.Len(t, entries, 1)
+	entry := entries[0]
+
+	require.Empty(t, entry.Errors(),
+		"testkit.AssertNoErrors must pass for a request authenticated by its body key")
+
+	placement := findingByCode(t, entry, CodeAPIKeyInBody)
+	require.Equal(t, journal.SeverityWarning, placement.Severity,
+		"the placement is an observation, not a rejection")
+	require.NotContains(t, placement.Message, secret)
+
+	require.True(t, entry.Auth.Present, "the journal must record that a credential arrived")
+	require.Equal(t, PlacementBodyAPIKey, entry.Auth.Header,
+		"a consumer asserts on the placement its adapter used")
+	require.NotEmpty(t, entry.Auth.Fingerprint)
+
+	serialized, err := json.Marshal(entry)
+	require.NoError(t, err)
+	require.NotContains(t, string(serialized), secret,
+		"accepting the body placement must not weaken redaction")
+	require.NotContains(t, rec.Body.String(), secret)
+}
+
+// TestBothCredentialPlacementsAreRecorded pins what a consumer asserting "my
+// adapter sent the credential the way we intended" reads. Presenting both is
+// accepted, and the header — the placement the vendor documents — keeps the
+// auth observation while the body placement is carried by its own finding, so
+// neither is lost in the other.
+func TestBothCredentialPlacementsAreRecorded(t *testing.T) {
+	t.Parallel()
+
+	ring := journal.NewRing(8, 1<<16)
+	rec := post(t, newHandler(t, validationScenario, ring),
+		"/search", `{"query":"report a","api_key":"tvly-body-key"}`, bearer)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	entries := ring.Snapshot()
+	require.Len(t, entries, 1)
+	entry := entries[0]
+
+	require.Empty(t, entry.Errors())
+	require.Equal(t, "authorization", entry.Auth.Header)
+	require.Equal(t, "Bearer", entry.Auth.Scheme)
+	require.Contains(t, findingCodes(t, ring), CodeAPIKeyInBody)
+}
+
+// TestAuthentication covers §6.4: either the documented Authorization: Bearer
+// header or a body api_key authenticates, an x-api-key is seen and journaled
+// without authenticating, and the scenario's AuthPolicy overrides all of it.
 func TestAuthentication(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
+		name string
+		// body defaults to a minimal valid search when empty, so a case that is
+		// about a header does not have to restate one.
+		body       string
 		scenario   string
 		headers    map[string]string
 		wantStatus int
@@ -305,6 +376,27 @@ func TestAuthentication(t *testing.T) {
 		},
 		{
 			name: "no credential is rejected", scenario: validationScenario,
+			wantStatus: http.StatusUnauthorized, wantCodes: []string{CodeAuthMissing},
+		},
+		{
+			name: "a body api_key authenticates with no header at all", scenario: validationScenario,
+			body:       `{"query":"report a","api_key":"tvly-test-key"}`,
+			wantStatus: http.StatusOK, wantCodes: []string{CodeAPIKeyInBody},
+		},
+		{
+			name: "both placements together authenticate", scenario: validationScenario,
+			body:       `{"query":"report a","api_key":"tvly-test-key"}`,
+			headers:    map[string]string{"Authorization": bearer},
+			wantStatus: http.StatusOK, wantCodes: []string{CodeAPIKeyInBody},
+		},
+		{
+			name: "a blank body api_key is not a credential", scenario: validationScenario,
+			body:       `{"query":"report a","api_key":"   "}`,
+			wantStatus: http.StatusUnauthorized, wantCodes: []string{CodeAuthMissing},
+		},
+		{
+			name: "a non-string body api_key is not a credential", scenario: validationScenario,
+			body:       `{"query":"report a","api_key":7}`,
 			wantStatus: http.StatusUnauthorized, wantCodes: []string{CodeAuthMissing},
 		},
 		{
@@ -374,6 +466,76 @@ providers:
 			wantStatus: http.StatusOK,
 		},
 		{
+			name: "expect_key accepts a body-placed key",
+			scenario: `
+version: 1
+name: expects
+providers:
+  tavily:
+    auth:
+      expect_key: tvly-expected
+    response_time: 1.15
+`,
+			body:       `{"query":"report a","api_key":"tvly-expected"}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "expect_key rejects the wrong body-placed key",
+			scenario: `
+version: 1
+name: expects
+providers:
+  tavily:
+    auth:
+      expect_key: tvly-expected
+    response_time: 1.15
+`,
+			body:       `{"query":"report a","api_key":"tvly-other"}`,
+			wantStatus: http.StatusUnauthorized, wantCodes: []string{CodeAuthMismatch},
+		},
+		{
+			name: "auth mode reject refuses a body-placed key",
+			scenario: `
+version: 1
+name: unauthorized
+providers:
+  tavily:
+    auth:
+      mode: reject
+    response_time: 1.15
+`,
+			body:       `{"query":"report a","api_key":"tvly-test-key"}`,
+			wantStatus: http.StatusUnauthorized, wantCodes: []string{CodeAuthMismatch},
+		},
+		{
+			name: "a scenario may narrow the placements back to the header alone",
+			scenario: `
+version: 1
+name: header-only
+providers:
+  tavily:
+    auth:
+      headers: [authorization]
+    response_time: 1.15
+`,
+			body:       `{"query":"report a","api_key":"tvly-test-key"}`,
+			wantStatus: http.StatusUnauthorized, wantCodes: []string{CodeAuthMissing, CodeAPIKeyInBody},
+		},
+		{
+			name: "a narrowed scenario may still name the body placement",
+			scenario: `
+version: 1
+name: body-only
+providers:
+  tavily:
+    auth:
+      headers: ["body:api_key"]
+    response_time: 1.15
+`,
+			body:       `{"query":"report a","api_key":"tvly-test-key"}`,
+			wantStatus: http.StatusOK,
+		},
+		{
 			name: "a scenario may widen the accepted placements",
 			scenario: `
 version: 1
@@ -396,7 +558,11 @@ providers:
 			ring := journal.NewRing(8, 1<<16)
 			handler := newHandler(t, tc.scenario, ring)
 
-			req := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{"query":"report a"}`))
+			body := tc.body
+			if body == "" {
+				body = `{"query":"report a"}`
+			}
+			req := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			for name, value := range tc.headers {
 				req.Header.Set(name, value)
@@ -450,6 +616,20 @@ func findingCodes(t *testing.T, ring *journal.Ring) []string {
 		codes = append(codes, f.Code)
 	}
 	return codes
+}
+
+// findingByCode returns the one finding carrying code, failing the test rather
+// than returning a zero value if the entry does not hold it.
+func findingByCode(t *testing.T, entry journal.Entry, code string) journal.Finding {
+	t.Helper()
+
+	for _, f := range entry.Findings {
+		if f.Code == code {
+			return f
+		}
+	}
+	t.Fatalf("no finding with code %q; entry has %v", code, entry.Findings)
+	return journal.Finding{}
 }
 
 // errorDetail reads the message out of the documented nested envelope, which is

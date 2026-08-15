@@ -41,6 +41,22 @@ type PerplexityProjection struct { //revive:disable-line:exported // the scenari
 	// FinishReason is stop or length. Empty means stop.
 	FinishReason string `yaml:"finish_reason,omitempty"`
 
+	// Stream selects the behaviour for a request carrying "stream": true.
+	// Defaults to StreamWarn: a journal warning plus the ordinary non-streaming
+	// JSON body, which is all this build can produce. StreamReject turns that
+	// into a 422 naming body.stream.
+	//
+	// It is a property of the provider block rather than of a turn — see
+	// streamPolicy — because rejection has to happen before turn selection claims
+	// a fault attempt. Only the first turn's value is read.
+	//
+	// The field exists because a consumer whose primary path always streams
+	// otherwise records fixtures against a complete non-streaming 200 that the
+	// real API would never have sent, and their suite passes green against
+	// behaviour that is about to change under them. Being able to make that fail
+	// loudly is the point.
+	Stream scenario.StreamPolicy `yaml:"stream,omitempty"`
+
 	Citations        []scenario.SourceRef `yaml:"citations,omitempty"`
 	SearchResults    []PerplexityResult   `yaml:"search_results,omitempty"`
 	Usage            *PerplexityUsage     `yaml:"usage,omitempty"`

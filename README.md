@@ -239,6 +239,9 @@ A namespace is a **state** boundary, not a behaviour one:
 | Turn cursors | Route tables and handlers |
 | Journal entries and their scoping | Configuration and listeners |
 
+Read the left column literally: that state is isolated per namespace *and held in one process's memory*. It is
+not shared with a second replica of the same image — see [Single replica by design](#single-replica-by-design).
+
 Behaviour is the separate `/x/<scenario>` dimension, served from `-scenario-dir`, because the common case is two
 tests wanting the *same* behaviour with *independent* state. Every scenario in that directory is loaded and
 validated at startup, so readiness still means "every scenario is valid" and nothing is loaded lazily.
@@ -261,6 +264,40 @@ The rest of it, briefly:
   callers at once, key the turn cursor on something that tells them apart with
   [`turn_key`](docs/scenario-schema.md#turn_key--what-the-cursor-counts-per). The built-in `namespaced` scenario is
   the worked example.
+
+## Single replica by design
+
+**Run exactly one Servicesim process per base URL. Two replicas behind one address is silently wrong, not slow.**
+
+Every piece of lane state — fault attempt counters, turn cursors, journal entries and their sequence numbers,
+and the namespace registry `-max-namespaces` bounds — lives in that process's memory. Nothing is shared, nothing
+is replicated and nothing is persisted. Namespaces isolate lanes *within* a process; they do not join lanes
+*across* processes.
+
+So a second replica does not halve the load, it forks the state. Requests from one client are spread across
+replicas by whatever balances them, and each replica counts only the calls it happened to receive:
+
+| What you scripted | What two replicas actually do |
+|---|---|
+| `call_index: 0`, then `call_index: 1` | Both replicas start at 0. The second call lands on the other replica and is served turn 0 again. |
+| `attempts: [{status: 429}, {status: 200}]` | Each replica owns a full budget, so the 429 is served **twice** — once per replica — before either succeeds. |
+| `AssertRequestCount(t, sim, provider.Exa, 3)` | The journal read reaches one replica and sees only its share: 1 or 2, varying run to run. |
+| `POST /__admin/reset?namespace=t1` | Resets the replica that answered. The others keep their cursors. |
+
+**The symptom you would actually see** is a test suite that passes locally and fails intermittently in the
+deployment that scaled out, with failures that never mention the simulator: a retry test that reports one retry
+too many, an agentic-loop test that gets the first turn's answer twice and fails on an assertion about the second
+turn's content, or a request-count assertion that is short by a number that changes on every run. Every response
+involved is a well-shaped 200. Nothing is logged, no finding is raised and `GET /__admin/requests` looks
+internally consistent on whichever replica you ask, because from inside one process nothing went wrong.
+
+There is no detection for this, which is the honest part: a replica cannot tell that a sibling exists. Pin the
+count instead — `replicas: 1` in a Kubernetes Deployment, `deploy.replicas: 1` in Compose, one container in CI.
+
+If you need more throughput or more isolation, add **more simulators**, not more replicas of one: a separate
+process or container per suite is the recommended default anyway, and namespaces cover the shared-container case
+within a single process. Shared cross-process state is not on the roadmap — it would put a network hop and a
+consistency model underneath a tool whose entire value is determinism.
 
 ## The admin surface
 
@@ -341,7 +378,7 @@ authors ever need, and the multi-turn form for scripting an agentic loop.
 | This README | Quickstart, base URLs, namespaces, the admin surface, built-in scenarios. |
 | [`examples/`](examples) | A worked consumer, compiled and run by CI. The best thing to copy. |
 | [`docs/scenario-schema.md`](docs/scenario-schema.md) | The scenario YAML reference: single-shot form, multi-turn form, faults. |
-| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptom-first answers: an unexpected 401, 404, 405, tests interfering, a container that will not become ready. |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptom-first answers: an unexpected 401, 404, 405, tests interfering, counts that differ per run under more than one replica, a container that will not become ready. |
 | [`contracts/`](contracts/README.md) | Per provider, the subset of the vendor API that is simulated, with the documentation URL and date each field was verified from — plus the golden fixtures the handlers are tested against. |
 
 ### If you are *changing* Servicesim

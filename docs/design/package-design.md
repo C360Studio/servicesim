@@ -578,7 +578,14 @@ type PerplexityProjection struct {
 	Usage            *PerplexityUsage     `yaml:"usage,omitempty"`
 	Images           []PerplexityImage    `yaml:"images,omitempty"`
 	RelatedQuestions []string             `yaml:"related_questions,omitempty"`
-	ExtraFields      ExtraFields          `yaml:"extra_fields,omitempty"`
+
+	// Stream selects the behaviour for a request carrying "stream": true, the
+	// same knob ExaProjection carries. Defaults to StreamWarn: a journal warning
+	// plus the ordinary non-streaming body. StreamReject makes it an error, which
+	// this surface renders as its FastAPI 422 rather than as Exa's 400.
+	Stream StreamPolicy `yaml:"stream,omitempty"`
+
+	ExtraFields ExtraFields `yaml:"extra_fields,omitempty"`
 }
 
 // PerplexityResult is one entry of the search_results array.
@@ -3196,7 +3203,7 @@ the only error body Perplexity formally schematises:
 | `perplexity.search_mode.invalid` | error | `web`, `academic`, `sec`. |
 | `perplexity.reasoning_effort.invalid` | error | `minimal`, `low`, `medium`, `high`. |
 | `perplexity.search_recency_filter.invalid` | error | `hour`, `day`, `week`, `month`, `year`. |
-| `perplexity.stream.unimplemented` | warning | Same policy as Exa. |
+| `perplexity.stream.unimplemented` | warning | Streaming is a plan non-goal. Default: warn and return the ordinary non-streaming body. `providers.perplexity.stream: reject` promotes it to an error. The *policy knob* is the same as Exa's, but the rejection is not the same response: a Perplexity error finding renders through this surface's FastAPI validation path, so it is a 422 `{"detail":[{"loc":["body","stream"],…}]}`, not Exa's 400. The Agent surface has its own separate code, `perplexity.agent.stream.unsupported`. |
 
 The Sonar sunset (2026-09-27) is logged once at startup and surfaced on `/__admin/scenario`. It is deliberately **not**
 a per-request finding: it is a property of the simulated API, not of any request, and per-request noise would drown the

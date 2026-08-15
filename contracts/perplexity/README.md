@@ -34,11 +34,33 @@ which declares `security: []` and is genuinely unauthenticated.
 
 ### Routes that are NOT in the specification
 
-`POST /chat/completions` and `POST /v1/responses` do **not** appear in `openapi.json`. They are SDK-routing
-aliases: the OpenAI SDK appends `/chat/completions` (or `/responses`) to its configured `base_url`, and
-Perplexity accepts those paths for compatibility. They are real and consumers do use them, but they are
-undocumented in the spec, so their request and response shapes are those of `/v1/sonar` and `/v1/agent`
-respectively. Servicesim serves all four paths.
+Four SDK-routing alias paths do **not** appear in `openapi.json` and are not vendor-documented anywhere.
+They exist because the OpenAI SDK appends `/chat/completions` (Chat Completions) or `/responses`
+(Responses) to whatever `base_url` it was configured with, and Perplexity accepts those paths for
+compatibility. They are real and consumers do use them.
+
+| Method | Path | Aliases | In `openapi.json` |
+|---|---|---|---|
+| `POST` | `/v1/sonar` | — | **yes** |
+| `POST` | `/chat/completions` | `/v1/sonar` | no — SDK routing convention |
+| `POST` | `/v1/chat/completions` | `/v1/sonar` | no — SDK routing convention |
+| `POST` | `/v1/agent` | — | **yes** |
+| `POST` | `/v1/responses` | `/v1/agent` | no — SDK routing convention |
+| `POST` | `/responses` | `/v1/agent` | no — SDK routing convention |
+
+Both spellings of each alias are needed because the `/v1` prefix can come from either end. A consumer
+configuring `base_url = https://api.perplexity.ai` produces `/v1/chat/completions` and `/v1/responses`;
+one configuring `base_url = https://api.perplexity.ai/v1` produces `/chat/completions` and `/responses`.
+Which of the two a consumer picked is arbitrary, so a simulator that served only one made whether it worked
+at all depend on a choice nobody thought was a choice.
+
+The aliases are aliases in the strict sense: same handler, same request and response shapes as their
+canonical path, and the **same fault budget** — a retry through an alias draws on the attempt budget its
+canonical route declares, rather than getting a fresh set of retries. The journal still records which path
+was used (`path` and `route` on every entry), so an adapter test can assert its intended route.
+
+Servicesim serves all six paths. *(Note added 2026-08-15: the two `/v1/chat/completions` and `/responses`
+spellings were missing before that date and returned 404.)*
 
 ## Surface 1 — Sonar (`POST /v1/sonar`)
 
@@ -280,14 +302,18 @@ Enum: `response.created`, `response.in_progress`, `response.completed`, `respons
 Per the plan's principle *model the consumed contract, not the entire vendor*, Servicesim implements the
 subset a C360 research adapter parses:
 
-- `POST /v1/sonar` and its `/chat/completions` alias — full request validation, `choices`, `citations`,
-  `search_results`, `usage` with required `cost`.
-- `POST /v1/agent` and its `/v1/responses` alias — non-streaming, with `message` and `search_results`
-  output items, `usage`/`cost`, and the `ErrorInfo` envelope.
+- `POST /v1/sonar` and its `/chat/completions` and `/v1/chat/completions` aliases — full request
+  validation, `choices`, `citations`, `search_results`, `usage` with required `cost`.
+- `POST /v1/agent` and its `/v1/responses` and `/responses` aliases — non-streaming, with `message` and
+  `search_results` output items, `usage`/`cost`, and the `ErrorInfo` envelope.
 
 Deliberately **not** simulated in the initial release, because no consumer parses them yet:
 
-- Streaming (the 14 `EventType` members above).
+- Streaming (the 14 `EventType` members above). A `stream: true` request is answered with a complete
+  non-streaming body plus a `perplexity.stream.unimplemented` warning. Since **2026-08-15** a scenario can
+  set `providers.perplexity.stream: reject` to turn that warning into a `422` naming `body.stream`
+  instead — which is what a consumer whose primary path always streams should do, so its fixtures are not
+  recorded against a body the real API would never have sent.
 - The `sandbox_results`, `mcp_list_tools`, `mcp_call`, `function_call`, `finance_results`,
   `people_search_results`, `fetch_url_results` and `tool_search_output` output-item types.
 - Background mode and the `GET /v1/agent/{id}` polling lifecycle, the files endpoints, and

@@ -209,8 +209,26 @@ type Turn struct {
 	// minus its reserved envelope keys.
 	Respond yaml.Node `yaml:"respond"`
 
-	// Fault applies to this turn only, which is what lets a script say
-	// "rate-limit the third call, then succeed".
+	// Fault declares a fault plan. It is written on a turn because that is where
+	// the schema puts it, NOT because the plan is scoped to that turn.
+	//
+	// Fault plans are registered per ROUTE. provider.TurnFault hands the engine
+	// the first turn of the provider that declares a plan with attempts, and that
+	// one plan is what the route's fault key expands — for every turn, and for
+	// every lane drawn from that route. Writing a fault under the second turn does
+	// not delay it to the second call: the plan starts consuming from the route's
+	// very first request, whichever turn answers it.
+	//
+	// So "rate-limit the third call, then succeed" is expressed in the attempts
+	// list, not by which turn the fault is written under. A leading
+	// "- status: 200" is an unfaulted attempt, which is what makes
+	// [{status: 200}, {status: 200}, {status: 429}] fault only the third call.
+	//
+	// Per-turn and per-lane plans are deferred work. The engine cannot select a
+	// different plan per turn today, so when two turns of one provider each
+	// declare attempts, only the earlier plan is ever expanded; the later one is
+	// silently unused rather than rejected by Validate. See
+	// docs/troubleshooting.md, "A fault fired on the wrong call".
 	Fault *Fault `yaml:"fault,omitempty"`
 }
 

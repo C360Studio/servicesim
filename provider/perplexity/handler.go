@@ -23,21 +23,33 @@ const (
 	NameAgent = "perplexity_agent"
 )
 
-// Fault budget keys. The two aliases of each surface share a key, so a retry
-// through the alias draws on the same attempt budget rather than getting a fresh
-// set of retries. The Agent surface gets its own key, which is what makes the
-// per-surface fault policy above possible.
+// Fault budget keys. Every alias of a surface shares that surface's key, so a
+// retry through an alias draws on the same attempt budget rather than getting a
+// fresh set of retries — an alias with a budget of its own would make a
+// scenario's fault plan silently stop meaning anything. The Agent surface gets
+// its own key, which is what makes the per-surface fault policy above possible.
 const (
 	FaultKeyCompletions = "perplexity:completions"
 	FaultKeyAgent       = "perplexity:agent"
 )
 
 // Route patterns, in registration order.
+//
+// Each surface is served under three spellings: its canonical vendor path, and
+// both of the paths the OpenAI SDK produces. The SDK appends /chat/completions
+// or /responses to its configured base_url, and that base URL may or may not
+// already end in /v1 — so https://host and https://host/v1 are both conventions
+// a consumer picks arbitrarily, and both must work. Registering only one of each
+// pair made whether the simulator answered at all depend on which convention the
+// consumer happened to choose, and the other convention 404ed with no hint that
+// the path was the problem.
 const (
-	PatternSonar           = "POST /v1/sonar"
-	PatternChatCompletions = "POST /chat/completions"
-	PatternAgent           = "POST /v1/agent"
-	PatternResponses       = "POST /v1/responses"
+	PatternSonar             = "POST /v1/sonar"
+	PatternChatCompletions   = "POST /chat/completions"
+	PatternChatCompletionsV1 = "POST /v1/chat/completions"
+	PatternAgent             = "POST /v1/agent"
+	PatternResponses         = "POST /v1/responses"
+	PatternResponsesBare     = "POST /responses"
 )
 
 // sonarFault selects the Sonar fault plan out of a scenario.
@@ -52,9 +64,17 @@ func RouteSonar() provider.Route {
 }
 
 // RouteChatCompletions returns POST /chat/completions, the OpenAI SDK alias of
-// the Sonar endpoint, on the same fault key.
+// the Sonar endpoint reached from a base_url that already ends in /v1, on the
+// same fault key.
 func RouteChatCompletions() provider.Route {
 	return provider.Route{Pattern: PatternChatCompletions, FaultKey: FaultKeyCompletions, Fault: sonarFault}
+}
+
+// RouteChatCompletionsV1 returns POST /v1/chat/completions, the OpenAI SDK alias
+// of the Sonar endpoint reached from a base_url with no /v1 suffix, on the same
+// fault key.
+func RouteChatCompletionsV1() provider.Route {
+	return provider.Route{Pattern: PatternChatCompletionsV1, FaultKey: FaultKeyCompletions, Fault: sonarFault}
 }
 
 // RouteAgent returns POST /v1/agent, the canonical Agent API endpoint.
@@ -63,25 +83,39 @@ func RouteAgent() provider.Route {
 }
 
 // RouteResponses returns POST /v1/responses, the OpenAI SDK alias of the Agent
-// endpoint, on the same fault key.
+// endpoint reached from a base_url with no /v1 suffix, on the same fault key.
 func RouteResponses() provider.Route {
 	return provider.Route{Pattern: PatternResponses, FaultKey: FaultKeyAgent, Fault: agentFault}
 }
 
-// Routes returns the four Perplexity routes across two surfaces, in registration
+// RouteResponsesBare returns POST /responses, the OpenAI SDK alias of the Agent
+// endpoint reached from a base_url that already ends in /v1, on the same fault
+// key.
+func RouteResponsesBare() provider.Route {
+	return provider.Route{Pattern: PatternResponsesBare, FaultKey: FaultKeyAgent, Fault: agentFault}
+}
+
+// Routes returns the six Perplexity routes across two surfaces, in registration
 // order. Each carries the fault budget it draws on and the selector for the
 // scenario entry that budget is declared in, so the composition layer can build
 // the fault engine's key set by concatenating the providers' Routes().
 //
+// Six routes, not six endpoints: three spellings of Sonar followed by three
+// spellings of the Agent API. The fault engine registers one counter per distinct
+// FaultKey, so the extra spellings cost nothing and cannot fork a budget.
+//
 // It is a function, not a package-level var, so no consumer can mutate the route
 // table of a package it merely imported.
 func Routes() []provider.Route {
-	return []provider.Route{RouteSonar(), RouteChatCompletions(), RouteAgent(), RouteResponses()}
+	return []provider.Route{
+		RouteSonar(), RouteChatCompletions(), RouteChatCompletionsV1(),
+		RouteAgent(), RouteResponses(), RouteResponsesBare(),
+	}
 }
 
 // New returns the Perplexity handler, built with provider.NewMux over Routes().
 //
-// The zero Deps is usable: it serves well-shaped empty successes on all four
+// The zero Deps is usable: it serves well-shaped empty successes on all six
 // routes with no journal, no faults and a real clock. Note that a zero Deps
 // means no faults even if the Scenario declares them — pass testkit.NewFaults(s)
 // as Deps.Faults, or use testkit.Start, to get the scenario's declared faults;
@@ -99,10 +133,12 @@ func New(deps provider.Deps) http.Handler {
 	return provider.NewMux(d, provider.Perplexity, provider.MuxSpec{
 		Routes: Routes(),
 		Handlers: map[string]provider.Handler{
-			PatternSonar:           handleSonar,
-			PatternChatCompletions: handleSonar,
-			PatternAgent:           handleAgent,
-			PatternResponses:       handleAgent,
+			PatternSonar:             handleSonar,
+			PatternChatCompletions:   handleSonar,
+			PatternChatCompletionsV1: handleSonar,
+			PatternAgent:             handleAgent,
+			PatternResponses:         handleAgent,
+			PatternResponsesBare:     handleAgent,
 		},
 		NotFound: func(_ *provider.Exchange) provider.Response {
 			// An unmatched path cannot know which of the two surfaces was
@@ -142,7 +178,7 @@ func validationResponse(surface Surface, findings []journal.Finding, order []str
 	}
 }
 
-// handleSonar serves POST /v1/sonar and its /chat/completions alias.
+// handleSonar serves POST /v1/sonar and its two OpenAI SDK aliases.
 //
 // The order is the pipeline §4.4 fixes: route match, authentication, request
 // validation, then — and only then — fault selection and rendering. A request
@@ -153,6 +189,9 @@ func handleSonar(x *provider.Exchange) provider.Response {
 
 	checkContentType(x)
 	checkAuth(x, entry)
+	if rejectStream(x, entry) {
+		return validationResponse(SurfaceSonar, x.Findings(), sonarFields)
+	}
 	model := validateSonarRequest(x)
 	if x.Failed() {
 		return validationResponse(SurfaceSonar, x.Findings(), sonarFields)
@@ -230,6 +269,71 @@ func handleAgent(x *provider.Exchange) provider.Response {
 	}
 }
 
+// CodeStreamPolicyUnknown is raised at startup for a Sonar `stream:` value that
+// is neither warn nor reject. It is an error rather than a warning because the
+// silent fallback would be warn — the very behaviour the author was trying to
+// turn off — and a typo that quietly re-enables a permissive default is exactly
+// the failure a reject policy exists to prevent.
+const CodeStreamPolicyUnknown = "perplexity.stream.policy.unknown"
+
+// CodeStreamPolicyIgnored is raised at startup for a `stream:` declared on any
+// turn but the first, where it cannot be honoured. It is a warning, not an
+// error: the scenario is servable, but the author needs to know the knob they
+// set is doing nothing.
+const CodeStreamPolicyIgnored = "perplexity.stream.policy.ignored"
+
+// streamPolicy returns the Sonar provider block's streaming policy.
+//
+// It reads the first turn rather than the selected one because the policy decides
+// whether a request is *rejected*, and rejection has to happen before turn
+// selection claims an attempt — a request refused for streaming must not eat a
+// retry budget. A policy that varied per turn could therefore never be honoured,
+// so it is treated as a property of the provider block; validateSonarProjection
+// warns about a later turn that declares one anyway rather than ignoring it in
+// silence.
+func streamPolicy(e *scenario.ProviderEntry) scenario.StreamPolicy {
+	if e == nil || len(e.Turns) == 0 {
+		return scenario.StreamWarn
+	}
+	var p PerplexityProjection
+	if err := e.Turns[0].DecodeProjection(e.Name, 0, &p); err != nil {
+		// Unreachable through internal/server, which validates before readiness.
+		// The permissive default is the right fallback for an undecodable body:
+		// the decode failure is reported on its own further down the pipeline.
+		return scenario.StreamWarn
+	}
+	if p.Stream == "" {
+		return scenario.StreamWarn
+	}
+	return p.Stream
+}
+
+// rejectStream applies a `stream: reject` policy to a streaming request and
+// reports whether it rejected one.
+//
+// It runs ahead of validateSonarRequest and returns immediately, rather than
+// alongside the field checks, because validateSonarRequest's own stream warning
+// promises "this request receives the ordinary non-streaming body" — true under
+// the default warn policy and a lie under this one. Journalling both would leave
+// a consumer reading two findings that contradict each other.
+//
+// Streaming is not simulated at all yet, so the default stays warn: a scenario
+// has to opt in. Opting in is what lets a consumer whose primary path always
+// streams stop recording fixtures against a complete non-streaming 200 that the
+// real API would never have sent.
+func rejectStream(x *provider.Exchange, e *scenario.ProviderEntry) bool {
+	if streamPolicy(e) != scenario.StreamReject {
+		return false
+	}
+	if stream, ok := x.Bool("stream"); !ok || !stream {
+		return false
+	}
+	x.Fail(CodeStreamUnimplemented, "body.stream",
+		"streaming responses are not simulated and this scenario rejects them; "+
+			"a non-streaming request is served normally")
+	return true
+}
+
 // noteUnresolved records a warning per source reference that did not resolve.
 // Startup validation should have caught these, so reaching one here means the
 // scenario was served without being validated; the response still renders, with
@@ -271,7 +375,7 @@ func (SonarValidator) ValidateProjections(s *scenario.Scenario, e *scenario.Prov
 			return []scenario.Finding{decodeFinding(path, err)}
 		}
 		findings := s.ResolveRefs(path, &p)
-		return append(findings, validateSonarProjection(path, &p)...)
+		return append(findings, validateSonarProjection(path, &p, index)...)
 	})
 }
 
@@ -322,13 +426,30 @@ func decodeFinding(path string, err error) scenario.Finding {
 	}
 }
 
-// validateSonarProjection checks one decoded Sonar projection at startup.
-func validateSonarProjection(path string, p *PerplexityProjection) []scenario.Finding {
+// validateSonarProjection checks one decoded Sonar projection at startup. index
+// is the turn's position, which only the streaming policy cares about.
+func validateSonarProjection(path string, p *PerplexityProjection, index int) []scenario.Finding {
 	var findings []scenario.Finding
 	add := func(code, at, message string) {
 		findings = append(findings, scenario.Finding{
 			Severity: scenario.SeverityError, Code: code, Path: at, Message: message,
 		})
+	}
+
+	switch p.Stream {
+	case "", scenario.StreamWarn, scenario.StreamReject:
+		if p.Stream != "" && index > 0 {
+			findings = append(findings, scenario.Finding{
+				Severity: scenario.SeverityWarning,
+				Code:     CodeStreamPolicyIgnored,
+				Path:     path + ".stream",
+				Message: "the streaming policy is a property of the provider block and is read from the first " +
+					"turn only; this value is ignored",
+			})
+		}
+	default:
+		add(CodeStreamPolicyUnknown, path+".stream",
+			"stream policy "+strconv.Quote(string(p.Stream))+" is not warn or reject")
 	}
 
 	if fr := p.FinishReason; fr != "" && !slices.Contains(FinishReasons, fr) {

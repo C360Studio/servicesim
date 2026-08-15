@@ -652,6 +652,134 @@ func TestString_MasksCredentialShapedText(t *testing.T) {
 	}
 }
 
+// TestString_TellsRequirementTextFromCredentials is the regression test for the
+// finding message a consumer read as evidence of a credential that was never
+// presented: "Authorization: Bearer is required" was journaled as
+// "Authorization: Bearer [REDACTED] required".
+//
+// Both halves are asserted in one table on purpose. Relaxing what follows a
+// scheme name is only correct if a credential in the same position is still
+// masked, so every prose case sits beside a credential case that must not
+// regress, and every case is redacted twice: the journal redacts again at the
+// storage boundary, so a second pass must change nothing.
+func TestString_TellsRequirementTextFromCredentials(t *testing.T) {
+	// The prose cases are the live finding messages this repository emits, verbatim
+	// from provider/tavily/request.go and provider/perplexity/request.go. Four of
+	// the five were mangled, which is why the fix cannot be a rule about the phrase
+	// "is required".
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "requirement sentence",
+			in:   "Authorization: Bearer is required",
+			want: "Authorization: Bearer is required",
+		},
+		{
+			name: "scheme followed by a verb",
+			in:   "x-api-key is not accepted; only Authorization: Bearer authenticates",
+			want: "x-api-key is not accepted; only Authorization: Bearer authenticates",
+		},
+		{
+			name: "scheme followed by a noun",
+			in:   "Authorization does not carry the documented Bearer scheme",
+			want: "Authorization does not carry the documented Bearer scheme",
+		},
+		{
+			name: "scheme followed by the word credential",
+			in:   "no Authorization: Bearer credential was presented",
+			want: "no Authorization: Bearer credential was presented",
+		},
+		{
+			name: "scheme named as a capitalised word",
+			in:   "Basic Auth is not accepted by this API",
+			want: "Basic Auth is not accepted by this API",
+		},
+		{
+			name: "bearer token in a finding message",
+			in:   "received header Authorization: Bearer " + altSecret,
+			want: "received header Authorization: Bearer " + redact.Mask,
+		},
+		{
+			name: "vendor prefixed bearer token in a finding message",
+			in:   "upstream rejected Authorization: Bearer " + secret,
+			want: "upstream rejected Authorization: Bearer " + redact.Mask,
+		},
+		{
+			name: "basic credential in a finding message",
+			in:   "received Basic dXNlcjpwYXNzd29yZA==",
+			want: "received Basic " + redact.Mask,
+		},
+		{
+			name: "interior capital is not a word",
+			in:   "Authorization: Bearer aBcDeFgHiJkL",
+			want: "Authorization: Bearer " + redact.Mask,
+		},
+		{
+			name: "letters only but longer than any word",
+			in:   "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+			want: "Authorization: Bearer " + redact.Mask,
+		},
+		{
+			name: "x-api-key value in a finding message",
+			in:   "x-api-key: " + altSecret + " is not accepted",
+			want: "x-api-key: " + redact.Mask + " is not accepted",
+		},
+		{
+			name: "x-api-key value quoted with its header name",
+			in:   "received header x-api-key=" + altSecret,
+			want: "received header x-api-key=" + redact.Mask,
+		},
+		{
+			name: "body embedded key in a finding message",
+			in:   `body {"api_key": "` + altSecret + `"} placed the key in the body`,
+			want: `body {"api_key": "` + redact.Mask + `"} placed the key in the body`,
+		},
+		{
+			name: "body embedded key in a form encoded body",
+			in:   "body api_key=" + altSecret + "&query=weather was rejected",
+			want: "body api_key=" + redact.Mask + "&query=weather was rejected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := redact.String(tt.in)
+			if got != tt.want {
+				t.Fatalf("String(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if twice := redact.String(got); twice != got {
+				t.Fatalf("String is not idempotent\nonce:  %q\ntwice: %q", got, twice)
+			}
+		})
+	}
+}
+
+// TestHeaderValue_MasksAWordShapedCredential pins the half of the scheme rule
+// that must not follow free text: in an Authorization header the token after the
+// scheme is the credential by definition, whatever it is shaped like.
+func TestHeaderValue_MasksAWordShapedCredential(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"lower case word", "Bearer opensesame", "Bearer " + redact.Mask},
+		{"the word required", "Bearer required", "Bearer " + redact.Mask},
+		{"capitalised word", "Basic Secret", "Basic " + redact.Mask},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redact.HeaderValue("Authorization", tt.value); got != tt.want {
+				t.Fatalf("HeaderValue(Authorization, %q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFingerprint(t *testing.T) {
 	first := redact.Fingerprint(secret)
 
@@ -697,6 +825,10 @@ func FuzzIdempotence(f *testing.F) {
 		"Authorization: Bearer " + redact.Mask,
 		"http://user:" + secret + "@exa.test/search?api_key=" + secret,
 		"secret: Bearer",
+		// Prose that names a scheme: the redactor must leave these alone, and must
+		// still leave them alone on the second pass.
+		"Authorization: Bearer is required",
+		"no Authorization: Bearer credential was presented",
 		"token=YWJj/ZGVm+Z2hp==&q=1",
 		"a=1;b=2,c=3)d=4}e=5",
 		"key:::::" + secret,

@@ -66,7 +66,9 @@ var (
 
 	// schemePattern matches "Bearer <token>" and friends in free text. It runs
 	// before pairPattern so that "Authorization: Bearer x" masks x rather than
-	// masking the scheme and leaving x behind.
+	// masking the scheme and leaving x behind. What follows the scheme is only
+	// masked when looksLikeCredential accepts it: in a finding message the scheme
+	// name is prose, not a prefix.
 	schemePattern = regexp.MustCompile(`(?i)\b(bearer|basic|digest)\s+([A-Za-z0-9._~+/=\-]+)`)
 
 	// pairPattern matches name=value and "name": "value" in free text. The value
@@ -97,6 +99,13 @@ const valueTerminators = `"'\t\n\f\r &,;)}`
 // valueTerminatorRunes is valueTerminators with the escapes resolved, for the
 // byte-wise scan in extendValue.
 const valueTerminatorRunes = "\"'\t\n\f\r &,;)}"
+
+// maxProseWord is the longest run of letters looksLikeCredential will accept as
+// a word of the sentence a finding is written in. The words that actually follow
+// a scheme name in this repository's findings are "is", "scheme", "credential"
+// and "authenticates" (13); the bound is set at "misconfiguration" so that no
+// plausible finding word is mistaken for a key, and any longer run is one.
+const maxProseWord = 16
 
 // normalizeName lower-cases a name and strips the separators that would
 // otherwise hide a credential behind a spelling variant.
@@ -377,6 +386,11 @@ func encodeJSON(v any) ([]byte, error) {
 // delimited differently from everything else; scheme-prefixed credentials run
 // before pairs so "Authorization: Bearer x" masks x instead of masking the
 // scheme and leaving x behind.
+//
+// Free text is prose as often as it is a quoted request, so what follows a scheme
+// name is masked only when it is shaped like a credential — see
+// looksLikeCredential. Nothing else is conditional: a value under a credential
+// name and a vendor-prefixed key are masked wherever they appear.
 func String(s string) string {
 	if s == "" {
 		return s
@@ -397,15 +411,83 @@ func maskUserinfo(s string) string {
 }
 
 // maskSchemes masks the credential after an authentication scheme, keeping the
-// scheme itself.
+// scheme itself — and keeping the word after it when that word is prose rather
+// than a credential. It rebuilds the string around the value spans, so the
+// scheme and the whitespace after it survive byte for byte.
 func maskSchemes(s string) string {
-	return schemePattern.ReplaceAllStringFunc(s, func(match string) string {
-		scheme, _, found := strings.Cut(match, " ")
-		if !found {
-			scheme, _, _ = strings.Cut(match, "\t")
+	matches := schemePattern.FindAllStringSubmatchIndex(s, -1)
+	if matches == nil {
+		return s
+	}
+
+	var b strings.Builder
+	written := 0
+	for _, m := range matches {
+		valueStart, valueEnd := m[4], m[5]
+		if valueStart < 0 || valueEnd <= valueStart {
+			continue
 		}
-		return scheme + " " + Mask
-	})
+		if !looksLikeCredential(s[valueStart:valueEnd]) {
+			continue
+		}
+		b.WriteString(s[written:valueStart])
+		b.WriteString(Mask)
+		written = valueEnd
+	}
+	if written == 0 {
+		return s
+	}
+	b.WriteString(s[written:])
+	return b.String()
+}
+
+// looksLikeCredential reports whether the token following an authentication
+// scheme in free text is a credential value rather than the next word of the
+// sentence.
+//
+// It exists because a finding message names the scheme as its subject:
+// "Authorization: Bearer is required", "only Authorization: Bearer
+// authenticates", "no Authorization: Bearer credential was presented". Masking
+// the word after the scheme turned the first of those into "Authorization:
+// Bearer [REDACTED] required", which reads as though a credential were
+// presented and sends the consumer hunting for a bug in correct code.
+//
+// The two are told apart by shape, never by vocabulary: a rule that knew the
+// phrase "is required" would mangle the next message anyone writes, and three of
+// the four messages above were mangled by exactly that oversight. A word of
+// English carries only letters, and carries at most one capital, at its start.
+// A credential carries a digit or one of the opaque-key separators ". _ ~ + / =
+// -", or an interior capital (base64 and camel-cased keys), or it runs longer
+// than any word a finding is written with.
+//
+// The relaxation is confined to free text. HeaderValue still masks whatever
+// follows the scheme in an actual Authorization header unconditionally, because
+// there the token after the scheme is the credential by definition, and the pair
+// and vendor-prefix matchers are untouched. What remains reachable is a
+// credential that is letters only, uniformly cased, no longer than a word, and
+// carried in prose under no credential-shaped name — a shape no vendor issues.
+func looksLikeCredential(v string) bool {
+	if v == "" {
+		return false
+	}
+	if len(v) > maxProseWord {
+		return true
+	}
+	// schemePattern's value class admits only ASCII letters, digits and the
+	// separators, so every rune here is one byte and "not a letter" means
+	// "a character no English word contains".
+	for i := range len(v) {
+		switch c := v[i]; {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+			if i > 0 {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // maskPairs masks the value of every credential-named name=value or name: value

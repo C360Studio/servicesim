@@ -345,6 +345,36 @@ simulator per test or a distinct namespace.
 `POST /__admin/reset` exists for local iteration and requires an explicit scope — see
 [the 400 above](#post-__adminreset-came-back-400).
 
+## Counts and cursors differ per run, or a fault fires twice
+
+Check how many Servicesim **replicas** are behind that base URL. If the answer is more than one, that is the bug,
+and it is the only failure in this document that Servicesim cannot tell you about itself.
+
+All lane state — fault attempt counters, turn cursors, journal entries and their sequence numbers, and the
+namespace registry `--max-namespaces` bounds — is held in the serving process's memory. It is never shared,
+replicated or persisted. **Servicesim is single-replica by design.** Namespaces isolate lanes *within* one
+process; they do nothing across processes.
+
+Two replicas therefore do not share a sequence, they run two of them, and each request is counted only by the
+replica that received it. The four ways that surfaces:
+
+| Symptom | What is happening |
+|---|---|
+| A scripted loop gets the same turn twice, or skips one | Each replica keeps its own turn cursor, so both hand out `call_index: 0` and neither ever reaches the turn scripted for call 1. |
+| A "fail once, then succeed" retry test sees two failures | Each replica holds a complete copy of the attempt plan, so the 429 is served once per replica before either gets to its 200. |
+| `testkit.AssertRequestCount` is short, by a number that changes per run | The journal read reaches one replica and sees only that replica's share of the traffic. |
+| A scoped reset does not reset | It clears the replica that answered the reset call. The others keep their cursors and their journal. |
+
+What makes it expensive is that **nothing reports it**. Every response is a well-shaped 200, no finding is
+raised, no warning is logged, and the journal is internally consistent on whichever replica you happen to ask —
+because from inside one process nothing went wrong. The failure surfaces as an assertion about *your* client's
+behaviour, so the natural reading is that the client has a bug it does not have.
+
+A replica cannot detect a sibling, so there is no check to switch on. Pin the count: `replicas: 1` in a
+Kubernetes Deployment, `deploy.replicas: 1` in Compose, one container in CI. If you need more capacity or more
+isolation, run more *simulators* — a process per suite, or namespaces within one process — rather than more
+replicas of one.
+
 ## Two responses have the same `requestId`
 
 Identifiers derive from stable fixture keys rather than a clock or a random source, and the tuple they hang off

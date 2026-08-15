@@ -56,10 +56,16 @@ const (
 	// deliberately asymmetric with include_domains.
 	CodeExcludeDomainsMax = "tavily.exclude_domains.max"
 
-	// CodeAPIKeyInBody reports an api_key property in the request body, which is
-	// not Tavily's REST authentication contract. Its message states presence and
-	// nothing else: the finding's entire subject is a credential, and the
-	// message reaches the journal, the admin API and the log.
+	// CodeAPIKeyInBody reports an api_key property in the request body. It is a
+	// WARNING and the request authenticates: the vendor documents
+	// Authorization: Bearer, and real client code sends the key in the body, so
+	// refusing it rejected traffic that works in production. The finding stays
+	// so a consumer moving off the body placement can still assert on it —
+	// promote it to an error with validation.promote to make that a failure.
+	//
+	// Its message states presence and nothing else: the finding's entire subject
+	// is a credential, and the message reaches the journal, the admin API and
+	// the log.
 	CodeAPIKeyInBody = "tavily.api_key.in_body"
 
 	// CodeDaysRemoved reports the days parameter, which is absent from the
@@ -71,7 +77,8 @@ const (
 	CodeCountryRequiresGeneralTopic = "tavily.country.requires_general_topic"
 
 	// CodeAuthWrongHeader reports an x-api-key on Tavily, which is seen,
-	// journaled and not accepted: only Authorization: Bearer authenticates.
+	// journaled and not accepted: only Authorization: Bearer and the body's
+	// api_key authenticate.
 	CodeAuthWrongHeader = "tavily.auth.wrong_header"
 
 	// CodeProjectionInvalid reports a scenario projection body this package
@@ -105,6 +112,18 @@ const (
 	// an authentication scheme Tavily does not document.
 	CodeAuthWrongPlacement = "auth.wrong_placement"
 )
+
+// PlacementBodyAPIKey names the credential placement that is not a header: the
+// request body's api_key property. It is what the journal's auth observation
+// records as Header for a request whose credential arrived that way, and what a
+// scenario writes in providers.tavily.auth.headers to keep the body placement
+// accepted while narrowing the header set.
+//
+// The colon is deliberate. A header name cannot contain one (RFC 9110 §5.1), so
+// this value can never collide with a real placement, and a consumer asserting
+// Auth.Header == "authorization" still proves its adapter sent the header the
+// vendor documents rather than merely sending *something*.
+const PlacementBodyAPIKey = "body:api_key"
 
 // Documented request defaults and the topic the response's published_date is
 // gated on.
@@ -284,10 +303,15 @@ func warnUnknownFields(x *provider.Exchange) {
 // only in order to be reported.
 func warnRemovedAndCredentialFields(x *provider.Exchange) {
 	if x.Has("api_key") {
+		// A warning, not an error: the request authenticates on it. The finding
+		// is what a consumer asserts on to prove which placement its adapter
+		// used, so accepting the placement must not make it invisible.
+		//
 		// States presence and nothing else. Not the value, not a prefix of it,
 		// not its length: this message reaches the journal, /__admin/requests
 		// and the process log.
-		x.Warn(CodeAPIKeyInBody, "api_key", "api_key must not be sent in the request body")
+		x.Warn(CodeAPIKeyInBody, "api_key",
+			"api_key was sent in the request body; the vendor documents Authorization: Bearer")
 	}
 	if x.Has("days") {
 		x.Warn(CodeDaysRemoved, "days",
@@ -424,28 +448,22 @@ func quoteAlternatives(values []string) string {
 	}
 }
 
-// checkAuth applies §6.4's rule for Tavily: Authorization: Bearer is the only
-// documented scheme, an x-api-key is seen and journaled but does not
-// authenticate, and the scenario's AuthPolicy overrides the mode, the expected
-// key and the accepted placements.
+// checkAuth applies §6.4's rule for Tavily: either the documented
+// Authorization: Bearer header or a body api_key authenticates, an x-api-key is
+// seen and journaled but does not, and the scenario's AuthPolicy overrides the
+// mode, the expected key and the accepted placements.
+//
+// Two placements authenticate rather than one because the vendor's
+// documentation and observed client code disagree: the OpenAPI security scheme
+// is bearerAuth, and real adapters send the key as a body property on POSTs.
+// Refusing the body placement returned 401 for requests that succeed against
+// the real Tavily API, which sends a consumer hunting a bug in correct code —
+// the one failure mode a simulator must never have. Accepting it costs nothing a
+// consumer needs, because which placement arrived is still recorded: the
+// journal's auth observation names it and tavily.api_key.in_body flags it.
 func checkAuth(x *provider.Exchange, entry *scenario.ProviderEntry) {
 	policy := authPolicy(entry)
-	accepted := acceptedHeaders(policy)
-
-	var presented *httpx.Credential
-	for _, cred := range httpx.ExtractCredentials(x.Request) {
-		if slices.Contains(accepted, cred.Header) {
-			if presented == nil {
-				credential := cred
-				presented = &credential
-			}
-			continue
-		}
-		if cred.Header == "x-api-key" {
-			x.Warn(CodeAuthWrongHeader, "x-api-key",
-				"x-api-key is not accepted; only Authorization: Bearer authenticates")
-		}
-	}
+	presented := presentedCredentials(x, acceptedPlacements(policy))
 
 	if policy.Mode == scenario.AuthReject {
 		// Deliberately a mismatch rather than a missing credential: something
@@ -453,20 +471,83 @@ func checkAuth(x *provider.Exchange, entry *scenario.ProviderEntry) {
 		x.Fail(CodeAuthMismatch, "authorization", "the scenario rejects every credential")
 		return
 	}
-	if presented == nil {
+	if len(presented) == 0 {
 		if policy.Mode != scenario.AuthOptional {
-			x.Fail(CodeAuthMissing, "authorization", "Authorization: Bearer is required")
+			x.Fail(CodeAuthMissing, "authorization",
+				"Authorization: Bearer or a body api_key is required")
 		}
 		return
 	}
-	if presented.Header == "authorization" && presented.Scheme != "Bearer" {
-		x.Warn(CodeAuthWrongPlacement, "authorization",
-			"Authorization does not carry the documented Bearer scheme")
+	for _, cred := range presented {
+		if cred.Header == "authorization" && cred.Scheme != "Bearer" {
+			x.Warn(CodeAuthWrongPlacement, "authorization",
+				"Authorization does not carry the documented Bearer scheme")
+		}
 	}
-	if policy.ExpectKey != "" && presented.Value != policy.ExpectKey {
+	// Any accepted placement carrying the expected key authenticates the
+	// request. A consumer that sends the key in both places has presented the
+	// right credential once, not the wrong one once.
+	if policy.ExpectKey != "" && !slices.ContainsFunc(presented, func(c httpx.Credential) bool {
+		return c.Value == policy.ExpectKey
+	}) {
 		// The value is never quoted; the journal holds a fingerprint of it.
 		x.Fail(CodeAuthMismatch, "authorization", "the presented credential is not the expected key")
 	}
+}
+
+// presentedCredentials returns every accepted placement that carried a value —
+// headers in httpx order first, the body last — and records what was seen but
+// not accepted.
+//
+// It also fills in the journal's auth observation for a body-placed credential,
+// which the shared lifecycle cannot: provider.Handle observes headers only, so a
+// request authenticated by its body would otherwise journal auth.present false
+// while being served, telling a consumer its adapter sent no credential at all.
+// A header credential that was already observed keeps the slot — it is the
+// documented placement — and the body placement stays visible as its own
+// finding, so a request carrying both records both.
+func presentedCredentials(x *provider.Exchange, accepted []string) []httpx.Credential {
+	var presented []httpx.Credential
+	for _, cred := range httpx.ExtractCredentials(x.Request) {
+		if slices.Contains(accepted, cred.Header) {
+			presented = append(presented, cred)
+			continue
+		}
+		if cred.Header == "x-api-key" {
+			x.Warn(CodeAuthWrongHeader, "x-api-key",
+				"x-api-key is not accepted; only Authorization: Bearer or a body api_key authenticates")
+		}
+	}
+
+	body, ok := bodyCredential(x)
+	if !ok {
+		return presented
+	}
+	if !x.Auth.Present {
+		x.Auth = httpx.Observe(body, true)
+	}
+	if slices.Contains(accepted, PlacementBodyAPIKey) {
+		presented = append(presented, body)
+	}
+	return presented
+}
+
+// bodyCredential returns the credential presented as the body's api_key
+// property, and whether one was presented at all.
+//
+// An api_key that is absent, not a string, or blank is not a credential. That
+// matches httpx.ExtractCredentials, where a placement with no value after it is
+// absent rather than empty: counting `"api_key": ""` as presented would put
+// auth.missing out of reach for a request that sent nothing.
+func bodyCredential(x *provider.Exchange) (httpx.Credential, bool) {
+	value, ok := x.String("api_key")
+	if !ok {
+		return httpx.Credential{}, false
+	}
+	if value = strings.TrimSpace(value); value == "" {
+		return httpx.Credential{}, false
+	}
+	return httpx.Credential{Header: PlacementBodyAPIKey, Value: value}, true
 }
 
 // authPolicy returns the entry's policy, or the documented default.
@@ -481,11 +562,17 @@ func authPolicy(entry *scenario.ProviderEntry) scenario.AuthPolicy {
 	return policy
 }
 
-// acceptedHeaders returns the credential placements that authenticate,
-// lower-cased. Tavily documents exactly one; a scenario may widen or narrow it.
-func acceptedHeaders(policy scenario.AuthPolicy) []string {
+// acceptedPlacements returns the credential placements that authenticate,
+// lower-cased. Two are accepted by default: the Authorization header the vendor
+// documents, and the body api_key property real client code sends.
+//
+// A scenario's auth.headers replaces the set outright, and may name
+// PlacementBodyAPIKey ("body:api_key") alongside header names. Listing only
+// header names is how a consumer that has moved off the body placement asserts
+// it: a body-placed key then fails with auth.missing rather than being served.
+func acceptedPlacements(policy scenario.AuthPolicy) []string {
 	if len(policy.Headers) == 0 {
-		return []string{"authorization"}
+		return []string{"authorization", PlacementBodyAPIKey}
 	}
 	out := make([]string, 0, len(policy.Headers))
 	for _, header := range policy.Headers {

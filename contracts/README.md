@@ -6,9 +6,31 @@ derived from and the date the shape was verified.
 
 | Provider | Contract | Verified | Base URL simulated |
 |---|---|---|---|
-| Exa | [`exa/README.md`](exa/README.md) | 2026-08-14 | `POST /search` |
+| Exa | [`exa/README.md`](exa/README.md) | 2026-08-14 | `POST /search`, `POST /answer` |
 | Tavily | [`tavily/README.md`](tavily/README.md) | 2026-08-14 | `POST /search` |
-| Perplexity | [`perplexity/README.md`](perplexity/README.md) | 2026-08-14 | `POST /v1/sonar`, `POST /chat/completions` |
+| Perplexity | [`perplexity/README.md`](perplexity/README.md) | 2026-08-14 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/agent`, `POST /v1/responses` |
+
+Every route in that column has golden fixtures in this directory. The column was previously incomplete — it
+omitted Exa `POST /answer` and Perplexity `POST /v1/agent` and `POST /v1/responses` while their goldens were
+already committed here — so treat it as the list of what is simulated, not as a summary of the interesting parts.
+`POST /chat/completions` and `POST /v1/responses` are the SDK-routing aliases described in
+[`perplexity/README.md`](perplexity/README.md); they share the shapes of `/v1/sonar` and `/v1/agent` respectively.
+
+## Vendor endpoints that are NOT simulated
+
+Listed rather than omitted. A surface that is simply absent from this table reads as an oversight, and a reader
+cannot tell whether it was considered and declined or never looked at — which is the same failure as a wrong claim.
+
+| Provider | Endpoint | Status | Why |
+|---|---|---|---|
+| Exa | `/contents` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. Referenced only indirectly, by the error-codes page's `statuses[]` / `CRAWL_*` tags. |
+| Exa | `/findSimilar` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. |
+| Exa | `/agent/runs` and its run lifecycle | NOT SIMULATED | Contract notes are recorded in [`exa/README.md`](exa/README.md). Its create-then-poll lifecycle needs a scenario shape Servicesim does not have yet; on the backlog. |
+| Tavily | `/extract` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. |
+
+"Scheduled for verification" means exactly that: the vendor documentation has not been fetched, dated and recorded
+under [the one rule](../CONTRIBUTING.md#the-one-rule-that-matters-most), so nothing here asserts a method, a request
+shape or a response shape for those paths. Verification comes first; simulation is a separate decision after it.
 
 ## Why these files exist
 

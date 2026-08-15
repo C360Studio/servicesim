@@ -18,9 +18,11 @@ the live contract canary reports drift.
 
 | Method | Path | Status | Note |
 |---|---|---|---|
-| `POST` | `/search` | canonical | Base URL <https://api.exa.ai>. Confirmed on both the OpenAPI-backed reference page and the coding-agents guide. |
-| `POST` | `/answer` | canonical | Separate documented endpoint at <https://exa.ai/docs/reference/answer>. Same auth. Request: query (string, required), stream, text, outputSchema. Response: answer (string\|object), citations[] (title,url,publishedDate,author,id,image,text), requestId, costDollars. The plan doc does not mention /answer at all. |
-| `POST` | `/contents` | unconfirmed | Referenced indirectly by the error-codes page's `statuses[]` / CRAWL_* tags, which describe a contents-fetch surface. I did not fetch a /contents reference page, so I am not asserting its route shape. |
+| `POST` | `/search` | canonical, simulated | Base URL <https://api.exa.ai>. Confirmed on both the OpenAPI-backed reference page and the coding-agents guide. |
+| `POST` | `/answer` | canonical, simulated | Separate documented endpoint at <https://exa.ai/docs/reference/answer>. Same auth. Request: query (string, required), stream, text, outputSchema. Response: answer (string\|object), citations[] (title,url,publishedDate,author,id,image,text), requestId, costDollars. The plan doc does not mention /answer at all. |
+| — | `/contents` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. Referenced indirectly by the error-codes page's `statuses[]` / CRAWL_* tags, which describe a contents-fetch surface. No /contents reference page was fetched, so no method or route shape is asserted here. |
+| — | `/findSimilar` | NOT SIMULATED | No verified vendor contract recorded yet; scheduled for verification. Named here so a reader can tell it was considered rather than overlooked; nothing about its method, request or response is asserted. |
+| — | `/agent/runs` (+ run lifecycle) | NOT SIMULATED | On the backlog. See the "Exa Agent API" section at the end of this file for the lifecycle and the reason. |
 
 ## Authentication
 
@@ -190,8 +192,19 @@ Sources:
 
 Exa's synthesis endpoint: same credential and base URL as `/search`, but it returns a written answer plus
 the sources that support it. It is the Exa analogue of Tavily's `include_answer` and of Perplexity's whole
-surface, which is what lets a fusion test treat all three providers symmetrically — *answer plus cited
-evidence* — instead of making Exa the one provider that contributes evidence but never a claim.
+surface.
+
+**Status: simulated, and retained.** `POST /answer` is implemented on the Exa listener, covered by the golden
+fixtures in this directory (`exa-answer-happy.json`, `exa-answer-empty.json`, `exa-answer-structured.json`,
+`exa-answer-501.json`, `exa-answer-400-invalid-json-schema.json`) and exercised by the provider tests.
+
+**It is not evidenced by an observed consumer.** Servicesim's first adopter reports that their client does not
+call `/answer`. No other consumer has been observed calling it either, so nothing here should be read as "a
+consumer needs this". The reason it was built — that an *answer plus cited evidence* shape lets a fusion test
+treat all three providers symmetrically, instead of leaving Exa the one provider that contributes evidence but
+never a claim — was a design argument, and a design argument is not evidence of demand. It is recorded as the
+rationale it was. The endpoint stays because it is written, verified against the vendor documentation above,
+and tested; removing working simulated surface would cost more than keeping it.
 
 ### Request
 
@@ -319,13 +332,22 @@ The README's existing one-line /answer row is directionally right but incomplete
 - REQUEST VALIDATION MUST DIVERGE FROM /search. Reject or ignore the /search-only fields — a request with type/numResults/includeDomains/contents against /answer should not be validated by the /search decoder. Treat model, systemPrompt and userLocation as accept-and-ignore (SDK sends them; the OpenAPI schema does not list them), and do not echo them.
 - DO NOT IMPLEMENT /research. No vendor doc page exists for it; only a third-party page claims it was retired in favour of the Agent API. If an agentic surface is ever needed, the real one is the async POST /agent/runs + GET /agent/runs/{id} poll pattern, which is a fundamentally different lifecycle (create returns immediately, output only at terminal status) and must not be folded into /answer's synchronous shape.
 
-### Exa Agent API (not simulated)
+### Exa Agent API (not simulated yet — on the backlog)
 
 Exa also exposes an asynchronous agentic surface — `POST /agent/runs` plus a run lifecycle
 (`GET /agent/runs`, `GET /agent/runs/{id}`, `GET /agent/runs/{id}/events`, `POST /agent/runs/{id}/cancel`,
-`DELETE /agent/runs/{id}`). Servicesim does not simulate it: no C360 consumer uses it, and its create-then-poll
-lifecycle needs a different scenario shape than a single request/response projection. Exa's own guidance is
-"for simpler low-latency retrieval, prefer /search".
+`DELETE /agent/runs/{id}`). Servicesim does not simulate it today: its create-then-poll lifecycle needs a
+different scenario shape than a single request/response projection, because a create returns immediately and the
+output only exists at a terminal status. That is the whole reason, and it is a reason about Servicesim's scenario
+model, not about who calls the endpoint. The surface is on the backlog. Exa's own guidance is "for simpler
+low-latency retrieval, prefer /search".
+
+This section previously carried a second reason — that no consumer used the endpoint. That claim was false: the
+first adopter's client calls `POST /agent/runs` and `GET /agent/runs/{id}`. It has been struck rather than
+corrected in place, because the claim should never have been made from either direction. This file records what
+the *vendor's* contract is; whether some consumer does or does not call a route is not something it can verify,
+and asserting it here is how a wrong statement acquired the authority of a verified one. State a scenario-model
+reason, a verification-status reason, or no reason.
 
 A `POST /research` endpoint appears in third-party integration documentation but not in Exa's own docs index.
 Treat it as retired; do not simulate it.

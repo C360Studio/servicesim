@@ -24,6 +24,47 @@ the live contract canary reports drift.
 
 - Authorization: Bearer `<token>` (OpenAPI `security: [{bearerAuth: []}]`; components.securitySchemes.bearerAuth = {type: http, scheme: bearer, bearerFormat: JWT}, described as 'Bearer authentication header in the form Bearer `<token>`, where `<token>` is your Tavily API key (e.g., Bearer tvly-YOUR_API_KEY)')
 
+### Accepted credential placements (recorded 2026-08-15)
+
+This is a case where **observed client behaviour and the vendor documentation disagree**. The
+vendor provenance above is unchanged and still says what it always said: the only documented
+placement is `Authorization: Bearer`. It is not the only placement the live API accepts, and it
+is not the only placement real client code sends.
+
+| Placement | Vendor documents it | Observed in client code | Authenticates in Servicesim | Finding raised |
+|---|---|---|---|---|
+| `Authorization: Bearer <key>` header | yes | yes (on GET polls) | yes | `auth.wrong_placement` only if the header carries another scheme |
+| `api_key` property in the JSON request body | no | yes (on POSTs) | yes | `tavily.api_key.in_body`, warning severity |
+| `x-api-key` header | no | no | no | `tavily.auth.wrong_header` plus `auth.missing` |
+
+Presenting both accepted placements at once is fine and is not a finding of its own; each is
+recorded on its own terms.
+
+Why both are accepted:
+
+- A consumer's production client sends the key as a body property on `POST /search` and as a
+  Bearer header on its GET polls. `api.tavily.com` serves that traffic.
+- Until 2026-08-15 Servicesim followed the vendor document alone and answered a body-placed key
+  with `401` and `auth.missing`. That failed requests which succeed against the real API, which
+  is worse than not simulating the surface at all: it sends the consumer hunting a bug in code
+  that is correct.
+
+Accepting the body placement does not lose the assertion that the placement existed for:
+
+- The journal's auth observation names the placement. `auth.header` is `authorization` for the
+  header and `body:api_key` for the body property; the value itself is never journaled, only its
+  fingerprint. When a request carries both, the documented header keeps the observation and the
+  body placement is carried by its finding.
+- `tavily.api_key.in_body` is still raised for every body-placed key, as a warning, so
+  `testkit.AssertNoErrors` passes while the placement stays visible.
+- A consumer that wants the body placement to FAIL — because it is migrating off it — declares
+  `validation: {promote: [tavily.api_key.in_body]}`, or narrows the accepted set with
+  `auth: {headers: [authorization]}`, in which case a body-placed key is rejected with
+  `auth.missing`. `auth: {headers: ["body:api_key"]}` is the mirror of that.
+
+The body key is redacted everywhere it is retained: the journal's request body renders it as
+`[REDACTED]`, and the finding message states presence only and never interpolates the value.
+
 ## Request fields
 
 | Field | JSON type | Required | Enum | Default |

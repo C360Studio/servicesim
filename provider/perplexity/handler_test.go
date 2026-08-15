@@ -158,21 +158,23 @@ const sonarRequest = `{"model":"sonar-pro","messages":[{"role":"user","content":
 // agentRequest is a minimal valid Agent request.
 const agentRequest = `{"input":"what do the reports say?","model":"openai/gpt-5"}`
 
-// TestRoutesFaultKeys pins the four routes and the fault budgets they draw on.
-// The two aliases of each surface must share a key — a retry through the alias
-// draws on the same budget — and the two surfaces must not, or a scenario could
-// not rate-limit one while leaving the other healthy.
+// TestRoutesFaultKeys pins the six routes and the fault budgets they draw on.
+// Every alias of a surface must share that surface's key — a retry through an
+// alias draws on the same budget — and the two surfaces must not, or a scenario
+// could not rate-limit one while leaving the other healthy.
 func TestRoutesFaultKeys(t *testing.T) {
 	t.Parallel()
 
 	routes := Routes()
-	require.Len(t, routes, 4)
+	require.Len(t, routes, 6)
 
 	want := []struct{ pattern, key string }{
 		{"POST /v1/sonar", "perplexity:completions"},
 		{"POST /chat/completions", "perplexity:completions"},
+		{"POST /v1/chat/completions", "perplexity:completions"},
 		{"POST /v1/agent", "perplexity:agent"},
 		{"POST /v1/responses", "perplexity:agent"},
+		{"POST /responses", "perplexity:agent"},
 	}
 	for i, w := range want {
 		require.Equal(t, w.pattern, routes[i].Pattern)
@@ -199,12 +201,20 @@ func TestRoutingTable(t *testing.T) {
 	}{
 		{name: "sonar canonical", method: http.MethodPost, path: "/v1/sonar", body: sonarRequest,
 			wantStatus: http.StatusOK, wantGolden: "perplexity-sonar-happy.json"},
-		{name: "sonar alias", method: http.MethodPost, path: "/chat/completions", body: sonarRequest,
-			wantStatus: http.StatusOK, wantGolden: "perplexity-sonar-happy.json"},
+		{name: "sonar alias from a /v1 base_url", method: http.MethodPost, path: "/chat/completions",
+			body: sonarRequest, wantStatus: http.StatusOK, wantGolden: "perplexity-sonar-happy.json"},
+		{name: "sonar alias from a bare base_url", method: http.MethodPost, path: "/v1/chat/completions",
+			body: sonarRequest, wantStatus: http.StatusOK, wantGolden: "perplexity-sonar-happy.json"},
 		{name: "agent canonical", method: http.MethodPost, path: "/v1/agent", body: agentRequest,
 			wantStatus: http.StatusOK},
-		{name: "agent alias", method: http.MethodPost, path: "/v1/responses", body: agentRequest,
-			wantStatus: http.StatusOK},
+		{name: "agent alias from a bare base_url", method: http.MethodPost, path: "/v1/responses",
+			body: agentRequest, wantStatus: http.StatusOK},
+		{name: "agent alias from a /v1 base_url", method: http.MethodPost, path: "/responses",
+			body: agentRequest, wantStatus: http.StatusOK},
+		{name: "GET on an alias path is 405", method: http.MethodGet, path: "/v1/chat/completions",
+			wantStatus: http.StatusMethodNotAllowed, wantGolden: "perplexity-405.json", wantAllow: "POST"},
+		{name: "GET on the bare responses alias is 405", method: http.MethodGet, path: "/responses",
+			wantStatus: http.StatusMethodNotAllowed, wantGolden: "perplexity-405.json", wantAllow: "POST"},
 		{name: "unknown path is 404", method: http.MethodPost, path: "/v1/nope", body: "{}",
 			wantStatus: http.StatusNotFound, wantGolden: "perplexity-404.json"},
 		{name: "GET on a real path is 405", method: http.MethodGet, path: "/v1/sonar",
@@ -230,31 +240,308 @@ func TestRoutingTable(t *testing.T) {
 	}
 }
 
-// TestAliasesShareOneFaultBudget proves the alias does not hand a retrying
-// client a fresh set of retries. The plan declares one 429 then success; the
-// first call takes it on the canonical path and the second must succeed on the
-// alias.
+// TestAliasesShareOneFaultBudget proves no alias hands a retrying client a fresh
+// set of retries. Each surface declares two 429s then success, and the three
+// spellings are walked in turn: if any of them had a budget of its own it would
+// answer 429 where the shared counter says 200, and a scenario's fault plan
+// would silently stop meaning anything the moment a consumer retried through a
+// different base-URL convention.
 func TestAliasesShareOneFaultBudget(t *testing.T) {
 	t.Parallel()
-	s := newSim(t, mustScenario(t, `
+
+	tests := []struct {
+		name     string
+		provider string
+		request  string
+		paths    [3]string
+		wantOK   string
+	}{
+		{
+			name: "sonar", provider: "perplexity", request: sonarRequest,
+			paths:  [3]string{"/v1/sonar", "/chat/completions", "/v1/chat/completions"},
+			wantOK: `"content":"recovered"`,
+		},
+		{
+			name: "agent", provider: "perplexity_agent", request: agentRequest,
+			paths:  [3]string{"/v1/agent", "/v1/responses", "/responses"},
+			wantOK: `"text":"recovered"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSim(t, mustScenario(t, `
 version: 1
 name: shared-budget
 providers:
+  `+tc.provider+`:
+    fault:
+      attempts:
+        - status: 429
+        - status: 429
+        - status: 200
+    answer: recovered
+`))
+
+			for i, path := range tc.paths[:2] {
+				resp, body := s.do(t, http.MethodPost, path, tc.request)
+				require.Equal(t, http.StatusTooManyRequests, resp.StatusCode,
+					"call %d on %s: %s", i, path, body)
+			}
+
+			resp, body := s.do(t, http.MethodPost, tc.paths[2], tc.request)
+			require.Equal(t, http.StatusOK, resp.StatusCode,
+				"%s must not restart the budget: %s", tc.paths[2], body)
+			require.Contains(t, string(body), tc.wantOK)
+		})
+	}
+}
+
+// TestJournalRecordsWhichSpellingWasUsed is the other half of the alias promise:
+// the routes behave identically, so the journal is the only place an adapter test
+// can prove it reached the path it meant to configure. Both the request path and
+// the matched route pattern must name the spelling that was used.
+func TestJournalRecordsWhichSpellingWasUsed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path    string
+		request string
+	}{
+		{"/v1/sonar", sonarRequest},
+		{"/chat/completions", sonarRequest},
+		{"/v1/chat/completions", sonarRequest},
+		{"/v1/agent", agentRequest},
+		{"/v1/responses", agentRequest},
+		{"/responses", agentRequest},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			t.Parallel()
+			s := newSim(t, mustScenario(t, `
+version: 1
+name: journalled-routes
+providers:
   perplexity:
+    answer: hello
+  perplexity_agent:
+    answer: hello
+`))
+			resp, body := s.do(t, http.MethodPost, tc.path, tc.request)
+			require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+
+			entries := s.journal.Snapshot()
+			require.Len(t, entries, 1)
+			require.Equal(t, tc.path, entries[0].Path)
+			require.Equal(t, http.MethodPost+" "+tc.path, entries[0].Route)
+		})
+	}
+}
+
+// TestStreamPolicy covers the field docs/design/package-design.md already claimed
+// Perplexity had. The default is warn — streaming is not simulated, so the
+// request still receives a complete non-streaming 200 — and `stream: reject`
+// turns that into a loud 422.
+//
+// The reject branch is what stops a consumer whose primary deep-research path
+// always streams from recording fixtures against a body the real API would never
+// have sent on that request.
+func TestStreamPolicy(t *testing.T) {
+	t.Parallel()
+
+	const streamRequest = `{"model":"sonar","messages":[{"role":"user","content":"hi"}],"stream":true}`
+
+	t.Run("the default warns and still answers", func(t *testing.T) {
+		t.Parallel()
+		s := newSim(t, mustScenario(t, `
+version: 1
+name: stream-default
+providers:
+  perplexity:
+    answer: hello
+`))
+		resp, body := s.do(t, http.MethodPost, "/v1/sonar", streamRequest)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+		require.True(t, hasCode(s.findings(t), CodeStreamUnimplemented))
+	})
+
+	t.Run("reject fails the request", func(t *testing.T) {
+		t.Parallel()
+		s := newSim(t, mustScenario(t, `
+version: 1
+name: stream-reject
+providers:
+  perplexity:
+    stream: reject
+    answer: hello
+`))
+		resp, body := s.do(t, http.MethodPost, "/v1/sonar", streamRequest)
+		require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, "body: %s", body)
+		require.Contains(t, string(body), `["body","stream"]`)
+
+		findings := s.findings(t)
+		require.True(t, hasCode(findings, CodeStreamUnimplemented))
+		for _, f := range findings {
+			if f.Code == CodeStreamUnimplemented {
+				require.Equal(t, journal.SeverityError, f.Severity)
+				require.NotContains(t, f.Message, "receives the ordinary non-streaming body",
+					"a rejected request must not also be told it was answered")
+			}
+		}
+	})
+
+	t.Run("reject applies through every spelling", func(t *testing.T) {
+		t.Parallel()
+		s := newSim(t, mustScenario(t, `
+version: 1
+name: stream-reject-aliases
+providers:
+  perplexity:
+    stream: reject
+    answer: hello
+`))
+		for _, path := range []string{"/chat/completions", "/v1/chat/completions"} {
+			resp, _ := s.do(t, http.MethodPost, path, streamRequest)
+			require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, "path %s", path)
+		}
+	})
+
+	t.Run("reject leaves non-streaming requests alone", func(t *testing.T) {
+		t.Parallel()
+		s := newSim(t, mustScenario(t, `
+version: 1
+name: stream-reject-passthrough
+providers:
+  perplexity:
+    stream: reject
+    answer: hello
+`))
+		for _, request := range []string{
+			sonarRequest,
+			`{"model":"sonar","messages":[{"role":"user","content":"hi"}],"stream":false}`,
+		} {
+			resp, body := s.do(t, http.MethodPost, "/v1/sonar", request)
+			require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+			require.False(t, hasCode(s.findings(t), CodeStreamUnimplemented))
+		}
+	})
+
+	t.Run("a rejected request consumes no fault attempt", func(t *testing.T) {
+		t.Parallel()
+		s := newSim(t, mustScenario(t, `
+version: 1
+name: stream-reject-budget
+providers:
+  perplexity:
+    stream: reject
     fault:
       attempts:
         - status: 429
         - status: 200
     answer: recovered
 `))
+		resp, _ := s.do(t, http.MethodPost, "/v1/sonar", streamRequest)
+		require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 
-	resp, body := s.do(t, http.MethodPost, "/v1/sonar", sonarRequest)
-	require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
-	require.Equal(t, string(goldenBytes(t, "perplexity-sonar-429.json")), string(body))
+		// The 429 is still waiting: the streaming rejection must not have eaten it.
+		resp, _ = s.do(t, http.MethodPost, "/v1/sonar", sonarRequest)
+		require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	})
+}
 
-	resp, body = s.do(t, http.MethodPost, "/chat/completions", sonarRequest)
-	require.Equal(t, http.StatusOK, resp.StatusCode, "the alias must not restart the budget: %s", body)
-	require.Contains(t, string(body), `"content":"recovered"`)
+// TestStreamPolicyValidation pins what startup validation says about the field.
+// A value outside the enum is an error, because the silent fallback is warn —
+// the permissive behaviour the author was trying to switch off — and a policy
+// declared on a later turn is a warning, because only the first turn's value can
+// be honoured.
+func TestStreamPolicyValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		source   string
+		wantCode string
+		wantSev  scenario.Severity
+	}{
+		{
+			name: "reject is accepted",
+			source: `
+version: 1
+name: ok
+providers:
+  perplexity:
+    stream: reject
+    answer: hello
+`,
+		},
+		{
+			name: "warn is accepted",
+			source: `
+version: 1
+name: ok
+providers:
+  perplexity:
+    stream: warn
+    answer: hello
+`,
+		},
+		{
+			name: "an unknown value is an error",
+			source: `
+version: 1
+name: typo
+providers:
+  perplexity:
+    stream: rejct
+    answer: hello
+`,
+			wantCode: CodeStreamPolicyUnknown, wantSev: scenario.SeverityError,
+		},
+		{
+			name: "a later turn's policy is reported as ignored",
+			source: `
+version: 1
+name: late-policy
+providers:
+  perplexity:
+    turns:
+      - when:
+          call_index: 0
+        respond:
+          answer: first
+      - respond:
+          stream: reject
+          answer: second
+`,
+			wantCode: CodeStreamPolicyIgnored, wantSev: scenario.SeverityWarning,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sc := mustScenario(t, tc.source)
+			findings := provider.ValidateScenario(sc, map[string]provider.Validator{
+				NameSonar: SonarValidator{},
+			})
+
+			if tc.wantCode == "" {
+				require.Empty(t, findings)
+				return
+			}
+			var found *scenario.Finding
+			for i := range findings {
+				if findings[i].Code == tc.wantCode {
+					found = &findings[i]
+				}
+			}
+			require.NotNil(t, found, "findings: %+v", findings)
+			require.Equal(t, tc.wantSev, found.Severity)
+			require.Contains(t, found.Path, ".stream")
+		})
+	}
 }
 
 // TestSurfacesFaultIndependently is the migration-fallback case the two fault

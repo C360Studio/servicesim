@@ -15,6 +15,19 @@ was wrong about Exa's `score` field (it does not exist), Tavily's `response_time
 Perplexity's `usage.cost` (required, not optional). All three would have shipped into golden fixtures and taught
 consumers to parse things the real APIs never send. See [ADR 0002](docs/adr/0002-verified-contract-precedence.md).
 
+### The same rule applied to consumers
+
+**Never claim what a consumer does or does not call.** Either cite the evidence — the adopter, the repository,
+the request in a journal — or say nothing about consumers at all and give the reason that actually applies:
+"no verified vendor contract recorded yet", "the scenario model has no shape for this lifecycle", "on the
+backlog". A reason about Servicesim is checkable; a reason about somebody else's client is not.
+
+This is not hypothetical either. `contracts/exa/README.md` justified leaving Exa's `/agent/runs` unsimulated with
+"no C360 consumer uses it". The first adopter's client calls it. The sentence sat in the directory that
+[outranks every other document here](#the-one-rule-that-matters-most), which is exactly what made a casual
+assumption read as a verified fact. An unevidenced claim about a consumer is worse than an omission, because it
+closes the question.
+
 ## Before you push
 
 ```bash
@@ -92,6 +105,24 @@ Only in response to a real vendor change, and the contract file and its **Verifi
 commit. If a live contract canary found the drift, say so in the commit message. Provider handler and contract
 changes are release-worthy; product-specific scenario changes in consuming repositories are not.
 
+## Releasing: publish the image, then update the docs
+
+**Order matters, and CI enforces it.** `scripts/check-docs.sh` resolves every `ghcr.io` reference in the scanned
+documentation against the registry. A commit that documents a tag before that tag is published fails the docs
+guard, because at that moment the documentation is wrong: a reader following it gets `manifest unknown`.
+
+So a release is two steps in this order:
+
+1. Tag and let the publish workflow push the image. Confirm the tag resolves.
+2. In a follow-up commit, update the version pins in `README.md`, `docker-compose.example.yml` and anywhere else
+   the tag appears.
+
+The guard distinguishes an unpublished tag from an unreachable registry: a network failure skips loudly rather
+than failing, so a registry outage cannot fail an unrelated pull request. Note also that the metadata action
+strips the leading `v`, so both spellings are published against one digest — check the one you are about to
+write down, not the one you assume exists. This check was added after that exact mistake shipped twice in one
+day.
+
 ## Things that will get a change sent back
 
 - A `time.Now()`, `math/rand` or UUID on a response path. Determinism is the product.
@@ -105,6 +136,8 @@ changes are release-worthy; product-specific scenario changes in consuming repos
 - A real vendor hostname in scenario or fixture data. `scripts/lint-no-live-hosts.sh` will catch it, and the
   failure it prevents — a base URL quietly reaching a paid API — is discovered in a billing statement.
 - Widening the exported surface without a reason. Prefer `internal/`.
+- A claim about what some consumer does, sends or needs, with nothing behind it. Evidence it or drop it.
+- A documentation commit that pins an image tag the registry does not serve yet. Publish first.
 
 ## Where to read next
 
