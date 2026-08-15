@@ -332,7 +332,83 @@ The README's existing one-line /answer row is directionally right but incomplete
 - REQUEST VALIDATION MUST DIVERGE FROM /search. Reject or ignore the /search-only fields — a request with type/numResults/includeDomains/contents against /answer should not be validated by the /search decoder. Treat model, systemPrompt and userLocation as accept-and-ignore (SDK sends them; the OpenAPI schema does not list them), and do not echo them.
 - DO NOT IMPLEMENT /research. No vendor doc page exists for it; only a third-party page claims it was retired in favour of the Agent API. If an agentic surface is ever needed, the real one is the async POST /agent/runs + GET /agent/runs/{id} poll pattern, which is a fundamentally different lifecycle (create returns immediately, output only at terminal status) and must not be folded into /answer's synchronous shape.
 
-### Exa Agent API (not simulated yet — on the backlog)
+## POST /agent/runs and GET /agent/runs/{id}
+
+Verified against live vendor documentation on **2026-08-15**.
+
+Read from:
+
+- <https://exa.ai/docs/reference/agent-api/overview> — lifecycle, status and stopReason enums, `output` shape
+- <https://exa.ai/docs/reference/agent-api-guide> — request example, run-object top-level fields, `usage`
+- <https://exa.ai/docs/reference/agent-api/examples> — request fields, `budget`, `previous_run_id`
+- <https://github.com/exa-labs/exa-js> — `costDollars.dataSources` and `usage.dataSources`
+
+Note the documentation host moved: `docs.exa.ai/reference/*` now 307-redirects to `exa.ai/docs/reference/*`. The
+older host still resolves, so a URL recorded before this date is not wrong, only indirect.
+
+### Lifecycle
+
+`POST /agent/runs` returns immediately with a run in a non-terminal status. The client then polls
+`GET /agent/runs/{id}` until terminal. Output exists **only at a terminal status** — that is the whole reason this
+surface needs a scenario shape a single request/response projection cannot express.
+
+```text
+queued -> running -> completed | failed | cancelled
+```
+
+`completed`, `failed` and `cancelled` are terminal. The vendor also documents
+`GET /agent/runs`, `GET /agent/runs/{id}/events`, `POST /agent/runs/{id}/cancel` and `DELETE /agent/runs/{id}`;
+none of those are in scope here and none are verified below.
+
+### Request fields (POST /agent/runs)
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `query` | `string` | yes | The research task. |
+| `outputSchema` | `object` | no | JSON Schema shaping `output.structured`. **camelCase** — see the naming conflict below. |
+| `effort` | `string` | no | Enum: `minimal`, `low`, `medium`, `high`, `xhigh`, `auto`, `max`. `max` is beta and requires a beta header. |
+| `input` | `object` | no | Carries `data`, `exclusion`, or both. Sub-shapes NOT verified. |
+| `previous_run_id` | `string` | no | Continues from a prior run. Note the snake_case, unlike `outputSchema`. |
+| `data_sources` | — | no | Exa Connect premium partners. Shape NOT verified. |
+| `budget` | `object` | no | Documented key: `maxCostDollars`. Other keys NOT verified. |
+| `betas` | — | no | Beta feature tokens. Shape NOT verified. |
+
+### Response fields (the run object, returned by both routes)
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | `string` | The identifier a poll presents. Format NOT verified. |
+| `status` | `string` | `queued`, `running`, `completed`, `failed`, `cancelled`. |
+| `stopReason` | `string\|null` | `null` while queued or running. Terminal: `schema_satisfied`, `budget_reached`, `error`, `cancelled`. |
+| `createdAt` | — | Type and format NOT verified. |
+| `request` | `object` | Echo of the submitted request. Shape NOT verified. |
+| `output` | `object\|null` | Present at terminal status. |
+| `output.text` | `string` | Natural-language answer or summary. |
+| `output.structured` | `object\|null` | Shaped by `outputSchema`; `null` when no schema was supplied. |
+| `output.grounding` | — | Citations for text or structured fields. Shape NOT verified. |
+| `usage` | `object` | Documented keys: `agentComputeUnits`, `dataSources`. |
+| `costDollars` | `object` | The run's cost breakdown. Documented key: `dataSources`. **See below.** |
+
+### What is NOT verified, and must not be invented
+
+The vendor documentation confirms these fields exist without showing a complete example run object, so the
+following are open and a simulator must not assert them from memory:
+
+1. **`costDollars`' nested shape on this surface.** `costDollars` is confirmed present, and `costDollars.dataSources`
+   is confirmed by the official JS SDK. **`costDollars.total` is NOT confirmed for agent runs.** It is confirmed and
+   required on `/search`, and confirmed-but-optional on `/answer`, where the two share one `CostDollarsOutput`
+   schema object — so a third endpoint reusing it is plausible. Plausible is not verified. This repository has
+   already been wrong about an Exa field by reasoning from a sibling endpoint.
+2. **`createdAt`'s type and format.** `/search` has no analogue; do not assume the `publishedDate` ISO-8601 shape.
+3. **The `id` format.** No example identifier appears. `/search`'s `requestId` is 32 lowercase hex, but nothing
+   verifies that this surface matches it.
+4. **`output.grounding`, `input`, `data_sources`, `betas` and `request` sub-shapes.**
+5. **`outputSchema` versus `output_schema`.** The guide's example JSON and the overview's prose both use
+   `outputSchema`; the examples page's prose says `output_schema`. Two sources to one, and the one that disagrees
+   is prose rather than a code sample, so **camelCase is recorded** — but it is a documentation conflict rather
+   than a settled fact, and a consumer sending snake_case should be accepted rather than rejected until it is.
+
+### Exa Agent API — lifecycle routes not in scope
 
 Exa also exposes an asynchronous agentic surface — `POST /agent/runs` plus a run lifecycle
 (`GET /agent/runs`, `GET /agent/runs/{id}`, `GET /agent/runs/{id}/events`, `POST /agent/runs/{id}/cancel`,
