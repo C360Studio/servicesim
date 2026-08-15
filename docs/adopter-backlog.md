@@ -4,14 +4,60 @@ The first adopter reviewed Servicesim against their target architecture and retu
 their own client code. This document is the durable record of that backlog, the evidence-based status of each item,
 the phased plan, and the decisions already taken. It exists so the work can be picked up cold.
 
-Recorded 2026-08-15, against **v0.1.1**. Phases 0 and 1 are shipped. **Phase 2 is in round 2**; everything from
-Phase 3 on is open.
+## Where this stands — read this first
 
-Phase 2 round 1 revised both design documents; the re-review that gates Phase 3 and Phase 5 returned
-**still needs revision** — one blocker per document, plus three majors on async-jobs. Two of those are defects the
-round-1 revision *introduced*. Both documents are back to **DRAFT — DO NOT IMPLEMENT**, and each carries its open
-findings at the top. The lesson worth keeping: a revision written by the same author who will also judge it is not
-a review, and round 1 self-certified two findings it had restated rather than answered.
+Recorded 2026-08-15, against **v0.1.1** plus unreleased work on `main`.
+
+| Phase | State |
+|---|---|
+| 0 — stop rejecting valid traffic | **shipped** in v0.1.1 |
+| 1 — schema-envelope changes | **shipped**, unreleased |
+| 2 — revise the two design documents | **round 3**, conceptual findings answered; Go blocks demoted to illustrative |
+| 3 — the async job machine | **A1–A4 done**, unreleased. **A5, A6, A7 open — this is where to start** |
+| 4 onward | open |
+
+`main` is green and pushed: 20 Go packages under `-race`, `task check` clean (lint now includes markdownlint,
+which it did not before today). Nothing since v0.1.1 has been released or tagged.
+
+### Start here
+
+**A5** is next in order and carries one known defect: **`POST /__admin/reset` does not drop job records.**
+`testkit.Sim.Reset()` does; the admin endpoint does not, so a reset through the API rewinds the fault cursors while
+leaving records live, and the next create re-mints a live identifier and 500s with `job.id_collision`. No adopter can
+reach it today — the async surfaces are unreleased — which is why it was left in phase order rather than hot-fixed.
+Fix it first in A5, and note §7.3 of the async design: every surface that resets fault counters must reset jobs in
+the same call, and the capability checks all run before anything is dropped.
+
+Then **A6** (testkit `Job`/`Jobs` aliases, `Sim.Jobs()`, a poll-sequence assertion, the `examples/adapter` alias
+guard) and **A7** (built-in `async-job.yaml`, the `docs/scenario-schema.md` async section, the multi-replica text in
+README and troubleshooting).
+
+**`docs/scenario-schema.md` is currently incomplete rather than wrong**: `create.fault` and the async entry shapes
+are live in the loader and documented nowhere. That is A7's job and it is the largest remaining doc debt.
+
+### What changed about how this work is being done
+
+Two process findings from today, both earned the hard way and both worth not rediscovering.
+
+**A design document cannot be reviewed into correctness by its own author.** Phase 2 round 1 self-certified two
+findings it had merely restated, and introduced three new defects. Round 2 fixed those and introduced six more. The
+*conceptual* layer converged and stayed converged; the *mechanical* layer — signatures, arities, enum completeness,
+registration wiring — did not, because prose cannot be type-checked. Round 3 therefore **demoted every Go block in
+both design documents to illustrative**, and the mechanical questions were settled by writing A2 and letting the
+compiler answer them. That worked: A2 resolved in one pass what two adversarial review rounds could not.
+
+**The guards in this repository have blind spots that surface exactly when a surface is extended, and they are
+defects in their own right.** Three today: `task lint` did not run the markdownlint CI runs (so `task check` passed
+on a tree CI rejected); `check-docs.sh` read provider routes from `provider/*/handler.go` only, so a provider that
+split its routes across files had them read as unregistered; and its method regexes omitted `HEAD` entirely, making
+a served HEAD route invisible in both directions. Each time the guard was right to fail and wrong about why. Budget
+for this when adding a surface.
+
+**Contract verification is the first step of any provider unit, not a formality.** Both A3 and A4 were blocked at
+the start because the contract recorded that an endpoint existed and nothing about its shape. Verifying turned up
+things no plan had: a seven-value `effort` enum on Exa with one value beta-gated, `stopReason` and its own enum, and
+for Tavily a poll whose **HTTP status varies with task state** plus a required field named `input` rather than
+`query`. A4's verification also **disproved the async design's stated reason** for per-route credentials.
 
 ## Decisions already taken
 
@@ -224,6 +270,41 @@ majors are answered rather than restated.
   stream findings to perplexity.stream.* mirroring the existing exa.stream.policy.unknown; reference
   internal/admin/handler.go:187 rather than writing a second copy of allowHeader; and delete the §5.2 golden-ignore
   item, which testkit/golden.go:60 already does.
+
+### Phase 3 — The async job machine — A1–A4 DONE, A5–A7 OPEN
+
+> **Delivered so far** (all on `main`, unreleased):
+>
+> - **A1 `internal/jobs`** — `Job`, `Store`, `Registry`, `Limits`, `Stats`, race tests. 100% statement coverage.
+>   Two decisions are load-bearing and argued in the source: the bound **refuses rather than evicts** (an evicted
+>   journal entry costs observability, an evicted job record costs correctness), and records are keyed on
+>   **(namespace, id)** because identifiers are derived without the namespace so two namespaces legitimately mint
+>   the same one.
+> - **A2 the provider seam** — `ValidJobID`, `Route.Entry`, `Route.LaneFrom` + `LaneFromPath`, `Deps.Jobs`,
+>   `Deps.MaxJobs`, `MintJob`, `ResolveJob`, served `HEAD`. Note `Route.Entry` is a **live behaviour change for the
+>   shipped `perplexity_agent` surface** — its `turn_key` was silently ignored before and is honoured now; three
+>   tests pin it and it needs a release-note line as a behaviour change, not a fix.
+> - **A3 Exa** — `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}`, `create.fault`,
+>   `costDollars.total` from the first release.
+> - **A4 Tavily** — `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}`. The poll's HTTP
+>   status varies with task state (202 running, 200 terminal) and that is the easiest thing on this surface to lose.
+>
+> **Corrections this work forced into other documents**, so nobody re-derives them:
+>
+> - `scenario.ProviderEntry` gained `Create` (`create.fault`), and **`reservedEnvelopeKeys` is not what the loader
+>   reads** — the authoritative list is `decodeProviderEntry`'s switch. `docs/scenario-schema.md` said otherwise and
+>   is corrected.
+> - `HasFaults` had to learn about `create.fault`, or a create-only plan reports no faults and the
+>   `deps.faults_ignored` warning never fires.
+> - The async design's claim that Tavily requires a body key on the POST and a header on the GET is **wrong** — the
+>   vendor documents Bearer for both. `Route.Credentials` is still right, because a POST has a body to carry an
+>   `api_key` and a GET does not. Corrected in both the design and `contracts/tavily`.
+> - `MintJob`'s commit predicate is **not** `FaultDecision.Faulted()`, which is true for a pure `delay:` whose body
+>   IS written. It is the set of kinds that still deliver the rendered body.
+> - Source refs must be resolved **at request time**, not only in the validator. Both A3 and A4 had this latent;
+>   A3's was invisible because its test asserted `output.text` and never a citation URL.
+>
+> **A5, A6 and A7 remain exactly as written below.** Start with A5's admin reset — see "Start here" at the top.
 
 ### Phase 3 — The async job machine
 
