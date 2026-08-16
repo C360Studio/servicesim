@@ -6,7 +6,7 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-16 (early), against **v0.2.0** plus Phases 2, 4 and 5 on `main`, unreleased.
+Recorded 2026-08-16 (midday), against **v0.3.0**, tagged from `main` at `ae4c8e6` the same day.
 
 | Phase | State |
 |---|---|
@@ -14,18 +14,17 @@ Recorded 2026-08-16 (early), against **v0.2.0** plus Phases 2, 4 and 5 on `main`
 | 1 — schema-envelope changes | **shipped** in v0.2.0 |
 | 2 — revise the two design documents | **DONE** — both documents are now records of what shipped |
 | 3 — the async job machine | **shipped** in v0.2.0 (A1–A7) |
-| 4 — the remaining synchronous routes | **DONE**, unreleased |
-| 5 — SSE streaming for the Perplexity deep-research path | **DONE**, unreleased — units 1–4; concise mode and the reasoning events deliberately deferred |
-| 6 onward | open — **Phase 6 (G-3 depth) is next**; Phase 7's provenance-date item is already done |
+| 4 — the remaining synchronous routes | **shipped** in v0.3.0 |
+| 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
+| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**; Phase 7's provenance-date item is already done |
 
-`main` is green and pushed. **v0.2.0** is the last tag; everything since — Phase 4's three routes, Phase 5's
-streaming end to end (four `.sse` goldens, the `streaming` built-in, four testkit assertions), honest provenance
-dates and goldens for the async routes, two wire corrections to routes released in v0.2.0 (Exa `output.structured`
-renders explicit `null`; a failed Tavily research poll carries only `request_id`/`status`/`response_time`),
-Perplexity's nullable enums accepting explicit `null`, and `/extract` Bearer-only per the vendor page — is
-unreleased. That is a **v0.3.0**, and it should be cut before more code lands: the streaming surface is the
-adopter's stated MUST-HAVE, and the two wire corrections are the kind of change a consumer holding v0.2.0 goldens
-should learn from a note, not a diff.
+**v0.3.0** is the last tag (2026-08-16): Phase 4's three routes, Phase 5's streaming end to end (four `.sse`
+goldens, the `streaming` built-in, four testkit assertions), honest provenance dates and goldens for the async
+routes, two wire corrections to routes released in v0.2.0 (Exa `output.structured` renders explicit `null`; a
+failed Tavily research poll carries only `request_id`/`status`/`response_time`), Perplexity's nullable enums
+accepting explicit `null`, and `/extract` Bearer-only per the vendor page. The annotated tag message is the release
+note; both spellings resolve to one digest (`sha256:6009f34c…`) and the README/Compose pins follow it. Phase 6 work
+lands on branch `phase-6` and reaches `main` through PR #2.
 
 **Authority rule, reaffirmed by the owner 2026-08-15 evening:** vendor documentation decides every wire contract; the
 adopter's client code and remarks are not evidence ("we have no idea if their client works — we use the vendor
@@ -36,17 +35,16 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
 
 ### Start here
 
-1. **Cut v0.3.0** (owner's call). The annotated tag message IS the release note (no CHANGELOG, no GitHub Release
-   object — v0.1.1 and v0.2.0 set that convention); the mechanics are CONTRIBUTING.md "Releasing": tag → the Publish
-   Image workflow pushes → confirm both spellings (`v0.3.0`, `0.3.0`) resolve on ghcr.io → THEN a follow-up commit
-   moves the README/Compose pins (CI's docs guard resolves every `ghcr.io` reference, so the order is enforced).
-2. **Phase 6 — G-3 depth.** Highest value per effort: most primitives exist. Start with the one real defect
-   (journal `CompletedAt` stamped before the delay on aborting faults, so `observed_ms` reads 0 on a hang), then the
-   malicious-content built-in rendered through all three providers, `body_bytes:` padding, the timeout/brownout/
-   hang-then-abort/rotation built-ins with `AssertDifferentCredential`, delay-after-headers, the observed-pacing
-   assertion per D5. Trickle bodies now have Phase 5's chunked-write path to sit on. Note the over-redaction defect
-   listed there was fixed in v0.1.1 already — verify before re-fixing.
-3. Tell the adopter v0.2.0 exists (and v0.3.0 when cut); their questions in the two contract READMEs are still open.
+1. ~~**Cut v0.3.0**~~ **DONE 2026-08-16.** Tagged from `ae4c8e6` with the annotated message as the release note (no
+   CHANGELOG, no GitHub Release object — v0.1.1 and v0.2.0 set that convention), published, both spellings confirmed,
+   pins moved in a follow-up commit — the CONTRIBUTING.md "Releasing" order.
+2. **Phase 6 — G-3 depth**, on branch `phase-6` (PR #2). Highest value per effort: most primitives exist. Unit 1
+   (the journal `CompletedAt` defect) is on the branch; then the malicious-content built-in rendered through all
+   three providers, `body_bytes:` padding, the timeout/brownout/hang-then-abort/rotation built-ins with
+   `AssertDifferentCredential`, delay-after-headers, the observed-pacing assertion per D5. Trickle bodies now have
+   Phase 5's chunked-write path to sit on. Note the over-redaction defect listed there was fixed in v0.1.1 already —
+   verify before re-fixing.
+3. Tell the adopter v0.3.0 exists; their questions in the two contract READMEs are still open.
 
 ### How the work has been run, for whoever picks it up
 
