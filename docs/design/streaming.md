@@ -5,7 +5,27 @@
 > **Phase 5 may start with unit 1:** `Response.Stream` + the `execute` branch + the widened `Handle` journal
 > condition + the SSE writer. **OPEN — owner decision: none.**
 >
-> Contract step (§10 step 1) done 2026-08-15; open design deltas listed at §7 — resolve before unit 1.
+> Contract step (§10 step 1) done 2026-08-15; the five design deltas that step forced were resolved the same day
+> — see §7 ("Resolved 2026-08-15").
+>
+> Amendment 2026-08-15: the five open deltas are resolved (see §7); unit 1 = GrammarDelta, full mode, on the three
+> Sonar routes.
+>
+> Amendment re-review 2026-08-15: two majors, several minors and nits were found against the amendment above; all
+> are answered in place, in the sections named, not restated here. The two majors: §7's GrammarDelta paragraph
+> had the vendor's `id`/`created` example backwards (it is `created` the example shows moving, not `id`) and
+> mislabelled `finish_reason: null` as vendor-pinned where the contract states it unstated for `full` mode; and
+> whether `[DONE]` is an element of `Stream.Chunks` was answered two ways by different sections — settled in §3.2
+> (it is not; `chunk_count == len(Stream.Chunks)`, always). Minors: §4.3's pace bullet still described a
+> role-only opening chunk A3 already removed; the contract's "What Servicesim simulates" section now states the
+> concise-mode limitation itself rather than being cited for a sentence it did not contain; §2.1 example 4b's
+> `after_chunk` was out of range against §2's three-delta scenario; the concise warning's condition now says
+> explicitly that it requires the request to actually stream, not merely to carry `stream_mode: concise`; §4.1
+> now names the new per-request warning on the path it fires from; §7's frame example elides `search_results`
+> instead of rendering it in the scenario's projection shape; and where `extra_fields`/`images`/`related_questions`
+> land in the stream (terminal-only) is now stated. A handful of nits — a dangling pronoun, a `chunk_count`
+> cross-reference pointing the wrong way, two stale "open deltas" pointers left over from resolving §7 — are
+> fixed in the same pass.
 >
 > A third, independent reviewer re-read this document end to end against both B1 lenses and the round-3 change list
 > below, and re-verified every round-3 blocker/major disposition against the current tree. Verdict: **PASS**. Every
@@ -286,9 +306,11 @@ Both gaps are fixed below, additively.
 ## 2. Scenario YAML
 
 The scenario projects **content**; the provider package owns the **wire contract**. A scenario author scripts the
-deltas and the pacing; it cannot hand-assemble frames, because the opening role chunk, the terminal chunk carrying
-both `finish_reason` and `usage` together, and the `[DONE]` sentinel are contract-fixed (§7, §10) and getting them
-wrong is what the simulator exists to prevent.
+deltas and the pacing; it cannot hand-assemble frames, because the full-mode frame sequence — each chunk's
+`role`+content delta and running aggregate `message`, `search_results` repeated on every chunk, the one terminal
+chunk carrying `finish_reason`, the full `message`, `usage` and `search_results` together, and the `[DONE]`
+sentinel — is contract-fixed (§7, §10) and getting it wrong is what the simulator exists to prevent. Full mode is
+the only mode unit 1 renders; `stream_mode: concise` is a later unit (§7).
 
 ```yaml
 version: 1
@@ -402,11 +424,12 @@ respond:
   stream:
     pace: 12s          # every gap exceeds the Temporal heartbeat interval
 
-# 4b. A single stall that exceeds the activity timeout, mid-stream, without aborting.
+# 4b. A single stall that exceeds the activity timeout, mid-stream (before the terminal chunk),
+#     without aborting.
 fault:
   attempts:
     - kind: stream_stall
-      after_chunk: 4
+      after_chunk: 3
       delay: 65s
 ```
 
@@ -460,11 +483,14 @@ const (
 )
 
 // StreamScript is the provider-neutral streaming projection: what to say, and how
-// slowly. It is deliberately not a list of frames. Frame assembly — the opening
-// role delta, the deltas, the one terminal chunk carrying finish_reason and usage
-// together, the [DONE] sentinel — is the vendor's contract and belongs to the
-// provider package, which is the same split the non-streaming path already makes
-// between a projection and a renderer.
+// slowly. It is deliberately not a list of frames. Frame assembly — each chunk's
+// role+content delta and running aggregate message, search_results repeated on
+// every chunk, the one terminal chunk carrying finish_reason, the full message,
+// usage and search_results together, the [DONE] sentinel — is the vendor's
+// contract and belongs to the provider package, which is the same split the
+// non-streaming path already makes between a projection and a renderer. This is
+// the full-mode (GrammarDelta) sequence, the only one unit 1 renders; concise
+// mode is a later unit (§7).
 //
 // It lives in scenario rather than in a provider package because all three
 // providers stream the same way and a second copy of this grammar is a second
@@ -678,6 +704,21 @@ func (s *Stream) Bytes() int
 func EncodeSSE(events []SSEEvent) []StreamChunk
 ```
 
+**`Stream.Chunks` holds exactly the indexed sequence — the N delta chunks and the one terminal chunk,
+`chunk_count = N + 1` elements — and never the `[DONE]` sentinel.** This is what makes `ChunkCount`,
+`TerminalIndex`, `AfterChunk` and the abort loop's `i` all range over the same `[0, len(Chunks))` with no
+separate accounting anywhere: `StreamOutcome.ChunkCount` **is** `len(Stream.Chunks)`, not a number computed a
+second way. On `GrammarDelta`, unless `terminal.omit_done` is set, `executeStream` writes `[DONE]` as one more
+write after the loop over `plan.Chunks` completes normally (§4.3) — it is never a `plan.Chunks[i]`, is never a
+candidate `AbortAt`/`AfterChunk` target, and `scenario.fault.after_chunk.out_of_range`'s load-time bound (§9) is
+exactly `chunk_count`, unaffected by whether `[DONE]` is written at all: the bound excludes it because it was
+never indexed, not because of a special case carved out for it. `Stream.Bytes()` and
+`Outcome.Stream.BytesPlanned` still include its bytes, because those answer "how many bytes will the wire
+carry", a different question from "how many chunks are there" — the two are allowed to disagree by design.
+`ChunksSent` (§5.1) counts only indexed chunks the client received, so a completed exchange always shows
+`chunks_sent == chunk_count` whether or not `[DONE]` followed it — precisely the signal `terminal.omit_done`
+exists to let a consumer's test read off a byte count alone.
+
 `Response` gains exactly one field:
 
 ```go
@@ -712,6 +753,11 @@ rendering. Concretely: `validateSonarRequest`'s stream check becomes conditional
   carry a warning promising "this request receives the ordinary non-streaming body" — that promise would be false,
   and §4.1's own `rejectStream` comment already names exactly this failure mode ("Journalling both would leave a
   consumer reading two findings that contradict each other") for the reject case; the same reasoning applies to warn.
+  A different WARNING can still fire on this same branch, once `stream_mode: concise` requests exist to trigger it:
+  when `body.stream_mode == "concise"` on a request this branch is about to stream, `perplexity.stream_mode.concise.unscripted`
+  is journaled (§7, A2; §9). Unlike the suppressed `CodeStreamUnimplemented` check above, this one is additive, not
+  a replacement — it says something true (the concise transcript is not what unit 1 renders) rather than something
+  false (this response is not a stream).
 
 The sketch below is illustrative and shows the *effect* — a stream branch after rendering — not the *mechanism*; the
 mechanism is the paragraph above, inside validation, not a second `if wantsStream(x)` gate bolted on after the body
@@ -980,14 +1026,18 @@ because each is observable on the wire and two implementers guessing independent
   means half, clamped to the chunk's length — applied to `plan.Chunks[AfterChunk].Bytes` rather than to the whole
   body. Reusing the field name without reusing this rule would make the same YAML key mean two different halves
   depending on which fault kind it appeared on.
-- **`pace:` gates every chunk `executeStream` writes, including the opening role chunk and the terminal chunk and
-  `[DONE]`**, not only the scripted deltas. `plan.PaceOf(i)` is defined over every index in `plan.Chunks`, which
-  `EncodeSSE` builds from the full frame sequence, not just `Deltas`; the role chunk therefore gets the script's
-  default `Pace` as the gap between headers-flushed and its own write (in addition to, not instead of, any
-  time-to-first-byte `Delay` a fault attempt declares — the two are independent gaps at the same point in the
-  sequence). A `StreamDelta.Pace` overrides the default for that delta's own chunk only; `StreamTerminal.Pace`
-  overrides it for the terminal chunk; there is no override for the role chunk or `[DONE]`, which always use the
-  script's default `Pace`.
+- **`pace:` gates every chunk `executeStream` writes, including chunk 0, the terminal chunk, and (on
+  `GrammarDelta`, when not omitted) `[DONE]`** — not only the scripted deltas after chunk 0. `plan.PaceOf(i)` is
+  defined over every index in `plan.Chunks`, which `EncodeSSE` builds from the N delta chunks and the one
+  terminal chunk — `chunk_count` elements, per §3.2's note that `[DONE]` is never one of them. Under A3 (§7)
+  there is no separate role-only opening chunk: role and content ride together on every one of the N chunks, so
+  chunk 0 IS `deltas[0]`, and the gap between headers-flushed and its write is `deltas[0]`'s own
+  `StreamDelta.Pace` override when the script sets one, falling back to the script's default `Pace` otherwise —
+  exactly like every other delta's chunk (in addition to, not instead of, any time-to-first-byte `Delay` a fault
+  attempt declares; the two are independent gaps at the same point in the sequence). `StreamTerminal.Pace`
+  overrides the default for the terminal chunk. `[DONE]`, not being indexed, has no per-frame override field to
+  carry one — it always uses the script's default `Pace`, applied as one more `sleep` after the loop over
+  `plan.Chunks` completes normally, not through `plan.PaceOf(i)`.
 
 ### 4.4 Faults that suppress the stream
 
@@ -1093,6 +1143,16 @@ type StreamOutcome struct {
 	ChunksSent int         `json:"chunks_sent"`
 }
 ```
+
+**`Terminal`/`TerminalIndex` mark the closing frame, not the presence of usage.** Every stream this design
+produces has exactly one terminal chunk — `StreamTerminal` tunes what it carries, it does not make it optional
+— so `TerminalIndex` is always `chunk_count - 1` for a fully-scripted `GrammarDelta` or `GrammarTyped` stream;
+the `-1` case is reserved for a future grammar this document does not define, where no chunk is ever marked
+`SSEEvent.Terminal`. `StreamTerminal.OmitUsage` removes the `usage` key from that frame's JSON payload —
+`Stream.Usage`/`StreamOutcome.Usage` are then `nil` and `SSEEvent.Terminal` is still `true` on that same frame,
+because the frame is still the one carrying `finish_reason` and the full `message`; omitting usage does not
+move which chunk is terminal. `AssertStreamUsage` on an `omit_usage` scenario therefore asserts `nil` the same
+way it would assert any other declared shape — it does not need `TerminalIndex` to change meaning to do it.
 
 `Outcome` gains `Stream *StreamOutcome json:"stream,omitempty"`, nil for every non-streaming request, so no existing
 journal consumer sees a changed shape.
@@ -1240,6 +1300,14 @@ The same request at the same call index in the same lane produces the same bytes
 design already establishes — a *different* call index deliberately produces different identifiers, so chunk `id`
 fields advance across calls the way a real vendor's do.
 
+**`created` is held CONSTANT across every chunk of one stream, not moving the way the vendor's own example shows**
+(§7, A3): the value is `time.base`, simulator-chosen — a byte-stable golden needs a constant, and §6.2 already
+forbids asserting on wall-clock-shaped fields, so pinning `created` at a fixed, injected value rather than a moving
+one is the only choice consistent with the rest of this section. **`search_results` rides on every chunk in full
+mode**, not only the terminal one (§7, A3): the vendor states they appear "multiple times during stream" without
+saying which, so every-chunk is the deterministic reading, and it stays byte-stable because the array is rendered
+once from the turn's projected `search_results` field and repeated verbatim, never re-derived per chunk.
+
 Framing is fixed by `EncodeSSE`: optional `event:` line, one `data:` line per line of payload, one blank line. Payloads
 are compact JSON and contain no newline, so in practice every frame is exactly two or three lines.
 
@@ -1248,9 +1316,10 @@ are compact JSON and contain no newline, so in practice every frame is exactly t
 Chunked transfer encoding means the **TCP read boundaries a client observes are not deterministic**. The probe in §1
 shows an 18-byte body arriving as `"data: a\n"` then `"\ndata: b\n\n"` — one frame split across two reads, purely from
 segmentation. A golden taken over `read()` boundaries will flake. Goldens are taken over parsed frames, per §5.4's
-`AssertGoldenSSE`. `contracts/perplexity/README.md` does not record this rule today — its SSE coverage is the
-request field, the `EventType` enum and a non-goal note, nothing about read-boundary non-determinism or goldens —
-so writing it there is a Phase 5 obligation this design creates, not a rule already in place to be pointed at.
+`AssertGoldenSSE`. `contracts/perplexity/README.md` does not record this rule today — its "Streaming (SSE)"
+section (verified 2026-08-15) covers the frame envelope, the `stream_mode` grammars and the `EventType` enum,
+but nothing about read-boundary non-determinism or goldens — so writing it there is still a Phase 5 obligation
+this design creates, not a rule already in place to be pointed at.
 
 ### 6.3 Pacing without wall-clock dependence
 
@@ -1271,65 +1340,142 @@ Pacing is deterministic in the only sense that is achievable and the only sense 
 
 ## 7. The two SSE grammars
 
-### Open design deltas from the verified contract (added 2026-08-15)
+### Resolved 2026-08-15
 
-`contracts/perplexity/README.md`'s "Streaming (SSE)" section — §10 step 1, done 2026-08-15 — forces the
-following changes on §2/§3/§9 before Phase 5's unit 1. This is a list of what must change, each with the
-vendor line that forces it; it is not itself the change. That is a small design amendment with its own
-adversarial review, which the next unit is.
+`contracts/perplexity/README.md`'s "Streaming (SSE)" section — §10 step 1, done 2026-08-15 — forced five
+changes on §2/§3/§9. Each is resolved below: the vendor line that forced it, the decision (A1–A5, taken by the
+orchestrator), and the reason.
 
-- **`stream_mode` must select between two frame sequences, not one.** Today's §2/§3 assume a single sequence
-  per turn (role chunk, deltas, one terminal chunk, `[DONE]`). The vendor line: "Full Mode: Single type
+- **`stream_mode` selects between two frame sequences; unit 1 builds only one.** Vendor: "Full Mode: Single type
   (`chat.completion.chunk`)" versus "Concise Mode: Multiple types for different stages"
-  (`sonar/pro-search/stream-mode.md`). A scenario's existing `stream_mode` request field (already in the Sonar
-  request table) has to steer which sequence `renderSonarStream` builds; nothing in `StreamScript` names it
-  today.
-- **Concise mode's reasoning frames have no representation in `StreamScript`/`StreamDelta`.** The vendor line:
-  "`chat.reasoning`: Streamed during the reasoning stage, containing real-time reasoning steps and search
-  operations" (`sonar/pro-search/stream-mode.md`). `StreamDelta` today is text-only; a `chat.reasoning` /
-  `chat.reasoning.done` pair is not a content delta and needs its own scenario vocabulary or an explicit
-  decision to leave concise mode unscripted in the initial release. `chat.reasoning.done` also carries `usage`,
-  `search_results` and `images` (verified against the page's raw frame example, reproduced in
-  `contracts/perplexity/README.md`), not only `chat.completion.done` — a renderer that only ever emits those
-  fields on the terminal frame will not match the vendor's concise sequence.
-- **`usage` placement is confirmed for concise mode, not for full mode, and §10's "one terminal chunk" choice
-  cannot yet claim vendor backing for the mode §2's example scenario actually renders.** The vendor line: "Cost
-  information is only available in the `chat.completion.done` chunk" (`sonar/pro-search/stream-mode.md`) — for
-  `concise`. No fetched page states where `usage` lands in `full` mode, which is the mode §2's example and §9's
-  frame-count formula assume. §10's "simulator-chosen" placement must be pinned explicitly to `full` mode
-  rather than presented as settled for the surface as a whole.
-- **`[DONE]` is unstated for the Responses/Agent surface, not contradicted.** A prior pass of the contract cited
-  "A successful stream ends with `data: [DONE]`" from `gateway-responses-post.md` as describing the
-  Responses/Agent surface; that page in fact documents `POST /router/v1/responses`, Perplexity's separate,
-  unsimulated Router API. Corrected 2026-08-15: no Agent-API page and no occurrence in `openapi.json` (0 hits)
-  states a `[DONE]` sentinel for `/v1/agent`. The bullet below stating "`[DONE]` sentinel is a chat-completions
-  concept only" therefore remains simulator-chosen, exactly as this document already said, with the vendor
-  question now recorded as unstated rather than open-and-contradicted. `StreamTerminal.OmitDone`'s
-  no-effect-on-`GrammarTyped` rule can stay as written on that basis.
-- **Whether `GrammarTyped` frames carry a named `event:` line at all is unpinned.** One fetch of the OpenAPI
-  document reported no mention of `event:` line formatting for the Responses/Agent streaming schema; the vendor
-  pages describe discrimination by a `type` field inside the JSON payload instead. `EncodeSSE`'s
-  `SSEEvent.Name` mechanism for `GrammarTyped` is simulator-chosen, not contract-verified, until this is
-  settled — possibly by a captured live response, per §10 step 3.
+  (`sonar/pro-search/stream-mode.md`). **A1 —** unit 1 ships `GrammarDelta` in `stream_mode: full` only, the
+  vendor default and therefore what a client that sends no `stream_mode` gets. Concise mode is a later unit:
+  full mode is one object type, while concise adds four object types and a reasoning-stage vocabulary the
+  scenario grammar does not have, and deserves to be designed once, from the verbatim frames, not squeezed into
+  unit 1.
+- **Concise mode's reasoning frames have no representation in `StreamScript`/`StreamDelta`.** Vendor:
+  `chat.reasoning.done` carries `usage`, `search_results` and `images` on **both** done-frames, a shape
+  `StreamDelta` — text-only today — cannot express (`sonar/pro-search/stream-mode.md`). **A1, continued —**
+  left unscripted for unit 1, for the same reason as above; the concise unit adds its own vocabulary rather
+  than bending this one's.
+- **A `stream_mode: concise` request that also sets `stream: true`, against an entry whose policy is `stream`**
+  — the only combination where anything actually streams for the mismatch to apply to; a `stream_mode: concise`
+  request that does not itself ask to stream never reaches this at all, because nothing streams for it to
+  diverge from. **A2 —** served the full-mode sequence, and a WARNING is journaled:
+  `perplexity.stream_mode.concise.unscripted` (§9). The request is valid — the enum passes — and the simulator
+  can only produce one grammar today; serving-plus-warning is exactly how `stream: true` itself has been
+  handled since v0.1.0 (`perplexity.stream.unimplemented`, warn + JSON body): the consumer's test still runs,
+  the divergence is visible in the journal, and `validation.promote` makes it fail for a suite that must not
+  accept it. Rejecting with a 422 would invent a vendor error for a request the vendor accepts.
+  `contracts/perplexity/README.md`'s "What Servicesim simulates" section is updated alongside this amendment to
+  say so explicitly: streaming is not simulated in the shipped build today, and once unit 1 ships,
+  `stream_mode: concise` will not be either — a concise request against a streaming entry gets the full-mode
+  transcript and this warning, not rejection and not the concise sequence. `warn`/`reject` policy behaviour is
+  unaffected — this is a policy-`stream` matter only.
+- **`usage` placement is confirmed for concise mode, not for `full` — the mode unit 1 actually renders.**
+  Vendor: "Cost information is only available in the `chat.completion.done` chunk," stated for `concise`
+  (`sonar/pro-search/stream-mode.md`); no fetched page states `full`-mode placement. **A3 —** pinned
+  terminal-only for `full` mode: one terminal chunk carries `finish_reason`, the aggregated `message`, `usage`
+  (with `cost`) and `search_results` together, simulator-chosen and correctable from a captured live response
+  per §10 step 3. The full frame sequence this produces, and which parts of it are vendor-pinned versus
+  simulator-chosen, is below. For a turn with N scripted deltas the sequence is **N chunks, then one terminal
+  chunk, then `data: [DONE]` — N + 1 chunks in total** (`[DONE]` is a sentinel, not a chunk; §9 re-derives
+  `after_chunk`'s bound from this count).
+- **`[DONE]` on the Responses/Agent surface, and whether `GrammarTyped` carries a named `event:` line, are both
+  unstated by the vendor, not contradicted** — the router-page misattribution that once made the first look
+  contradicted is withdrawn (§10, `contracts/perplexity/README.md`). **A4 —** `[DONE]` stays a chat-completions
+  concept; `GrammarTyped` emits none — the existing simulator choice stands, since delta 4 resolved as unstated
+  rather than as a reason to change it. `GrammarTyped` frames do carry an `event: <type>` line: unpinned by
+  Perplexity, but the OpenAI Responses streaming dialect the Agent API declares compatible with does; recorded
+  as simulator-chosen, correctable from a captured live response (§10 step 3). `GrammarTyped` is unit 2, after
+  unit 1.
 
-They are genuinely different and both are in scope, because the adopter's client uses the first and their migration
-target uses the second.
+Nothing else in this section is a sixth open item: **A5 —** §2's scenario vocabulary is unchanged for unit 1 —
+`when_requested: stream`, `deltas:`, the terminal frame's `usage`/`cost`/`search_results` sourced from the
+turn's existing projection fields exactly as the non-streaming body's are, and `StreamTerminal.OmitDone` as
+designed. Concise mode's `chat.reasoning`/`chat.reasoning.done` get their own vocabulary in the concise unit,
+additive to version 1 under §8's test — not a gap unit 1 needs to close.
 
-**Chat completions (`GrammarDelta`)** — `POST /chat/completions`, `POST /v1/sonar`, `POST /v1/chat/completions`
-(`NameSonar`'s `SonarRoutes()`, all three spellings). Unnamed frames; the payload is a
-`chat.completion.chunk` object; `usage` and `usage.cost` ride on the terminal chunk; the sequence closes with the bare
-token `[DONE]`.
+The two grammars, `GrammarDelta` and `GrammarTyped`, are genuinely different and both are in scope, because the
+adopter's client uses the first and their migration target uses the second.
+
+**Chat completions (`GrammarDelta`), `stream_mode: full`** — `POST /chat/completions`, `POST /v1/sonar`,
+`POST /v1/chat/completions` (`NameSonar`'s `SonarRoutes()`, all three spellings). Unnamed frames; the payload is
+a `chat.completion.chunk` object. **For a turn with N scripted deltas: N chunks, then one terminal chunk, then
+the bare token `data: [DONE]` — N + 1 chunks in total** (`[DONE]` is a sentinel, not a chunk).
+
+Every one of the N chunks carries: `object: "chat.completion.chunk"` (vendor-pinned, by name); a constant `id`,
+derived per §6.1 (vendor-pinned as a `chat.completion.chunk` field; that it stays constant across the stream's
+chunks in `full` mode is simulator-chosen, but it agrees with, rather than contradicts, the vendor's own
+`concise`-mode example: the three chunks sharing `id: "cfa38f9d-..."` keep that `id` fixed while `created`
+changes under them, §10 — it is `created`, not `id`, the vendor's own example moves); `model` echoed
+from the request (vendor-pinned); `created` held CONSTANT across the whole stream at `time.base`, unlike that
+same `concise` example (simulator-chosen, §6.1 — a byte-stable golden needs a constant, and §6.2 already
+forbids asserting on wall-clock-shaped fields, so this is the one field where the design deliberately departs
+from what the vendor's own example shows rather than merely going beyond it); one `choices[0]` with `index: 0`
+(vendor-pinned); `delta: {role: "assistant", content: <this chunk's piece>}` together with `message: {role:
+"assistant", content: <the aggregate through this piece>}` (the vendor states full mode aggregates server-side
+and includes `choices.message`; the exact field shape is taken from the `concise`-mode `chat.completion.chunk`
+example, marked as an inference in `contracts/perplexity/README.md`); `finish_reason: null` (inferred from that
+same `concise`-mode example, which shows `null` there; unstated for `full` mode by any fetched page per the
+contract's NOT-stated table, so this is simulator-chosen for `full` mode specifically, not vendor-pinned); and
+`search_results` on every chunk (simulator-chosen — the vendor states they appear "multiple times during
+stream" in full mode without saying which, and the key is omitted, not emitted empty, on a turn that projects
+none, exactly as the non-streaming body's `renderSonarResults` already omits it). No `citations`: they appear
+in no fetched vendor frame, at any scope.
+
+Two of the labels above — `index: 0` and `model` echoed — rest on the same `concise`-mode examples as
+`finish_reason` does, and the contract's prose does not confirm either one for `full` mode specifically either.
+They stay labelled vendor-pinned rather than downgraded alongside `finish_reason`, because they are structural
+properties of a single-choice chat-completions payload — one request, one model, one `choices` slot — that do
+not plausibly vary by `stream_mode`, unlike `finish_reason`, whose *value* depends on completion state and is
+exactly the kind of field a mode split could plausibly change. Not a contradiction either way, only a lower
+confidence than the other vendor-pinned fields in this list, worth naming rather than leaving implicit.
+
+Field values otherwise follow the same rules `renderSonar` already applies to the non-streaming body, not a
+separate set invented for the stream: `id` is `p.CompletionID` when the turn sets one, else the same
+`ids.UUIDv5` derivation (§6.1); `model` is `firstNonEmpty(p.Model, requestModel, Models[0])`; the terminal
+chunk's `finish_reason` is `p.FinishReason` when the turn sets one, else `"stop"` — so a turn that scripts
+`finish_reason: length` gets `length` on the terminal chunk, not a hardcoded `"stop"`. `created` is the one
+field that does **not** follow the non-streaming rule (`p.Created` when non-zero, else `BaseTime().Unix()`): it
+is pinned CONSTANT at `time.base` for every chunk regardless of `p.Created`, for the reason given above. A
+scenario that pins `completion_id`/`model`/`finish_reason` and is served both ways therefore gets a stream and
+a JSON body that agree on every field except `created`.
+
+The terminal chunk carries: `delta: {role: "assistant", content: ""}`; the full aggregated `message`;
+`finish_reason: "stop"` (or `p.FinishReason`, per the rule above); `usage` (with `cost`) — placement is **not**
+stated for `full` mode by any fetched page and is pinned here as terminal-only, simulator-chosen, correctable
+from a captured live response per §10 step 3; `search_results`; and, when the turn projects them, `images` and
+`related_questions`, plus `extra_fields` merged onto the terminal chunk's payload exactly as `wire.Render`
+merges them onto the non-streaming body. These three are terminal-only, mirroring where `usage` lands, not
+scripted onto every chunk: they are properties of the completed turn, not of an individual delta, and the
+`extra-fields` scenario's consumer-tolerance purpose (CLAUDE.md rule 5) is exercised by any one frame carrying
+the unknown key — repeating it on N further frames buys nothing and only makes the golden noisier.
+
+`data: [DONE]` follows — vendor-pinned for `concise` mode by the raw code sample in
+`contracts/perplexity/README.md`, resting for `full` mode only on the declared OpenAI compatibility, and
+recorded as such rather than as a direct Sonar statement.
 
 ```text
-data: {"id":"...","object":"chat.completion.chunk","created":1767225600,"model":"sonar-deep-research","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+data: {"id":"...","object":"chat.completion.chunk","created":1767225600,"model":"sonar-deep-research","choices":[{"index":0,"delta":{"role":"assistant","content":"Report A "},"message":{"role":"assistant","content":"Report A "},"finish_reason":null}],"search_results":[...]}
 
-data: {"id":"...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Report A "},"finish_reason":null}]}
+data: {"id":"...","object":"chat.completion.chunk","created":1767225600,"model":"sonar-deep-research","choices":[{"index":0,"delta":{"role":"assistant","content":"finds "},"message":{"role":"assistant","content":"Report A finds "},"finish_reason":null}],"search_results":[...]}
 
-data: {"id":"...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":19,"completion_tokens":240,"total_tokens":259,"cost":{"total_cost":0.0128}},"search_results":[...]}
+data: {"id":"...","object":"chat.completion.chunk","created":1767225600,"model":"sonar-deep-research","choices":[{"index":0,"delta":{"role":"assistant","content":"that X."},"message":{"role":"assistant","content":"Report A finds that X."},"finish_reason":null}],"search_results":[...]}
+
+data: {"id":"...","object":"chat.completion.chunk","created":1767225600,"model":"sonar-deep-research","choices":[{"index":0,"delta":{"role":"assistant","content":""},"message":{"role":"assistant","content":"Report A finds that X."},"finish_reason":"stop"}],"usage":{"prompt_tokens":19,"completion_tokens":240,"total_tokens":259,"reasoning_tokens":5120,"cost":{"input_tokens_cost":0.0002,"output_tokens_cost":0.0024,"reasoning_tokens_cost":0.0102,"total_cost":0.0128}},"search_results":[...]}
 
 data: [DONE]
 
 ```
+
+`search_results` is elided above (`[...]`) rather than spelled out as `{"source":"source-a"}`, which is the
+scenario's projection shorthand (`PerplexityResult`), not the wire shape `EncodeSSE` actually renders: the same
+`SearchResult` object (`title`/`url`/`snippet`/`date`/`last_updated`) the non-streaming body emits from that
+`source:` reference, via the same `renderSonarResults` machinery §6.1 already says the stream inherits
+verbatim. Eliding it here, rather than writing out one hand-picked set of wire values, keeps this text example
+from being read as its own contract for a field this document does not otherwise pin the shape of; the golden
+fixture `perplexity-sonar-stream.sse` (§10) is where the real wire shape gets checked byte-for-byte.
 
 **Vendor-verified 2026-08-15** (`contracts/perplexity/README.md`'s "Streaming (SSE)" section): the vendor pins
 unnamed `data:` frames terminated by `data: [DONE]` (confirmed concise-mode-specific by example; full mode's
@@ -1339,9 +1485,9 @@ types and that `usage`/`search_results`/`images` ride on **both** `chat.reasonin
 chunk with `finish_reason` in `full` mode, the exact `id`/`created` behaviour per chunk in `full` mode (the
 vendor's own `concise`-mode example shows `created` changing per chunk while `id` stays constant — a
 counterexample to the OpenAI-compatibility "repeat unchanged" pattern, not a confirmation of it), or
-chunk-to-token granularity; those remain simulator-chosen. The frame example above assumes `full`-mode-shaped
-single-type chunks, which is not the mode the vendor's usage-placement statement above was verified for — the
-first open design delta above exists to resolve that.
+chunk-to-token granularity; those remain simulator-chosen. The frame example above renders `full`-mode-shaped
+chunks — the mode the vendor's usage-placement statement above was not verified for — pinned instead by A3 in
+"Resolved 2026-08-15" as terminal-only, simulator-chosen and correctable per §10 step 3.
 
 **Responses / Agent (`GrammarTyped`)** — `POST /v1/agent`, `POST /v1/responses`, `POST /responses`
 (`NameAgent`'s `AgentRoutes()`, all three spellings). Every frame carries an `event:` line
@@ -1374,7 +1520,7 @@ grammar: no Agent-API page and no occurrence in `openapi.json` (0 hits) states a
 `/v1/agent`; the "ends with `data: [DONE]`" line previously attributed to `gateway-responses-post.md` describes
 `POST /router/v1/responses`, Perplexity's separate, unsimulated Router API, and that attribution is withdrawn.
 The "`[DONE]` sentinel is a chat-completions concept only" bullet below remains simulator-chosen on that
-corrected basis (see the fourth open design delta above), not vendor-pinned either way.
+corrected basis (see A4 in "Resolved 2026-08-15" above), not vendor-pinned either way.
 
 **One mechanism serves both, and landing `GrammarTyped` is what gives the Agent entry a `stream:` key at all.**
 `PerplexityAgentProjection` carries no `Stream` field today — the Agent surface warns `CodeAgentStreamUnsupported`
@@ -1387,7 +1533,10 @@ the non-streaming path already makes: `provider` owns transport,
 `Stream`, `executeStream`, all three fault kinds, `StreamOutcome`, the append-before-first-byte rule, every
 determinism property — is grammar-blind. The grammars differ in exactly two places, both inside a provider package:
 
-1. Whether `SSEEvent.Name` is set. `GrammarDelta` leaves it empty and `EncodeSSE` omits the `event:` line.
+1. Whether `SSEEvent.Name` is set. `GrammarDelta` leaves it empty and `EncodeSSE` omits the `event:` line;
+   `GrammarTyped` sets it to `event: <type>` — unpinned by Perplexity, but the OpenAI Responses streaming
+   dialect the Agent API declares compatible with does, recorded as simulator-chosen and correctable from a
+   captured live response (§10 step 3; "Resolved 2026-08-15", A4).
 2. The payload renderer, and where usage lives inside it.
 
 Two consequences worth stating because they are the places a shared mechanism could have gone wrong:
@@ -1483,6 +1632,7 @@ All are load-time unless marked, so a bad streaming fixture fails at readiness r
 | `scenario.fault.stream_mismatch` | error | a `stream_*` kind on an **entry whose policy is not `stream`**, or `truncate_body` on an **entry whose policy is `stream`** |
 | `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` is **not less than** the smallest chunk count any of the entry's turns will produce |
 | `scenario.stream.abort_unreachable` | error (per request) | a claimed attempt cannot apply to this exchange's actual transport — a `stream_*` kind claimed by a request that will not stream (§4.2; the entry's policy is `stream` but this particular request did not ask for one), or the load-time `stream_mismatch` case reached at request time by a hand-built entry that skipped validation |
+| `perplexity.stream_mode.concise.unscripted` | warning (per request) | a request carries `stream_mode: concise` AND will actually stream (`resp.Stream != nil` — i.e. `stream: true`, on an entry whose policy is `stream`); unit 1 renders only the full-mode sequence, so the full-mode transcript is served anyway. A `stream_mode: concise` request that does not itself set `stream: true` never reaches this — nothing streams for it to diverge from (§7, A2) |
 | `perplexity.stream.done_ignored` | warning | `terminal.omit_done` declared on the typed grammar, which has no sentinel |
 
 ### `stream_mismatch` keys on the effective policy, not key presence
@@ -1570,13 +1720,15 @@ methods (`SonarValidator`, `AgentValidator`). No turn under one entry can answer
 "the grammar is fixed by the provider entry" is not an approximation to be caught by a load-time coherence check —
 it is the route table.
 
-**The frame count, stated precisely because two sections of this document gave two different counts for the same
-sequence:** `1` (role) `+ len(deltas)` (content) `+ 1` (the terminal chunk, carrying `finish_reason` and `usage`
-together on `GrammarDelta`) `+ terminal frames`, where `terminal frames` is grammar-dependent, not a constant:
-`GrammarDelta` adds `1` unless `terminal.omit_done` is set, in which case `0`; `GrammarTyped` never adds one,
-because `[DONE]` is a chat-completions concept only and `OmitDone` has no effect there (§7). Combining
-`finish_reason` and `usage` on one chunk rather than two is a frame-level choice §10 records as simulator-chosen,
-not contract-verified — the count above is only as pinned as that choice is.
+**The frame count, resolved 2026-08-15 (§7, A3) after two sections of this document gave two different counts for
+the same sequence.** For a turn with N scripted deltas, `GrammarDelta`'s full-mode sequence is **N chunks + 1
+terminal chunk = N + 1 chunks** (`chunk_count`, §5.1 above) — there is no longer a separate role-only opening chunk;
+role and content ride together on every one of the N chunks (§7, A3) — followed by `+ terminal frames`, which is
+grammar-dependent and not itself a chunk: `GrammarDelta` writes `data: [DONE]` unless `terminal.omit_done` is
+set, in which case none; `GrammarTyped` never writes one, because `[DONE]` is a chat-completions concept only and
+`OmitDone` has no effect there (§7). Combining `finish_reason` and `usage` on the terminal chunk rather than two
+separate chunks is a frame-level choice §10 records as simulator-chosen for `full` mode specifically, not
+contract-verified — the count above is only as pinned as that choice is.
 
 **It is checked against the smallest count across the entry's turns, and that follows from the plan being per
 route.** `TurnFault` supplies one plan for the whole route, so a single `after_chunk: 4` may fire on whichever turn
@@ -1596,10 +1748,11 @@ in `[0, len(plan.Chunks))`; an `after_chunk` equal to the chunk count matches no
 validation exists to prevent, reached through an off-by-one instead of a missing check. The same bound applies to
 `stream_stall`: a stall "before chunk N" with `N == chunk_count` has no chunk to precede and never fires either: a
 stall wanting to pause after every scripted chunk uses `StreamTerminal.Pace`, not `after_chunk` pointed past the end.
-The upper end of the valid range (`after_chunk == chunk_count - 1`) is not a special case to reject — aborting on the
-final frame (which may be `[DONE]` itself) is a legitimate, useful script: everything the client needs to reconstruct
-the answer arrived, but the connection never confirms completion, which is its own edge a consumer's client should
-survive.
+The upper end of the valid range (`after_chunk == chunk_count - 1`) is not a special case to reject — aborting on
+the final indexed chunk (the terminal chunk itself, carrying `finish_reason` and `usage`; `[DONE]` is a sentinel
+outside the indexed range, per A3, and is never a valid `after_chunk` target) is a legitimate, useful script:
+every scripted delta arrived, but the response that confirms completion — and the `[DONE]` sentinel after it —
+never does, which is its own edge a consumer's client should survive.
 
 ### What an entry-level policy makes impossible, and what it does not
 
@@ -1623,10 +1776,12 @@ cannot rule out by construction, only by reporting it every time it happens.
 ## 10. Contract fidelity
 
 **This is a Phase 5 prerequisite, in this order, before unit 1 — not background reading.** The rest of this document
-already depends on one frame-level choice this section has not pinned until now: §2, §7 and §9's frame-count formula
-all assume `finish_reason` and `usage` ride on the same terminal chunk on `GrammarDelta`, which this document adopts
-as the simulator's choice below. Everything downstream of that choice — the frame count, `after_chunk`'s valid
-range, every SSE golden — is only as verified as this section makes it.
+depends on one frame-level choice this section pins: §2, §7 and §9's frame-count formula all assume `finish_reason`
+and `usage` ride on the same terminal chunk on `GrammarDelta` — pinned specifically for **`full`** mode, the only
+mode unit 1 renders, by "Resolved 2026-08-15" (§7, A3), since the vendor confirms this placement for `concise` mode
+only. Everything downstream of that choice — the frame count, `after_chunk`'s valid range, every SSE golden — is
+only as verified as this section makes it, and the choice itself remains simulator-chosen, not contract-verified,
+until corrected from a captured live response (step 3 below).
 
 1. ~~**Regenerate the Perplexity SSE section from `https://docs.perplexity.ai/openapi.json`.**~~ **DONE
    2026-08-15, corrected the same day.** Recorded in `contracts/perplexity/README.md`'s "Streaming (SSE)"
@@ -1636,7 +1791,7 @@ range, every SSE golden — is only as verified as this section makes it.
    separate, unsimulated Router API rather than the Sonar/Agent SDK aliases they were assumed to be, and every
    claim sourced from them has been withdrawn or re-attributed. The `ResponseStreamEvent` schema, initially
    recorded as unretrievable, was confirmed present in `openapi.json` and is now recorded directly from it. §7
-   below carries the open deltas that section's findings force.
+   above records the resolution that section's findings forced.
 2. ~~Read the adopter's `src/pkg/agent/perplexity.go` as evidence of the real wire shape.~~ **STRUCK 2026-08-15
    — VOID under the authority rule:** vendor documentation decides every wire contract; the adopter's client
    code is not evidence, however convenient an authority it is "already in hand." Reading it here would let a
@@ -1667,8 +1822,8 @@ specifically, so this document's own choice that `usage` rides on the same chunk
 simulator-chosen and provisional for that mode; and whether `GrammarTyped` frames carry a literal `event: <type>`
 SSE line at all, as opposed to an anonymous `data:`-only frame whose payload names its own type — `openapi.json`
 has 0 occurrences of `event:` line formatting for `ResponseStreamEvent`. See `contracts/perplexity/README.md`'s
-"What is NOT stated by the vendor" table for the complete list, and §7 below for what each of these forces on this
-design before unit 1.
+"What is NOT stated by the vendor" table for the complete list, and §7 above ("Resolved 2026-08-15") for the
+decision each of these forced before unit 1.
 
 Golden fixtures to add under `contracts/perplexity/`: `perplexity-sonar-stream.sse`,
 `perplexity-sonar-stream-disconnect.sse`, `perplexity-agent-stream.sse`, each with a provenance entry naming the

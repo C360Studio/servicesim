@@ -544,8 +544,8 @@ schema carries "Monotonically increasing sequence number for event ordering" —
 above. **`agent-post.md` does not state that a frame also carries a named `event: <type>` SSE line**, as opposed
 to an anonymous `data:`-only frame whose JSON payload carries `type`; a full-text search of `openapi.json` finds
 0 occurrences of `event:` line formatting for this schema. `docs/design/streaming.md` §7's claim that every
-frame carries an `event:` line is therefore simulator-chosen, not vendor-pinned — see that document's "Open
-design deltas" block.
+frame carries an `event:` line is therefore simulator-chosen, not vendor-pinned — see that document's "Resolved
+2026-08-15" block (A4).
 
 **`response.completed` payload:** `output-control.md` and `agent-post.md` agree it carries the response object
 inline as `event.response`, whose schema description is "Response event. Contains the full or partial response
@@ -625,7 +625,11 @@ Deliberately **not** simulated in the initial release, because no consumer parse
   non-streaming body plus a `perplexity.stream.unimplemented` warning. Since **2026-08-15** a scenario can
   set `providers.perplexity.stream: reject` to turn that warning into a `422` naming `body.stream`
   instead — which is what a consumer whose primary path always streams should do, so its fixtures are not
-  recorded against a body the real API would never have sent.
+  recorded against a body the real API would never have sent. `docs/design/streaming.md` (Phase 5, not yet
+  shipped) plans unit 1 to render only `stream_mode: full`; once it ships, a `stream_mode: concise` request
+  against a scenario that streams will be served the full-mode transcript and a
+  `perplexity.stream_mode.concise.unscripted` warning, not rejected and not the concise-mode sequence —
+  concise mode itself remains unsimulated until a later unit.
 - The `sandbox_results`, `mcp_list_tools`, `mcp_call`, `function_call`, `finance_results`,
   `people_search_results`, `fetch_url_results` and `tool_search_output` output-item types.
 - Background mode and the `GET /v1/agent/{id}` polling lifecycle, the files endpoints, and
