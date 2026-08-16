@@ -1,0 +1,218 @@
+# A rising-latency ladder, a short outage, then recovery — six attempts per
+# route, then plain success forever after.
+#
+# What a consumer proves: calls 1-4 exercise a latency budget or circuit
+# breaker against successively worse response times (50ms, 100ms, 200ms,
+# 400ms — each still a plain 200); calls 5-6 exercise a retry policy against
+# two consecutive 503s carrying `Retry-After: 1`; call 7 onward proves the
+# retry is counted rather than restarting the plan, the same "counted, not
+# reset" property `rate-limited` pins for a single 429.
+#
+# Timing mode matters here more than for any other built-in. The
+# ladder is REAL time under the default `DelayReal`: four calls in sequence
+# cost roughly 50 + 100 + 200 + 400 = 750ms of genuine wall clock, which is
+# why the built-in's own live test keeps that number in mind rather than
+# treating it as free. Under `testkit.WithSkippedDelays()` (`DelaySkip`) nothing
+# is actually slept — the ladder is free — but `outcome.delay_ms` still
+# records the requested values (50, 100, 200, 400) on each entry, so a test
+# that only asserts "the scenario asked for this ladder" without paying for it
+# can use `DelaySkip`; a test that asserts a client's own latency budget fired
+# needs the real delay and must not skip it, for the same reason `timeout`
+# must not.
+#
+# Coverage: one plan per route, exactly as `rate-limited` and `oversized-body`
+# declare theirs — Exa `/search`, `/answer`, `/contents`, `/findSimilar`,
+# Tavily `/search`, `/extract`, Perplexity Sonar and Agent. The two async
+# surfaces carry plain happy-shaped turns and no fault attempt, on the same
+# terms `timeout`'s header comment explains: a poll snapshot's timing is the
+# client's own retry loop's concern, and `create.fault` is where a
+# create-route variant would go, if anyone needs one.
+version: 1
+name: brownout
+description: >-
+  Every synchronous route serves a rising-latency ladder (50ms, 100ms, 200ms,
+  400ms), then two 503s carrying Retry-After, then recovers — a latency
+  budget, a circuit breaker and a retry policy, all exercised from one
+  scenario.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+providers:
+
+  exa:
+    fault:
+      attempts:
+        - delay: 50ms
+        - delay: 100ms
+        - delay: 200ms
+        - delay: 400ms
+        - status: 503
+          retry_after: 1
+          error: Service temporarily unavailable.
+        - status: 503
+          retry_after: 1
+          error: Service temporarily unavailable.
+      after: success
+    results:
+      - source: source-a
+    # /answer, /contents and /findSimilar are separate routes with their own
+    # attempt budgets, so each needs its own plan; a single block-level fault
+    # would leave them healthy. /contents needs no results of its own — it
+    # resolves requested URLs against the corpus — but it does need the plan.
+    answer:
+      fault:
+        attempts:
+          - delay: 50ms
+          - delay: 100ms
+          - delay: 200ms
+          - delay: 400ms
+          - status: 503
+            retry_after: 1
+            error: Service temporarily unavailable.
+          - status: 503
+            retry_after: 1
+            error: Service temporarily unavailable.
+        after: success
+      answer: Report A states the finding.
+      citations:
+        - source-a
+    contents:
+      fault:
+        attempts:
+          - delay: 50ms
+          - delay: 100ms
+          - delay: 200ms
+          - delay: 400ms
+          - status: 503
+            retry_after: 1
+            error: Service temporarily unavailable.
+          - status: 503
+            retry_after: 1
+            error: Service temporarily unavailable.
+        after: success
+    find_similar:
+      fault:
+        attempts:
+          - delay: 50ms
+          - delay: 100ms
+          - delay: 200ms
+          - delay: 400ms
+          - status: 503
+            retry_after: 1
+            error: Service temporarily unavailable.
+          - status: 503
+            retry_after: 1
+            error: Service temporarily unavailable.
+        after: success
+      results:
+        - source: source-a
+
+  tavily:
+    fault:
+      attempts:
+        - delay: 50ms
+        - delay: 100ms
+        - delay: 200ms
+        - delay: 400ms
+        - status: 503
+          retry_after: 1
+          error: Service temporarily unavailable.
+        - status: 503
+          retry_after: 1
+          error: Service temporarily unavailable.
+      after: success
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+    # /extract is its own route with its own budget, independent of /search's.
+    extract:
+      fault:
+        attempts:
+          - delay: 50ms
+          - delay: 100ms
+          - delay: 200ms
+          - delay: 400ms
+          - status: 503
+            retry_after: 1
+            error: Service temporarily unavailable.
+          - status: 503
+            retry_after: 1
+            error: Service temporarily unavailable.
+        after: success
+
+  perplexity:
+    fault:
+      attempts:
+        - delay: 50ms
+        - delay: 100ms
+        - delay: 200ms
+        - delay: 400ms
+        - status: 503
+          retry_after: 1
+          error: Service temporarily unavailable.
+        - status: 503
+          retry_after: 1
+          error: Service temporarily unavailable.
+      after: success
+    answer: A grounded answer citing Report A.
+    finish_reason: stop
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    fault:
+      attempts:
+        - delay: 50ms
+        - delay: 100ms
+        - delay: 200ms
+        - delay: 400ms
+        - status: 503
+          retry_after: 1
+          error: Service temporarily unavailable.
+        - status: 503
+          retry_after: 1
+          error: Service temporarily unavailable.
+      after: success
+    answer: Report A states the finding.
+    search_results:
+      - source-a
+
+  # Async surfaces: plain happy-shaped turns, no fault attempt — see the
+  # header comment for why.
+  exa_agent_runs:
+    turns:
+      - when: {call_index: 0}
+        respond:
+          status: running
+      - when: {call_index: 1}
+        respond:
+          status: running
+      - respond:
+          status: completed
+          output:
+            text: Report A states the finding.
+          cost_dollars:
+            total: 0.045
+
+  tavily_research:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - when: {call_index: 1}
+        respond: {status: in_progress}
+      - respond:
+          status: completed
+          content: Report A states the finding.
+          sources:
+            - source-a

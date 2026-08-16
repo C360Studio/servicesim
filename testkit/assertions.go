@@ -75,6 +75,28 @@ func AssertSameCredential(tb testing.TB, a, b Entry) {
 	}
 }
 
+// AssertDifferentCredential asserts two requests presented different
+// credentials, by comparing fingerprints rather than values — the mirror of
+// [AssertSameCredential]. Both entries must have presented a credential, on
+// the same terms as that assertion, and fail with the same "cannot compare"
+// shape when one did not. The journal never holds a credential, which is
+// what makes fingerprint comparison the only available one; this is the
+// assertion that proves a client actually rotated to a new credential rather
+// than retried with the one it already had.
+func AssertDifferentCredential(tb testing.TB, a, b Entry) {
+	tb.Helper()
+
+	if !a.Auth.Present || !b.Auth.Present {
+		tb.Errorf("cannot compare credentials: seq %d presented one=%t, seq %d presented one=%t",
+			a.Seq, a.Auth.Present, b.Seq, b.Auth.Present)
+		return
+	}
+	if a.Auth.Fingerprint == b.Auth.Fingerprint {
+		tb.Errorf("seq %d and seq %d presented the same credential (fingerprint %s), want different ones",
+			a.Seq, b.Seq, a.Auth.Fingerprint)
+	}
+}
+
 // AssertNoCredentialLeak scans every journal entry for the given literals and
 // fails if any appears. The scan covers every text-bearing field, not just the
 // two obvious ones: Headers, Body, Query, Path, Outcome.Label, BodyParseError

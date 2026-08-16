@@ -154,6 +154,12 @@ func TestAdapterSendsACorrectExaRequest(t *testing.T) {
 Note what it does *not* assert: that the call returned 200. A simulator will happily return 200 for a request the
 real vendor would reject, so a green status proves nothing. The assertions are on the journal.
 
+For a client that rotates credentials, `testkit.AssertSameCredential(t, a, b)` and
+`testkit.AssertDifferentCredential(t, a, b)` compare two journal entries by credential fingerprint rather than
+value — the journal never holds a credential at all — so a test can prove a retry reused the same key, or that a
+rotation actually switched to a new one, from two entries alone. The `credential-rotation` built-in scripts the
+scenario both exist to test against.
+
 `sim.BaseURLs()` returns the URLs keyed exactly as the environment variables above, so one helper configures your
 client from either a `*testkit.Sim` or a container. `testkit.WithScenarioYAML` keeps a single-purpose fixture inline
 next to the test; `testkit.WithScenarioFile` and `testkit.WithScenario` cover the rest.
@@ -359,7 +365,7 @@ entirely and much later:
 
 ## Built-in protocol scenarios
 
-Sixteen scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
+Twenty scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
 `testkit.WithBuiltin("<name>")`. They cover *protocol* behaviour, which is the same for every consumer;
 product-specific corpora belong in your own repository.
 
@@ -369,9 +375,13 @@ product-specific corpora belong in your own repository.
 | `empty-results` | Zero results in a well-shaped envelope is handled as "no results", not as an error. |
 | `async-failed` | An Exa agent run and a Tavily research task each reach a terminal `failed` status — Exa's poll carries an `error` object with the detail, Tavily's carries none beyond the status itself — so your failure branch handles both shapes rather than mis-parsing either as success. |
 | `async-stuck` | An Exa agent run and a Tavily research task never terminate, so your own poll timeout — not Servicesim — is what ends the loop. |
-| `unauthorized` | A 401 in each vendor's own error envelope is surfaced as an auth failure and is not retried. |
+| `unauthorized` | A 401 in each vendor's own error envelope is surfaced as an auth failure and is not retried — every key is rejected (`mode: reject`), unlike `credential-rotation` below, where refreshing to the one accepted key and retrying once is exactly what must happen. |
 | `rate-limited` | A 429 with `Retry-After`, then success — backoff and retry work, and the retry is counted. |
 | `oversized-body` | Every synchronous route (Exa `/search`, `/answer`, `/contents`, `/findSimilar`; Tavily `/search`, `/extract`; Perplexity Sonar and Agent) has its first response padded past a 1 MiB size-limit ingress gate (`body_bytes: 4194304`), then a clean retry — a fail-closed size gate and its recovery, from one scenario. |
+| `timeout` | Every synchronous route hangs for 30s on its first call, then a clean retry — your own client deadline, not a status code, is what ends the first call. **Do not use `testkit.WithSkippedDelays()` with this scenario**: under `DelaySkip` the 30s is not slept and the "timeout" arrives as an instant 200, and a deadline is only ever observed by bytes not arriving. |
+| `brownout` | Every synchronous route serves a rising-latency ladder (50ms, 100ms, 200ms, 400ms), then two 503s carrying `Retry-After`, then recovers — a latency budget or circuit breaker, a retry policy, and counted recovery, all from one scenario. |
+| `hang-then-abort` | Every synchronous route hangs 700ms then resets before any header arrives, hangs 700ms again then resets mid-body, then serves a clean call — the two abort shapes a mid-flight disconnect takes on the wire today, with the hang itself now visible in `completed_at - arrived_at`. Your client sees both as transport failures (a round trip that never got a header, then a 200 whose body read fails mid-stream) — never as an empty result set — and its retry is counted. Its own deadline must outlast 700ms, or the hang aborts on your side first and this degenerates into `timeout`. |
+| `credential-rotation` | Every provider requires the fixed key `rotated-key-EXAMPLE`; any other credential draws the vendor's own 401. Proves a client actually rotates rather than retries with the key it already had. **Do not combine `expect_key` with a fault plan**: an auth rejection claims no attempt, so a plan written next to `expect_key` fires one call later than its author expects. |
 | `server-error` | A 500 is surfaced as an upstream failure rather than mistaken for an empty result set. |
 | `malformed-json` | A body that is not valid JSON fails cleanly instead of panicking or returning zero values. |
 | `extra-fields` | Unknown additive response fields do not break the decoder — vendors evolve additively. |

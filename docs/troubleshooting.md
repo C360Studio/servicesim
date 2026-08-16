@@ -401,6 +401,31 @@ The other half of this: a request answered by a fault attempt has still consumed
 and `attempts[0]` describe the *same* request, so a turn scripted for `call_index: 0` behind a leading 429 is
 unreachable.
 
+A related trap, specific to combining `auth.expect_key` with a fault plan on the same provider entry: an auth
+rejection claims **no** call index at all (see
+["What claims a call index, and what does not"](scenario-schema.md#what-claims-a-call-index-and-what-does-not)), so
+a plan written next to `expect_key` does not start consuming from the first request a client sends — it starts
+consuming from the first request that actually **authenticates**. Two calls with the wrong key, then the correct
+one, land the plan's first attempt on that third call, not the first. `outcome.attempt_index: -1` on the rejected
+entries is how you tell the two apart in the journal. The `credential-rotation` built-in never combines the two, on
+purpose, and pins this exact behaviour in a regression test.
+
+## My timeout test passes instantly
+
+You called `testkit.WithSkippedDelays()`. It exists for a backoff test that only needs to assert "the scenario
+asked for this delay" without paying for it — under it a delay fault returns immediately and `outcome.delay_ms`
+still records the requested value. A client *deadline*, by contrast, is observed by bytes not arriving: nothing on
+the server side of a real socket can fake that, so `WithSkippedDelays` turns a 30-second hang into an instant 200
+and the "timeout" your test meant to exercise never happens at all.
+
+For a deadline, timeout or cancellation test, leave delays real (the default) and give the scenario attempt a delay
+LONGER than your client's deadline — the `timeout` built-in's 30s, or a `delay: 150ms` of your own against a client
+deadline shorter than that. The client's own context (a short `context.WithTimeout`, or the deadline your adapter
+sets) is what ends the request; the server's sleep is released by that same cancellation, so the test does not
+actually wait out the declared delay. See
+[`provider/clock.go`](../provider/clock.go)'s `DelayMode` doc comment, which is the authority on this, and the
+`timeout` built-in's own header comment for a worked example.
+
 ## The wrong turn answered, or two callers got each other's responses
 
 Turn cursors are per **lane**, and the default lane is one per route. One route serving several concurrent callers

@@ -137,6 +137,44 @@ func TestCredentialAssertions(t *testing.T) {
 	}
 }
 
+// TestAssertDifferentCredential covers the three shapes AssertSameCredential's
+// own test covers: different credentials pass, the same credential fails
+// naming both seqs, and one entry presenting no credential fails with the
+// shared "cannot compare" shape.
+func TestAssertDifferentCredential(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+
+	first := entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "old-key"})
+	rotated := entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "rotated-key"})
+	sameAsFirst := entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "old-key"})
+	noCredential := entryFor(t, sim, `{"query":"report a"}`, nil)
+
+	// Different credentials: passes.
+	testkit.AssertDifferentCredential(t, first, rotated)
+
+	tests := []struct {
+		name    string
+		a, b    testkit.Entry
+		wantMsg string
+	}{
+		{"same credential", first, sameAsFirst, "the same credential"},
+		{"one credential absent", first, noCredential, "cannot compare"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &stubTB{}
+			testkit.AssertDifferentCredential(stub, tc.a, tc.b)
+
+			assert.True(t, stub.Failed())
+			assert.Containsf(t, stub.Message(), fmt.Sprintf("seq %d", tc.a.Seq), "must name the first entry's seq")
+			assert.Containsf(t, stub.Message(), fmt.Sprintf("seq %d", tc.b.Seq), "must name the second entry's seq")
+			assert.Containsf(t, stub.Message(), tc.wantMsg, "must name the distinguishing shape")
+		})
+	}
+}
+
 // TestAssertNoCredentialLeak is the assertion form of the rule that credentials
 // never survive a round trip: the literal is sent in the header, in the body and
 // in the query string, and must appear in none of them.

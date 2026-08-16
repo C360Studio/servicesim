@@ -1,0 +1,153 @@
+# The first call on every synchronous route hangs for 30s and is never
+# answered in time by any reasonable client; a clean retry follows.
+#
+# This proves a consumer's own deadline, not a status code: a client with a
+# real timeout (say 100ms) sends the first request, observes bytes NOT
+# arriving, and its context is cancelled out from under it — the request ends
+# in context.DeadlineExceeded (or your transport's own timeout error), not in
+# any HTTP response at all. The attempt index was claimed by the call the
+# client abandoned, so its retry lands on `after: success` and gets a clean
+# response.
+#
+# TRAP: do not use `testkit.WithSkippedDelays()` with this scenario. Under
+# DelaySkip the 30s delay is not slept at all, so the "timeout" arrives as an
+# instant 200 and the scenario proves nothing — a client deadline is observed
+# by bytes not arriving, and only a real delay produces that. See
+# provider/clock.go's DelayMode doc comment, which is the authority on this.
+#
+# What the journal shows for the abandoned call: `outcome.aborted: true`,
+# `outcome.bytes_written: 0`, `outcome.delay_ms: 30000` (the requested delay,
+# not however long the client actually waited), and a `completed_at` at the
+# instant the server observed the client's own cancellation — which, because
+# the server's sleep is released by that same cancellation, is close to when
+# the client gave up, not 30s after `arrived_at`. The entry is recorded on the
+# server goroutine, strictly after the client has already returned control to
+# the caller (package-design.md §2.2's ordering, unaffected by this being a
+# plain delay rather than an aborting fault kind); read it with
+# `testkit.Sim.AwaitRequests`, never a bare `sim.Requests`.
+#
+# Coverage: one plan per route, exactly as `rate-limited` and `oversized-body`
+# declare theirs — Exa `/search`, `/answer`, `/contents`, `/findSimilar`,
+# Tavily `/search`, `/extract`, Perplexity Sonar and Agent. The two async
+# surfaces — `exa_agent_runs` and `tavily_research` — carry plain
+# happy-shaped turns and no fault attempt at all: a poll snapshot's timing is
+# the client's own retry loop's concern, not a first-call deadline probe, and
+# `create.fault` (a route-level plan on the CREATE route, independent of the
+# poll route's own budget) is where a create-route timeout would go, if
+# anyone needs one — it is not declared here.
+version: 1
+name: timeout
+description: >-
+  Every synchronous route hangs for 30s on its first call, then serves a
+  clean retry, so a consumer's own deadline — not a status code — is what a
+  test against this scenario proves.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+providers:
+
+  exa:
+    fault:
+      attempts:
+        - delay: 30s
+      after: success
+    results:
+      - source: source-a
+    # /answer, /contents and /findSimilar are separate routes with their own
+    # attempt budgets, so each needs its own plan; a single block-level fault
+    # would leave them healthy. /contents needs no results of its own — it
+    # resolves requested URLs against the corpus — but it does need the plan.
+    answer:
+      fault:
+        attempts:
+          - delay: 30s
+        after: success
+      answer: Report A states the finding.
+      citations:
+        - source-a
+    contents:
+      fault:
+        attempts:
+          - delay: 30s
+        after: success
+    find_similar:
+      fault:
+        attempts:
+          - delay: 30s
+        after: success
+      results:
+        - source: source-a
+
+  tavily:
+    fault:
+      attempts:
+        - delay: 30s
+      after: success
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+    # /extract is its own route with its own budget, independent of /search's.
+    extract:
+      fault:
+        attempts:
+          - delay: 30s
+        after: success
+
+  perplexity:
+    fault:
+      attempts:
+        - delay: 30s
+      after: success
+    answer: A grounded answer citing Report A.
+    finish_reason: stop
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    fault:
+      attempts:
+        - delay: 30s
+      after: success
+    answer: Report A states the finding.
+    search_results:
+      - source-a
+
+  # Async surfaces: plain happy-shaped turns, no fault attempt — see the
+  # header comment for why.
+  exa_agent_runs:
+    turns:
+      - when: {call_index: 0}
+        respond:
+          status: running
+      - when: {call_index: 1}
+        respond:
+          status: running
+      - respond:
+          status: completed
+          output:
+            text: Report A states the finding.
+          cost_dollars:
+            total: 0.045
+
+  tavily_research:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - when: {call_index: 1}
+        respond: {status: in_progress}
+      - respond:
+          status: completed
+          content: Report A states the finding.
+          sources:
+            - source-a

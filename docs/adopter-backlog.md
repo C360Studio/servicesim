@@ -16,7 +16,7 @@ Recorded 2026-08-16 (midday), against **v0.3.0**, tagged from `main` at `ae4c8e6
 | 3 — the async job machine | **shipped** in v0.2.0 (A1–A7) |
 | 4 — the remaining synchronous routes | **shipped** in v0.3.0 |
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
-| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`), 2 (`malicious-content`) and 3 (`oversized_body`) done; Phase 7's provenance-date item is already done |
+| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`), 2 (`malicious-content`), 3 (`oversized_body`) and 4 (timeout/brownout/hang-then-abort/credential-rotation built-ins, `AssertDifferentCredential`) done; Phase 7's provenance-date item is already done |
 
 **v0.3.0** is the last tag (2026-08-16): Phase 4's three routes, Phase 5's streaming end to end (four `.sse`
 goldens, the `streaming` built-in, four testkit assertions), honest provenance dates and goldens for the async
@@ -41,11 +41,11 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
 2. **Phase 6 — G-3 depth**, on branch `phase-6` (PR #2). Highest value per effort: most primitives exist. Unit 1
    (the journal `CompletedAt` defect: stamped before the delay on aborting faults, so `observed_ms` read 0 on a
    hang) is done; unit 2 (the generic `malicious-content` built-in) is done; unit 3 (the `oversized_body` fault
-   kind and the `oversized-body` built-in) is done; next is the timeout/brownout/hang-then-abort/rotation built-ins
-   with `AssertDifferentCredential`, delay-after-headers, the observed-pacing assertion per D5, and a closing docs
-   sweep for onboarding and correctness (owner, 2026-08-16) that also carries the D9 framing question. Trickle
-   bodies now have Phase 5's chunked-write path to sit on. Note the over-redaction defect listed there was fixed in
-   v0.1.1 already — verify before re-fixing.
+   kind and the `oversized-body` built-in) is done; unit 4 (the `timeout`/`brownout`/`hang-then-abort`/
+   `credential-rotation` built-ins and `testkit.AssertDifferentCredential`) is done; next is delay-after-headers,
+   the observed-pacing assertion per D5, and a closing docs sweep for onboarding and correctness (owner,
+   2026-08-16) that also carries the D9 framing question. Trickle bodies now have Phase 5's chunked-write path to
+   sit on. Note the over-redaction defect listed there was fixed in v0.1.1 already — verify before re-fixing.
 3. Tell the adopter v0.3.0 exists; their questions in the two contract READMEs are still open.
 
 ### How the work has been run, for whoever picks it up
@@ -560,9 +560,10 @@ trickle-body vector in Phase 6 can now build on the same chunked-write path this
 
 > Phase 6 — G-3 depth: hostile content, brownout, timeouts, rotation, and the pacing evidence fix
 >
-> **State on 2026-08-16:** units 1 (`CompletedAt`), 2 (the generic `malicious-content` built-in) and 3 (the
-> `oversized_body` fault kind and the `oversized-body` built-in) done on `phase-6`; otherwise not started, apart
-> from three items that other phases already covered — marked in the list below. Read the current
+> **State on 2026-08-16:** units 1 (`CompletedAt`), 2 (the generic `malicious-content` built-in), 3 (the
+> `oversized_body` fault kind and the `oversized-body` built-in) and 4 (the `timeout`/`brownout`/`hang-then-abort`/
+> `credential-rotation` built-ins and `testkit.AssertDifferentCredential`) done on `phase-6`; otherwise not started,
+> apart from three items that other phases already covered — marked in the list below. Read the current
 > `provider/handle.go` and `provider/fault_exec.go` before trusting the line numbers quoted here; Phase 5 rewrote
 > the execute path (a stream branch, `hijackReset`, per-chunk `sleep`), and the journal-early record now also fires
 > for streams (`if out.Aborted || resp.Stream != nil { record() }`), a shape `phase-6` unit 1 has since split in
@@ -613,10 +614,20 @@ registry disable. The pacing fix is what makes journal timestamps usable as the 
 - Trickle/slow-drip bodies — a genuinely new execution kind sharing its entire machinery with Phase 5's chunked
   writes. **Phase 5 has shipped that path** (`provider/stream.go`'s `executeStream`, per-chunk `sleep` through the
   injectable clock, flush per frame): build trickle as a JSON-body user of the same writer, never a second one.
-- Built-in scenarios for timeout, brownout, hang-then-abort and credential-rotation, plus a testkit
-  AssertDifferentCredential to complete the rotation assertion. Document the two traps the audit hit: do not combine
-  expect_key with a fault plan (auth rejection does not claim an attempt, so the plan misfires), and do not use
-  WithSkippedDelays for timeout tests.
+- ~~Built-in scenarios for timeout, brownout, hang-then-abort and credential-rotation, plus a testkit
+  AssertDifferentCredential~~ **DONE on `phase-6` (unit 4).** Four fixtures under `scenarios/protocol/`, all six
+  provider blocks each: `timeout` (a 30s delay-only attempt per route, then `after: success`), `brownout` (the
+  50/100/200/400ms ladder, then two 503s carrying `Retry-After: 1`, then recovery), `hang-then-abort`
+  (`close_before_headers` then `truncate_body`+`reset`, each behind a 700ms delay — the hang unit 1 made visible in
+  `completed_at`), and `credential-rotation` (`auth.expect_key: rotated-key-EXAMPLE` on every block, sync and
+  async, and no fault plan anywhere, on purpose). `testkit.AssertDifferentCredential` mirrors
+  `AssertSameCredential` exactly — same "cannot compare" shape when a credential is absent, fingerprints compared
+  rather than values. Combining `expect_key` with a fault plan is pinned as a regression test: an inline scenario
+  proves the plan's first attempt fires on the first AUTHENTICATED call, not the first call overall. The
+  `WithSkippedDelays` trap is documented (the built-in's own header, the README row, and troubleshooting's "My
+  timeout test passes instantly") and the live timeout test runs under real delays by construction, never
+  `WithSkippedDelays`; the DelaySkip shape itself (instant 200, `delay_ms: 30000`) is already pinned generically by
+  testkit's own server tests, not re-pinned here.
 - Delay-after-headers, so 'send headers, hang, then abort' is expressible. Today Delay is applied once, pre-dispatch
   (`preDispatchDelay`, called from `Handle` before anything is journaled or written), so the shape a mid-flight
   cancellation actually has cannot be scripted at all.

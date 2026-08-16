@@ -2,12 +2,15 @@ package scenarios_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -28,10 +31,13 @@ import (
 var builtins = []string{
 	"async-failed",
 	"async-stuck",
+	"brownout",
 	"conversation",
+	"credential-rotation",
 	"empty-results",
 	"extra-fields",
 	"fusion-overlap",
+	"hang-then-abort",
 	"happy",
 	"malformed-json",
 	"malicious-content",
@@ -40,6 +46,7 @@ var builtins = []string{
 	"rate-limited",
 	"server-error",
 	"streaming",
+	"timeout",
 	"unauthorized",
 	"unknown-provider",
 }
@@ -991,6 +998,547 @@ func filterByRoute(entries []testkit.Entry, route string) []testkit.Entry {
 		}
 	}
 	return out
+}
+
+// syncRouteCase names one synchronous route this build serves and the
+// request that reaches it. brownout and hang-then-abort's live tests both
+// walk the identical eight routes TestOversizedBody_FirstAttemptPadsThenCleanRetry's
+// own table declares inline; factored out once here rather than duplicated a
+// third and fourth time.
+type syncRouteCase struct {
+	name    string
+	p       provider.Name
+	path    string
+	body    string
+	headers map[string]string
+}
+
+// syncRouteCases returns the eight synchronous routes this build serves —
+// Exa /search, /answer, /contents, /findSimilar; Tavily /search, /extract;
+// Perplexity Sonar and Agent — each with a well-formed request and its
+// accepted credential placement.
+func syncRouteCases() []syncRouteCase {
+	return []syncRouteCase{
+		{
+			name: "exa search", p: provider.Exa, path: "/search",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name: "exa answer", p: provider.Exa, path: "/answer",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name: "exa contents", p: provider.Exa, path: "/contents",
+			body:    `{"urls":["https://example.test/report-a"]}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name: "exa findSimilar", p: provider.Exa, path: "/findSimilar",
+			body:    `{"url":"https://example.test/report-a"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name: "tavily search", p: provider.Tavily, path: "/search",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
+		},
+		{
+			name: "tavily extract", p: provider.Tavily, path: "/extract",
+			body:    `{"urls":"https://example.test/report-a"}`,
+			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
+		},
+		{
+			name: "perplexity sonar", p: provider.Perplexity, path: "/v1/sonar",
+			body:    `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+		{
+			name: "perplexity agent", p: provider.Perplexity, path: "/v1/agent",
+			body:    `{"input":"report"}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+	}
+}
+
+// TestTimeout_ClientDeadlineAbandonsTheHangThenRetrySucceeds is the timeout
+// built-in's dedicated live test: a client with a real deadline observes
+// bytes not arriving rather than any HTTP response, its own context ends in
+// context.DeadlineExceeded, and its retry — which draws the SECOND attempt on
+// that route, the one past the built-in's single declared attempt — gets a
+// clean response. testkit.WithSkippedDelays is deliberately never used here;
+// see the built-in's own header comment and provider/clock.go's DelayMode
+// doc comment for why a timeout test cannot use it.
+//
+// All eight of the built-in's routes are exercised, from the shared
+// syncRouteCases() table, rather than a hand-picked subset: each subtest is
+// t.Parallel() with only a 100ms client deadline, so the eight cost about the
+// same wall clock as three would, and covering all eight is what actually
+// pins that the fault plan is declared on every route rather than a handful
+// — a plan missing from one route was otherwise invisible to this test.
+func TestTimeout_ClientDeadlineAbandonsTheHangThenRetrySucceeds(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("timeout"),
+		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+
+	for _, tc := range syncRouteCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			route := "POST " + tc.path
+
+			// A real deadline well short of the scenario's 30s delay: long
+			// enough not to flake on a loaded CI runner, short enough that
+			// the test does not meaningfully wait for it.
+			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+				sim.URL(tc.p)+tc.path, strings.NewReader(tc.body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+
+			_, err = sim.Client().Do(req) //nolint:bodyclose // err is non-nil, so there is no body to close
+			require.Error(t, err, "the client's own deadline must end the request")
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+
+			// The property that the server's sleep actually releases on the
+			// client's cancellation, rather than lingering for the full 30s, is
+			// NOT provable from the client's side: Do returns at the client's own
+			// 100ms deadline regardless of what the server goroutine does, so a
+			// wall-clock bound on this line could never fail even if the sleep
+			// never released. awaitRouteEntries below is the real guard — its 5s
+			// require.Eventually times out, naming the route, if the abandoned
+			// call's entry never lands.
+			//
+			// The abandoned call's own entry lands on the server goroutine
+			// AFTER the client above already returned; AwaitRequests, never a
+			// bare sim.Requests, is mandatory here.
+			abandoned := awaitRouteEntries(t, sim, tc.p, route, 1)[0]
+			assert.True(t, abandoned.Outcome.Aborted, "the abandoned call's outcome must be marked aborted")
+			assert.Equal(t, 0, abandoned.Outcome.BytesWritten, "nothing reached the client")
+			assert.Equal(t, int64(30000), abandoned.Outcome.DelayMS,
+				"the journal records the requested 30s delay, not however long the client actually waited")
+
+			// The retry: a plain request with no short deadline, drawing the
+			// SECOND attempt on this route — past the plan's one declared
+			// attempt, so `after: success` serves it clean.
+			retryReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+				sim.URL(tc.p)+tc.path, strings.NewReader(tc.body))
+			require.NoError(t, err)
+			retryReq.Header.Set("Content-Type", "application/json")
+			for k, v := range tc.headers {
+				retryReq.Header.Set(k, v)
+			}
+			resp, err := sim.Client().Do(retryReq)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			raw, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+
+			retried := awaitRouteEntries(t, sim, tc.p, route, 2)[1]
+			assert.Empty(t, retried.Outcome.FaultKind, "the retry must carry no fault at all")
+			assert.Equal(t, 1, retried.Outcome.AttemptIndex,
+				"the retry claims the second attempt: the abandoned call already claimed the first")
+		})
+	}
+}
+
+// brownoutLadderMS is the delay, in milliseconds, each of the first four
+// calls on a brownout route declares — repeated here so the test pins the
+// same numbers the YAML declares rather than an independently chosen ladder
+// that could silently drift from it.
+var brownoutLadderMS = []int64{50, 100, 200, 400}
+
+// TestBrownout_LadderThenOutageThenRecovery is the brownout built-in's
+// dedicated live test, run under the default DelayReal: four calls of
+// successively worse real latency, two 503s carrying Retry-After, then a
+// clean seventh call whose journal entry carries no fault at all — the
+// "counted, not reset" property rate-limited pins for one 429, here pinned
+// for a whole ladder. Total wall clock per route is the sum of the ladder,
+// about 750ms; run across all eight routes as parallel subtests, that stays
+// well short of anything a loaded CI runner would call slow.
+func TestBrownout_LadderThenOutageThenRecovery(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("brownout"),
+		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+
+	for _, tc := range syncRouteCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			route := "POST " + tc.path
+
+			for i, wantMS := range brownoutLadderMS {
+				start := time.Now()
+				status, _ := brownoutPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+				elapsed := time.Since(start)
+				require.Equalf(t, http.StatusOK, status, "call %d", i)
+				assert.GreaterOrEqualf(t, elapsed, time.Duration(wantMS)*time.Millisecond,
+					"call %d: the client must observe the declared delay", i)
+			}
+			for i := range 2 {
+				status, retryAfter := brownoutPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+				assert.Equalf(t, http.StatusServiceUnavailable, status, "call %d", i+len(brownoutLadderMS))
+				assert.Equalf(t, "1", retryAfter, "call %d", i+len(brownoutLadderMS))
+			}
+			status, _ := brownoutPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+			require.Equal(t, http.StatusOK, status, "the seventh call must recover")
+
+			entries := awaitRouteEntries(t, sim, tc.p, route, 7)
+			for i, wantMS := range brownoutLadderMS {
+				assert.Equalf(t, wantMS, entries[i].Outcome.DelayMS, "entry %d delay_ms", i)
+				assert.GreaterOrEqualf(t, entries[i].CompletedAt.Sub(entries[i].ArrivedAt),
+					time.Duration(wantMS)*time.Millisecond, "entry %d completed_at - arrived_at", i)
+			}
+			assert.Equal(t, http.StatusServiceUnavailable, entries[4].Outcome.Status, "entry 4 status")
+			assert.Equal(t, http.StatusServiceUnavailable, entries[5].Outcome.Status, "entry 5 status")
+			assert.Equal(t, http.StatusOK, entries[6].Outcome.Status, "entry 6 status")
+			assert.Empty(t, entries[6].Outcome.FaultKind, "the seventh entry must carry no fault at all")
+		})
+	}
+}
+
+// brownoutPost issues one POST and returns the response's status code and
+// Retry-After header, discarding the body: brownout's ladder and outage
+// attempts are asserted on status and journal fields, and the body is the
+// ordinary happy-shaped projection throughout, unaffected by any of them.
+func brownoutPost(
+	t *testing.T, sim *testkit.Sim, p provider.Name, path, body string, headers map[string]string,
+) (status int, retryAfter string) {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, sim.URL(p)+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := sim.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode, resp.Header.Get("Retry-After")
+}
+
+// TestHangThenAbort_TwoAbortShapesThenSuccess is the hang-then-abort
+// built-in's dedicated live test: a hang then a reset before any header
+// arrives, a hang then a reset mid-body, then a clean third call — the two
+// abort shapes a mid-flight disconnect takes on the wire today, both
+// preceded by the hang unit 1 made observable in completed_at. Total wall
+// clock per route is about 1.4s (two 700ms hangs); run across all eight
+// routes as parallel subtests, that stays well short of anything a loaded CI
+// runner would call slow.
+func TestHangThenAbort_TwoAbortShapesThenSuccess(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("hang-then-abort"),
+		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+
+	const hang = 700 * time.Millisecond
+
+	for _, tc := range syncRouteCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			route := "POST " + tc.path
+
+			start := time.Now()
+			hangThenAbortCall(t, sim, tc.p, tc.path, tc.body, tc.headers, false)
+			require.GreaterOrEqual(t, time.Since(start), hang, "call 1 must observe the hang before it errors")
+
+			start = time.Now()
+			hangThenAbortCall(t, sim, tc.p, tc.path, tc.body, tc.headers, true)
+			require.GreaterOrEqual(t, time.Since(start), hang, "call 2 must observe the hang before it errors")
+
+			status, _ := brownoutPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+			require.Equal(t, http.StatusOK, status, "call 3 must recover")
+
+			entries := awaitRouteEntries(t, sim, tc.p, route, 3)
+
+			assert.True(t, entries[0].Outcome.Aborted, "entry 0 must be marked aborted")
+			assert.Equal(t, "close_before_headers", entries[0].Outcome.FaultKind, "entry 0 fault_kind")
+			assert.GreaterOrEqual(t, entries[0].CompletedAt.Sub(entries[0].ArrivedAt), hang,
+				"entry 0 completed_at - arrived_at must observe the hang (Phase 6 unit 1's fix)")
+
+			assert.True(t, entries[1].Outcome.Aborted, "entry 1 must be marked aborted")
+			assert.Equal(t, "truncate_body", entries[1].Outcome.FaultKind, "entry 1 fault_kind")
+			assert.GreaterOrEqual(t, entries[1].CompletedAt.Sub(entries[1].ArrivedAt), hang,
+				"entry 1 completed_at - arrived_at must observe the hang (Phase 6 unit 1's fix)")
+
+			assert.Empty(t, entries[2].Outcome.FaultKind, "entry 2 must carry no fault at all")
+		})
+	}
+}
+
+// hangThenAbortCall issues one POST and requires the connection to die in
+// the shape wantHeaders names: false for close_before_headers, where the
+// round trip itself must fail because no status line ever arrives; true for
+// truncate_body+reset, where headers and a partial body must arrive first and
+// only the body read fails, with the failure specifically wrapping
+// syscall.ECONNRESET — an ordinary closed connection (io.ErrUnexpectedEOF)
+// would NOT satisfy this, which is what lets this assertion tell a scripted
+// reset apart from `reset: true` being silently dropped from the fixture.
+func hangThenAbortCall(
+	t *testing.T, sim *testkit.Sim, p provider.Name, path, body string, headers map[string]string, wantHeaders bool,
+) {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, sim.URL(p)+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, postErr := sim.Client().Do(req) //nolint:bodyclose // closed below only when postErr is nil
+	if !wantHeaders {
+		require.Error(t, postErr, "close_before_headers must fail before any header arrives")
+		return
+	}
+	require.NoError(t, postErr, "truncate_body must serve headers before the reset")
+	defer func() { _ = resp.Body.Close() }()
+	_, readErr := io.ReadAll(resp.Body)
+	require.Errorf(t, readErr, "truncate_body must fail the body read")
+	require.Truef(t, errors.Is(readErr, syscall.ECONNRESET),
+		"truncate_body's reset must surface as ECONNRESET, not an ordinary close (got %v)", readErr)
+}
+
+// credentialRotationCase is one placement credential-rotation's live test
+// covers, naming both the request that presents the OLD key and the one that
+// presents the ROTATED key so the two bodies can differ, as they must for
+// Tavily's body:api_key placement.
+type credentialRotationCase struct {
+	name             string
+	p                provider.Name
+	path             string
+	oldBody, newBody string
+	oldHdrs, newHdrs map[string]string
+}
+
+// TestCredentialRotation_OldKeyRejectedRotatedKeyAccepted is the
+// credential-rotation built-in's dedicated live test: the old key draws the
+// vendor's own 401 envelope, the rotated key draws the ordinary 200, and
+// AssertDifferentCredential on the two journal entries passes while
+// AssertSameCredential on the same pair fails — the assertion pair this
+// unit's testkit helper exists for, exercised end to end rather than only
+// unit-tested against synthetic entries. It covers one credential placement
+// per provider the auth table documents: Exa x-api-key, Tavily Bearer AND
+// body:api_key on /search, Perplexity Bearer.
+func TestCredentialRotation_OldKeyRejectedRotatedKeyAccepted(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("credential-rotation"),
+		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+
+	cases := []credentialRotationCase{
+		{
+			name: "exa x-api-key", p: provider.Exa, path: "/search",
+			oldBody: `{"query":"report"}`, newBody: `{"query":"report"}`,
+			oldHdrs: map[string]string{"x-api-key": "old-key-EXAMPLE"},
+			newHdrs: map[string]string{"x-api-key": "rotated-key-EXAMPLE"},
+		},
+		{
+			name: "tavily bearer", p: provider.Tavily, path: "/search",
+			oldBody: `{"query":"report"}`, newBody: `{"query":"report"}`,
+			oldHdrs: map[string]string{"authorization": "Bearer old-key-EXAMPLE"},
+			newHdrs: map[string]string{"authorization": "Bearer rotated-key-EXAMPLE"},
+		},
+		{
+			name: "tavily body api_key", p: provider.Tavily, path: "/search",
+			oldBody: `{"query":"report","api_key":"old-key-EXAMPLE"}`,
+			newBody: `{"query":"report","api_key":"rotated-key-EXAMPLE"}`,
+			oldHdrs: nil, newHdrs: nil,
+		},
+		{
+			name: "perplexity bearer", p: provider.Perplexity, path: "/v1/sonar",
+			oldBody: `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
+			newBody: `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
+			oldHdrs: map[string]string{"authorization": "Bearer old-key-EXAMPLE"},
+			newHdrs: map[string]string{"authorization": "Bearer rotated-key-EXAMPLE"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Two of these cases (tavily bearer, tavily body api_key) target
+			// the SAME physical route — Tavily accepts both placements on
+			// /search — so a shared journal read here would race the two
+			// subtests' entries against each other. A namespace per subtest
+			// is what keeps each one reading only its own traffic, the same
+			// isolation testkit.NamespaceFor exists for.
+			ns := sim.NamespaceFor(t)
+			url := ns.URL(tc.p) + tc.path
+
+			oldStatus := credentialRotationPost(t, ns.Client(), url, tc.oldBody, tc.oldHdrs)
+			require.Equal(t, http.StatusUnauthorized, oldStatus, "the old key must draw the vendor's own 401")
+
+			newStatus := credentialRotationPost(t, ns.Client(), url, tc.newBody, tc.newHdrs)
+			require.Equal(t, http.StatusOK, newStatus, "the rotated key must draw the ordinary 200")
+
+			// ns.AwaitRequests already scopes to this namespace and this
+			// provider; a route filter on top would be redundant, since each
+			// subtest's namespace only ever carries its own two calls on one
+			// route.
+			entries := ns.AwaitRequests(t, tc.p, 2)
+			rejected, accepted := entries[0], entries[1]
+
+			testkit.AssertDifferentCredential(t, rejected, accepted)
+
+			stub := &rotationStubTB{}
+			testkit.AssertSameCredential(stub, rejected, accepted)
+			assert.True(t, stub.failed, "AssertSameCredential must fail on two different credentials")
+		})
+	}
+}
+
+// rotationStubTB is the minimal testing.TB stand-in this file needs to prove
+// AssertSameCredential fails without failing the real test: it records
+// whether Errorf was ever called and does nothing else.
+type rotationStubTB struct {
+	testing.TB
+	failed bool
+}
+
+func (s *rotationStubTB) Helper() {}
+
+func (s *rotationStubTB) Errorf(string, ...any) { s.failed = true }
+
+// credentialRotationPost issues one POST against url and returns the
+// response's status code, discarding the body: this test asserts on the
+// status and on the journal's credential fingerprints, never on response
+// content.
+func credentialRotationPost(
+	t *testing.T, client *http.Client, url, body string, headers map[string]string,
+) int {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode
+}
+
+// TestCredentialRotation_EveryBlockRequiresTheRotatedKey is a static guard on
+// the credential-rotation built-in's YAML: every one of the six provider
+// blocks — sync and async alike — must expect the documented rotated key and
+// declare no fault plan (the trap the header comment names). The live test
+// above only exercises the four placements docs/scenario-schema.md documents
+// (Exa x-api-key, Tavily Bearer and body:api_key, Perplexity Bearer), which
+// leaves perplexity_agent, exa_agent_runs and tavily_research unreachable
+// from a real HTTP call in this package; this check reads the loaded
+// scenario directly so those three blocks are still pinned against silently
+// losing their auth policy or gaining a fault plan next to it.
+func TestCredentialRotation_EveryBlockRequiresTheRotatedKey(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "credential-rotation")
+
+	for _, name := range implementedProviders {
+		t.Run(name, func(t *testing.T) {
+			entry := s.Provider(name)
+			require.NotNilf(t, entry, "%s: credential-rotation must declare this block", name)
+			require.NotNilf(t, entry.Auth, "%s: must declare an auth policy", name)
+			assert.Equalf(t, "rotated-key-EXAMPLE", entry.Auth.ExpectKey,
+				"%s: must expect the documented rotated key", name)
+
+			require.NotEmptyf(t, entry.Turns, "%s: must have at least one turn", name)
+			assert.Nilf(t, entry.Turns[0].Fault, "%s: no fault plan next to expect_key — the documented trap", name)
+			if entry.Create != nil {
+				assert.Nilf(t, entry.Create.Fault, "%s: no create-route fault plan either", name)
+			}
+		})
+	}
+}
+
+// credentialRotationTrapScenario pins the trap docs/troubleshooting.md and
+// the credential-rotation built-in's own header comment document: combining
+// expect_key with a fault plan makes the plan's first attempt fire on the
+// first AUTHENTICATED call, not the first call overall, because an auth
+// rejection never claims one (provider/handle.go: resp.FaultEligible is
+// forced false whenever the exchange already failed).
+const credentialRotationTrapScenario = `
+version: 1
+name: credential-rotation-trap
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa:
+    auth:
+      expect_key: rotated-key-EXAMPLE
+    fault:
+      attempts:
+        - status: 429
+          error: Rate limit exceeded.
+        - status: 200
+    results:
+      - source: source-a
+`
+
+// TestCredentialRotation_ExpectKeyPlusFaultPlanFiresOnFirstAuthenticatedCall
+// is the pinned regression for the trap credential-rotation's header comment
+// documents: two calls with the wrong key are rejected and claim no attempt
+// at all (attempt_index -1), and the fault plan's first attempt — a 429, not
+// the 200 an author counting from the first HTTP request would expect —
+// fires on the THIRD call, the first one presenting the correct key.
+func TestCredentialRotation_ExpectKeyPlusFaultPlanFiresOnFirstAuthenticatedCall(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithScenarioYAML(credentialRotationTrapScenario),
+		testkit.WithProviders(provider.Exa))
+
+	post := func(key string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+			sim.URL(provider.Exa)+"/search", strings.NewReader(`{"query":"report"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", key)
+		resp, err := sim.Client().Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		_, err = io.Copy(io.Discard, resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode
+	}
+
+	require.Equal(t, http.StatusUnauthorized, post("wrong-key-EXAMPLE"))
+	require.Equal(t, http.StatusUnauthorized, post("wrong-key-EXAMPLE"))
+	require.Equalf(t, http.StatusTooManyRequests, post("rotated-key-EXAMPLE"),
+		"the fault plan's first attempt must claim the first AUTHENTICATED call, not the first call overall")
+	require.Equal(t, http.StatusOK, post("rotated-key-EXAMPLE"))
+
+	entries := sim.AwaitRequests(t, provider.Exa, 4)
+	require.Len(t, entries, 4)
+	assert.Equal(t, -1, entries[0].Outcome.AttemptIndex, "an auth rejection claims no attempt")
+	assert.Equal(t, -1, entries[1].Outcome.AttemptIndex, "an auth rejection claims no attempt")
+	assert.Equal(t, 0, entries[2].Outcome.AttemptIndex, "the first authenticated call claims attempt 0")
+	assert.Equal(t, 1, entries[3].Outcome.AttemptIndex, "the second authenticated call claims attempt 1")
 }
 
 // TestNamespaced_DeclaresOneLanePerModel pins the shape of the file: the two
