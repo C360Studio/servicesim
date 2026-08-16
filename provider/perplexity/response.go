@@ -498,8 +498,10 @@ type ValidationError struct {
 // error and for both fail-closed routing statuses, modelled on FastAPI's default
 // {"detail": "<string>"}. The specification declares no body for those statuses,
 // so this is an inference recorded as unverified in
-// contracts/perplexity/provenance.yaml and correcting it from a real response is
-// an explicit job for the live contract canary.
+// contracts/perplexity/provenance.yaml, and correcting it from a real response
+// captured by a person is a job for a dated re-verification
+// (contracts/README.md "Keeping them honest") — there is no live contract
+// canary.
 //
 // Note that detail is an array for 422 and a string here. Both are legal
 // FastAPI, and a consumer must not assume one type.

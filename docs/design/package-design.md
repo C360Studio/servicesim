@@ -3175,6 +3175,9 @@ Only Tavily's envelope is vendor-verified for these statuses. Exa's tag values a
 simulator inferences and are recorded as such in `contracts/*/provenance.yaml`, so a live canary can correct them
 without archaeology.
 
+*Dropped by D10 (2026-08-16): no live canary; see `contracts/README.md` "Keeping them honest" — a dated, manual
+re-verification does the correcting instead.*
+
 ### 5.3 The admin listener
 
 The admin mux fails closed the same way, with a plain `{"error":"not found"}` — it is not a provider surface and has no
@@ -3371,11 +3374,13 @@ Two tree-wide rules that make this safe:
 | **U20** Live canary | `.github/workflows/live-contract-canary.yml`, `scripts/live-canary.sh`, `docs/live-canary.md` | — |
 | **U21** Documentation | `README.md`, `docs/design/package-design.md`, `docs/scenario-schema.md`, `docs/adr/0001-single-repository.md`, `docs/adr/0002-verified-contract-precedence.md` | — |
 
+*Dropped by D10 (2026-08-16): no live canary; see `contracts/README.md`. (U20's row above.)*
+
 Waves, given those dependencies:
 
 | Wave | Units | Notes |
 |---:|---|---|
-| 0 | U0, U5, U20, U21 | No Go dependencies. U5 authors the goldens from the verified contracts, so the provider units have something to compare against the moment they start. |
+| 0 | U0, U5, U20, U21 | No Go dependencies. U5 authors the goldens from the verified contracts, so the provider units have something to compare against the moment they start. *(U20 dropped by D10 (2026-08-16): no live canary; see `contracts/README.md`.)* |
 | 1 | U1, U2, U3, U4 | Level 0 and 1 packages. |
 | 2 | U6, U7 | |
 | 3 | U8, U9 | U9 is the critical path: nothing above level 3 starts until the seam is fixed. |
@@ -3459,6 +3464,7 @@ Two contradictions inside the vendors' own documentation are resolved here rathe
 Everything Perplexity returns for a non-422 error is a simulator invention, because Perplexity publishes no body shape
 for 400, 401, 403, 404, 429 or 500. Those bodies are recorded as `simulator-chosen` in
 `contracts/perplexity/provenance.yaml`, and correcting them is an explicit job for the live canary in U20.
+*(Dropped by D10 (2026-08-16): no live canary; see `contracts/README.md`.)*
 
 ---
 

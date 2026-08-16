@@ -17,7 +17,8 @@ Recorded 2026-08-16 (evening), against **v0.4.0**, tagged from `main` at `b788f0
 | 4 — the remaining synchronous routes | **shipped** in v0.3.0 |
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
 | 6 — G-3 depth: hostile content, oversized bodies, hangs after headers, resilience built-ins, pacing evidence | **shipped** in v0.4.0 — units 1–6, the closing docs sweep, D9 tier 1; the adopter's own guardrail vectors are still an append to `malicious-content` when they arrive |
-| 7 onward | open — **Phase 7 (packaging) and Phase 8 (MCP/ODR) are next**; Phase 7's provenance-date item is already done; D9 tier 2 (the seam export) is decided after Phase 8 |
+| 7 — packaging, deployment and the contract-fidelity process | **DONE (rescoped), on `phase-7`, not yet merged** — items 1–2 (the Gitea mirror, the Kubernetes manifest) dropped 2026-08-16 (owner, D3 reworded); items 3–5b shipped, this pass adding item 4 (`contracts.Record.APIVersion`, `contracts.Spec`, `contracts.ProviderSpec`) and item 5b (the refresh procedure rewritten around D10 — no live canary, ever) |
+| 8 onward | open — **Phase 8 (MCP/ODR) is next**; D9 tier 2 (the seam export) is decided after it; the adopter's own guardrail vectors when they arrive |
 
 **v0.4.0** is the last tag (2026-08-16, `b788f00`): Phase 6 end to end — `completed_at` observing every scripted
 hang, the `malicious-content`, `oversized-body`, `timeout`, `brownout`, `hang-then-abort` and `credential-rotation`
@@ -52,13 +53,22 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    2026-08-16) is done, and it wrote up the D9 framing question as a concrete proposal —
    [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md) — and the owner decided the same
    day: **tier 1 (framing) is applied, tier 2 (the seam, re-opening D6) waits for Phase 8, tier 3 stays open.**
-   PR #2 is merged and v0.4.0 is cut. Next: Phase 7's remaining packaging items (the digest-pinned Gitea mirror,
-   the Kubernetes manifest, `api_version` on contract records), the adopter's own vectors when they bring them, and
-   Phase 8 (the MCP listener and the ODR profile), after which the seam export is decided on what those two
-   profiles actually needed. Trickle bodies now have
+   PR #2 is merged and v0.4.0 is cut. Trickle bodies now have
    Phase 5's chunked-write path, and unit 5's after-headers seam, to sit on. Note the over-redaction defect listed
    in the Phase 6 section below was fixed in v0.1.1 already — verify before re-fixing.
-3. Tell the adopter v0.3.0 and v0.4.0 exist; their questions in the two contract READMEs are still open.
+3. ~~**Phase 7 — packaging, deployment and the contract-fidelity process**~~ **DONE (rescoped), 2026-08-16, on
+   `phase-7`.** Items 1 (the Gitea mirror) and 2 (the Kubernetes manifest) are dropped — the adopter's deployment,
+   not this repository's; the guidance that matters already ships (README "Single replica by design",
+   troubleshooting, the Compose example, the startup log, `job.foreign_id`), so D3 is reworded to say that rather
+   than promise a manifest. Item 3 shipped 2026-08-15. Items 4 and 5b ship in this pass: `api_version` on
+   `contracts.Record`, `contracts.Spec`/`contracts.ProviderSpec` with Perplexity's `openapi.json` version and
+   SHA-256 recorded for real, and `contracts/README.md` "Keeping them honest" rewritten around **D10** — there is
+   no live contract canary, and none is planned; drift detection is dated, manual re-verification against the
+   recorded hash (Perplexity) or the cited documentation pages (Exa, Tavily). ADR 0002 carries an "Amended
+   2026-08-16" section recording the same change. Next: Phase 8 (the MCP listener and the ODR profile), after
+   which D9 tier 2 (the seam export) is decided on what those two profiles actually needed; the adopter's own
+   guardrail vectors when they bring them.
+4. Tell the adopter v0.3.0 and v0.4.0 exist; their questions in the two contract READMEs are still open.
 
 ### How the work has been run, for whoever picks it up
 
@@ -132,13 +142,14 @@ These are settled. Re-open one only with new evidence, and record why.
 |---|---|---|
 |  D1 | Keep or drop Exa POST /answer? The adopter says their client does not call it. | **Keep** Exa `/answer`, and fix only the documentation. Still unverified whether their client calls it — ask the adopter.  |
 |  D2 | Does a body-placed Tavily api_key AUTHENTICATE, or merely stop being an error? This reverses a documented contract decision, where ADR-0002 (verifi... | **Body-placed Tavily key authenticates** on POST routes. Shipped in v0.1.1.  |
-|  D3 | Multi-replica namespace state: document a single-replica exemption, or share state across replicas? | **Documented single-replica exemption**, enforced by a manifest defaulting to `replicas: 1`. Not shared state.  |
+|  D3 | Multi-replica namespace state: document a single-replica exemption, or share state across replicas? | **Documented single-replica exemption**, enforced by README's "Single replica by design" section, troubleshooting, the `servicesim.single_replica_required` startup log, the `job.foreign_id` finding, and the Compose example — not by a shipped Kubernetes manifest, which is the adopter's own deployment artifact, out of this repository's scope (reworded 2026-08-16, Phase 7 pass). **No replicas, ever, by design:** this is a test simulator, not a production service; its only durable state is scenario YAML, which lives in the consumer's repository under version control, and the journal is ephemeral by design, so there is nothing to back up. Capacity for a shared tier is more processes with namespaces (house rule 6), never replicas of one instance.  |
 |  D4 | How is the callback injector bounded against the never-dials-outward property? | **Ship the no-dialer half** of the callback injector first; the outbound dialer is a separate, later decision.  |
 |  D5 | Enforced per-lane RPS limiting, which makes response status a function of wall-clock time and contradicts the repo's stated determinism doctrine (s... | **Assertion over journal timestamps first**; build enforced RPS only if that proves insufficient. The assertion half — `testkit.AssertMaxRate`, `AssertMinGap`, `AssertObservedDuration` — shipped in Phase 6 unit 6.  |
 |  D6 | MCP and ODR are two new provider profiles for G-3. Build them in-tree, or make out-of-tree providers a supported path? | **Build MCP and ODR in-tree** (owner overrode the recommendation to export the seam instead).  |
 |  D7 | Exa /contents, /findSimilar and Tavily /extract have no verified contract in this repository — contracts/exa/README.md:23 explicitly declines to as... | **Re-verify against vendor docs first** for `/contents`, `/findSimilar`, `/extract` — ADR-0002 holds as written.  |
 |  D8 | What should the adopter do about stream:true fixtures in the window before SSE ships (Phase 5)? | Tell the adopter **not to record `stream:true` fixtures** yet, and ship a `stream: reject` policy so their path fails loudly. **Reversed 2026-08-15: Phase 5 has shipped.** `stream: {when_requested: stream, deltas: [...]}` now serves a real, golden-tested SSE sequence on both Perplexity surfaces — the adopter can record `stream:true` fixtures today, against `testkit.AssertGoldenSSE`. `stream: reject` remains available for a suite that wants a hard failure instead. |
 |  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Decided 2026-08-16: tier 1 adopted** — README and CLAUDE.md now lead with "a deterministic service-simulator framework shipping three research-API profiles", the non-goals hold for any profile, README says what is provider-neutral versus profile-specific. **Tier 2 (export the seam, re-opening D6) is deferred until Phase 8's MCP/ODR have exercised the seam in-tree; tier 3 (positioning) stays open.** The proposal, with the reasoning and the tier 2 shape, is [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md). |
+|  D10 | How is contract drift detected without a canary? | **Dated, manual re-verification**, never a live canary — none is built or planned. Every provider's contract is generated with a machine-readable spec behind it — Exa's `exa-spec.yaml`, Tavily's `openapi.json` and Perplexity's `openapi.json`, each covering every route this repository simulates for that vendor — and each carries a RECORDED spec version and SHA-256 (`contracts.Spec`, `contracts/<provider>/provenance.yaml`'s `spec:` block) that a fresh fetch is compared against as the first, cheap step. That hash comparison is a drift SIGNAL, not a substitute for reading: most entries in every provider are still verified against the vendor's rendered prose pages (each entry's own `documentation_url`), which have no stable byte hash of their own — a page's bytes change with every site deploy independent of the content that matters — so a changed spec hash means a person re-reads the consumed fields against both the cited pages and the spec, never a hash of the prose itself. Only entries whose `documentation_url` IS the spec (all of Perplexity's, and Exa's three `/findSimilar` entries) were read from the spec directly and carry `api_version`; every other entry was read from prose and carries none. Reason for no canary: a canary is outbound infrastructure and a scheduled dependency on vendor availability, for a test simulator whose value is determinism; the recorded hash or the cited page gives a reviewer the same answer ("did the vendor change or did we?") on demand, without the outbound dependency. `contracts/README.md` "Keeping them honest" is the sanctioned procedure; ADR 0002 carries an "Amended 2026-08-16" section recording the same change. Owner, 2026-08-16.  |
 
 Two of these reversed a recommendation, and the reasoning is worth keeping. On D6 the owner chose in-tree because the
 adopter's G-3 should not wait on their own team's out-of-tree build. On D7 the owner held ADR-0002 — vendor
@@ -694,7 +705,17 @@ registry disable. The pacing fix is what makes journal timestamps usable as the 
   [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md) writes it up concretely, in three
   independently choosable tiers, for the owner to decide; **the sweep does not apply any part of it**.
 
-### Phase 7 — Packaging, deployment and the contract-fidelity process
+### Phase 7 — Packaging, deployment and the contract-fidelity process — DONE (rescoped)
+
+> **DONE 2026-08-16, rescoped to items 3, 4 and 5b (owner).** Items 1 (the Gitea mirror) and 2 (the Kubernetes
+> manifest) are **dropped**: they are the adopter's deployment, not this repository's, and the guidance that
+> matters already ships — README's "Single replica by design" section, troubleshooting, the Compose example, the
+> startup log `servicesim.single_replica_required`, and the `job.foreign_id` finding (D3, reworded in the same
+> pass). Item 3 (the provenance date model) shipped 2026-08-15, pulled forward for Phase 4. Item 4
+> (`contracts.Record.APIVersion`, `contracts.Spec`, `contracts.ProviderSpec`) and item 5b (the sanctioned refresh
+> procedure, rewritten around D10) both shipped 2026-08-16. D10 (above) is the owner decision this phase now
+> records: drift detection is dated, manual re-verification against a recorded spec hash or a cited documentation
+> page — there is no live contract canary, and none is planned.
 
 Track E work that is small, independent of every code phase, and gated on nothing — it can be pulled forward whenever
 there is slack. One item WAS a genuine blocker for the adopter's first fixture refresh and is now done (2026-08-15,
@@ -702,30 +723,51 @@ pulled forward for Phase 4): contracts_test.go used to require every provenance 
 single global constant, so refreshing ONE fixture forced you either to re-date all 40 across three vendors as freshly
 verified when they were not, or to fail CI. A provenance record that lies is worse than none, and the test compelled
 the lie. Per-entry dates are real now, the provider-level date must match the index table, and `VerifiedOn` is the
-oldest entry — that is the concrete thing to hand the adopter when they ask what the sanctioned procedure is. The
-rest of this phase is still open.
+oldest entry — that is the concrete thing to hand the adopter when they ask what the sanctioned procedure is.
 
-**Unblocks:** The adopter's G-4 / Track E: their cluster-shared container tier and their contract-fidelity process.
-Also converts the multi-replica hazard from documentation into an enforced default.
+**Unblocks:** The adopter's contract-fidelity process — `contracts/README.md` "Keeping them honest" is now the
+concrete, dated procedure to hand them, and Perplexity's recorded `spec:` block is the concrete hash a refresh
+compares against. Their cluster-shared deployment tier (a Gitea mirror, a Kubernetes manifest) is their own
+artifact to build, not this repository's; the single-replica guidance it needs already ships in README,
+troubleshooting, the Compose example, the startup log and `job.foreign_id`.
 
-- Mirror the digest-pinned image to Gitea, copying BY DIGEST (regctl image copy keyed off the build's digest output)
-  rather than re-pushing — a second build produces a different digest for byte-identical inputs, and pinning is the
-  adopter's entire point. Extend scripts/check-docs.sh:302's ghcr.io grep to the Gitea host in the same change, or
-  documented Gitea references silently escape the resolve-check that already caught a nonexistent tag once.
-- A Kubernetes manifest shipping replicas: 1 with a comment explaining why, the readiness probe on /readyz, and a
-  digest-pinned image reference. Shipping the manifest WITHOUT the replica note would actively make things worse — a
-  manifest is the artifact people scale.
+- ~~Mirror the digest-pinned image to Gitea, copying BY DIGEST (regctl image copy keyed off the build's digest
+  output) rather than re-pushing — a second build produces a different digest for byte-identical inputs, and
+  pinning is the adopter's entire point.~~ **Dropped 2026-08-16 (owner)** — the adopter's deployment; the guidance
+  that matters already ships (README "Single replica by design", troubleshooting, the Compose example, the
+  startup log, `job.foreign_id`); no replicas by design.
+- ~~A Kubernetes manifest shipping replicas: 1 with a comment explaining why, the readiness probe on /readyz, and
+  a digest-pinned image reference.~~ **Dropped 2026-08-16 (owner)** — the adopter's deployment; the guidance that
+  matters already ships (README "Single replica by design", troubleshooting, the Compose example, the startup
+  log, `job.foreign_id`); no replicas by design.
 - **DONE 2026-08-15 (pulled forward for Phase 4)** — Fix the provenance date model before the first refresh: per-entry
   dates are now real, the provider-level date must match the index table (a test parses it), and `VerifiedOn` is the
   oldest entry, pinned by a test to the recomputed minimum. Goldens for the async routes were added in the same
   change; the async routes had shipped without any.
-- Add an optional api_version to contracts.Record, plus spec_sha256 for the spec-derived provider. What exists today
-  is a date, not a version. Perplexity's contract came from a machine-readable openapi.json that has a version and hash
-  which could be diffed mechanically; Exa and Tavily came from prose pages, where the honest version is a content hash
-  or archive timestamp of the cited page.
-- Complete the sanctioned fixture-refresh procedure. contracts/README.md:30-35 already documents three steps, but they
-  are gated on a live contract canary described as 'plan Phase 5' that does not exist — the only workflows in the repo
-  are ci.yml and image.yml, and nothing compares VerifiedOn to anything.
+- **DONE 2026-08-16** — `api_version` on `contracts.Record` (`yaml:"api_version,omitempty"`, populated for every
+  entry read from a versioned document) and `contracts.Spec` (`url`/`version`/`sha256`/`retrieved`, with
+  `contracts.ProviderSpec(p)` as the small accessor a consumer's own test can read it through). **Every provider
+  carries a `spec:` block** — all three vendors publish a machine-readable specification covering every route this
+  repository simulates for them, confirmed by fetching each live for this change: Perplexity's
+  `contracts/perplexity/provenance.yaml` records `openapi.json`, version `1.0.0`, sha256
+  `95305c44ed99cf4e51463de55994b3bd26063194b78668d5e8753534ee3551ab`; Exa's `contracts/exa/provenance.yaml` records
+  `exa-spec.yaml`, version `2.0.0`, sha256
+  `6fcf299032d8b52fb614315cf4f251f055633bb9e21da7aeeaa0e9bcfb532e30`; Tavily's `contracts/tavily/provenance.yaml`
+  records `openapi.json`, version `1.0.0`, sha256
+  `f13ba20f158a40ca5776fff3d665ded0010c8f71bce15795defa72b863ef26f8` — all three retrieved 2026-08-16. An earlier
+  draft of this pass wrongly recorded Exa and Tavily as having no machine-readable spec at all (or only Exa's
+  `/findSimilar` sourced from one); that was wrong and is corrected here. The spec hash is a drift SIGNAL, not a
+  diff of what changed: most entries in Exa and Tavily are still verified against the vendor's rendered prose pages
+  (each entry's own `documentation_url`) rather than the spec, so a changed hash means re-reading the consumed
+  fields against both those pages and the spec — only entries whose `documentation_url` IS the spec (all of
+  Perplexity's, and Exa's three `/findSimilar` entries) carry `api_version`.
+- **DONE 2026-08-16** — Complete the sanctioned fixture-refresh procedure, rewritten around D10 rather than
+  finished as originally scoped: `contracts/README.md` "Keeping them honest" no longer describes a canary that
+  does not exist. It states D10 plainly and gives the numbered steps a person actually follows — compare a fresh
+  Perplexity spec fetch's SHA-256 against the recorded one, or re-read Exa/Tavily's cited pages for the prose
+  path — and what moves where once drift is found. ADR 0002 carries an "Amended 2026-08-16" section recording the
+  same change without rewriting the original accepted text; CONTRIBUTING.md and both provider README headlines
+  are reworded to match.
 - Note that the multi-replica README and troubleshooting text ships in Phase 3, not here — it must land with the job
   store that makes the divergence a hard 404.
 

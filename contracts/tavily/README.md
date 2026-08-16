@@ -3,8 +3,9 @@
 Verified against live vendor documentation on **2026-08-14**.
 
 This file records only what Servicesim simulates and what consumers parse. It is not a
-redistribution of the vendor's OpenAPI document. Re-verify and update the date above when
-the live contract canary reports drift.
+redistribution of the vendor's OpenAPI document. Re-verify and update the date above on the
+sanctioned dated re-verification cadence (`contracts/README.md` "Keeping them honest" — there
+is no live contract canary).
 
 ## Documentation sources
 

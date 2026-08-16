@@ -15,8 +15,10 @@
 # kind:
 #   vendor-documented  the shape AND the values come from the vendor's own
 #                      machine-readable specification.
-#   simulator-chosen   Servicesim picked this shape or these values. The live
-#                      contract canary may correct it from a real response.
+#   simulator-chosen   Servicesim picked this shape or these values. A dated
+#                      re-verification (contracts/README.md "Keeping them
+#                      honest") may correct it from a real response — there is
+#                      no live contract canary.
 #
 # Unlike Exa and Tavily, this provider's contract was generated directly from
 # https://docs.perplexity.ai/openapi.json rather than from prose pages, so
@@ -29,12 +31,36 @@
 provider: perplexity
 verified: 2026-08-15
 
+# spec: records the document as fetched and hashed on 2026-08-16 for this
+# record (not reused from the original 2026-08-14/15 verification pass, which
+# read the same URL but never hashed it): 176,997 bytes, the same size
+# contracts/perplexity/README.md's 2026-08-15 fetch recorded. That file's
+# 2026-08-14 headline says 176,777 bytes; this record cannot establish
+# whether the 220-byte gap is a tooling artefact (one is already noted in
+# that file) or a real vendor edit, because nothing was hashed at either
+# earlier fetch. A refresh compares a new fetch's SHA256 against sha256
+# below: unchanged, move nothing; changed, treat it as vendor drift and
+# re-verify. api_version "1.0.0" below is info.version as read from THIS
+# 2026-08-16 fetch, applied to entries verified 2026-08-14 on the assumption
+# that the version has not changed since — the earlier pass never recorded
+# info.version itself.
+# Exa and Tavily carry a spec: block too (contracts/exa/provenance.yaml,
+# contracts/tavily/provenance.yaml) — see contracts/README.md "Keeping them
+# honest" for why the hash is a drift signal there rather than the source
+# most of their entries were actually read from.
+spec:
+  url: https://docs.perplexity.ai/openapi.json
+  version: "1.0.0"
+  sha256: 95305c44ed99cf4e51463de55994b3bd26063194b78668d5e8753534ee3551ab
+  retrieved: 2026-08-16
+
 goldens:
   - golden: perplexity-sonar-happy.json
     endpoint: POST /v1/sonar (alias POST /chat/completions)
     status: 200
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
       Choice carries BOTH message and delta: the specification declares delta
@@ -50,6 +76,7 @@ goldens:
     status: 200
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
       Zero-result success. search_results and citations are optional and are
@@ -61,19 +88,21 @@ goldens:
     status: 400
     kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
       The specification declares no body for any non-422 Sonar status. This is
       FastAPI's default {"detail": "<string>"} and is an inference. Note detail
       is a STRING here and an ARRAY for 422 - both are legal FastAPI and a
-      consumer must not assume one type. Correcting this from a real response is
-      an explicit job for the live contract canary.
+      consumer must not assume one type. Correcting this from a real response
+      is an explicit job for a dated re-verification.
 
   - golden: perplexity-sonar-401.json
     endpoint: POST /v1/sonar (alias POST /chat/completions)
     status: 401
     kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: Non-422 Sonar body; unverified, see perplexity-sonar-400.json.
 
@@ -82,6 +111,7 @@ goldens:
     status: 422
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
       HTTPValidationError, the one error body the specification schematises.
@@ -94,6 +124,7 @@ goldens:
     status: 429
     kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: Non-422 Sonar body; unverified, see perplexity-sonar-400.json.
 
@@ -102,6 +133,7 @@ goldens:
     status: 500
     kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: Non-422 Sonar body; unverified, see perplexity-sonar-400.json.
 
@@ -110,6 +142,7 @@ goldens:
     status: 404
     kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
       Fail-closed routing. An unmatched path cannot know which of the two
@@ -122,6 +155,7 @@ goldens:
     status: 405
     kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: Served with an Allow header. Shape and message are Servicesim's.
 
@@ -130,6 +164,7 @@ goldens:
     status: 200
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
       SearchResult.id is an INTEGER - the one identifier in this repository that
@@ -145,6 +180,7 @@ goldens:
     status: 200
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
       Zero-result success. results and annotations are emitted as empty arrays
@@ -156,6 +192,7 @@ goldens:
     status: 200
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
       A terminal failure reported inside a 200 body: status is the Status enum
@@ -168,6 +205,7 @@ goldens:
     status: 400
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
       ErrorInfo is declared on the agent operations, so the {"error": {...}}
@@ -180,6 +218,7 @@ goldens:
     status: 401
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: ErrorInfo envelope; code and type values are Servicesim's.
 
@@ -188,6 +227,7 @@ goldens:
     status: 403
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: ErrorInfo envelope; code and type values are Servicesim's.
 
@@ -196,6 +236,7 @@ goldens:
     status: 422
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
       HTTPValidationError, not ErrorInfo. The asymmetry is real and deliberate:
@@ -207,6 +248,7 @@ goldens:
     status: 429
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: ErrorInfo envelope; code and type values are Servicesim's.
 
@@ -215,6 +257,7 @@ goldens:
     status: 500
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
     verified: 2026-08-14
     note: ErrorInfo envelope; code and type values are Servicesim's.
 

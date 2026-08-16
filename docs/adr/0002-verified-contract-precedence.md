@@ -5,7 +5,8 @@
 Accepted — 2026-08-14. Reaffirmed by the owner on 2026-08-15 (`docs/adopter-backlog.md`'s "Authority rule,
 reaffirmed by the owner" paragraph). The one recorded departure, D2's body-placed Tavily `api_key` on
 `/search`/`/research` (v0.1.1), stands as shipped and is explicitly not a precedent; every route verified since
-follows this ADR as written.
+follows this ADR as written. **Amended 2026-08-16** (drift-detection mechanism only — no live canary, D10; see the
+closing section below. The Decision and Consequences text is left as accepted).
 
 ## Context
 
@@ -92,3 +93,37 @@ Concretely:
 - Fields the vendor documents but no consumer parses stay unimplemented. The contract is the **consumed**
   contract, not the whole vendor surface; adding a field is a bounded change made when a consumer actually needs
   it.
+
+## Amended 2026-08-16
+
+The Decision and Consequences sections above are the accepted text and are left as written — this section
+supersedes only the drift-detection mechanism they describe, and records why.
+
+**There is no live contract canary, and none is built or planned (D10, `docs/adopter-backlog.md`).** A canary is
+outbound infrastructure and a scheduled dependency on vendor availability, for a test simulator whose entire
+value is determinism (house rule 2) — in the spirit of house rule 3's fail-closed, never-dials-outward design,
+even though that rule governs the served process, not repository tooling. Building the thing this ADR's own
+Decision section describes as the drift-detection mechanism would work against the property it is meant to serve.
+
+Drift detection instead is a **dated, manual re-verification** against a recorded reference. Every provider's
+contract has a machine-readable specification behind it — Exa's `exa-spec.yaml`, Tavily's `openapi.json` and
+Perplexity's `openapi.json`, each covering every route this repository simulates for that vendor — and each
+`contracts/<provider>/provenance.yaml` records that document's version and SHA-256 (`contracts.Spec`, the `spec:`
+block) that a fresh fetch is compared against, as the first, cheap step. That hash comparison is a drift SIGNAL,
+not a substitute for reading: most entries in every provider, Perplexity included, are verified against the
+vendor's rendered prose pages (each entry's own `documentation_url`), which have no stable byte hash of their own —
+a page's bytes change with every site deploy independent of whether the content that matters changed. A changed
+spec hash means a person re-reads the consumed fields against both the cited `documentation_url` pages and the spec
+itself; only entries whose `documentation_url` IS the spec (all of Perplexity's, and Exa's three `/findSimilar`
+entries) were read from the spec directly. `contracts/README.md` "Keeping them honest" is the sanctioned procedure
+for all three providers.
+
+This changes nothing about the Decision's central claim — the contract file, not the plan, is the authority on a
+wire field — and nothing about how a correction is applied once found: update the contract file and its
+verification date, update the handler and its goldens in the same change, cut a release. It changes only how
+drift is *found*: on a person's dated schedule, backed by a mechanically comparable hash where one exists, rather
+than by an automated, scheduled outbound probe.
+
+The Consequences section's closing line — "the rule is only as good as the canary that maintains it" — is
+corrected in the same spirit: **the rule is only as good as the re-verification cadence and the recorded hash
+that make staleness visible.**

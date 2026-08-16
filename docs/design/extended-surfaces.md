@@ -254,6 +254,9 @@ This supersedes the base design's claim that Perplexity publishes no error body 
 Record the Sonar non-422 bodies as `simulator-chosen` in `contracts/perplexity/provenance.yaml` so the live canary
 knows they are unverified and can correct them from a real response.
 
+*Dropped by D10 (2026-08-16): no live canary; see `contracts/README.md` "Keeping them honest" — correcting a
+simulator-chosen body from a real response is a dated, manual re-verification's job instead.*
+
 Note the asymmetry is real, not an oversight: Sonar is a FastAPI surface whose validation errors follow FastAPI's
 convention, while the Agent API declares its own `ErrorInfo`. Do not unify them.
 
@@ -266,6 +269,9 @@ convention, while the Agent API declares its own `ErrorInfo`. Do not unify them.
 | **U13** | Extended: also owns `provider/perplexity/agent.go` and `provider/perplexity/agent_test.go`, and serves all four Perplexity routes. |
 | **U19**, **U20** | **Deferred.** Consumer examples are plan Phase 4 and the live canary is Phase 5; this release is Phases 0–3. `contracts/README.md` already documents the canary's contract for when it is built. |
 | **U21** | Also owns this file. |
+
+*U20 dropped by D10 (2026-08-16): no live canary; see `contracts/README.md`. (U19/U20's row above; U19, the
+consumer examples, shipped.)*
 
 Wave structure is unchanged. U13 grows but stays in wave 5 alongside U11 and U12, and remains independent of both.
 

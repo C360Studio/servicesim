@@ -51,27 +51,66 @@ minimal schemas for the fields it actually implements.
 
 ## Keeping them honest
 
-Simulator tests cannot detect vendor drift — a simulator agrees with itself by construction. The live contract
-canary (plan Phase 5) makes one bounded request per provider against the real API on a manual or scheduled trigger,
-validates only the consumed fields listed here, and fails on removed or incompatible fields. Additive fields are
-reported without failing, because external APIs evolve additively and consumers are expected to tolerate that.
+Simulator tests cannot detect vendor drift — a simulator agrees with itself by construction. **There is no live
+contract canary, and none is planned (D10, `docs/adopter-backlog.md`).** A canary is outbound infrastructure and a
+scheduled dependency on vendor availability, for a test simulator whose entire value is determinism — the wrong
+kind of moving part for a repository that dials outward on its own schedule for nothing else. Drift detection
+instead is a **dated, manual re-verification**, and its first, cheap step is the same for every provider: Exa,
+Tavily and Perplexity each publish a machine-readable OpenAPI document — `exa-spec.yaml`, `openapi.json` and
+`openapi.json` respectively — covering every route this repository simulates for that vendor, and each provider's
+`contracts/<provider>/provenance.yaml` records that document's URL, version and `sha256` in a `spec:` block.
+Comparing a fresh fetch's hash against the recorded one is mechanical and answers "did the vendor's machine-readable
+surface move at all?" in seconds. It does **not** by itself answer "did anything we consume change?": a provider's
+consumed fields are still verified mostly against the vendor's rendered prose pages (each entry's own
+`documentation_url`), and the spec's bytes can move for reasons a given consumed contract never touches — a new
+Exa Websets endpoint, an unrelated Tavily `/crawl` field, and so on. A changed hash is therefore the SIGNAL that
+something may have moved, not a diff of what moved: the next step is always a person re-reading the consumed fields
+against both the cited `documentation_url` pages and the spec itself. Only the entries whose own `documentation_url`
+IS the spec's URL (all of Perplexity's, and Exa's three `/findSimilar` entries) were read from the spec directly;
+every other entry was read from an undated prose page, and re-checking it means re-reading that page, not re-hashing
+anything.
+
 Every provider's `provenance.yaml` carries two kinds of `verified:` date — the provider-level one at the top of the
-file, matching the **Verified** column above, and one per golden entry. Both move on a drift refresh, but not for the
+file, matching the **Verified** column above, and one per golden entry. Both move on a refresh, but not for the
 same reason: an entry's date moves because that golden's shape was re-checked; the provider-level date and the
 **Verified** column above move together whenever any entry is checked later than they currently claim, because a
 whole-contract verification cannot be older than a fixture that was individually re-checked since. See the header of
-any `provenance.yaml` for how the two relate.
+any `provenance.yaml` for how the two relate. Every provider's `provenance.yaml` also carries a `spec:` block —
+`url`, `version`, `sha256`, `retrieved` — recording the bytes its consumed contract's machine-readable source was
+generated from, readable from Go via `contracts.ProviderSpec(p)`; `contracts/contracts_test.go`'s
+`TestEveryProviderHasSpecRecorded` fails the build if a provider drops one, so a future fourth profile must record
+its own too.
 
-When the canary reports drift:
+### The sanctioned refresh procedure
 
-1. Update the affected `contracts/<provider>/README.md`, and bring `provenance.yaml`'s provider-level `verified:` and
-   this file's index-table **Verified** column into agreement in the same change — that pair is what
-   `TestProviderVerifiedMatchesReadmeIndexTable` enforces; the provider README's own headline "Verified against..."
-   date is a separate, currently-unenforced line and updating it is good practice but not mechanically checked.
-2. Update the provider handler and its golden fixtures, including each changed entry's own `verified:` date, in the
-   same change.
-3. Cut a Servicesim release — provider handler and contract changes are release-worthy; product-specific scenario
+1. **Check whether the spec changed.** Fetch the provider's machine-readable specification (`spec.url` in its
+   `provenance.yaml`), compute its SHA-256, and compare against the recorded `spec.sha256`.
+   - **Unchanged** — move nothing (bumping `spec.retrieved` to today is optional and does not itself imply a
+     re-verification).
+   - **Changed** — re-read the fields this repository consumes against BOTH the per-entry `documentation_url` pages
+     and the spec itself, comparing against the provider's README tables, then continue to steps 2–4 below. A
+     changed hash is not itself a diff: most entries were verified against prose, not the spec, so the hash change
+     alone does not say which of them moved.
+2. Update the affected `contracts/<provider>/README.md` tables and the golden fixtures for whatever changed, and
+   each re-checked entry's own `verified:` date — a re-read that finds no change still moves it, because that is
+   what the date means; only entries you did not re-read keep their date — and its `api_version`, if the document
+   it came from is versioned, in the same change.
+3. Bring the provider-level `verified:` at the top of `provenance.yaml`, this file's index-table **Verified**
+   column, and `spec.sha256`, `spec.version` and `spec.retrieved` into agreement. The pairs
+   `TestProviderVerifiedMatchesReadmeIndexTable` and `TestSpecRetrievedIsAtLeastProviderVerified` mechanically
+   enforce are exactly the ones that must agree here; `TestSpecRetrievedIsAtLeastProviderVerified` rejects a
+   `spec.retrieved` older than the provider-level `verified:` it backs, so if a refresh spans several days,
+   re-fetch and re-hash the spec on the day you set `verified:`, not before it. The provider README's own headline
+   "Verified against..." date is a separate, currently-unenforced line and updating it is good practice but not
+   mechanically checked.
+4. Cut a Servicesim release — provider handler and contract changes are release-worthy; product-specific scenario
    changes in consuming repositories are not.
+
+After a refresh, `contracts.VerifiedOn` reads the oldest per-entry `verified:` date across every provider. A
+hash-only check that finds a provider's spec unchanged re-checks no fixture, so nothing moves and `VerifiedOn` still
+reads whatever it read before. A check that finds the spec changed re-checks every entry step 1 sends it to re-read,
+so `VerifiedOn` moves to the oldest entry that pass did not cover — it moves only because step 2 actually
+re-checked and re-dated the entries that were holding it down, never merely because a check ran and found nothing.
 
 ## Known upstream deprecations
 

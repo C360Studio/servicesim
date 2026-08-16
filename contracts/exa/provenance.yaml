@@ -18,14 +18,43 @@
 # kind:
 #   vendor-documented  the shape AND the values come from the vendor's own
 #                      documentation, quoted or directly derived from it.
-#   simulator-chosen   Servicesim picked this shape or these values. The live
-#                      contract canary may correct it from a real response.
+#   simulator-chosen   Servicesim picked this shape or these values. A dated
+#                      re-verification (contracts/README.md "Keeping them
+#                      honest") may correct it from a real response — there is
+#                      no live contract canary.
 #
 # The field names in every golden are governed by README.md in this directory,
 # which is the authority and must not be edited by fixture work.
+#
+# spec: records the machine-readable specification Exa publishes,
+# https://exa.ai/docs/exa-spec.yaml, covering every route this provider
+# simulates (/search, /contents, /answer, /findSimilar, /agent/runs,
+# /agent/runs/{id}) — fetched and hashed 2026-08-16. Its sha256 is the DRIFT
+# SIGNAL for this provider: an unchanged hash on a fresh fetch means nothing
+# below needs re-reading; a changed one means re-read the consumed fields
+# against both the per-entry documentation_url pages below and the spec
+# itself (contracts/README.md "Keeping them honest"), then update whatever
+# changed.
+#
+# A changed spec.sha256 is not itself a diff of what this file consumes:
+# most entries' documentation_url below is a rendered prose page, not the
+# spec, and the spec's own bytes can move for reasons this provider's
+# contract never touches (new webset/monitor endpoints, unrelated schema
+# additions). The hash says "go re-read the pages", not "here is what
+# changed" — the per-entry documentation_url and verified date remain the
+# record of what was actually verified and against what. Only entries whose
+# documentation_url IS the spec (the three /findSimilar entries below) carry
+# api_version, because only those were read from this versioned document;
+# every other entry was read from an undated prose page and carries none.
 
 provider: exa
 verified: 2026-08-15
+
+spec:
+  url: https://exa.ai/docs/exa-spec.yaml
+  version: "2.0.0"
+  sha256: 6fcf299032d8b52fb614315cf4f251f055633bb9e21da7aeeaa0e9bcfb532e30
+  retrieved: 2026-08-16
 
 goldens:
   - golden: exa-search-happy.json
@@ -280,8 +309,9 @@ goldens:
       run-object key with its own shape. The {code, message} shape rendered
       here traces to docs/design/async-jobs.md's design and
       provider/exa/agentrun_handler.go's errorWire, i.e. it is Servicesim's
-      construction, unverified against any vendor example, and a live-canary
-      run against a real failed run is what would confirm or correct it. Note
+      construction, unverified against any vendor example, and a dated
+      re-verification against a real failed run is what would confirm or
+      correct it. Note
       costDollars.total is 0, not absent: the terminal-run inference in the
       completed golden's entry applies regardless of outcome, and a failed run
       still reports a (possibly zero) spend rather than omitting the key. id
@@ -444,6 +474,7 @@ goldens:
     status: 200
     kind: simulator-chosen
     documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
     verified: 2026-08-15
     note: >-
       D-b: a relevance route rendered exactly like /search, from its own
@@ -462,6 +493,7 @@ goldens:
     status: 200
     kind: simulator-chosen
     documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
     verified: 2026-08-15
     note: >-
       Zero-result success, following /search's own empty golden: results
@@ -474,6 +506,7 @@ goldens:
     status: 400
     kind: simulator-chosen
     documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
     verified: 2026-08-15
     note: >-
       `url` is the one required field the spec names (minLength 3); no

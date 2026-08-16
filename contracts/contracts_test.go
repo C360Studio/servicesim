@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -195,6 +196,124 @@ func TestVerifiedOnIsTheOldestEntry(t *testing.T) {
 // (package contracts), because they need provenanceFile.Verified and that
 // field is unexported: house rule 7 says a test-only need is not a reason to
 // export a new symbol, so there is no contracts.VerifiedFor here.
+//
+// TestSpecRetrievedIsAtLeastProviderVerified, the one spec check that also
+// needs the unexported provider-level Verified, lives there too for the same
+// reason.
+
+// TestSpecBlockFieldsAreComplete checks every field contracts.ProviderSpec
+// reports when a provider has a spec: block at all: a spec that names a URL
+// but forgets to record what was hashed, or when, cannot answer "did the
+// vendor change?" any better than no spec block would.
+func TestSpecBlockFieldsAreComplete(t *testing.T) {
+	t.Parallel()
+
+	hexSHA256 := regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+	for _, provider := range contracts.Providers() {
+		spec, ok, err := contracts.ProviderSpec(provider)
+		if err != nil {
+			t.Fatalf("%s: ProviderSpec: %v", provider, err)
+		}
+		if !ok {
+			continue
+		}
+
+		if !strings.HasPrefix(spec.URL, "https://") {
+			t.Errorf("%s: spec.url %q is not an https URL", provider, spec.URL)
+		}
+		if spec.Version == "" {
+			t.Errorf("%s: spec.version is empty", provider)
+		}
+		if !hexSHA256.MatchString(spec.SHA256) {
+			t.Errorf("%s: spec.sha256 %q is not 64 lowercase hex characters", provider, spec.SHA256)
+		}
+		if _, err := time.Parse(time.DateOnly, spec.Retrieved); err != nil {
+			t.Errorf("%s: spec.retrieved %q is not a YYYY-MM-DD date", provider, spec.Retrieved)
+		}
+	}
+}
+
+// TestEveryProviderHasSpecRecorded pins that every provider in
+// contracts.Providers() carries a spec: block: all three vendors simulated
+// today (Exa, Tavily, Perplexity) publish a machine-readable specification
+// that covers every route Servicesim simulates for them, so recording one
+// is not Perplexity-specific — it is what any provider added to this
+// package in the future must also do. A refresh dropping a block silently
+// (rather than as a deliberate, documented decision) is exactly the drift
+// this test exists to catch.
+func TestEveryProviderHasSpecRecorded(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range contracts.Providers() {
+		_, ok, err := contracts.ProviderSpec(provider)
+		if err != nil {
+			t.Fatalf("ProviderSpec(%s): %v", provider, err)
+		}
+		if !ok {
+			t.Errorf("%s has no spec: block, want one — every simulated provider publishes a "+
+				"machine-readable specification covering the routes Servicesim simulates for it", provider)
+		}
+	}
+}
+
+// TestRecordAPIVersionWhenPresentIsNonEmpty checks the one field the schema
+// allows to be entirely absent: api_version is legitimately empty for a
+// prose-sourced entry, but a present key with blank or whitespace-only
+// content would be a version nobody could act on. A plain string field
+// cannot tell "absent" from "present but empty" apart — both decode to ""
+// — so this only catches whitespace-only values; TestSpecSourcedEntriesCarryAPIVersion
+// is what actually pins that a spec-sourced entry carries a real one.
+func TestRecordAPIVersionWhenPresentIsNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range contracts.Providers() {
+		for name, record := range provenance(t, provider) {
+			if record.APIVersion == "" {
+				continue
+			}
+			if strings.TrimSpace(record.APIVersion) == "" {
+				t.Errorf("%s/%s: api_version is whitespace-only, want a real version or an absent key", provider, name)
+			}
+		}
+	}
+}
+
+// TestSpecSourcedEntriesCarryAPIVersion pins the pair the schema makes
+// enforceable: an entry whose documentation_url IS the provider's spec.url
+// was read from a versioned document, so it must carry api_version.
+//
+// It does NOT require spec.url to be cited by at least one entry. A
+// provider's spec: block is recorded even when every entry's
+// documentation_url is a prose page (Tavily's case, and two of Exa's five
+// /findSimilar entries): the spec's sha256 is still a valid drift signal for
+// the whole provider — "did the vendor's machine-readable surface move at
+// all?" — even where no single golden was read from it directly. See
+// contracts/README.md "Keeping them honest": a changed hash means re-read
+// the consumed fields against the per-entry pages AND the spec, it is not
+// itself a diff of what changed.
+func TestSpecSourcedEntriesCarryAPIVersion(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range contracts.Providers() {
+		spec, ok, err := contracts.ProviderSpec(provider)
+		if err != nil {
+			t.Fatalf("%s: ProviderSpec: %v", provider, err)
+		}
+		if !ok {
+			continue
+		}
+
+		for name, record := range provenance(t, provider) {
+			if record.DocumentationURL != spec.URL {
+				continue
+			}
+			if strings.TrimSpace(record.APIVersion) == "" {
+				t.Errorf("%s/%s: read from spec %s but carries no api_version", provider, name, spec.URL)
+			}
+		}
+	}
+}
 
 // TestExaResultsCarryNoScore guards the single most likely Exa mistake. The plan
 // document says results carry a score float; Exa's schema has no such field, and
