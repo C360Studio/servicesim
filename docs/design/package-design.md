@@ -2838,6 +2838,12 @@ written against, and all three must run **under the default configuration**:
 - An aborting fault (`close_before_headers`) followed by `AwaitRequests`, asserting the entry is present with
   `Outcome.Aborted`.
 
+**Shipped as (Phase 6 unit 6):** `AssertMaxRate`, `AssertMinGap` and `AssertObservedDuration` are the pacing
+evidence decision D5 (`docs/adopter-backlog.md`) chose over an enforced rate limiter — the request-level half
+of the pacing story `AssertStreamPacing` already gives the streamed one. All three read the same real-time
+`ArrivedAt`/`CompletedAt` pair `AssertOverlapped` does, and are safe on a loaded machine in only one
+direction: real time can only spread arrivals out or lengthen a duration, never invent a tighter one.
+
 ---
 
 ## 3. Determinism strategy

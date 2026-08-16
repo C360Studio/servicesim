@@ -178,6 +178,16 @@ unreadable whole-file one. `sim.AwaitStreamClosed(t, entry.Seq)` is the wait for
 once the exchange closes (`bytes_written`, `chunks_sent`, `state`); everything else on `entry.Outcome.Stream` —
 `testkit.AssertStreamPacing` included — is final before the client sees a byte and needs no wait at all.
 
+For a client-side rate limiter, `testkit.AssertMaxRate(t, entries, limit, per)` and
+`testkit.AssertMinGap(t, entries, gap)` are the request-level evidence decision D5, in
+[`docs/adopter-backlog.md`](docs/adopter-backlog.md), chose over an enforced limiter: proving a budget held
+from the journal's real `arrived_at` timestamps, rather than a simulator making
+response status a function of wall-clock time. `testkit.AssertObservedDuration(t, e, atLeast)` is the
+single-entry sibling, for proving a `delay:` or `delay_after_headers:` attempt was really observed. All three
+are safe on a loaded machine in only one direction — real time can only spread arrivals out or lengthen a
+duration, never manufacture a tighter or shorter one — so only a client that genuinely broke its budget, or a
+hang that genuinely was not observed, fails them.
+
 | Example file | What it shows |
 |---|---|
 | [`examples/adapter_test.go`](examples/adapter_test.go) | The canonical first test: prove the request was correct. |
@@ -185,6 +195,7 @@ once the exchange closes (`bytes_written`, `chunks_sent`, `state`); everything e
 | [`examples/namespace_test.go`](examples/namespace_test.go) | Parallel subtests sharing one simulator, each in its own state lane. |
 | [`examples/async_test.go`](examples/async_test.go) | Create-then-poll through `testkit`, and the same flow wired by hand through `provider.Deps`. |
 | [`examples/stream_test.go`](examples/stream_test.go) | A scripted Perplexity SSE response: `testkit.AssertGoldenSSE` against a golden transcript, `testkit.AssertStreamPacing` before the first byte, `sim.AwaitStreamClosed` after the exchange closes. |
+| [`examples/pacing_test.go`](examples/pacing_test.go) | A tiny client-side limiter proven against the journal with `testkit.AssertMaxRate` — decision D5's evidence-not-enforcement pattern. |
 
 ## As a container
 

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/c360studio/servicesim/provider"
 	"github.com/google/go-cmp/cmp"
@@ -241,6 +242,151 @@ func AssertOverlapped(tb testing.TB, a, b Entry) {
 	tb.Errorf("requests did not overlap: seq %d ran %s..%s, seq %d ran %s..%s",
 		a.Seq, a.ArrivedAt.Format(stampLayout), a.CompletedAt.Format(stampLayout),
 		b.Seq, b.ArrivedAt.Format(stampLayout), b.CompletedAt.Format(stampLayout))
+}
+
+// AssertMaxRate asserts that no per-long window of arrivals held more than
+// limit of them — "no per contains more than limit calls" — which is the RPS
+// evidence a client-side limiter is proven against under decision D5
+// (docs/adopter-backlog.md): Servicesim ships no enforced rate limiter,
+// because an enforced one would make response status a function of
+// wall-clock time and contradict the determinism doctrine. Entries are
+// sorted by ArrivedAt first — never assume journal order, which reflects
+// completion and carries no guarantee at all across namespaces or providers
+// — then, for every arrival i, the half-open window [ArrivedAt[i],
+// ArrivedAt[i]+per) is counted: an arrival exactly per after the anchor is
+// NOT in that window. A window over limit fails, naming the anchor's seq and
+// arrival stamp, the count, the limit, and every seq the window held.
+//
+// It compares real, wall-clock arrival timestamps — provider.SystemClock by
+// default; see [WithClock]'s warning — and is safe on a loaded machine in
+// only one direction: a slow scheduler can only SPREAD arrivals further
+// apart, which can never manufacture a window that looks busier than the
+// client actually made it. Only a client that really exceeded its declared
+// budget fails this. There is deliberately no "minimum observed rate" form:
+// that would be an upper bound on wall-clock elapsed time, exactly the flake
+// this repository refuses to add.
+//
+// limit < 1 or per <= 0 is a caller error and fails tb with a message rather
+// than panicking. Fewer than two entries passes trivially.
+func AssertMaxRate(tb testing.TB, entries []Entry, limit int, per time.Duration) {
+	tb.Helper()
+
+	if limit < 1 {
+		tb.Errorf("testkit: AssertMaxRate called with limit %d, want at least 1", limit)
+		return
+	}
+	if per <= 0 {
+		tb.Errorf("testkit: AssertMaxRate called with per %s, want a positive duration", per)
+		return
+	}
+	if len(entries) < 2 {
+		return
+	}
+
+	sorted := sortedByArrival(entries)
+	for i, anchor := range sorted {
+		end := anchor.ArrivedAt.Add(per)
+
+		var window []Entry
+		for _, e := range sorted[i:] {
+			if !e.ArrivedAt.Before(end) {
+				break // sorted ascending: nothing further can re-enter the window
+			}
+			window = append(window, e)
+		}
+		if len(window) <= limit {
+			continue
+		}
+
+		seqs := make([]uint64, len(window))
+		for j, e := range window {
+			seqs[j] = e.Seq
+		}
+		tb.Errorf("seq %d at %s: %d arrivals within %s (limit %d), seqs %v",
+			anchor.Seq, anchor.ArrivedAt.Format(stampLayout), len(window), per, limit, seqs)
+	}
+}
+
+// AssertMinGap asserts every pair of consecutive arrivals — sorted by
+// ArrivedAt, not journal order — is at least gap apart, which is the D5
+// evidence for a client that paces by spacing rather than by budget (see
+// [AssertMaxRate] for the sibling evidence and the reasoning both share). A
+// pair closer than gap fails, naming both seqs and the observed gap.
+//
+// Like [AssertMaxRate], it compares real wall-clock timestamps and is safe
+// on a loaded machine in only one direction: a slow scheduler can only WIDEN
+// the observed gap, never close it, so a client that really paced itself
+// never fails this on a busy CI runner. Fewer than two entries passes
+// trivially. There is deliberately no "maximum gap" form, for the same
+// reason [AssertMaxRate] has no "minimum rate" form: it would be an upper
+// bound on wall-clock elapsed time.
+func AssertMinGap(tb testing.TB, entries []Entry, gap time.Duration) {
+	tb.Helper()
+
+	if len(entries) < 2 {
+		return
+	}
+
+	sorted := sortedByArrival(entries)
+	for i := 1; i < len(sorted); i++ {
+		prev, cur := sorted[i-1], sorted[i]
+		if got := cur.ArrivedAt.Sub(prev.ArrivedAt); got < gap {
+			tb.Errorf("seq %d arrived %s after seq %d (%s and %s), want at least %s",
+				cur.Seq, got, prev.Seq, prev.ArrivedAt.Format(stampLayout), cur.ArrivedAt.Format(stampLayout), gap)
+		}
+	}
+}
+
+// AssertObservedDuration asserts CompletedAt - ArrivedAt is at least
+// atLeast, which is how a consumer proves a hang was REALLY observed rather
+// than merely requested — the D5 counterpart to [AssertMaxRate] and
+// [AssertMinGap] for a single entry's duration, after a delay: or
+// delay_after_headers: fault attempt. It fails naming the seq, both
+// timestamps and the observed duration.
+//
+// What CompletedAt means depends on the entry's class
+// (docs/design/package-design.md §2.2 rule 3):
+//
+//   - a non-streaming exchange: the instant the response finished, or, for an
+//     aborting fault, the instant just before the connection was destroyed —
+//     after every scripted hang, including an after-headers one;
+//   - a streamed exchange: provisional until the stream closes — call
+//     [Sim.AwaitStreamClosed] (or [Namespace.AwaitStreamClosed]) first and
+//     read the entry it returns, not one from an earlier Requests or Journal
+//     call;
+//   - a client-cancelled exchange: the instant the server observed the
+//     cancellation, not the instant the client gave up — and the entry
+//     lands only after the client has already returned, so read it through
+//     [Sim.AwaitRequests] (or [Namespace.AwaitRequests]), never a
+//     synchronous Requests call.
+//
+// It compares real, wall-clock timestamps — provider.SystemClock by default;
+// see [WithClock]'s warning — and is safe on a loaded machine in only one
+// direction: a slow machine can only LENGTHEN the observed duration, never
+// shorten it, so a hang that really happened never fails to be observed here
+// just because CI was busy. There is deliberately no "maximum duration"
+// form: that is an upper bound on wall-clock elapsed time, exactly the flake
+// this repository refuses to add.
+func AssertObservedDuration(tb testing.TB, e Entry, atLeast time.Duration) {
+	tb.Helper()
+
+	if got := e.CompletedAt.Sub(e.ArrivedAt); got < atLeast {
+		tb.Errorf("seq %d observed %s..%s (%s), want at least %s",
+			e.Seq, e.ArrivedAt.Format(stampLayout), e.CompletedAt.Format(stampLayout), got, atLeast)
+	}
+}
+
+// sortedByArrival returns a copy of entries ordered by ArrivedAt, so a
+// pacing assertion never mutates the caller's slice and never assumes
+// journal order — which reflects completion, not arrival, and carries no
+// guarantee at all across namespaces or providers. The sort is stable so
+// that entries sharing an identical ArrivedAt — real timestamps can coincide
+// exactly — keep the caller's order, and a failure message names the same
+// seq on every run.
+func sortedByArrival(entries []Entry) []Entry {
+	sorted := slices.Clone(entries)
+	slices.SortStableFunc(sorted, func(a, b Entry) int { return a.ArrivedAt.Compare(b.ArrivedAt) })
+	return sorted
 }
 
 // AssertNamespacesIsolated asserts two namespaces of one [Sim] did not interfere:

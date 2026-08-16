@@ -16,7 +16,7 @@ Recorded 2026-08-16 (midday), against **v0.3.0**, tagged from `main` at `ae4c8e6
 | 3 — the async job machine | **shipped** in v0.2.0 (A1–A7) |
 | 4 — the remaining synchronous routes | **shipped** in v0.3.0 |
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
-| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`), 2 (`malicious-content`), 3 (`oversized_body`), 4 (timeout/brownout/hang-then-abort/credential-rotation built-ins, `AssertDifferentCredential`) and 5 (`delay_after_headers`) done; Phase 7's provenance-date item is already done |
+| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`), 2 (`malicious-content`), 3 (`oversized_body`), 4 (timeout/brownout/hang-then-abort/credential-rotation built-ins, `AssertDifferentCredential`), 5 (`delay_after_headers`) and 6 (`AssertMaxRate`/`AssertMinGap`/`AssertObservedDuration`, the request-level pacing evidence) done; Phase 7's provenance-date item is already done |
 
 **v0.3.0** is the last tag (2026-08-16): Phase 4's three routes, Phase 5's streaming end to end (four `.sse`
 goldens, the `streaming` built-in, four testkit assertions), honest provenance dates and goldens for the async
@@ -43,10 +43,12 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    hang) is done; unit 2 (the generic `malicious-content` built-in) is done; unit 3 (the `oversized_body` fault
    kind and the `oversized-body` built-in) is done; unit 4 (the `timeout`/`brownout`/`hang-then-abort`/
    `credential-rotation` built-ins and `testkit.AssertDifferentCredential`) is done; unit 5 (`delay_after_headers`,
-   the fault modifier and its `hang-then-abort` third attempt) is done; next is the observed-pacing assertion per
-   D5, then a closing docs sweep for onboarding and correctness (owner, 2026-08-16) that also carries the D9
-   framing question. Trickle bodies now have Phase 5's chunked-write path, and unit 5's after-headers seam, to sit
-   on. Note the over-redaction defect listed there was fixed in v0.1.1 already — verify before re-fixing.
+   the fault modifier and its `hang-then-abort` third attempt) is done; unit 6 (the request-level pacing
+   assertions per D5 — `testkit.AssertMaxRate`, `testkit.AssertMinGap`, `testkit.AssertObservedDuration` —
+   plus a consumer-facing example) is done, so Phase 6's code units are now complete; next is a closing docs
+   sweep for onboarding and correctness (owner, 2026-08-16) that also carries the D9 framing question. Trickle
+   bodies now have Phase 5's chunked-write path, and unit 5's after-headers seam, to sit on. Note the
+   over-redaction defect listed there was fixed in v0.1.1 already — verify before re-fixing.
 3. Tell the adopter v0.3.0 exists; their questions in the two contract READMEs are still open.
 
 ### How the work has been run, for whoever picks it up
@@ -123,7 +125,7 @@ These are settled. Re-open one only with new evidence, and record why.
 |  D2 | Does a body-placed Tavily api_key AUTHENTICATE, or merely stop being an error? This reverses a documented contract decision, where ADR-0002 (verifi... | **Body-placed Tavily key authenticates** on POST routes. Shipped in v0.1.1.  |
 |  D3 | Multi-replica namespace state: document a single-replica exemption, or share state across replicas? | **Documented single-replica exemption**, enforced by a manifest defaulting to `replicas: 1`. Not shared state.  |
 |  D4 | How is the callback injector bounded against the never-dials-outward property? | **Ship the no-dialer half** of the callback injector first; the outbound dialer is a separate, later decision.  |
-|  D5 | Enforced per-lane RPS limiting, which makes response status a function of wall-clock time and contradicts the repo's stated determinism doctrine (s... | **Assertion over journal timestamps first**; build enforced RPS only if that proves insufficient.  |
+|  D5 | Enforced per-lane RPS limiting, which makes response status a function of wall-clock time and contradicts the repo's stated determinism doctrine (s... | **Assertion over journal timestamps first**; build enforced RPS only if that proves insufficient. The assertion half — `testkit.AssertMaxRate`, `AssertMinGap`, `AssertObservedDuration` — shipped in Phase 6 unit 6.  |
 |  D6 | MCP and ODR are two new provider profiles for G-3. Build them in-tree, or make out-of-tree providers a supported path? | **Build MCP and ODR in-tree** (owner overrode the recommendation to export the seam instead).  |
 |  D7 | Exa /contents, /findSimilar and Tavily /extract have no verified contract in this repository — contracts/exa/README.md:23 explicitly declines to as... | **Re-verify against vendor docs first** for `/contents`, `/findSimilar`, `/extract` — ADR-0002 holds as written.  |
 |  D8 | What should the adopter do about stream:true fixtures in the window before SSE ships (Phase 5)? | Tell the adopter **not to record `stream:true` fixtures** yet, and ship a `stream: reject` policy so their path fails loudly. **Reversed 2026-08-15: Phase 5 has shipped.** `stream: {when_requested: stream, deltas: [...]}` now serves a real, golden-tested SSE sequence on both Perplexity surfaces — the adopter can record `stream:true` fixtures today, against `testkit.AssertGoldenSSE`. `stream: reject` remains available for a suite that wants a hard failure instead. |
@@ -563,16 +565,18 @@ trickle-body vector in Phase 6 can now build on the same chunked-write path this
 >
 > **State on 2026-08-16:** units 1 (`CompletedAt`), 2 (the generic `malicious-content` built-in), 3 (the
 > `oversized_body` fault kind and the `oversized-body` built-in), 4 (the `timeout`/`brownout`/`hang-then-abort`/
-> `credential-rotation` built-ins and `testkit.AssertDifferentCredential`) and 5 (the `delay_after_headers` fault
-> modifier, its request-time streaming mirror, and `hang-then-abort`'s third attempt) done on `phase-6`; otherwise
-> not started, apart from three items that other phases already covered — marked in the list below. Read the
-> current `provider/handle.go` and `provider/fault_exec.go` before trusting the line numbers quoted here; Phase 5
-> rewrote the execute path (a stream branch, `hijackReset`, per-chunk `sleep`), and the journal-early record now
-> also fires for streams (`if out.Aborted || resp.Stream != nil { record() }`), a shape `phase-6` unit 1 has since
-> split in two: streams still record before the delay; a non-streaming aborting fault now waits out its delay,
-> then records, so `CompletedAt` observes the hang instead of the instant the attempt was decided — except
-> `truncate_body` carrying `delay_after_headers`, unit 5's one further split: that record waits for the
-> AFTER-headers hang too, from inside `truncateBody` itself, immediately before the destructive write.
+> `credential-rotation` built-ins and `testkit.AssertDifferentCredential`), 5 (the `delay_after_headers` fault
+> modifier, its request-time streaming mirror, and `hang-then-abort`'s third attempt) and 6 (the request-level
+> pacing assertions per D5 — `testkit.AssertMaxRate`, `AssertMinGap`, `AssertObservedDuration` — plus a
+> consumer-facing example) done on `phase-6`; every code unit of this phase is now shipped, leaving only the
+> closing docs sweep. Read the current `provider/handle.go` and `provider/fault_exec.go` before trusting the
+> line numbers quoted here; Phase 5 rewrote the execute path (a stream branch, `hijackReset`, per-chunk
+> `sleep`), and the journal-early record now also fires for streams (`if out.Aborted || resp.Stream != nil {
+> record() }`), a shape `phase-6` unit 1 has since split in two: streams still record before the delay; a
+> non-streaming aborting fault now waits out its delay, then records, so `CompletedAt` observes the hang
+> instead of the instant the attempt was decided — except `truncate_body` carrying `delay_after_headers`, unit
+> 5's one further split: that record waits for the AFTER-headers hang too, from inside `truncateBody` itself,
+> immediately before the destructive write.
 
 The highest value-per-effort phase in the backlog, because the audit found most of these primitives already exist and
 are missing only packaging. Delays are unbounded and context-aware with no WriteTimeout to cut them off; the
@@ -658,10 +662,17 @@ registry disable. The pacing fix is what makes journal timestamps usable as the 
 - ~~Fix the over-redaction defect that mangles finding text~~ **DONE in v0.1.1** ("Redaction no longer mangles
   finding text; real credential values in free text still mask" — the tag message). Verify with the journal before
   re-fixing; the item is kept so the audit list stays complete.
-- Ship the observed-pacing assertion helper over journal arrival timestamps, per decision 5. **Half exists**: Phase 5
-  shipped `testkit.AssertStreamPacing` over a streamed entry's `outcome.stream.pace_ms`; the request-level helper
-  over `arrived_at`/`completed_at` across entries (the RPS evidence D5 asks for) is still open; the `CompletedAt` fix
-  it depended on is now in (`phase-6`, unit 1).
+- ~~Ship the observed-pacing assertion helper over journal arrival timestamps, per decision 5.~~ **DONE on
+  `phase-6` (unit 6).** Phase 5 shipped `testkit.AssertStreamPacing` over a streamed entry's
+  `outcome.stream.pace_ms`; this unit ships the request-level half: `testkit.AssertMaxRate` (no window of
+  length `per` holds more than `limit` arrivals), `testkit.AssertMinGap` (every consecutive pair of
+  arrivals is at least `gap` apart) and `testkit.AssertObservedDuration` (one entry's
+  `completed_at - arrived_at` is at least `atLeast` — the `CompletedAt` fix from unit 1 consumed directly).
+  All three compare real journal timestamps and are safe on a loaded machine in only one direction (real
+  time can only spread arrivals out or lengthen a duration), with no "minimum rate" / "maximum gap" /
+  "maximum duration" mirror — those would be upper bounds on wall-clock elapsed time, the flake this
+  repository refuses to add. `examples/pacing_test.go` is the consumer-facing pattern: a tiny client-side
+  limiter proven against `AssertMaxRate`.
 
 - **Closing unit — a docs sweep for onboarding and correctness (owner, 2026-08-16).** Run it as a unit with an
   outside-reader lens: can a new consumer go from README to `testkit.WithBuiltin` to a passing test without
@@ -758,8 +769,9 @@ limiter proof — both reachable in Tier-1 without any new doctrine exception.
   places it appears — README.md:15, CLAUDE.md:64, Dockerfile:13-16, package-design.md:2981 — because --healthcheck
   already dials and the claim was inaccurate at v0.1.0. The defensible version is 'unmatched traffic fails closed and is
   never proxied'.
-- Observed-RPS assertion over journal arrival timestamps (shipped in Phase 6) as the answer to the limiter
-  requirement. Revisit an enforcing mode only if that is demonstrably insufficient.
+- Observed-RPS assertion over journal arrival timestamps (shipped in Phase 6 unit 6 — `testkit.AssertMaxRate`,
+  `AssertMinGap`, `AssertObservedDuration`) as the answer to the limiter requirement. Revisit an enforcing mode
+  only if that is demonstrably insufficient.
 - If an enforcing mode is ever built: explicitly opt-in, never fires unless configured, and honouring the Phase 1
   decision that a dynamic 429 does not claim a call index.
 - If an outbound dialer is ever built, the bounds are already specified by the --healthcheck precedent and are

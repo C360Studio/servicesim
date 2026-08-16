@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -359,6 +360,239 @@ func TestAssertOverlappedRejectsAdjacentRequests(t *testing.T) {
 
 	overlapping := testkit.Entry{Seq: 3, ArrivedAt: instant.Add(500 * time.Millisecond), CompletedAt: instant.Add(2 * time.Second)}
 	testkit.AssertOverlapped(t, first, overlapping)
+}
+
+// arrivalAt builds a synthetic entry carrying only Seq and ArrivedAt, offset
+// from a fixed instant by ms — the shape every pacing assertion's synthetic
+// table below reads.
+func arrivalAt(instant time.Time, ms int, seq uint64) testkit.Entry {
+	return testkit.Entry{Seq: seq, ArrivedAt: instant.Add(time.Duration(ms) * time.Millisecond)}
+}
+
+// TestAssertMaxRate covers the synthetic shapes named in the unit's
+// definition of done: passing at the limit, failing one over (naming the
+// anchor seq, the count, the limit and the offending seqs), the half-open
+// window boundary, unsorted input, fewer than two entries, and the two
+// caller-error shapes.
+func TestAssertMaxRate(t *testing.T) {
+	t.Parallel()
+
+	instant := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	at := func(ms int, seq uint64) testkit.Entry { return arrivalAt(instant, ms, seq) }
+
+	t.Run("passes at the limit", func(t *testing.T) {
+		t.Parallel()
+		entries := []testkit.Entry{at(0, 1), at(100, 2), at(200, 3)}
+		testkit.AssertMaxRate(t, entries, 3, time.Second)
+	})
+
+	t.Run("fails one over the limit", func(t *testing.T) {
+		t.Parallel()
+		entries := []testkit.Entry{at(0, 1), at(100, 2), at(200, 3)}
+
+		stub := &stubTB{}
+		testkit.AssertMaxRate(stub, entries, 2, time.Second)
+		assert.True(t, stub.Failed())
+		assert.Contains(t, stub.Message(), "seq 1")
+		assert.Contains(t, stub.Message(), "limit 2")
+		assert.Contains(t, stub.Message(), "[1 2 3]")
+	})
+
+	t.Run("the window is half-open", func(t *testing.T) {
+		t.Parallel()
+		// The second arrival lands EXACTLY one second after the first: the
+		// definition excludes it from the first arrival's window.
+		entries := []testkit.Entry{at(0, 1), at(1000, 2)}
+		testkit.AssertMaxRate(t, entries, 1, time.Second)
+	})
+
+	t.Run("unsorted input is sorted", func(t *testing.T) {
+		t.Parallel()
+		entries := []testkit.Entry{at(200, 3), at(0, 1), at(100, 2)}
+		input := slices.Clone(entries)
+
+		stub := &stubTB{}
+		testkit.AssertMaxRate(stub, entries, 2, time.Second)
+		assert.True(t, stub.Failed(), "unsorted input must still be read as the same offending window")
+		// A scan that skipped the sort would anchor on seq 3 (listed first) and
+		// name seqs [3 1 2]; only the true chronological anchor and order prove
+		// the sort ran.
+		assert.Contains(t, stub.Message(), "seq 1 at", "must name the chronologically first arrival as the anchor")
+		assert.Contains(t, stub.Message(), "[1 2 3]", "must list the seqs in arrival order")
+		assert.Equal(t, input, entries, "must not reorder the caller's slice")
+	})
+
+	t.Run("unsorted input that holds the budget passes", func(t *testing.T) {
+		t.Parallel()
+		// Listed out of arrival order (seq 2 arrives after seq 1 despite being
+		// listed first). A scan that skipped the sort would anchor on seq 2 and
+		// wrongly fold seq 1 into its window too; sorting first is what makes the
+		// two windows disjoint.
+		entries := []testkit.Entry{at(1000, 2), at(0, 1)}
+		testkit.AssertMaxRate(t, entries, 1, time.Second)
+	})
+
+	t.Run("fewer than two entries passes", func(t *testing.T) {
+		t.Parallel()
+		testkit.AssertMaxRate(t, nil, 1, time.Second)
+		testkit.AssertMaxRate(t, []testkit.Entry{at(0, 1)}, 1, time.Second)
+	})
+
+	t.Run("limit under 1 is a caller error", func(t *testing.T) {
+		t.Parallel()
+		stub := &stubTB{}
+		testkit.AssertMaxRate(stub, []testkit.Entry{at(0, 1), at(1, 2)}, 0, time.Second)
+		assert.True(t, stub.Failed())
+		assert.Contains(t, stub.Message(), "limit")
+	})
+
+	t.Run("per <= 0 is a caller error", func(t *testing.T) {
+		t.Parallel()
+		stub := &stubTB{}
+		testkit.AssertMaxRate(stub, []testkit.Entry{at(0, 1), at(1, 2)}, 1, 0)
+		assert.True(t, stub.Failed())
+		assert.Contains(t, stub.Message(), "per")
+	})
+}
+
+// TestAssertMinGap covers the synthetic shapes named in the unit's
+// definition of done: passing at exactly gap, failing one nanosecond under,
+// unsorted input, and fewer than two entries.
+func TestAssertMinGap(t *testing.T) {
+	t.Parallel()
+
+	instant := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	at := func(ms int, seq uint64) testkit.Entry { return arrivalAt(instant, ms, seq) }
+
+	t.Run("passes at exactly gap", func(t *testing.T) {
+		t.Parallel()
+		entries := []testkit.Entry{at(0, 1), at(100, 2)}
+		testkit.AssertMinGap(t, entries, 100*time.Millisecond)
+	})
+
+	t.Run("fails one nanosecond under", func(t *testing.T) {
+		t.Parallel()
+		entries := []testkit.Entry{
+			{Seq: 1, ArrivedAt: instant},
+			{Seq: 2, ArrivedAt: instant.Add(100*time.Millisecond - time.Nanosecond)},
+		}
+
+		stub := &stubTB{}
+		testkit.AssertMinGap(stub, entries, 100*time.Millisecond)
+		assert.True(t, stub.Failed())
+		assert.Contains(t, stub.Message(), "seq 1")
+		assert.Contains(t, stub.Message(), "seq 2")
+		assert.Contains(t, stub.Message(), "99.999999ms", "must name the observed gap")
+	})
+
+	t.Run("unsorted input is sorted", func(t *testing.T) {
+		t.Parallel()
+		// Listed out of arrival order: a scan of consecutive slice pairs as
+		// given (seq 2 -> seq 3 -> seq 1) would never compare seq 1 against seq
+		// 2 at all, and would instead report a negative gap from seq 3 to seq 1
+		// — naming seq 3, not seq 2. Only the sorted pair (seq 1, seq 2) is the
+		// real offending one.
+		entries := []testkit.Entry{at(100, 2), at(300, 3), at(0, 1)}
+		input := slices.Clone(entries)
+
+		stub := &stubTB{}
+		testkit.AssertMinGap(stub, entries, 150*time.Millisecond)
+		assert.True(t, stub.Failed(), "the real 100ms gap (seq 1 -> seq 2) must be found regardless of input order")
+		assert.Contains(t, stub.Message(), "seq 1")
+		assert.Contains(t, stub.Message(), "seq 2")
+		assert.NotContains(t, stub.Message(), "seq 3", "seq 3 is not part of the offending pair once sorted")
+		assert.Equal(t, input, entries, "must not reorder the caller's slice")
+	})
+
+	t.Run("unsorted input that holds the gap passes", func(t *testing.T) {
+		t.Parallel()
+		// Out of arrival order: comparing consecutive slice entries as given
+		// (seq 3 -> seq 1) would see a negative gap and fail; sorting first is
+		// what makes every consecutive pair a real, non-negative gap.
+		entries := []testkit.Entry{at(300, 3), at(0, 1), at(150, 2)}
+		testkit.AssertMinGap(t, entries, 150*time.Millisecond)
+	})
+
+	t.Run("fewer than two entries passes", func(t *testing.T) {
+		t.Parallel()
+		testkit.AssertMinGap(t, nil, time.Second)
+		testkit.AssertMinGap(t, []testkit.Entry{at(0, 1)}, time.Second)
+	})
+}
+
+// TestAssertObservedDuration covers the synthetic shapes named in the unit's
+// definition of done: passing at exactly atLeast, failing under it, and a
+// failure message that names both stamps.
+func TestAssertObservedDuration(t *testing.T) {
+	t.Parallel()
+
+	instant := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("passes at exactly atLeast", func(t *testing.T) {
+		t.Parallel()
+		e := testkit.Entry{Seq: 1, ArrivedAt: instant, CompletedAt: instant.Add(400 * time.Millisecond)}
+		testkit.AssertObservedDuration(t, e, 400*time.Millisecond)
+	})
+
+	t.Run("fails under atLeast", func(t *testing.T) {
+		t.Parallel()
+		e := testkit.Entry{Seq: 7, ArrivedAt: instant, CompletedAt: instant.Add(399 * time.Millisecond)}
+
+		stub := &stubTB{}
+		testkit.AssertObservedDuration(stub, e, 400*time.Millisecond)
+		assert.True(t, stub.Failed())
+		assert.Contains(t, stub.Message(), "seq 7")
+		assert.Contains(t, stub.Message(), "00:00:00.000000", "the message must name the arrival stamp")
+		assert.Contains(t, stub.Message(), "00:00:00.399000", "the message must name the completion stamp")
+		assert.Contains(t, stub.Message(), "399ms", "the message must name the observed duration")
+		assert.Contains(t, stub.Message(), "400ms", "the message must name the wanted duration")
+	})
+}
+
+// TestPacingAssertionsLive is the live counterpart to the synthetic tables
+// above: real journal arrivals from a running Sim, not hand-built entries —
+// deterministic in the direction that matters for each helper.
+func TestPacingAssertionsLive(t *testing.T) {
+	t.Parallel()
+
+	t.Run("AssertMaxRate over N serial requests", func(t *testing.T) {
+		t.Parallel()
+
+		sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+		const n = 4
+		for range n {
+			entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "test-key"})
+		}
+		entries := sim.Requests(provider.Exa)
+		require.Len(t, entries, n)
+
+		// n calls inside an hour-long window trivially holds a budget of n.
+		testkit.AssertMaxRate(t, entries, n, time.Hour)
+
+		// The same n calls cannot hold a budget of 1: this direction is what
+		// proves the assertion actually reads the arrivals rather than
+		// passing unconditionally.
+		stub := &stubTB{}
+		testkit.AssertMaxRate(stub, entries, 1, time.Hour)
+		assert.True(t, stub.Failed(), "a budget of 1 cannot survive n serial calls inside an hour")
+	})
+
+	t.Run("AssertObservedDuration over a real 400ms hang", func(t *testing.T) {
+		t.Parallel()
+
+		sim := testkit.Start(t, testkit.WithBuiltin("brownout"), testkit.WithProviders(provider.Exa))
+		for range 4 {
+			entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "test-key"})
+		}
+		entries := sim.Requests(provider.Exa)
+		require.Len(t, entries, 4)
+
+		// entries[3] is the ladder's fourth call: brownout.yaml's declared
+		// 400ms delay (scenarios/scenarios_test.go's brownoutLadderMS), unit
+		// 1's fixed completed_at, read here through the new helper instead
+		// of the raw Sub scenarios_test.go's own live test asserts directly.
+		testkit.AssertObservedDuration(t, entries[3], 400*time.Millisecond)
+	})
 }
 
 // TestAssertNamespacesIsolated is the property the namespace feature exists to
