@@ -30,17 +30,17 @@ validation and wire shapes live, and it is the part that grows when a fourth ven
 No account, no credentials, no configuration, and nothing to clone:
 
 ```bash
-docker run --rm -p 8080-8083:8080-8083 ghcr.io/c360studio/servicesim:v0.3.0
+docker run --rm -p 8080-8083:8080-8083 ghcr.io/c360studio/servicesim:v0.4.0
 ```
 
 The image is public and multi-architecture (`linux/amd64`, `linux/arm64`). Tags are published in both spellings
-against one digest — `v0.3.0` and `0.3.0`, `v0.3` and `0.3`, `v0` and `0` — plus `latest` and `sha-<commit>`.
+against one digest — `v0.4.0` and `0.4.0`, `v0.4` and `0.4`, `v0` and `0` — plus `latest` and `sha-<commit>`.
 
 For release-critical CI, pin the digest rather than a tag, so a re-publish cannot move under you — this is the
-`v0.3.0` digest:
+`v0.4.0` digest:
 
 ```text
-ghcr.io/c360studio/servicesim@sha256:6009f34cfb91cde0704dfc61d25c06587f22dd09ffc15e2004446a407bea7e18
+ghcr.io/c360studio/servicesim@sha256:5a7d6d055fa4d6f9662d538823e8f9274b28416fb415b152a9da39f22f03c08f
 ```
 
 Working on Servicesim itself, or want the tip of `main`? `task image:build` produces `servicesim:dev` locally, and
@@ -236,7 +236,7 @@ Same handlers, same scenarios, reachable from any language.
 ```yaml
 services:
   servicesim:
-    image: ghcr.io/c360studio/servicesim:v0.3.0
+    image: ghcr.io/c360studio/servicesim:v0.4.0
     command: ["--scenario", "builtin:fusion-overlap"]
 
   app-tests:
@@ -409,7 +409,7 @@ entirely and much later:
 ## Built-in protocol scenarios
 
 Twenty scenarios ship inside the binary. Select one with `--scenario builtin:<name>` — for example,
-`docker run --rm -p 8080-8083:8080-8083 ghcr.io/c360studio/servicesim:v0.3.0 --scenario builtin:rate-limited` — or
+`docker run --rm -p 8080-8083:8080-8083 ghcr.io/c360studio/servicesim:v0.4.0 --scenario builtin:rate-limited` — or
 `testkit.WithBuiltin("<name>")`. They cover *protocol* behaviour, which is the same for every consumer;
 product-specific corpora belong in your own repository.
 
@@ -452,7 +452,7 @@ repository and is mounted read-only. Changing it does not require a Servicesim r
 ```yaml
 services:
   servicesim:
-    image: ghcr.io/c360studio/servicesim:v0.3.0
+    image: ghcr.io/c360studio/servicesim:v0.4.0
     command: ["--scenario", "/scenarios/fusion-overlap.yaml"]
     volumes:
       - ./test/fixtures/research:/scenarios:ro
