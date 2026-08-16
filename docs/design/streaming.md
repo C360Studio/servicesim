@@ -1,5 +1,16 @@
 # SSE streaming
 
+> ## IMPLEMENTED — Phase 5 shipped 2026-08-15/16 (units 1–4)
+>
+> Unreleased until the next tag. This document is now the record of the streaming design **as built**. The code is authoritative; each unit's
+> banner below and every "Shipped as (Phase 5 unit N)" note in the body record where the illustrative sketches and
+> the shipped code parted ways and why. What shipped: the provider-blind SSE transport, journal-early append and
+> close, `GrammarDelta` in `stream_mode: full` on the three Sonar routes, the three `stream_*` fault kinds and
+> per-chunk pacing, `GrammarTyped` on the three Agent routes, testkit `AssertGoldenSSE` / `AwaitStreamClosed` /
+> `AssertStreamPacing` / `AssertStreamUsage`, the `streaming` built-in, and the consumer docs. Not shipped, by
+> decision: `stream_mode: concise` (served as full with a warning), the `response.reasoning.*` and
+> `response.failed` events, Exa/Tavily streaming.
+>
 > ## SHIPPED (unit 3) — 2026-08-15
 >
 > **Phase 5 unit 3 has landed**: the Agent API's `GrammarTyped` grammar, on `perplexity_agent`. The projection

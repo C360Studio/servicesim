@@ -6,36 +6,44 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-15 (late evening), against **v0.2.0** plus Phase 2 and Phase 4 on `main`, unreleased.
+Recorded 2026-08-16 (early), against **v0.2.0** plus Phases 2, 4 and 5 on `main`, unreleased.
 
 | Phase | State |
 |---|---|
 | 0 — stop rejecting valid traffic | **shipped** in v0.1.1 |
 | 1 — schema-envelope changes | **shipped** in v0.2.0 |
-| 2 — revise the two design documents | **DONE** — `async-jobs.md` is the record of what shipped; `streaming.md` passed its round-3 challenge re-review, no owner decision open |
-| 3 — the async job machine | **shipped** in v0.2.0 (A1–A7 complete) |
-| 4 — the remaining synchronous routes | **DONE**, unreleased — `/contents`, `/findSimilar`, `/extract`, `stream_mode`, plus the contract-hygiene fixes |
-| 5 onward | open — **Phase 5 (SSE) is next**; Phase 7's provenance-date item is already done |
+| 2 — revise the two design documents | **DONE** — both documents are now records of what shipped |
+| 3 — the async job machine | **shipped** in v0.2.0 (A1–A7) |
+| 4 — the remaining synchronous routes | **DONE**, unreleased |
+| 5 — SSE streaming for the Perplexity deep-research path | **DONE**, unreleased — units 1–4; concise mode and the reasoning events deliberately deferred |
+| 6 onward | open — **Phase 6 (G-3 depth) is next**; Phase 7's provenance-date item is already done |
 
-`main` is green and pushed. **v0.2.0** is the last tag; everything Phase 2 and Phase 4 added since — three new
-routes with goldens, honest provenance dates and goldens for the async routes, two wire corrections to routes
-released in v0.2.0 (Exa `output.structured` renders explicit `null`; a failed Tavily research poll carries only
-`request_id`/`status`/`response_time`), Perplexity's nullable enums accepting explicit `null` — is unreleased. That
-is worth a **v0.3.0** soon: the two wire corrections are the kind of change a consumer holding v0.2.0 goldens wants
-to hear about in a note, not discover in a diff.
+`main` is green and pushed. **v0.2.0** is the last tag; everything since — Phase 4's three routes, Phase 5's
+streaming end to end (four `.sse` goldens, the `streaming` built-in, four testkit assertions), honest provenance
+dates and goldens for the async routes, two wire corrections to routes released in v0.2.0 (Exa `output.structured`
+renders explicit `null`; a failed Tavily research poll carries only `request_id`/`status`/`response_time`),
+Perplexity's nullable enums accepting explicit `null`, and `/extract` Bearer-only per the vendor page — is
+unreleased. That is a **v0.3.0**, and it should be cut before more code lands: the streaming surface is the
+adopter's stated MUST-HAVE, and the two wire corrections are the kind of change a consumer holding v0.2.0 goldens
+should learn from a note, not a diff.
+
+**Authority rule, reaffirmed by the owner 2026-08-15 evening:** vendor documentation decides every wire contract; the
+adopter's client code and remarks are not evidence ("we have no idea if their client works — we use the vendor
+docs"). D2 stands as shipped and is not a precedent; the questions inlined for the adopter in the contract files
+are informational — they tell us where the adopter diverges from the vendor, they do not change what a route
+accepts. The Phase 5 backlog line "read the adopter's `perplexity.go` as evidence of the real wire shape" was struck
+under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
 
 ### Start here
 
-**Phase 5 — SSE streaming**, the adopter's MUST-HAVE. Its specification, `docs/design/streaming.md`, has passed the
-round-3 re-review and its banner names unit 1: `Response.Stream` + the `execute` branch + the widened `Handle`
-journal condition + the SSE writer. §10 of that document is the ordered prerequisite — regenerate the Perplexity SSE
-contract from the vendor's openapi.json first, with every simulator-chosen frame-level choice recorded in
-provenance. Build unit 1 and let the compiler settle the mechanical layer, as Phase 3 did; do not open a fourth
-prose round. Also worth doing first, cheaply: tell the adopter v0.2.0 exists, and hand them the D7 questions now
-inlined in `contracts/tavily/README.md` and `contracts/exa/README.md` ("Open questions for the adopter") — those
-are informational under the owner's 2026-08-15 vendor-documentation-is-authority reaffirmation (the `/extract` body
-`api_key` question no longer decides the placement; see the contract's "Auth" section), but whether they still call
-`/findSimilar` still decides whether that Phase 4 choice stands.
+1. **Cut v0.3.0** (owner's call; the tag message is the release note, as for v0.2.0 — see the process notes below).
+2. **Phase 6 — G-3 depth.** Highest value per effort: most primitives exist. Start with the one real defect
+   (journal `CompletedAt` stamped before the delay on aborting faults, so `observed_ms` reads 0 on a hang), then the
+   malicious-content built-in rendered through all three providers, `body_bytes:` padding, the timeout/brownout/
+   hang-then-abort/rotation built-ins with `AssertDifferentCredential`, delay-after-headers, the observed-pacing
+   assertion per D5. Trickle bodies now have Phase 5's chunked-write path to sit on. Note the over-redaction defect
+   listed there was fixed in v0.1.1 already — verify before re-fixing.
+3. Tell the adopter v0.2.0 exists (and v0.3.0 when cut); their questions in the two contract READMEs are still open.
 
 ### What closed today, beyond A5–A7
 
