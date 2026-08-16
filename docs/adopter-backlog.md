@@ -36,7 +36,10 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
 
 ### Start here
 
-1. **Cut v0.3.0** (owner's call; the tag message is the release note, as for v0.2.0 — see the process notes below).
+1. **Cut v0.3.0** (owner's call). The annotated tag message IS the release note (no CHANGELOG, no GitHub Release
+   object — v0.1.1 and v0.2.0 set that convention); the mechanics are CONTRIBUTING.md "Releasing": tag → the Publish
+   Image workflow pushes → confirm both spellings (`v0.3.0`, `0.3.0`) resolve on ghcr.io → THEN a follow-up commit
+   moves the README/Compose pins (CI's docs guard resolves every `ghcr.io` reference, so the order is enforced).
 2. **Phase 6 — G-3 depth.** Highest value per effort: most primitives exist. Start with the one real defect
    (journal `CompletedAt` stamped before the delay on aborting faults, so `observed_ms` reads 0 on a hang), then the
    malicious-content built-in rendered through all three providers, `body_bytes:` padding, the timeout/brownout/
@@ -45,7 +48,19 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    listed there was fixed in v0.1.1 already — verify before re-fixing.
 3. Tell the adopter v0.2.0 exists (and v0.3.0 when cut); their questions in the two contract READMEs are still open.
 
-### What closed today, beyond A5–A7
+### How the work has been run, for whoever picks it up
+
+Every unit since Phase 3 ran the same way and it held up: a written spec (what is in scope, what is explicitly out,
+which document is the authority, the definition of done) → one developer implementing test-first → three or four
+independent review lenses in parallel (correctness; a house rule to *break*; test quality by mutation; contract
+fidelity where there is a wire) → a fix pass that verifies each finding before acting → an independent `task check`
+→ the orchestrator reads the diff → one commit per unit with a body that says why. Two guards worth stating: the
+verified vendor documentation is the authority for every wire field (`contracts/<provider>/README.md`, dated); and a
+"green" report from an agent or a piped linter is not evidence — check the exit status and the CI run yourself. The
+design documents (`docs/design/*.md`) are records of what shipped; their Go blocks are illustrative and the code
+wins where they disagree.
+
+### What closed on 2026-08-15 beyond the planned units
 
 Four things review found while building the planned units, each committed separately with the reasoning in the
 commit body, all in v0.2.0:
@@ -540,9 +555,15 @@ trickle-body vector in Phase 6 can now build on the same chunked-write path this
   `docs/design/package-design.md`'s stream-policy lines are corrected in place rather than merely flagged as
   stale. Decision 8 itself is reversed above: the adopter can record `stream:true` fixtures now.
 
-### Phase 6 — G-3 depth
+### Phase 6 — G-3 depth — NEXT
 
 > Phase 6 — G-3 depth: hostile content, brownout, timeouts, rotation, and the pacing evidence fix
+>
+> **State on 2026-08-16:** not started, apart from three items that other phases already covered — marked in the
+> list below. Read the current `provider/handle.go` and `provider/fault_exec.go` before trusting the line numbers
+> quoted here; Phase 5 rewrote the execute path (a stream branch, `hijackReset`, per-chunk `sleep`), and the
+> journal-early record now also fires for streams (`if out.Aborted || resp.Stream != nil { record() }`). The
+> pacing-fix item is still real: the early record still stamps `CompletedAt` before an aborting fault's delay runs.
 
 The highest value-per-effort phase in the backlog, because the audit found most of these primitives already exist and
 are missing only packaging. Delays are unbounded and context-aware with no WriteTimeout to cut them off; the
@@ -566,27 +587,32 @@ registry disable. The pacing fix is what makes journal timestamps usable as the 
 - An oversized-body knob (body_bytes: padding) — cheap, and what actually exercises a size-limit ingress gate. Today
   oversized is expressible only by embedding megabytes of text in the YAML.
 - Trickle/slow-drip bodies — a genuinely new execution kind sharing its entire machinery with Phase 5's chunked
-  writes. Build it there or immediately after, never twice.
+  writes. **Phase 5 has shipped that path** (`provider/stream.go`'s `executeStream`, per-chunk `sleep` through the
+  injectable clock, flush per frame): build trickle as a JSON-body user of the same writer, never a second one.
 - Built-in scenarios for timeout, brownout, hang-then-abort and credential-rotation, plus a testkit
   AssertDifferentCredential to complete the rotation assertion. Document the two traps the audit hit: do not combine
   expect_key with a fault plan (auth rejection does not claim an attempt, so the plan misfires), and do not use
   WithSkippedDelays for timeout tests.
 - Delay-after-headers, so 'send headers, hang, then abort' is expressible. Today Delay is applied once at the top of
   execute, so the shape a mid-flight cancellation actually has cannot be scripted at all.
-- Fix the over-redaction defect that mangles finding text: 'Authorization: Bearer is required' is journaled as
-  'Authorization: Bearer [REDACTED] required'. Harmless to secrecy, but any consumer asserting on journal finding text
-  reads mangled English, and it shows free-text redaction running over messages containing no credential.
-- Ship the observed-pacing assertion helper over journal arrival timestamps, per decision 5.
+- ~~Fix the over-redaction defect that mangles finding text~~ **DONE in v0.1.1** ("Redaction no longer mangles
+  finding text; real credential values in free text still mask" — the tag message). Verify with the journal before
+  re-fixing; the item is kept so the audit list stays complete.
+- Ship the observed-pacing assertion helper over journal arrival timestamps, per decision 5. **Half exists**: Phase 5
+  shipped `testkit.AssertStreamPacing` over a streamed entry's `outcome.stream.pace_ms`; the request-level helper
+  over `arrived_at`/`completed_at` across entries (the RPS evidence D5 asks for) is still open, and it depends on the
+  `CompletedAt` fix above being in first.
 
 ### Phase 7 — Packaging, deployment and the contract-fidelity process
 
 Track E work that is small, independent of every code phase, and gated on nothing — it can be pulled forward whenever
-there is slack. One item is a genuine blocker for the adopter's first fixture refresh rather than a nice-to-have:
-contracts_test.go:105-107 requires every provenance entry's verified date to equal a single global constant, so
-refreshing ONE fixture forces you either to re-date all 40 across three vendors as freshly verified when they were
-not, or to fail CI. A provenance record that lies is worse than none, and the test currently compels the lie. That
-must be fixed before any real refresh, and it is the concrete thing to hand the adopter when they ask what the
-sanctioned procedure is.
+there is slack. One item WAS a genuine blocker for the adopter's first fixture refresh and is now done (2026-08-15,
+pulled forward for Phase 4): contracts_test.go used to require every provenance entry's verified date to equal a
+single global constant, so refreshing ONE fixture forced you either to re-date all 40 across three vendors as freshly
+verified when they were not, or to fail CI. A provenance record that lies is worse than none, and the test compelled
+the lie. Per-entry dates are real now, the provider-level date must match the index table, and `VerifiedOn` is the
+oldest entry — that is the concrete thing to hand the adopter when they ask what the sanctioned procedure is. The
+rest of this phase is still open.
 
 **Unblocks:** The adopter's G-4 / Track E: their cluster-shared container tier and their contract-fidelity process.
 Also converts the multi-replica hazard from documentation into an enforced default.
