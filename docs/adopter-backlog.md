@@ -6,7 +6,8 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-16 (evening), against **v0.4.0**, tagged from `main` at `b788f00` — the merge of Phase 6 — the same day.
+Recorded 2026-08-16 (evening), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6) plus
+Phase 7 merged on top, unreleased.
 
 | Phase | State |
 |---|---|
@@ -17,8 +18,8 @@ Recorded 2026-08-16 (evening), against **v0.4.0**, tagged from `main` at `b788f0
 | 4 — the remaining synchronous routes | **shipped** in v0.3.0 |
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
 | 6 — G-3 depth: hostile content, oversized bodies, hangs after headers, resilience built-ins, pacing evidence | **shipped** in v0.4.0 — units 1–6, the closing docs sweep, D9 tier 1; the adopter's own guardrail vectors are still an append to `malicious-content` when they arrive |
-| 7 — packaging, deployment and the contract-fidelity process | **DONE (rescoped), on `phase-7`, not yet merged** — items 1–2 (the Gitea mirror, the Kubernetes manifest) dropped 2026-08-16 (owner, D3 reworded); items 3–5b shipped, this pass adding item 4 (`contracts.Record.APIVersion`, `contracts.Spec`, `contracts.ProviderSpec`) and item 5b (the refresh procedure rewritten around D10 — no live canary, ever) |
-| 8 onward | open — **Phase 8 (MCP/ODR) is next**; D9 tier 2 (the seam export) is decided after it; the adopter's own guardrail vectors when they arrive |
+| 7 — packaging, deployment and the contract-fidelity process | **DONE (rescoped) and merged to `main` (`6a43316`, PR #3), unreleased** — items 1–2 (the Gitea mirror, the Kubernetes manifest) dropped 2026-08-16 (owner; D3 reworded: no replicas by design); item 3 shipped 2026-08-15; items 4 and 5b shipped: a `spec:` block (url/version/sha256/retrieved) for every vendor's OpenAPI document, `contracts.Spec`/`ProviderSpec`, `Record.APIVersion`, and the no-canary refresh procedure (D10) |
+| 8 onward | open — **Phase 8 (the MCP listener and the ODR profile, in-tree per D6) is next and is the last feature phase**; D9 tier 2 (the seam export) is decided after it; the adopter's own guardrail vectors when they arrive |
 
 **v0.4.0** is the last tag (2026-08-16, `b788f00`): Phase 6 end to end — `completed_at` observing every scripted
 hang, the `malicious-content`, `oversized-body`, `timeout`, `brownout`, `hang-then-abort` and `credential-rotation`
@@ -28,7 +29,9 @@ service-simulator framework shipping three research-API profiles). Two behaviour
 assertions could notice are in the tag note: Tavily's `faultBody` serves its error envelope for any kind paired with
 an error status, and `POST /research` warns `tavily.api_key.in_body` as `/search` does. The annotated tag message is
 the release note; every spelling resolves to one digest (`sha256:5a7d6d05…`) and the README/Compose pins follow it.
-`main` is where work lands now; `phase-6` is merged.
+`main` is where work lands now; `phase-6` and `phase-7` are merged and deleted. **Unreleased on `main` since
+v0.4.0:** Phase 7 (`df1eb64`) — a release note for it can be built from that commit's body; cut it when there is
+a reason to.
 
 **Authority rule, reaffirmed by the owner 2026-08-15 evening:** vendor documentation decides every wire contract; the
 adopter's client code and remarks are not evidence ("we have no idea if their client works — we use the vendor
@@ -56,23 +59,37 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    PR #2 is merged and v0.4.0 is cut. Trickle bodies now have
    Phase 5's chunked-write path, and unit 5's after-headers seam, to sit on. Note the over-redaction defect listed
    in the Phase 6 section below was fixed in v0.1.1 already — verify before re-fixing.
-3. ~~**Phase 7 — packaging, deployment and the contract-fidelity process**~~ **DONE (rescoped), 2026-08-16, on
-   `phase-7`.** Items 1 (the Gitea mirror) and 2 (the Kubernetes manifest) are dropped — the adopter's deployment,
-   not this repository's; the guidance that matters already ships (README "Single replica by design",
-   troubleshooting, the Compose example, the startup log, `job.foreign_id`), so D3 is reworded to say that rather
-   than promise a manifest. Item 3 shipped 2026-08-15. Items 4 and 5b ship in this pass: `api_version` on
-   `contracts.Record`, `contracts.Spec`/`contracts.ProviderSpec` with Perplexity's `openapi.json` version and
-   SHA-256 recorded for real, and `contracts/README.md` "Keeping them honest" rewritten around **D10** — there is
-   no live contract canary, and none is planned; drift detection is dated, manual re-verification against the
-   recorded hash (Perplexity) or the cited documentation pages (Exa, Tavily). ADR 0002 carries an "Amended
-   2026-08-16" section recording the same change. Next: Phase 8 (the MCP listener and the ODR profile), after
-   which D9 tier 2 (the seam export) is decided on what those two profiles actually needed; the adopter's own
-   guardrail vectors when they bring them.
-4. Tell the adopter v0.3.0 and v0.4.0 exist; their questions in the two contract READMEs are still open.
+3. ~~**Phase 7 — packaging, deployment and the contract-fidelity process**~~ **DONE (rescoped), merged to
+   `main` 2026-08-16 (`6a43316`).** Items 1 (the Gitea mirror) and 2 (the Kubernetes manifest) are dropped — the
+   adopter's deployment, not this repository's; the guidance that matters already ships (README "Single replica by
+   design", troubleshooting, the Compose example's `deploy.replicas: 1`, the startup log, `job.foreign_id`), and D3
+   is reworded to say that — no replicas, by design. Item 3 shipped 2026-08-15. Items 4 and 5b shipped: every
+   provider's `provenance.yaml` carries a `spec:` block for the vendor's machine-readable OpenAPI document (all three
+   publish one covering every simulated route — the first draft said Exa/Tavily did not; a fetch refuted it),
+   `contracts.Spec`/`contracts.ProviderSpec`, `Record.APIVersion` on entries read from a versioned document, and
+   `contracts/README.md` "Keeping them honest" rewritten around **D10** — no live contract canary; drift detection is
+   a dated, manual re-verification whose first step is the hash comparison. ADR 0002 carries an "Amended 2026-08-16"
+   section.
+4. **Phase 8 — the MCP listener and the ODR profile** is next and the last feature phase. Read its section below
+   before starting: it lists what is free (tools/call vs tools/list is `body_json` dispatch; schema drift between
+   calls is the turn model; oversized and injection-bearing output are projection bytes — `oversized_body` and the
+   `malicious-content` corpus now exist), the JSON-RPC batch-rejection fix that must come first, and the
+   composition-layer sites a new profile touches (`internal/config`, `internal/server/listeners.go`,
+   `testkit/server.go`, `contracts`, the image and docs). Contract verification is the first step of any provider
+   unit — MCP's transport spec (streamable HTTP, JSON-RPC 2.0) and ODR's surface must be recorded in `contracts/`
+   the way the three profiles' were (`contracts/<provider>/README.md` + `provenance.yaml` with a `spec:` block),
+   before a handler is written. After Phase 8, decide **D9 tier 2** (export the provider seam) on what MCP and ODR
+   actually needed — `docs/proposals/d9-framework-framing.md` has the shape.
+5. Tell the adopter v0.3.0 and v0.4.0 exist; their questions in the two contract READMEs are still open; their
+   own guardrail-classifier vectors are an append to `malicious-content` (add any new prefix to
+   `hostileSourcePrefixes` in `scenarios/scenarios_test.go`).
 
 ### How the work has been run, for whoever picks it up
 
-Every unit since Phase 3 ran the same way and it held up: a written spec (what is in scope, what is explicitly out,
+Every unit since Phase 3 ran the same way and it held up (Phase 6 and 7 ran the whole chain after the spec as one
+orchestrated workflow — implement → review lenses in parallel → fix → independent verify — which is the same
+cycle, faster; the mutation lens works in a scratch copy of the tree so its mutants cannot collide with a
+sibling reviewer): a written spec (what is in scope, what is explicitly out,
 which document is the authority, the definition of done) → one developer implementing test-first → three or four
 independent review lenses in parallel (correctness; a house rule to *break*; test quality by mutation; contract
 fidelity where there is a wire) → a fix pass that verifies each finding before acting → an independent `task check`
