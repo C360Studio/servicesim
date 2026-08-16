@@ -341,6 +341,26 @@ func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 		r.add(SeverityError, "scenario.fault.delay.negative", path+".delay",
 			"delay must not be negative")
 	}
+	if a.DelayAfterHeaders < 0 {
+		r.add(SeverityError, "scenario.fault.delay_after_headers.negative", path+".delay_after_headers",
+			"delay_after_headers must not be negative")
+	}
+	if a.DelayAfterHeaders > 0 {
+		switch a.EffectiveKind() {
+		case FaultCloseBeforeHeaders:
+			r.add(SeverityError, "scenario.fault.delay_after_headers.no_headers", path+".delay_after_headers",
+				"delay_after_headers cannot apply to close_before_headers: no headers ever reach the client to hang after")
+		case FaultEmptyBody:
+			r.add(SeverityWarning, "scenario.fault.delay_after_headers.unobservable", path+".delay_after_headers",
+				"empty_body sets Content-Length: 0, so the client considers THIS response complete at the headers "+
+					"and the hang is invisible on it; it still delays the journal entry and stalls the next "+
+					"request on the same keep-alive connection")
+		}
+		if a.EffectiveKind().IsStream() {
+			r.add(SeverityError, "scenario.fault.delay_after_headers.streaming", path+".delay_after_headers",
+				"delay_after_headers assumes an ordinary JSON body; the streaming equivalent is stream_stall with after_chunk: 0")
+		}
+	}
 	if a.RetryAfter != nil && *a.RetryAfter < 0 {
 		r.add(SeverityError, "scenario.fault.retry_after.negative", path+".retry_after",
 			"retry_after must not be negative")

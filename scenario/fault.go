@@ -96,6 +96,18 @@ type FaultAttempt struct {
 	RetryAfter *int              `yaml:"retry_after,omitempty"` // seconds, sets Retry-After
 	Headers    map[string]string `yaml:"headers,omitempty"`
 
+	// DelayAfterHeaders pauses AFTER the status line and headers have been
+	// written and flushed, before the body — or, for truncate_body, before the
+	// partial write and reset. Delay is a pre-dispatch hang, before anything
+	// reaches the client at all; this is the shape a mid-flight cancellation
+	// actually has on the wire — headers arrive, then silence, then the rest —
+	// which Delay alone cannot express. It composes with Delay (hang, then
+	// headers, then hang again) and with every non-streaming kind except
+	// close_before_headers, which never writes headers for there to be a hang
+	// after. It cannot apply to a stream_* kind or to an exchange that will
+	// stream; stream_stall with after_chunk: 0 is the streaming equivalent.
+	DelayAfterHeaders Duration `yaml:"delay_after_headers,omitempty"`
+
 	// Body is the verbatim error body. When nil the provider package synthesises
 	// its documented shape for Status.
 	Body map[string]any `yaml:"body,omitempty"`

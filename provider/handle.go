@@ -88,10 +88,15 @@ const (
 //  2. The recover re-panics. http.ErrAbortHandler is a sentinel net/http
 //     interprets; swallowing it turns a connection-abort fault into a 200 with an
 //     empty body.
-//  3. An aborting fault is journaled *before* the socket is touched, and record
-//     is idempotent. The client observes the reset while this goroutine is still
-//     unwinding, so a test that read the journal at that moment would otherwise
-//     see nothing — intermittently, and more often under -race.
+//  3. An aborting fault is journaled before the connection is destroyed — after
+//     every hang, before the abort — and record is idempotent. The client
+//     observes the reset while this goroutine is still unwinding, so a test
+//     that read the journal at that moment would otherwise see nothing —
+//     intermittently, and more often under -race. The one exception is
+//     truncate_body carrying delay_after_headers, where the record cannot
+//     move before the headers (headers ARE the socket being touched) and
+//     instead runs from inside truncateBody, after the after-headers hang and
+//     immediately before the destructive write; see deferAbortRecord below.
 //  4. The entry is redacted where it is built, not only where it is stored.
 //     Journal.Append takes Entry by value, so redacting only inside Append leaves
 //     this copy — the one the logger is about to serialise — holding the raw
@@ -304,6 +309,32 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 					"it assumes a chunked SSE body", attempt.EffectiveKind())
 			scriptedUnreachableKind = string(attempt.EffectiveKind())
 			attempt = nil
+		case attempt != nil && resp.Stream != nil && attempt.DelayAfterHeaders > 0:
+			// A third mirror case, Phase 6 unit 5: this exchange WILL stream,
+			// and the claimed attempt's own kind does not suppress that (a
+			// suppressing kind already matched the first case above and never
+			// reaches here) — but it carries delay_after_headers, which
+			// assumes an ordinary JSON body to hang before writing. A chunked
+			// SSE body has no such point; stream_stall with after_chunk: 0 is
+			// the streaming equivalent. Reported, never silently ignored: a
+			// scenario that skipped validation would otherwise have this
+			// modifier vanish with no trace.
+			// label names the MODIFIER, not the kind, whenever the kind is
+			// empty (a bare delay_after_headers attempt, EffectiveKind() ==
+			// scenario.FaultNone == ""): the finding and the restored
+			// FaultKind below both name what was actually asked for —
+			// "delay", matching faultOutcome's own label for the same shape
+			// on the non-streaming path — rather than the empty string a
+			// raw %q on FaultNone would otherwise render.
+			label := string(attempt.EffectiveKind())
+			if label == "" {
+				label = faultKindDelay
+			}
+			x.Fail(scenario.CodeStreamAbortUnreachable, "",
+				"fault attempt %q carries delay_after_headers, which cannot apply to this exchange, which will "+
+					"stream; it assumes an ordinary JSON body to hang after headers on", label)
+			scriptedUnreachableKind = label
+			attempt = nil
 		}
 
 		effectiveDec := dec
@@ -363,15 +394,67 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 			return // the deferred record() (and, for streams, the fallback closer) stamps CompletedAt now.
 		}
 
-		// Aborting, non-streaming faults (close_before_headers, truncate_body) are
-		// journaled here, after the hang and before the socket is touched — the
-		// property package-design.md §2.2 rule 3 requires: the client cannot
-		// observe the reset before this entry exists.
-		if out.Aborted && resp.Stream == nil {
+		// recordAbort journals the aborting entry. It is called from here
+		// directly for every aborting shape except one (deferAbortRecord,
+		// below), and passed into execute either way so FaultTruncateBody's
+		// writer can call it itself when the record has to wait on the
+		// after-headers hang. record() is idempotent, so a call from both
+		// places would cost a no-op, never a second entry.
+		recordAbort := func() {
 			entry.Outcome = out
 			record()
 		}
-		entry.Outcome = execute(r.Context(), w, attempt, resp, d.DelayMode, out, closer)
+
+		// Aborting, non-streaming faults (close_before_headers, truncate_body) are
+		// normally journaled here, after the pre-dispatch hang and before the
+		// socket is touched — the property package-design.md §2.2 rule 3
+		// requires: the client cannot observe the reset before this entry
+		// exists.
+		//
+		// truncate_body carrying delay_after_headers is the one exception,
+		// Phase 6 unit 5: headers ARE the socket being touched, so the record
+		// cannot move before them the way the pre-dispatch hang's record
+		// does, and it still has to wait for the AFTER-headers hang on top of
+		// that. Deliberately, the record for that combination is deferred
+		// past this point — recordAbort is passed into execute unrecorded,
+		// and truncateBody (fault_exec.go) calls it itself, after the hang
+		// and immediately before the destructive partial write + RST. The
+		// property that matters — journaled before the client can observe
+		// the abort — still holds exactly, because the partial write and RST
+		// are still what follows; what changes is only that a client reading
+		// the journal DURING the after-headers hang sees no entry yet, the
+		// same as it already sees during any pre-dispatch hang since unit 1.
+		// completed_at then observes the whole exchange. If the client
+		// cancels during that hang instead, truncateBody returns before ever
+		// calling recordAbort, and the deferred record() at the top of this
+		// function (in the recover/record defer) is the one that lands —
+		// exactly the client-cancellation case already named below, just
+		// reached one hang later.
+		//
+		// Two rejected alternatives, so a later review does not re-open this
+		// without new evidence: recording before headers and leaving
+		// completed_at stale for this one shape (a permanent version of the
+		// ambiguity unit 1 removed); recording before headers and amending
+		// completed_at before the RST (needs a non-stream amend path the
+		// journal design deliberately does not have, journal.StreamCloser is
+		// narrow on purpose).
+		//
+		// The kind check (not just DelayAfterHeaders > 0) is deliberate and
+		// safety-relevant, not merely precise: scenario.Validate rejects
+		// close_before_headers+delay_after_headers together
+		// (scenario.fault.delay_after_headers.no_headers), so a loaded
+		// scenario can never reach this with any other aborting kind — but a
+		// hand-built *scenario.FaultAttempt constructed directly in Go, past
+		// validation, could. closeBeforeHeaders (below) has no recordAbort
+		// parameter and never calls one; deferring for a kind it cannot
+		// honour would silently lose the entry rather than merely journal it
+		// one hang later.
+		deferAbortRecord := out.Aborted && resp.Stream == nil &&
+			attempt != nil && attempt.DelayAfterHeaders > 0 && attempt.EffectiveKind() == scenario.FaultTruncateBody
+		if out.Aborted && resp.Stream == nil && !deferAbortRecord {
+			recordAbort()
+		}
+		entry.Outcome = execute(r.Context(), w, attempt, resp, d.DelayMode, out, closer, recordAbort)
 	}
 }
 

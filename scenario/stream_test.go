@@ -443,4 +443,52 @@ func TestValidateStreamFaultMismatch(t *testing.T) {
 			require.Equal(t, CodeStreamAfterChunkOutOfRange, findings[0].Code)
 		}
 	})
+
+	// TestValidateStreamFaultMismatch/delay_after_headers cases are Phase 6
+	// unit 5's mirror addition, alongside truncate_body/oversized_body above.
+	t.Run("delay_after_headers on a kind that would not suppress the stream is an error", func(t *testing.T) {
+		t.Parallel()
+		e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
+			{Fault: &Fault{Attempts: []FaultAttempt{{DelayAfterHeaders: Duration(time.Second)}}}},
+		}}
+		findings := ValidateStreamFaultMismatch(e, StreamServe, threeDeltaTurns)
+		require.Len(t, findings, 1)
+		require.Equal(t, CodeStreamFaultMismatch, findings[0].Code)
+		require.Equal(t, SeverityError, findings[0].Severity)
+		require.Equal(t, "providers.perplexity.fault.attempts[0].delay_after_headers", findings[0].Path)
+	})
+
+	t.Run("delay_after_headers under a non-streaming policy stays valid", func(t *testing.T) {
+		t.Parallel()
+		e := &ProviderEntry{Name: "exa", Turns: []Turn{
+			{Fault: &Fault{Attempts: []FaultAttempt{{DelayAfterHeaders: Duration(time.Second)}}}},
+		}}
+		for _, policy := range []StreamPolicy{StreamWarn, StreamReject, ""} {
+			require.Emptyf(t, ValidateStreamFaultMismatch(e, policy, nil), "policy %q", policy)
+		}
+	})
+
+	t.Run("delay_after_headers on a kind that suppresses the stream stays valid — it applies to the JSON body suppression produces", func(t *testing.T) {
+		t.Parallel()
+		for _, kind := range []FaultKind{FaultStatus, FaultInvalidJSON, FaultWrongContentType, FaultEmptyBody, FaultExtraFields} {
+			e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
+				{Fault: &Fault{Attempts: []FaultAttempt{{Kind: kind, Status: 500, DelayAfterHeaders: Duration(time.Second)}}}},
+			}}
+			require.Emptyf(t, ValidateStreamFaultMismatch(e, StreamServe, threeDeltaTurns), "kind %q", kind)
+		}
+	})
+
+	t.Run("delay_after_headers combined with truncate_body under a streaming policy still reports the truncate_body mismatch, not a duplicate", func(t *testing.T) {
+		t.Parallel()
+		e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
+			{Fault: &Fault{Attempts: []FaultAttempt{
+				{Kind: FaultTruncateBody, TruncateAfterBytes: 40, DelayAfterHeaders: Duration(time.Second)},
+			}}},
+		}}
+		findings := ValidateStreamFaultMismatch(e, StreamServe, threeDeltaTurns)
+		require.Len(t, findings, 1, "one finding, not two, for the same attempt")
+		require.Equal(t, CodeStreamFaultMismatch, findings[0].Code)
+		require.Equal(t, "providers.perplexity.fault.attempts[0].kind", findings[0].Path,
+			"the truncate_body-specific finding wins; delay_after_headers's own case never fires for it")
+	})
 }

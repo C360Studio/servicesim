@@ -1231,15 +1231,21 @@ func brownoutPost(
 	return resp.StatusCode, resp.Header.Get("Retry-After")
 }
 
-// TestHangThenAbort_TwoAbortShapesThenSuccess is the hang-then-abort
+// TestHangThenAbort_ThreeAbortShapesThenSuccess is the hang-then-abort
 // built-in's dedicated live test: a hang then a reset before any header
-// arrives, a hang then a reset mid-body, then a clean third call — the two
-// abort shapes a mid-flight disconnect takes on the wire today, both
-// preceded by the hang unit 1 made observable in completed_at. Total wall
-// clock per route is about 1.4s (two 700ms hangs); run across all eight
-// routes as parallel subtests, that stays well short of anything a loaded CI
-// runner would call slow.
-func TestHangThenAbort_TwoAbortShapesThenSuccess(t *testing.T) {
+// arrives, a hang then a reset mid-body, headers immediately followed by a
+// hang and a reset mid-body, then a clean fourth call — the three abort
+// shapes a mid-flight disconnect takes on the wire today, each preceded by
+// the hang unit 1 (calls 1-2) or unit 5 (call 3) made observable in
+// completed_at. Call 3 asserts no upper bound on when headers arrive — only
+// that they do, and cleanly, before the hang the client cannot see coming —
+// because a bounded-time assertion there would prove nothing that isn't
+// already proven by TestHandleDelayAfterHeadersHeadersArriveBeforeTheHang at
+// the provider-package level and would cost this test a flake surface for no
+// benefit. Total wall clock per route is about 2.1s (three 700ms hangs); run
+// across all eight routes as parallel subtests, that stays well short of
+// anything a loaded CI runner would call slow.
+func TestHangThenAbort_ThreeAbortShapesThenSuccess(t *testing.T) {
 	t.Parallel()
 
 	sim := testkit.Start(t,
@@ -1262,10 +1268,18 @@ func TestHangThenAbort_TwoAbortShapesThenSuccess(t *testing.T) {
 			hangThenAbortCall(t, sim, tc.p, tc.path, tc.body, tc.headers, true)
 			require.GreaterOrEqual(t, time.Since(start), hang, "call 2 must observe the hang before it errors")
 
-			status, _ := brownoutPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
-			require.Equal(t, http.StatusOK, status, "call 3 must recover")
+			// Call 3: headers arrive normally — no pre-dispatch delay: on this
+			// attempt at all — and only the body is affected. hangThenAbortCall's
+			// wantHeaders=true branch already asserts exactly what the client
+			// side of that looks like: a response with headers, then a body read
+			// that fails with a reset. No wall-clock bound is asserted on the
+			// call itself; the hang is proven from the journal entry below.
+			hangThenAbortCall(t, sim, tc.p, tc.path, tc.body, tc.headers, true)
 
-			entries := awaitRouteEntries(t, sim, tc.p, route, 3)
+			status, _ := brownoutPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+			require.Equal(t, http.StatusOK, status, "call 4 must recover")
+
+			entries := awaitRouteEntries(t, sim, tc.p, route, 4)
 
 			assert.True(t, entries[0].Outcome.Aborted, "entry 0 must be marked aborted")
 			assert.Equal(t, "close_before_headers", entries[0].Outcome.FaultKind, "entry 0 fault_kind")
@@ -1277,7 +1291,14 @@ func TestHangThenAbort_TwoAbortShapesThenSuccess(t *testing.T) {
 			assert.GreaterOrEqual(t, entries[1].CompletedAt.Sub(entries[1].ArrivedAt), hang,
 				"entry 1 completed_at - arrived_at must observe the hang (Phase 6 unit 1's fix)")
 
-			assert.Empty(t, entries[2].Outcome.FaultKind, "entry 2 must carry no fault at all")
+			assert.True(t, entries[2].Outcome.Aborted, "entry 2 must be marked aborted")
+			assert.Equal(t, "truncate_body", entries[2].Outcome.FaultKind, "entry 2 fault_kind")
+			assert.NotZero(t, entries[2].Outcome.BytesWritten, "entry 2 must carry the partial body's byte count")
+			assert.Equal(t, hang.Milliseconds(), entries[2].Outcome.DelayAfterHeadersMS, "entry 2 delay_after_headers_ms")
+			assert.GreaterOrEqual(t, entries[2].CompletedAt.Sub(entries[2].ArrivedAt), hang,
+				"entry 2 completed_at - arrived_at must observe the after-headers hang (Phase 6 unit 5)")
+
+			assert.Empty(t, entries[3].Outcome.FaultKind, "entry 3 must carry no fault at all")
 		})
 	}
 }
@@ -1309,6 +1330,7 @@ func hangThenAbortCall(
 	}
 	require.NoError(t, postErr, "truncate_body must serve headers before the reset")
 	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "truncate_body must serve a 200 before the reset")
 	_, readErr := io.ReadAll(resp.Body)
 	require.Errorf(t, readErr, "truncate_body must fail the body read")
 	require.Truef(t, errors.Is(readErr, syscall.ECONNRESET),

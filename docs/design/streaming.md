@@ -1305,6 +1305,15 @@ before writing, which is wrong for chunked SSE), and its request-time mirror cas
 `scenario.stream.abort_unreachable` that `truncate_body`'s does. It is likewise absent from `suppressesStream` — a
 real vendor does not answer `stream: true` with a padded JSON document either.
 
+**Shipped as (Phase 6 unit 5):** `delay_after_headers` — a modifier, not a kind, so it rides along with whatever
+kind an attempt carries — is rejected at load on a streaming entry too, but only for a kind that would not
+otherwise reach `suppressStream` above: `truncate_body` and `oversized_body` already have their own rejection, and
+a kind IN `suppressesStream`'s set stays valid, because it turns the response into the ordinary JSON body
+`delay_after_headers` already knows how to hang before writing. `stream_stall` with `after_chunk: 0` is the
+streaming-aware spelling. The request-time mirror raises the same `scenario.stream.abort_unreachable`, from a
+third mirror direction (the fourth `case` in `Handle`'s suppression switch) beside the two §4.2 names — never a
+change to `suppressesStream` itself, which the modifier does not touch.
+
 #### Suppression is decided once, before the entry is journaled
 
 An earlier draft decided suppression inside `execute`, against `execute`'s own copy of the response. That is too
@@ -1997,9 +2006,10 @@ All are load-time unless marked, so a bad streaming fixture fails at readiness r
 | `scenario.stream.deltas_ignored` | error | a turn declares `deltas:` while the entry's policy is **not** `stream` — the script is dead and would serve JSON silently |
 | `scenario.stream.answer_mismatch` | warning | concatenated `deltas` do not equal the projection's `answer` |
 | `scenario.fault.after_chunk.not_streaming` | error | `after_chunk` set on a kind that is not `stream_*` |
-| `scenario.fault.stream_mismatch` | error | a `stream_*` kind on an **entry whose policy is not `stream`**, or `truncate_body` (or, since Phase 6 unit 3, `oversized_body`) on an **entry whose policy is `stream`** |
+| `scenario.fault.delay_after_headers.streaming` | error | `delay_after_headers` set on a `stream_*` kind, regardless of the entry's policy (Phase 6 unit 5) |
+| `scenario.fault.stream_mismatch` | error | a `stream_*` kind on an **entry whose policy is not `stream`**; `truncate_body` (or, since Phase 6 unit 3, `oversized_body`) on an **entry whose policy is `stream`**; or, since Phase 6 unit 5, `delay_after_headers` on an **entry whose policy is `stream`**, on a kind that would not otherwise suppress the stream |
 | `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` is **not less than** the smallest chunk count any of the entry's turns will produce |
-| `scenario.stream.abort_unreachable` | error (per request) | a claimed attempt cannot apply to this exchange's actual transport — a `stream_*` kind claimed by a request that will not stream (§4.2; the entry's policy is `stream` but this particular request did not ask for one), or the load-time `stream_mismatch` case reached at request time by a hand-built entry that skipped validation |
+| `scenario.stream.abort_unreachable` | error (per request) | a claimed attempt cannot apply to this exchange's actual transport — a `stream_*` kind claimed by a request that will not stream (§4.2; the entry's policy is `stream` but this particular request did not ask for one); the load-time `stream_mismatch` case reached at request time by a hand-built entry that skipped validation; or, since Phase 6 unit 5, an attempt carrying `delay_after_headers` claimed by a request that will stream, on a kind that would not otherwise suppress it |
 | `perplexity.stream_mode.concise.unscripted` | warning (per request) | a request carries `stream_mode: concise` AND will actually stream (`resp.Stream != nil` — i.e. `stream: true`, on an entry whose policy is `stream`); unit 1 renders only the full-mode sequence, so the full-mode transcript is served anyway. A `stream_mode: concise` request that does not itself set `stream: true` never reaches this — nothing streams for it to diverge from (§7, A2) |
 | `perplexity.stream.done_ignored` | warning | `terminal.omit_done` declared on the typed grammar, which has no sentinel |
 

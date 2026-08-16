@@ -1,4 +1,5 @@
-# Two abort shapes, each preceded by a 700ms hang, then a clean call.
+# Three abort shapes, each with a 700ms hang before the abort (the third only
+# after headers have arrived), then a clean call.
 #
 # Your client's own deadline must outlast the 700ms hang. A shorter one ends
 # the call on its own cancellation before the scripted abort ever reaches the
@@ -6,27 +7,37 @@
 # this file scripts.
 #
 # This is "the registry disabled us mid-flight" as it looks on the wire
-# today: a hang, then an RST before any header arrives; a hang, then headers
-# and a partial body, then an RST. The shape "headers arrive, THEN a hang,
-# THEN an abort" — a mid-flight disconnect after the response has already
-# started — is the delay-after-headers item, not yet built. It is named here
-# as future work, not promised: nothing in this file scripts it.
+# today, in every shape it can currently take: a hang, then an RST before any
+# header arrives; a hang, then headers and a partial body, then an RST; and
+# headers arriving normally, THEN a hang, THEN a partial body and an RST — a
+# mid-flight disconnect after the response has already started, which is
+# what a Temporal activity's heartbeat actually has to notice. The third
+# attempt is `delay_after_headers` (Phase 6 unit 5): it carries no
+# pre-dispatch `delay:` at all, so headers reach the client immediately, and
+# the hang happens only after them.
 #
 # What the journal shows: entry 0 carries `outcome.aborted: true`,
 # `outcome.fault_kind: "close_before_headers"`, `outcome.bytes_written: 0`;
 # entry 1 carries `outcome.aborted: true`,
 # `outcome.fault_kind: "truncate_body"`, and a non-zero `outcome.bytes_written`
-# for the partial body the client did receive before the reset. On BOTH
-# entries, since Phase 6 unit 1's fix, `completed_at - arrived_at` observes
-# the full 700ms hang — CompletedAt is stamped after the pre-dispatch delay
-# runs and before the socket is touched, not at the instant the attempt was
-# decided. This is the built-in that makes that fix visible to a consumer
-# rather than only to Servicesim's own tests. The scripted reset is journaled
-# BEFORE the socket is touched (package-design.md §2.2 rule 3: the client
+# for the partial body the client did receive before the reset; entry 2
+# carries the same `outcome.aborted: true`, `outcome.fault_kind:
+# "truncate_body"` and non-zero `outcome.bytes_written` as entry 1, plus
+# `outcome.delay_after_headers_ms: 700`. On ALL THREE entries, `completed_at -
+# arrived_at` observes the full 700ms hang — for entries 0 and 1 that is
+# Phase 6 unit 1's fix (CompletedAt stamped after the pre-dispatch delay runs
+# and before the socket is touched); for entry 2 it is unit 5's: CompletedAt
+# is stamped after the AFTER-headers hang runs, immediately before the
+# partial write and reset, which is deliberately a different point on the
+# wire than entries 0/1's (headers are already on the client by then) but the
+# same property — journaled before the client can observe the abort. This is
+# the built-in that makes both fixes visible to a consumer rather than only
+# to Servicesim's own tests. Every scripted reset is journaled BEFORE the
+# socket is destructively touched (package-design.md §2.2 rule 3: the client
 # cannot observe the reset before this entry exists), so `sim.Requests` right
-# after the error already sees it for these two attempts specifically; read
+# after the error already sees it for all three attempts specifically; read
 # it with `testkit.Sim.AwaitRequests` anyway, because if a client's own
-# deadline fires during the 700ms hang instead — the same race `timeout`
+# deadline fires during a 700ms hang instead — the same race `timeout`
 # exercises — that entry lands only after the client has already returned.
 #
 # Coverage: one plan per route, exactly as `rate-limited` and `oversized-body`
@@ -40,9 +51,11 @@ version: 1
 name: hang-then-abort
 description: >-
   Every synchronous route hangs 700ms then resets before any header arrives,
-  hangs 700ms again then resets mid-body, then serves a clean call — the two
-  abort shapes a mid-flight disconnect takes on the wire today, both
-  preceded by the hang a consumer's own timeout has to survive.
+  hangs 700ms again then resets mid-body, then serves headers immediately
+  followed by a 700ms hang and a reset mid-body, then serves a clean call —
+  the three abort shapes a mid-flight disconnect takes on the wire today,
+  each with the hang a consumer's own timeout has to survive before the
+  abort — the third only after headers have already arrived.
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -65,6 +78,9 @@ providers:
         - delay: 700ms
           kind: truncate_body
           reset: true
+        - kind: truncate_body
+          delay_after_headers: 700ms
+          reset: true
       after: success
     results:
       - source: source-a
@@ -80,6 +96,9 @@ providers:
           - delay: 700ms
             kind: truncate_body
             reset: true
+          - kind: truncate_body
+            delay_after_headers: 700ms
+            reset: true
         after: success
       answer: Report A states the finding.
       citations:
@@ -92,6 +111,9 @@ providers:
           - delay: 700ms
             kind: truncate_body
             reset: true
+          - kind: truncate_body
+            delay_after_headers: 700ms
+            reset: true
         after: success
     find_similar:
       fault:
@@ -100,6 +122,9 @@ providers:
             kind: close_before_headers
           - delay: 700ms
             kind: truncate_body
+            reset: true
+          - kind: truncate_body
+            delay_after_headers: 700ms
             reset: true
         after: success
       results:
@@ -112,6 +137,9 @@ providers:
           kind: close_before_headers
         - delay: 700ms
           kind: truncate_body
+          reset: true
+        - kind: truncate_body
+          delay_after_headers: 700ms
           reset: true
       after: success
     answer: A short synthesis of Report A.
@@ -128,6 +156,9 @@ providers:
           - delay: 700ms
             kind: truncate_body
             reset: true
+          - kind: truncate_body
+            delay_after_headers: 700ms
+            reset: true
         after: success
 
   perplexity:
@@ -137,6 +168,9 @@ providers:
           kind: close_before_headers
         - delay: 700ms
           kind: truncate_body
+          reset: true
+        - kind: truncate_body
+          delay_after_headers: 700ms
           reset: true
       after: success
     answer: A grounded answer citing Report A.
@@ -151,6 +185,9 @@ providers:
           kind: close_before_headers
         - delay: 700ms
           kind: truncate_body
+          reset: true
+        - kind: truncate_body
+          delay_after_headers: 700ms
           reset: true
       after: success
     answer: Report A states the finding.

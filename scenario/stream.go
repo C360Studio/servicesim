@@ -420,6 +420,27 @@ func chunkCount(t StreamTurn) int {
 	return len(t.Script.Deltas) + 1
 }
 
+// delayAfterHeadersHasJSONBody reports whether kind is one of the fault kinds
+// a real vendor answers with an ordinary JSON body before a stream would ever
+// start — the same six kinds provider.suppressesStream names, duplicated here
+// rather than shared: provider imports scenario, so scenario importing
+// provider back would close a cycle, the same reason [FaultKind.IsStream] is
+// exported instead of living only on the provider side. Kept in step by hand;
+// a kind added to one list and not the other is a scenario this package's own
+// tests would need to catch. truncate_body and oversized_body are excluded
+// here on purpose even though provider's list excludes them too: they never
+// reach the call site below, which only asks this question for a kind that
+// is not already handled by ValidateStreamFaultMismatch's own truncate_body/
+// oversized_body cases.
+func delayAfterHeadersHasJSONBody(k FaultKind) bool {
+	switch k {
+	case FaultStatus, FaultInvalidJSON, FaultWrongContentType, FaultEmptyBody, FaultExtraFields, FaultCloseBeforeHeaders:
+		return true
+	default:
+		return false
+	}
+}
+
 // ValidateStreamFaultMismatch checks a fault plan's coherence against the
 // entry's effective streaming transport, across every turn together because
 // the plan is per ROUTE (TurnFault) while a turn's script is per TURN:
@@ -508,6 +529,26 @@ func ValidateStreamFaultMismatch(e *ProviderEntry, entryPolicy StreamPolicy, tur
 							"turn the route may answer with", a.AfterChunk, minChunks, minChunks),
 					})
 				}
+			// delay_after_headers on a kind that would not suppress the stream
+			// (see delayAfterHeadersHasJSONBody) is unreachable exactly the way
+			// truncate_body/oversized_body are, above: it assumes an ordinary
+			// JSON body to hang before writing. truncate_body and
+			// oversized_body themselves are excluded from reaching this case at
+			// all — their own cases, earlier in this switch, already flag the
+			// mismatch regardless of delay_after_headers, and a switch runs
+			// only the first matching case, so this one is never double-fired
+			// for them. A stream_* kind carrying delay_after_headers is
+			// likewise already excluded by validateFaultAttempt's
+			// scenario.fault.delay_after_headers.streaming, independent of
+			// this function.
+			case a.DelayAfterHeaders > 0 && entryPolicy == StreamServe && !delayAfterHeadersHasJSONBody(a.EffectiveKind()):
+				findings = append(findings, Finding{
+					Severity: SeverityError,
+					Code:     CodeStreamFaultMismatch,
+					Path:     path + ".delay_after_headers",
+					Message: "delay_after_headers cannot apply to a streaming entry: it assumes an ordinary JSON " +
+						"body to hang before writing; the streaming-aware equivalent is stream_stall with after_chunk: 0",
+				})
 			}
 		}
 	}

@@ -16,7 +16,7 @@ Recorded 2026-08-16 (midday), against **v0.3.0**, tagged from `main` at `ae4c8e6
 | 3 — the async job machine | **shipped** in v0.2.0 (A1–A7) |
 | 4 — the remaining synchronous routes | **shipped** in v0.3.0 |
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
-| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`), 2 (`malicious-content`), 3 (`oversized_body`) and 4 (timeout/brownout/hang-then-abort/credential-rotation built-ins, `AssertDifferentCredential`) done; Phase 7's provenance-date item is already done |
+| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`), 2 (`malicious-content`), 3 (`oversized_body`), 4 (timeout/brownout/hang-then-abort/credential-rotation built-ins, `AssertDifferentCredential`) and 5 (`delay_after_headers`) done; Phase 7's provenance-date item is already done |
 
 **v0.3.0** is the last tag (2026-08-16): Phase 4's three routes, Phase 5's streaming end to end (four `.sse`
 goldens, the `streaming` built-in, four testkit assertions), honest provenance dates and goldens for the async
@@ -42,10 +42,11 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    (the journal `CompletedAt` defect: stamped before the delay on aborting faults, so `observed_ms` read 0 on a
    hang) is done; unit 2 (the generic `malicious-content` built-in) is done; unit 3 (the `oversized_body` fault
    kind and the `oversized-body` built-in) is done; unit 4 (the `timeout`/`brownout`/`hang-then-abort`/
-   `credential-rotation` built-ins and `testkit.AssertDifferentCredential`) is done; next is delay-after-headers,
-   the observed-pacing assertion per D5, and a closing docs sweep for onboarding and correctness (owner,
-   2026-08-16) that also carries the D9 framing question. Trickle bodies now have Phase 5's chunked-write path to
-   sit on. Note the over-redaction defect listed there was fixed in v0.1.1 already — verify before re-fixing.
+   `credential-rotation` built-ins and `testkit.AssertDifferentCredential`) is done; unit 5 (`delay_after_headers`,
+   the fault modifier and its `hang-then-abort` third attempt) is done; next is the observed-pacing assertion per
+   D5, then a closing docs sweep for onboarding and correctness (owner, 2026-08-16) that also carries the D9
+   framing question. Trickle bodies now have Phase 5's chunked-write path, and unit 5's after-headers seam, to sit
+   on. Note the over-redaction defect listed there was fixed in v0.1.1 already — verify before re-fixing.
 3. Tell the adopter v0.3.0 exists; their questions in the two contract READMEs are still open.
 
 ### How the work has been run, for whoever picks it up
@@ -561,14 +562,17 @@ trickle-body vector in Phase 6 can now build on the same chunked-write path this
 > Phase 6 — G-3 depth: hostile content, brownout, timeouts, rotation, and the pacing evidence fix
 >
 > **State on 2026-08-16:** units 1 (`CompletedAt`), 2 (the generic `malicious-content` built-in), 3 (the
-> `oversized_body` fault kind and the `oversized-body` built-in) and 4 (the `timeout`/`brownout`/`hang-then-abort`/
-> `credential-rotation` built-ins and `testkit.AssertDifferentCredential`) done on `phase-6`; otherwise not started,
-> apart from three items that other phases already covered — marked in the list below. Read the current
-> `provider/handle.go` and `provider/fault_exec.go` before trusting the line numbers quoted here; Phase 5 rewrote
-> the execute path (a stream branch, `hijackReset`, per-chunk `sleep`), and the journal-early record now also fires
-> for streams (`if out.Aborted || resp.Stream != nil { record() }`), a shape `phase-6` unit 1 has since split in
-> two: streams still record before the delay; a non-streaming aborting fault now waits out its delay, then records,
-> so `CompletedAt` observes the hang instead of the instant the attempt was decided.
+> `oversized_body` fault kind and the `oversized-body` built-in), 4 (the `timeout`/`brownout`/`hang-then-abort`/
+> `credential-rotation` built-ins and `testkit.AssertDifferentCredential`) and 5 (the `delay_after_headers` fault
+> modifier, its request-time streaming mirror, and `hang-then-abort`'s third attempt) done on `phase-6`; otherwise
+> not started, apart from three items that other phases already covered — marked in the list below. Read the
+> current `provider/handle.go` and `provider/fault_exec.go` before trusting the line numbers quoted here; Phase 5
+> rewrote the execute path (a stream branch, `hijackReset`, per-chunk `sleep`), and the journal-early record now
+> also fires for streams (`if out.Aborted || resp.Stream != nil { record() }`), a shape `phase-6` unit 1 has since
+> split in two: streams still record before the delay; a non-streaming aborting fault now waits out its delay,
+> then records, so `CompletedAt` observes the hang instead of the instant the attempt was decided — except
+> `truncate_body` carrying `delay_after_headers`, unit 5's one further split: that record waits for the
+> AFTER-headers hang too, from inside `truncateBody` itself, immediately before the destructive write.
 
 The highest value-per-effort phase in the backlog, because the audit found most of these primitives already exist and
 are missing only packaging. Delays are unbounded and context-aware with no WriteTimeout to cut them off; the
@@ -614,13 +618,16 @@ registry disable. The pacing fix is what makes journal timestamps usable as the 
 - Trickle/slow-drip bodies — a genuinely new execution kind sharing its entire machinery with Phase 5's chunked
   writes. **Phase 5 has shipped that path** (`provider/stream.go`'s `executeStream`, per-chunk `sleep` through the
   injectable clock, flush per frame): build trickle as a JSON-body user of the same writer, never a second one.
+  Unit 5's `afterHeadersDelay` seam (`provider/fault_exec.go`: headers → flush → hang → body) is the other half:
+  trickle is headers, then several paced partial writes, sitting on that same after-headers point.
 - ~~Built-in scenarios for timeout, brownout, hang-then-abort and credential-rotation, plus a testkit
   AssertDifferentCredential~~ **DONE on `phase-6` (unit 4).** Four fixtures under `scenarios/protocol/`, all six
   provider blocks each: `timeout` (a 30s delay-only attempt per route, then `after: success`), `brownout` (the
   50/100/200/400ms ladder, then two 503s carrying `Retry-After: 1`, then recovery), `hang-then-abort`
   (`close_before_headers` then `truncate_body`+`reset`, each behind a 700ms delay — the hang unit 1 made visible in
-  `completed_at`), and `credential-rotation` (`auth.expect_key: rotated-key-EXAMPLE` on every block, sync and
-  async, and no fault plan anywhere, on purpose). `testkit.AssertDifferentCredential` mirrors
+  `completed_at`; unit 5 adds a third attempt, `truncate_body`+`delay_after_headers: 700ms`+`reset`, see below),
+  and `credential-rotation` (`auth.expect_key: rotated-key-EXAMPLE` on every block, sync and async, and no fault
+  plan anywhere, on purpose). `testkit.AssertDifferentCredential` mirrors
   `AssertSameCredential` exactly — same "cannot compare" shape when a credential is absent, fingerprints compared
   rather than values. Combining `expect_key` with a fault plan is pinned as a regression test: an inline scenario
   proves the plan's first attempt fires on the first AUTHENTICATED call, not the first call overall. The
@@ -628,9 +635,26 @@ registry disable. The pacing fix is what makes journal timestamps usable as the 
   timeout test passes instantly") and the live timeout test runs under real delays by construction, never
   `WithSkippedDelays`; the DelaySkip shape itself (instant 200, `delay_ms: 30000`) is already pinned generically by
   testkit's own server tests, not re-pinned here.
-- Delay-after-headers, so 'send headers, hang, then abort' is expressible. Today Delay is applied once, pre-dispatch
-  (`preDispatchDelay`, called from `Handle` before anything is journaled or written), so the shape a mid-flight
-  cancellation actually has cannot be scripted at all.
+- ~~Delay-after-headers, so 'send headers, hang, then abort' is expressible. Today Delay is applied once,
+  pre-dispatch (`preDispatchDelay`, called from `Handle` before anything is journaled or written), so the shape a
+  mid-flight cancellation actually has cannot be scripted at all.~~ **DONE on `phase-6` (unit 5).**
+  `FaultAttempt.DelayAfterHeaders` (`delay_after_headers:`): the status line and headers are written and flushed,
+  THEN the attempt hangs, then execution continues — the body for `none`/`status`/`extra_fields`/
+  `wrong_content_type`/`invalid_json`/`oversized_body`, the partial body + RST for `truncate_body`. One helper,
+  `afterHeadersDelay` (`provider/fault_exec.go`), called at the single point after `WriteHeader` each writer
+  already reaches. Composes with `delay:` and every kind except `close_before_headers` (no headers ever go out —
+  `scenario.fault.delay_after_headers.no_headers`); a load-time warning on `empty_body` (`Content-Length: 0` means
+  the hang is unobservable); a load-time error on any `stream_*` kind or on a streaming entry's non-suppressing
+  kind (`scenario.fault.delay_after_headers.streaming` / `scenario.fault.stream_mismatch`), with
+  `stream_stall`+`after_chunk: 0` named as the streaming equivalent; a request-time mirror
+  (`scenario.stream.abort_unreachable`) for a hand-built entry that skipped validation. The one deliberate design
+  decision: for `truncate_body` carrying this modifier, the journal record cannot move before headers (headers ARE
+  the socket being touched), so it is recorded after the hang, immediately before the destructive partial write +
+  reset, instead of before `execute` runs at all as every other aborting shape still is — `completed_at` then
+  observes the whole exchange, and the client-cannot-observe-the-abort-before-the-entry-exists property
+  (package-design.md §2.2 rule 3) holds exactly, just one hang later. `Journal.Outcome.DelayAfterHeadersMS`
+  (`delay_after_headers_ms`, `omitempty`) is `DelayMS`'s sibling, reported for every kind that can carry it. The
+  `hang-then-abort` built-in gained the third attempt this item named as future work when it shipped in unit 4.
 - ~~Fix the over-redaction defect that mangles finding text~~ **DONE in v0.1.1** ("Redaction no longer mangles
   finding text; real credential values in free text still mask" — the tag message). Verify with the journal before
   re-fixing; the item is kept so the audit list stays complete.

@@ -467,6 +467,7 @@ A deterministic failure plan. Attempt *N* of a route receives `attempts[N]` afte
 | `kind` | [fault kind](#fault-kinds) | Inferred when omitted; see below. |
 | `status` | integer | The HTTP status for this attempt. Must be 100–599. |
 | `delay` | duration string | For example `250ms`. Orthogonal — it composes with every kind. |
+| `delay_after_headers` | duration string | Pauses AFTER the status line and headers are written and flushed, before the body (or, for `truncate_body`, before the partial write and reset) — "headers arrive, then a hang, then the rest". Composes with `delay` (pre-dispatch hang, then headers, then this hang) and with every non-streaming kind except `close_before_headers`. See the paragraph below the fault-kind table for what it does and does not apply to. |
 | `retry_after` | integer | Seconds; sets the `Retry-After` header. |
 | `headers` | map of string to string | Additional response headers. |
 | `body` | map | The verbatim error body. When absent, the provider synthesises its own documented shape for `status`. |
@@ -505,6 +506,38 @@ zero means `oversized_body`; a `status` of 400 or above means `status`; everythi
 Delays are real by default, in-process and in the container alike, so a scenario behaves identically either way.
 A Go test can opt out with `testkit.WithSkippedDelays()` — but not for a timeout or cancellation test, which is
 observed by bytes *not arriving* and therefore needs a genuinely short real delay.
+
+#### `delay_after_headers`
+
+`delay:` is a pre-dispatch hang — nothing reaches the client until it ends. `delay_after_headers:` is the opposite
+half: the status line and headers are written and flushed first, so the client sees the response has started, and
+only THEN does the attempt hang, before the body (or, for `truncate_body`, before the partial write and reset).
+That is the shape a mid-flight cancellation actually has on the wire — a registry disabling a provider, a load
+balancer dropping a backend — which `delay:` alone cannot express, because by the time `delay:` releases, nothing
+has reached the client yet to call "mid-flight". Both compose on one attempt: hang, then headers, then hang again.
+
+It applies to every non-streaming kind except `close_before_headers`, which never writes headers for there to be a
+hang after (`scenario.fault.delay_after_headers.no_headers`, a load error). On `empty_body`, whose
+`Content-Length: 0` means the client considers that one response complete at the headers, the hang is invisible on
+it — but not otherwise: it still delays the journal entry for that request and stalls the next request on the same
+keep-alive connection. The scenario is not wrong, so this is only a warning
+(`scenario.fault.delay_after_headers.unobservable`), not an error. It cannot
+apply to a `stream_*` kind (`scenario.fault.delay_after_headers.streaming`), nor, on an entry whose effective
+policy is `stream`, to a kind that would actually stream (`scenario.fault.stream_mismatch` — see
+[Validation](#validation) below); a kind that turns the response into an ordinary JSON body first (`status`,
+`invalid_json`, `wrong_content_type`, `empty_body`, `extra_fields`) stays valid there — see
+[Streaming](#streaming-stream). `stream_stall` with `after_chunk: 0` is the streaming-aware equivalent
+("headers, then a hang, then the first event").
+
+The journal reports the REQUESTED duration as `outcome.delay_after_headers_ms`, the sibling of `outcome.delay_ms`:
+under `testkit.WithSkippedDelays()` no time passes, and this is still the asserted value. If the client's own
+deadline or cancellation ends the request during this hang, nothing more is written — `outcome.aborted: true`,
+`outcome.bytes_written: 0` — and `outcome.completed_at` is stamped at the instant the server observed the
+cancellation, exactly as a client cancellation during `delay:`'s pre-dispatch hang already behaves. That entry
+lands only after your client has already returned, so read it with `testkit.Sim.AwaitRequests`, not a synchronous
+`Requests()`; for `truncate_body`, a `bytes_written` of zero means your own deadline won the race, and a nonzero
+value means the scripted reset arrived first. An attempt carrying only this modifier (no other kind) is journaled
+as `outcome.fault_kind: "delay"`, the same label a bare `delay:` attempt gets.
 
 ### Faults and turns
 
@@ -864,6 +897,13 @@ has no streaming-aware equivalent, because a real vendor does not answer `stream
 document at all. The mirror direction holds too — a `stream_*` kind cannot apply to an entry whose effective
 policy is not `stream`.
 
+`delay_after_headers:` is rejected the same way, on any kind that would not otherwise turn a streaming entry's
+response into an ordinary JSON body: it assumes a body to hang before writing, which a chunked SSE stream has no
+such point in. A kind that DOES turn the response into JSON first (`status`, `invalid_json`, `wrong_content_type`,
+`empty_body`, `extra_fields`) stays valid, because `delay_after_headers` then applies to that JSON body, exactly
+as it would on a non-streaming entry. `stream_stall` with `after_chunk: 0` is the streaming-aware equivalent —
+"headers, then a hang, then the first event" — and is already valid on its own terms.
+
 The four ways an adopter scripts a stream (docs/design/streaming.md §2.1; the built-in
 [`streaming`](../scenarios/protocol/streaming.yaml) scenario scripts all four, keyed by `call_index` on one
 Sonar entry, plus a happy Agent-surface stream):
@@ -925,9 +965,10 @@ silently served as a plain 200.
 | `scenario.stream.deltas_ignored` | error | A turn declares `deltas` while the entry's effective policy is not `stream`. |
 | `scenario.stream.answer_mismatch` | warning | Concatenated `deltas` do not equal the turn's own `answer`. |
 | `scenario.fault.after_chunk.not_streaming` | error | `after_chunk` is nonzero on a kind that is not one of the three `stream_*` kinds. |
-| `scenario.fault.stream_mismatch` | error | `truncate_body` or `oversized_body` on a streaming entry, or a `stream_*` kind on one that is not. |
+| `scenario.fault.delay_after_headers.streaming` | error | `delay_after_headers` set on a `stream_*` kind — regardless of the entry's policy. |
+| `scenario.fault.stream_mismatch` | error | `truncate_body` or `oversized_body` on a streaming entry; a `stream_*` kind on one that is not; or `delay_after_headers` on a streaming entry, on a kind that would not otherwise turn the response into an ordinary JSON body. |
 | `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` is not in `[0, chunk_count)` for the smallest chunk count across the entry's turns. |
-| `scenario.stream.abort_unreachable` | error, per request | A claimed attempt cannot apply to this specific exchange's actual transport — a `stream_*` kind on a call that will not stream, or `truncate_body`/`oversized_body` on one that will. |
+| `scenario.stream.abort_unreachable` | error, per request | A claimed attempt cannot apply to this specific exchange's actual transport — a `stream_*` kind on a call that will not stream; `truncate_body`/`oversized_body` on one that will; or `delay_after_headers`, on a kind that would not otherwise turn the response into JSON, on one that will. |
 | `perplexity.stream.unimplemented` | warning | Sonar: `stream: true` under an entry whose effective policy is not `stream`. The request still receives the ordinary body. |
 | `perplexity.stream.agent_unsupported` | warning under `warn`, error (422) under `reject` | The Agent surface's analogue of the code above — renamed from `perplexity.agent.stream.unsupported` so it sorts under the `perplexity.stream.` prefix like every other streaming code. |
 | `perplexity.stream_mode.concise.unscripted` | warning | A request sets `stream_mode: concise` **and** will actually stream. Only `stream_mode: full` is rendered; the full-mode transcript is served instead of being rejected. |

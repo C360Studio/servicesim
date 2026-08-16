@@ -13,9 +13,11 @@ import (
 	"github.com/c360studio/servicesim/scenario"
 )
 
-// faultKindDelay names a delay-only attempt in the journal. Delay is a modifier
-// rather than a scenario.FaultKind, but an attempt that only delays did fault the
-// request as far as an observer is concerned, so the outcome says so.
+// faultKindDelay names a delay-only or delay-after-headers-only attempt in the
+// journal. Delay and DelayAfterHeaders are modifiers rather than a
+// scenario.FaultKind, but an attempt that only delays — before dispatch, after
+// headers, or both — did fault the request as far as an observer is concerned,
+// so the outcome says so.
 const faultKindDelay = "delay"
 
 // defaultInvalidJSONBody is what an invalid_json fault sends when the attempt
@@ -75,11 +77,19 @@ func faultOutcome(dec FaultDecision, resp Response) journal.Outcome {
 	if kind != scenario.FaultStreamStall {
 		out.DelayMS = a.Delay.Duration().Milliseconds()
 	}
+	// DelayAfterHeadersMS carries no such carve-out: unlike Delay, it is never
+	// folded into a stream's pace schedule (delay_after_headers cannot apply
+	// to a stream_* kind or to an exchange that will stream at all — see
+	// Handle's mismatch handling and scenario.ValidateStreamFaultMismatch), so
+	// every kind that can carry it past validation reports it exactly as
+	// requested; a kind that cannot (stream_* or close_before_headers) has it
+	// pinned at zero by validation, and zero is exactly what this reports.
+	out.DelayAfterHeadersMS = a.DelayAfterHeaders.Duration().Milliseconds()
 
 	if kind == scenario.FaultNone {
 		// A trailing "status: 200" attempt renders the scenario response. A
-		// delay-only attempt still faulted it.
-		if a.Delay > 0 {
+		// delay-only, or delay-after-headers-only, attempt still faulted it.
+		if a.Delay > 0 || a.DelayAfterHeaders > 0 {
 			out.Kind = journal.OutcomeFault
 			out.FaultKind = faultKindDelay
 		}
@@ -143,12 +153,26 @@ func preDispatchDelay(ctx context.Context, a *scenario.FaultAttempt, mode DelayM
 // execute applies a fault to the wire and returns the completed outcome (out
 // with BytesWritten filled in). By the time Handle calls this, the
 // pre-dispatch delay has already run (see preDispatchDelay) and, for a
-// non-streaming aborting fault, the entry is already journaled — execute's
-// only remaining job is to touch the socket. mode is still threaded through
-// to executeStream, which paces chunks with sleep after the first byte. For
-// aborting kinds it does not return: it panics with http.ErrAbortHandler, and
-// Handle's deferred record — already run for those kinds — is a no-op before the
-// re-panic.
+// non-streaming aborting fault not carrying delay_after_headers, the entry is
+// already journaled — execute's only remaining job is to touch the socket.
+// mode is still threaded through to executeStream, which paces chunks with
+// sleep after the first byte, and to afterHeadersDelay below, which paces the
+// one non-streaming hang every writer can carry. For aborting kinds it does
+// not return: it panics with http.ErrAbortHandler, and Handle's deferred
+// record — already run for those kinds, unless recordAbort was deferred to
+// truncateBody below — is a no-op before the re-panic.
+//
+// recordAbort journals the aborting entry (Handle's closure over entry/out/
+// record). Handle always passes its closure here, never nil; it is nil only
+// for a direct caller outside Handle, such as a unit test. truncateBody
+// below is the only writer that ever calls it: headers ARE the socket being
+// touched, so a truncate_body attempt that also hangs after them cannot be
+// journaled before execute runs at all, and Handle passes its closure in
+// unrecorded for that one combination — every other aborting kind has
+// already had it called before execute runs, which makes truncateBody's own
+// call a no-op re-record (record is idempotent) rather than the first and
+// only one. See Handle's own comment at the call site for the full reasoning
+// and the alternatives that were rejected.
 //
 // One branch, not a switch, decides whether this exchange streams:
 // resp.Stream != nil dispatches to executeStream and nothing else in this
@@ -160,14 +184,15 @@ func preDispatchDelay(ctx context.Context, a *scenario.FaultAttempt, mode DelayM
 // for a change to reintroduce: it would be a second derivation of a decision
 // Handle already made, invisible to everything that read the first one.
 func execute(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttempt,
-	resp Response, mode DelayMode, out journal.Outcome, closer func(journal.StreamClose),
+	resp Response, mode DelayMode, out journal.Outcome, closer func(journal.StreamClose), recordAbort func(),
 ) journal.Outcome {
 	if resp.Stream != nil {
 		return executeStream(ctx, w, a, resp, mode, out, closer)
 	}
 
 	if a == nil {
-		out.BytesWritten = writeResponse(w, resp.Status, resp.Header, contentTypeOf(resp), resp.Body)
+		n, _ := writeResponse(ctx, w, resp.Status, resp.Header, contentTypeOf(resp), resp.Body, nil, mode)
+		out.BytesWritten = n
 		return out
 	}
 
@@ -184,24 +209,83 @@ func execute(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttemp
 		panic(http.ErrAbortHandler)
 
 	case scenario.FaultTruncateBody:
-		truncateBody(w, a, resp, body, status, header)
+		if err := truncateBody(ctx, w, a, resp, body, status, header, mode, recordAbort); err != nil {
+			// The client's own deadline or cancellation ended the request during
+			// the after-headers hang, before the partial write. Nothing more is
+			// written, and recordAbort was never called — see truncateBody.
+			out.Aborted = true
+			out.BytesWritten = 0
+			return out
+		}
 		panic(http.ErrAbortHandler)
 
 	case scenario.FaultEmptyBody:
 		applyHeader(w, header)
 		w.Header().Set("Content-Length", "0")
 		w.WriteHeader(statusOr(status))
+		if err := afterHeadersDelay(ctx, w, a, mode); err != nil {
+			out.Aborted = true
+			out.BytesWritten = 0
+			return out
+		}
 		out.BytesWritten = 0
 		return out
 
 	case scenario.FaultOversizedBody:
-		out.BytesWritten = writeOversizedBody(w, status, header, body, a.BodyBytes)
+		n, err := writeOversizedBody(ctx, w, status, header, body, a.BodyBytes, a, mode)
+		if err != nil {
+			out.Aborted = true
+			out.BytesWritten = 0
+			return out
+		}
+		out.BytesWritten = n
 		return out
 
 	default:
-		out.BytesWritten = writeResponse(w, status, header, header.Get("Content-Type"), body)
+		n, err := writeResponse(ctx, w, status, header, header.Get("Content-Type"), body, a, mode)
+		if err != nil {
+			out.Aborted = true
+			out.BytesWritten = 0
+			return out
+		}
+		out.BytesWritten = n
 		return out
 	}
+}
+
+// afterHeadersDelay is the one implementation of "headers are already on the
+// wire, now hang before the rest": every non-streaming writer that can carry
+// delay_after_headers calls this exactly once, immediately after
+// WriteHeader, so the flush-then-sleep pair is never duplicated. A nil a or a
+// non-positive DelayAfterHeaders returns nil immediately without touching the
+// flusher, so a writer that carries no after-headers delay pays nothing extra
+// and behaves exactly as it did before this modifier existed.
+//
+// The explicit Flush is what makes "headers reach the client before the
+// hang" true rather than aspirational: net/http buffers a small response and
+// only commits Content-Length/headers to the wire once it has seen enough of
+// the body to decide the framing, or once something forces the issue.
+// Flushing before any body byte is written forces it now, which is the
+// entire point — the client must be able to observe that the response has
+// started and is not yet finished.
+//
+// Returns ctx.Err() when the client's own deadline or cancellation ends the
+// request during the hang, exactly as sleep does; every caller below turns
+// that into Outcome.Aborted=true, BytesWritten=0 rather than writing a body
+// into a connection nothing is reading from any more.
+//
+// Trickle/slow-drip bodies (deferred; docs/adopter-backlog.md Phase 6) are a
+// different fault sitting on this same after-headers seam: headers, then
+// several paced partial writes instead of one hang and one write. Out of
+// scope here.
+func afterHeadersDelay(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttempt, mode DelayMode) error {
+	if a == nil || a.DelayAfterHeaders <= 0 {
+		return nil
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	return sleep(ctx, a.DelayAfterHeaders.Duration(), mode)
 }
 
 // faultBody returns the bytes a faulted response writes. The order is deliberate:
@@ -381,14 +465,40 @@ func closeBeforeHeaders(w http.ResponseWriter) {
 	resetAndClose(conn)
 }
 
-// truncateBody declares the full length, sends a prefix, then aborts.
-func truncateBody(w http.ResponseWriter, a *scenario.FaultAttempt, resp Response,
-	body []byte, status int, header http.Header,
-) {
+// truncateBody declares the full length, sends a prefix, then aborts. When a
+// carries delay_after_headers, the sequence is headers -> flush -> hang ->
+// recordAbort -> partial write -> flush -> reset, and a client cancellation
+// during the hang returns a non-nil error with NOTHING further written —
+// recordAbort is never called in that case, which is the property Handle's
+// caller relies on: the deferred record (Handle's top-level defer) is then
+// the one that lands, exactly as it already does for a client cancellation
+// during the pre-dispatch hang.
+//
+// recordAbort journals the entry immediately before the destructive write —
+// see execute's doc comment for why that timing, not "before headers", is
+// what this specific combination needs. It is called unconditionally
+// whenever non-nil and the hang (if any) completed without cancellation:
+// record is idempotent, so a caller that already journaled this entry before
+// execute ran (every case except truncate_body+delay_after_headers) passing
+// its own closure through here anyway would cost one no-op call, not a
+// second entry. A nil recordAbort — a direct caller outside Handle, for
+// instance a unit test — is simply skipped.
+func truncateBody(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttempt, resp Response,
+	body []byte, status int, header http.Header, mode DelayMode, recordAbort func(),
+) error {
 	n := truncationLen(a, resp)
 	applyHeader(w, header)
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(statusOr(status))
+
+	if err := afterHeadersDelay(ctx, w, a, mode); err != nil {
+		return err
+	}
+
+	if recordAbort != nil {
+		recordAbort()
+	}
+
 	_, _ = w.Write(body[:n])
 
 	// Flush pushes the partial bytes onto the wire. Without it net/http still
@@ -405,6 +515,7 @@ func truncateBody(w http.ResponseWriter, a *scenario.FaultAttempt, resp Response
 		// for a consumer's retry policy to branch on.
 		hijackReset(w)
 	}
+	return nil
 }
 
 // oversizedBodyPaddingChunk is the fixed-size buffer FaultOversizedBody reuses
@@ -427,10 +538,20 @@ var oversizedBodyPaddingChunk = bytes.Repeat([]byte{' '}, 64*1024)
 // without a declared length net/http falls back to chunked transfer
 // encoding once headers are already committed, which is invisible to a
 // Content-Length-based size gate — the one thing this fault exists to
-// exercise. Write errors are ignored the same way writeResponse ignores
-// them: this is a simulator serving a local socket, not a production
-// server that needs to log a client hanging up mid-write.
-func writeOversizedBody(w http.ResponseWriter, status int, header http.Header, body []byte, bodyBytes int) int {
+// exercise. That declaration happens before afterHeadersDelay's own flush
+// too, so a client hung after headers still sees the true, final
+// Content-Length, not a value chunked encoding would have replaced.
+//
+// A carries the optional delay_after_headers hang, applied by
+// afterHeadersDelay immediately after WriteHeader and before the first body
+// byte; a non-nil error means the client's own deadline or cancellation
+// ended the request during that hang, and nothing was written. Ordinary
+// Write errors past that point are ignored the same way writeResponse
+// ignores them: this is a simulator serving a local socket, not a
+// production server that needs to log a client hanging up mid-write.
+func writeOversizedBody(ctx context.Context, w http.ResponseWriter, status int, header http.Header, body []byte,
+	bodyBytes int, a *scenario.FaultAttempt, mode DelayMode,
+) (int, error) {
 	padding := bodyBytes - len(body)
 	if padding < 0 {
 		padding = 0
@@ -440,9 +561,13 @@ func writeOversizedBody(w http.ResponseWriter, status int, header http.Header, b
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)+padding))
 	w.WriteHeader(statusOr(status))
 
+	if err := afterHeadersDelay(ctx, w, a, mode); err != nil {
+		return 0, err
+	}
+
 	written, err := w.Write(body)
 	if err != nil {
-		return written
+		return written, nil
 	}
 	for padding > 0 {
 		chunk := oversizedBodyPaddingChunk
@@ -458,7 +583,7 @@ func writeOversizedBody(w http.ResponseWriter, status int, header http.Header, b
 			break
 		}
 	}
-	return written
+	return written, nil
 }
 
 // hijackReset hijacks w's connection and destroys it with a RST rather than a
@@ -493,15 +618,40 @@ func resetAndClose(conn net.Conn) {
 	_ = conn.Close()
 }
 
-// writeResponse writes the headers, status and body, returning the byte count.
-func writeResponse(w http.ResponseWriter, status int, header http.Header, contentType string, body []byte) int {
+// writeResponse writes the headers, status and, unless the after-headers
+// hang is cancelled by the client first, the body — returning the byte
+// count written and, on cancellation, sleep's error. a and mode exist only to
+// run afterHeadersDelay; a nil a or a zero DelayAfterHeaders means no hang,
+// and this behaves exactly as it did before the modifier existed. This is
+// the writer for close_before_headers's siblings that carry no transport
+// change of their own — none, status, extra_fields, wrong_content_type,
+// invalid_json — and for the unfaulted (a == nil) path.
+//
+// When a hang is about to run, Content-Length is declared explicitly before
+// WriteHeader, exactly as truncateBody and writeOversizedBody already
+// declare theirs: without it, afterHeadersDelay's Flush commits the headers
+// before net/http has seen the whole body to infer a length from, and
+// net/http falls back to Transfer-Encoding: chunked — a wire-framing change
+// this modifier must not cause. The un-delayed path is left exactly as it
+// was: net/http's own inference already matches what an explicit
+// Content-Length here would say, and this function must not become a second
+// place that decides framing for the common case.
+func writeResponse(ctx context.Context, w http.ResponseWriter, status int, header http.Header, contentType string,
+	body []byte, a *scenario.FaultAttempt, mode DelayMode,
+) (int, error) {
 	applyHeader(w, header)
 	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)
 	}
+	if a != nil && a.DelayAfterHeaders > 0 {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	}
 	w.WriteHeader(statusOr(status))
+	if err := afterHeadersDelay(ctx, w, a, mode); err != nil {
+		return 0, err
+	}
 	n, _ := w.Write(body)
-	return n
+	return n, nil
 }
 
 // applyHeader copies header onto w. Header order on the wire does not depend on

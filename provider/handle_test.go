@@ -576,6 +576,353 @@ func TestHandleDelayFault(t *testing.T) {
 	})
 }
 
+// TestHandleCloseBeforeHeadersWithDelayAfterHeadersStillRecordsEarly is a
+// regression test for a gap review found while building the deferred-record
+// design decision: scenario.Validate rejects close_before_headers combined
+// with delay_after_headers (scenario.fault.delay_after_headers.no_headers),
+// so a loaded scenario can never present Handle with this combination — but
+// a hand-built *scenario.FaultAttempt constructed directly in Go, the way
+// this test's scriptedFaults does, bypasses that validation entirely.
+// deferAbortRecord (handle.go) must not defer the record for this
+// combination: closeBeforeHeaders never calls recordAbort (it has no
+// after-headers hang to wait out — the connection dies immediately), so
+// deferring here would silently lose the entry rather than merely journal
+// it later. This asserts the entry is still present the moment the client
+// observes the reset, exactly as TestHandleCloseBeforeHeadersIsJournaledBeforeTheAbort
+// does for the ordinary (no delay_after_headers) case.
+func TestHandleCloseBeforeHeadersWithDelayAfterHeadersStillRecordsEarly(t *testing.T) {
+	t.Parallel()
+
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{Kind: scenario.FaultCloseBeforeHeaders, DelayAfterHeaders: scenario.Duration(time.Hour)},
+	}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+	defer srv.Close()
+
+	start := time.Now()
+	_, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+	require.Error(t, err, "the connection must die before any header reaches the client")
+	require.Less(t, time.Since(start), time.Second,
+		"close_before_headers must not actually hang: it never reaches afterHeadersDelay")
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1, "the entry must not be lost: close_before_headers cannot defer its own record")
+	require.True(t, entries[0].Outcome.Aborted)
+	require.Zero(t, entries[0].Outcome.BytesWritten)
+	require.Equal(t, string(scenario.FaultCloseBeforeHeaders), entries[0].Outcome.FaultKind)
+}
+
+// TestHandleDelayAfterHeadersHeadersArriveBeforeTheHang is Phase 6 unit 5's
+// DoD (a): the status line and headers reach the client well before the
+// after-headers hang completes, and the body arrives only once it does. A
+// bare delay_after_headers attempt (no other kind) still faults the request
+// exactly as a bare delay: attempt does. Content-Length is exact and
+// declared before the flush, exactly as the un-delayed writeResponse path
+// declares it — without that, afterHeadersDelay's Flush would commit the
+// headers before net/http can infer a length from the completed write, and
+// the response would go out as Transfer-Encoding: chunked instead.
+// headersTimestampSkew is the tolerance subtracted from delay when a test
+// timestamps headersAt AFTER client.Do has already returned: capturing that
+// timestamp costs a little real time itself (network read completion,
+// goroutine scheduling), and that time is never available to the ensuing
+// "body arrives >= delay after headersAt" measurement, so a hang timed to
+// the millisecond can otherwise read a few hundred microseconds short of
+// delay under normal scheduling jitter — not a hang that ran short. The
+// margin is small next to every delay these tests use (150ms), so it keeps
+// full power to catch a mutant that shifts timing by the delay itself.
+const headersTimestampSkew = 25 * time.Millisecond
+
+func TestHandleDelayAfterHeadersHeadersArriveBeforeTheHang(t *testing.T) {
+	t.Parallel()
+
+	const delay = 150 * time.Millisecond
+	const body = `{"ok":true}`
+
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{{DelayAfterHeaders: scenario.Duration(delay)}}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	defer srv.Close()
+
+	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	headersAt := time.Now()
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, strconv.Itoa(len(body)), resp.Header.Get("Content-Length"),
+		"Content-Length must be exact and declared before the flush, exactly as the un-delayed path declares it")
+	require.Empty(t, resp.TransferEncoding, "the hang must not change the response to chunked framing")
+
+	read, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, body, string(read))
+	require.GreaterOrEqual(t, time.Since(headersAt), delay-headersTimestampSkew,
+		"the body must arrive at least the hang after the headers did — a one-directional proof that headers "+
+			"were not themselves delayed until after the hang")
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, delay.Milliseconds(), entries[0].Outcome.DelayAfterHeadersMS)
+	require.Equal(t, journal.OutcomeFault, entries[0].Outcome.Kind,
+		"a bare delay_after_headers attempt still faulted the request, the way a bare delay: attempt does")
+	require.Equal(t, faultKindDelay, entries[0].Outcome.FaultKind)
+}
+
+// TestHandleDelayAndDelayAfterHeadersCompose is DoD (c): delay: and
+// delay_after_headers: both apply on one attempt — hang, then headers, then
+// hang again — and both are reported on the journal entry.
+func TestHandleDelayAndDelayAfterHeadersCompose(t *testing.T) {
+	t.Parallel()
+
+	const preDelay = 60 * time.Millisecond
+	const afterDelay = 60 * time.Millisecond
+	const body = `{"ok":true}`
+
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{Delay: scenario.Duration(preDelay), DelayAfterHeaders: scenario.Duration(afterDelay)},
+	}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	defer srv.Close()
+
+	start := time.Now()
+	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	headersElapsed := time.Since(start)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.GreaterOrEqual(t, headersElapsed, preDelay, "headers themselves must wait out the pre-dispatch hang")
+
+	read, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, body, string(read))
+	require.GreaterOrEqual(t, time.Since(start), preDelay+afterDelay, "the body must wait out both hangs, back to back")
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, preDelay.Milliseconds(), entries[0].Outcome.DelayMS)
+	require.Equal(t, afterDelay.Milliseconds(), entries[0].Outcome.DelayAfterHeadersMS)
+}
+
+// TestHandleDelayAfterHeadersDelaySkipRecordsBothWithoutWaiting is DoD (d):
+// under DelaySkip neither hang actually waits, and the journal still records
+// both requested durations — unaffected by DelayMode, exactly as DelayMS
+// already is.
+func TestHandleDelayAfterHeadersDelaySkipRecordsBothWithoutWaiting(t *testing.T) {
+	t.Parallel()
+
+	const preDelay = 10 * time.Second
+	const afterDelay = 10 * time.Second
+
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{Delay: scenario.Duration(preDelay), DelayAfterHeaders: scenario.Duration(afterDelay)},
+	}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine, DelayMode: DelaySkip},
+		Exa, testRoute, okHandler(`{"ok":true}`)))
+	defer srv.Close()
+
+	start := time.Now()
+	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	_, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Less(t, time.Since(start), time.Second, "DelaySkip must not wait out either hang")
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, preDelay.Milliseconds(), entries[0].Outcome.DelayMS)
+	require.Equal(t, afterDelay.Milliseconds(), entries[0].Outcome.DelayAfterHeadersMS)
+}
+
+// TestHandleDelayAfterHeadersClientCancelledDuringHangLandsAbortedEntry is
+// DoD (e). Pre-cancelling the context, the way
+// TestHandleAbortingFaultCancelledDuringDelayLandsAnAbortedEntry does for the
+// pre-dispatch hang, is not possible here: the whole point is that headers
+// have already gone out over a real socket before the client cancels, so
+// this needs a live client whose context is cancelled only after Do returns
+// them. Cancelling an in-flight request's context closes the underlying
+// connection even once headers have been read but the body has not, which is
+// what the server observes as its own r.Context() ending.
+//
+// The context carries a generous 5s deadline, not an unbounded one: a
+// regression that stops flushing headers before the hang (so Do blocks for
+// the full one-hour hang instead of returning immediately) would otherwise
+// hang this test until the package's default 10-minute -timeout kills the
+// whole binary with a stack dump, rather than failing this test alone with a
+// clear message. The deadline is never reached on the shipped code — cancel
+// runs manually, well within it, the moment headers arrive.
+func TestHandleDelayAfterHeadersClientCancelledDuringHangLandsAbortedEntry(t *testing.T) {
+	t.Parallel()
+
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{DelayAfterHeaders: scenario.Duration(time.Hour)},
+	}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/search", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := srv.Client().Do(req) //nolint:bodyclose // cancelled below before any body arrives to close
+	require.NoError(t, err, "headers must arrive before the client cancels")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	cancel()
+
+	require.Eventually(t, func() bool { return len(j.Snapshot()) == 1 }, time.Second, time.Millisecond,
+		"the client's own cancellation is not a reason to lose the entry")
+
+	e := j.Snapshot()[0]
+	require.True(t, e.Outcome.Aborted)
+	require.Zero(t, e.Outcome.BytesWritten)
+}
+
+// TestHandleDelayAfterHeadersTruncateBodyClientCancelledDuringHangLandsDeferredRecord
+// is the spec's explicitly named test for the client-cancellation case on
+// truncate_body carrying delay_after_headers: the ONE combination where
+// recordAbort has not run by the time the client's own deadline ends the
+// request (deferAbortRecord, Handle), so the deferred record at the top of
+// Handle is the one that has to land it. The one-hour hang also makes the
+// pre-cancel snapshot deterministic: the entry cannot possibly exist yet the
+// instant after Do returns, no matter how the test goroutine is scheduled,
+// which is a stronger, non-racy way to prove "absent while the hang runs"
+// than a short real delay's timing window.
+func TestHandleDelayAfterHeadersTruncateBodyClientCancelledDuringHangLandsDeferredRecord(t *testing.T) {
+	t.Parallel()
+
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{Kind: scenario.FaultTruncateBody, DelayAfterHeaders: scenario.Duration(time.Hour), Reset: true},
+	}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/search", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := srv.Client().Do(req) //nolint:bodyclose // cancelled below before any body arrives to close
+	require.NoError(t, err, "headers must arrive before the client cancels")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.Empty(t, j.Snapshot(),
+		"the one-hour hang cannot have finished yet, so recordAbort cannot have run: the entry must be absent")
+
+	cancel()
+
+	require.Eventually(t, func() bool { return len(j.Snapshot()) == 1 }, time.Second, time.Millisecond,
+		"the client's own cancellation during the after-headers hang is not a reason to lose the entry — the "+
+			"deferred record at the top of Handle must land it, since truncateBody's own recordAbort never ran")
+
+	e := j.Snapshot()[0]
+	require.Equal(t, journal.OutcomeFault, e.Outcome.Kind)
+	require.Equal(t, string(scenario.FaultTruncateBody), e.Outcome.FaultKind)
+	require.True(t, e.Outcome.Aborted)
+	require.Zero(t, e.Outcome.BytesWritten)
+	require.Equal(t, time.Hour.Milliseconds(), e.Outcome.DelayAfterHeadersMS)
+}
+
+// TestHandleDelayAfterHeadersTruncateBodyRecordsAfterTheHangBeforeTheAbort is
+// DoD (b) and the unit's central design-decision test: headers 200, the body
+// read fails with a reset, the journal entry is present once that read has
+// failed, completed_at - arrived_at observes the whole hang, and Aborted/
+// FaultKind are set. The companion property the spec calls out by name — the
+// entry must NOT exist while the hang is still running, only once it has
+// completed — is proved deterministically (no timing window) by
+// TestHandleDelayAfterHeadersTruncateBodyClientCancelledDuringHangLandsDeferredRecord's
+// one-hour hang instead of here: a require.Empty immediately after Do
+// returns, racing a real 150ms hang on this goroutine's own scheduling,
+// would be a flake surface for no discriminating power a longer, unbounded
+// hang does not already give more reliably.
+func TestHandleDelayAfterHeadersTruncateBodyRecordsAfterTheHangBeforeTheAbort(t *testing.T) {
+	t.Parallel()
+
+	const delay = 150 * time.Millisecond
+	const body = `{"results":[{"title":"a full and complete response body"}]}`
+
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{Kind: scenario.FaultTruncateBody, DelayAfterHeaders: scenario.Duration(delay), Reset: true},
+	}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	defer srv.Close()
+
+	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err, "headers must arrive before the hang; only the body is affected")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	headersAt := time.Now()
+
+	_, err = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	require.Error(t, err, "the body must not complete: reset after the hang")
+	require.GreaterOrEqual(t, time.Since(headersAt), delay-headersTimestampSkew,
+		"the client must observe the hang, measured one-directionally from headers, before the reset")
+
+	// Read the journal at exactly the moment the client saw the read fail:
+	// the entry has to be there already, and it has to say the hang actually
+	// happened — recordAbort ran on the server goroutine strictly before the
+	// destructive write, which itself precedes the client observing anything.
+	// This check is deterministic under the shipped ordering; it would only
+	// catch a regression that moved recordAbort to AFTER the destructive
+	// write racily, the same way the ring's other "record before the abort"
+	// checks are inherently probabilistic against that one class of mutation.
+	entries := j.Snapshot()
+	require.Len(t, entries, 1, "the aborting entry must be present once the body read has failed")
+	require.True(t, entries[0].Outcome.Aborted)
+	require.Equal(t, string(scenario.FaultTruncateBody), entries[0].Outcome.FaultKind)
+	observed := entries[0].CompletedAt.Sub(entries[0].ArrivedAt)
+	require.GreaterOrEqual(t, observed, delay, "completed_at must observe the after-headers hang")
+	require.Equal(t, delay.Milliseconds(), entries[0].Outcome.DelayAfterHeadersMS)
+}
+
+// TestHandleOversizedBodyDelayAfterHeaders is DoD (g): Content-Length is
+// exact and declared before the hang exactly as the un-delayed oversized_body
+// path already declares it, headers arrive first, then the hang, then the
+// padded body.
+func TestHandleOversizedBodyDelayAfterHeaders(t *testing.T) {
+	t.Parallel()
+
+	const body = `{"results":[{"title":"a small body"}]}`
+	const delay = 150 * time.Millisecond
+	wantLen := len(body) + 3*64*1024 + 17
+
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{Kind: scenario.FaultOversizedBody, BodyBytes: wantLen, DelayAfterHeaders: scenario.Duration(delay)},
+	}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	defer srv.Close()
+
+	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	headersAt := time.Now()
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, strconv.Itoa(wantLen), resp.Header.Get("Content-Length"),
+		"Content-Length must be exact and declared before the flush, exactly as the un-delayed path declares it")
+
+	read, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, wantLen, len(read))
+	require.GreaterOrEqual(t, time.Since(headersAt), delay-headersTimestampSkew,
+		"the padded body must arrive at least the hang after the headers did")
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, delay.Milliseconds(), entries[0].Outcome.DelayAfterHeadersMS)
+	require.Equal(t, wantLen, entries[0].Outcome.BytesWritten)
+}
+
 func TestHandleCloseBeforeHeadersIsJournaledBeforeTheAbort(t *testing.T) {
 	t.Parallel()
 
@@ -1024,7 +1371,8 @@ func TestOversizedBodyPaddingIsBounded(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&before)
 
-	written := writeOversizedBody(w, http.StatusOK, header, body, bodyBytes)
+	written, err := writeOversizedBody(context.Background(), w, http.StatusOK, header, body, bodyBytes, nil, DelayReal)
+	require.NoError(t, err)
 
 	runtime.ReadMemStats(&after)
 
