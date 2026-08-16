@@ -2,7 +2,9 @@
 
 ## Status
 
-**Proposal for the owner. Nothing in this file is applied by writing it.** It exists to make decision D9 in
+**Decided 2026-08-16: tier 1 adopted and applied (README and CLAUDE.md leads, the non-goals, the Documentation
+table); tier 2 deferred until Phase 8's MCP/ODR have exercised the seam; tier 3 open.** The text below is the
+proposal as the owner read it, kept for the reasoning and for tier 2's shape. It was written to make decision D9 in
 [`docs/adopter-backlog.md`](../adopter-backlog.md) concrete enough to decide in one sitting: what the observation
 means literally, what the code already is, three independently choosable tiers of what could change, and a
 recommendation. The backlog's D9 row points here. Written during the Phase 6 closing docs sweep (2026-08-16), on

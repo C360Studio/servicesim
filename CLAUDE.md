@@ -1,8 +1,8 @@
 # Servicesim Project Context
 
-A deterministic HTTP simulator for the Exa, Tavily and Perplexity research APIs. One binary, one image, one
-listener per provider. It exists so that consuming repositories can test their research adapters fast, offline,
-and without spending money on paid APIs.
+A deterministic service-simulator framework: one binary, one image, one listener per provider profile. It ships
+three research-API profiles today — Exa, Tavily and Perplexity — so that consuming repositories can test their
+research adapters fast, offline, and without spending money on paid APIs.
 
 ## Tech Stack
 
@@ -126,5 +126,7 @@ needs a doc comment, every package needs a package comment, initialisms are capi
 
 It does not reproduce ranking or semantic relevance, does not generate realistic answers from arbitrary input,
 is not a proxy or gateway, does not store real credentials or unsanitised recorded traffic, and does not
-implement every field of every vendor. Requests to make it "more realistic" in these directions are out of
-scope — the value here is determinism, not fidelity to a vendor's ML behaviour.
+implement every field of every vendor — for the three shipped profiles or for any profile added later. Requests to
+make it "more realistic" in these directions are out of scope — the value here is determinism, not fidelity to a
+vendor's ML behaviour. It is also not a generic mock server: a profile is a verified vendor contract plus
+deterministic scenarios, added the way the first three were, not free-form request/response configuration.

@@ -47,13 +47,13 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    assertions per D5 — `testkit.AssertMaxRate`, `testkit.AssertMinGap`, `testkit.AssertObservedDuration` —
    plus a consumer-facing example) is done. The closing docs sweep for onboarding and correctness (owner,
    2026-08-16) is done, and it wrote up the D9 framing question as a concrete proposal —
-   [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md) — for the owner to decide; **D9
-   itself is still open**, nothing in the proposal is applied on its own. **PR #2 is mergeable at the owner's
-   call.** Next: Phase 7's remaining packaging items (the digest-pinned Gitea mirror, the Kubernetes manifest),
-   the adopter's own vectors when they bring them, and Phase 8 (the MCP listener and the ODR profile) — gated on
-   D9's outcome for the seam question first. Trickle bodies now have Phase 5's chunked-write path, and unit 5's
-   after-headers seam, to sit on. Note the over-redaction defect listed in the Phase 6 section below was fixed in
-   v0.1.1 already — verify before re-fixing.
+   [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md) — and the owner decided the same
+   day: **tier 1 (framing) is applied, tier 2 (the seam, re-opening D6) waits for Phase 8, tier 3 stays open.**
+   Next: merge PR #2, then Phase 7's remaining packaging items (the digest-pinned Gitea mirror, the Kubernetes
+   manifest), the adopter's own vectors when they bring them, and Phase 8 (the MCP listener and the ODR profile),
+   after which the seam export is decided on what those two profiles actually needed. Trickle bodies now have
+   Phase 5's chunked-write path, and unit 5's after-headers seam, to sit on. Note the over-redaction defect listed
+   in the Phase 6 section below was fixed in v0.1.1 already — verify before re-fixing.
 3. Tell the adopter v0.3.0 exists; their questions in the two contract READMEs are still open.
 
 ### How the work has been run, for whoever picks it up
@@ -134,7 +134,7 @@ These are settled. Re-open one only with new evidence, and record why.
 |  D6 | MCP and ODR are two new provider profiles for G-3. Build them in-tree, or make out-of-tree providers a supported path? | **Build MCP and ODR in-tree** (owner overrode the recommendation to export the seam instead).  |
 |  D7 | Exa /contents, /findSimilar and Tavily /extract have no verified contract in this repository — contracts/exa/README.md:23 explicitly declines to as... | **Re-verify against vendor docs first** for `/contents`, `/findSimilar`, `/extract` — ADR-0002 holds as written.  |
 |  D8 | What should the adopter do about stream:true fixtures in the window before SSE ships (Phase 5)? | Tell the adopter **not to record `stream:true` fixtures** yet, and ship a `stream: reject` policy so their path fails loudly. **Reversed 2026-08-15: Phase 5 has shipped.** `stream: {when_requested: stream, deltas: [...]}` now serves a real, golden-tested SSE sequence on both Perplexity surfaces — the adopter can record `stream:true` fixtures today, against `testkit.AssertGoldenSSE`. `stream: reject` remains available for a suite that wants a hard failure instead. |
-|  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Open — proposed concretely in [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md).** Three independently choosable tiers (framing only; re-open D6's seam question; positioning) with rough `wc -l` proportions and a recommendation; nothing changes until the owner picks. |
+|  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Decided 2026-08-16: tier 1 adopted** — README and CLAUDE.md now lead with "a deterministic service-simulator framework shipping three research-API profiles", the non-goals hold for any profile, README says what is provider-neutral versus profile-specific. **Tier 2 (export the seam, re-opening D6) is deferred until Phase 8's MCP/ODR have exercised the seam in-tree; tier 3 (positioning) stays open.** The proposal, with the reasoning and the tier 2 shape, is [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md). |
 
 Two of these reversed a recommendation, and the reasoning is worth keeping. On D6 the owner chose in-tree because the
 adopter's G-3 should not wait on their own team's out-of-tree build. On D7 the owner held ADR-0002 — vendor

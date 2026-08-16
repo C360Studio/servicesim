@@ -1,7 +1,7 @@
 # Servicesim
 
-A deterministic HTTP simulator for the **Exa**, **Tavily** and **Perplexity** research APIs. One binary, one image,
-one listener per provider.
+A deterministic service-simulator framework — one binary, one image, one listener per provider profile — shipping
+three research-API profiles out of the box: **Exa**, **Tavily** and **Perplexity**.
 
 Point your code's base URLs at it instead of the real vendors. Your tests then run *fast, offline and for free* —
 and, more importantly, they can prove your client sent the **correct vendor request**, not merely that it got a
@@ -18,6 +18,12 @@ response back.
 
 It is not a proxy, a ranking engine or a fake LLM. It does not generate answers from arbitrary input and does not
 implement every field of every vendor — only the *consumed contract*.
+
+What is provider-neutral and what is not: the scenario schema and turn model, the fault engine and its catalogue,
+the redacted journal and admin surface, `testkit`, the built-in scenarios mechanism and the image are the
+framework — the same for every profile. A profile is one provider package (`provider/exa`, `provider/tavily`,
+`provider/perplexity`) plus its verified contract under `contracts/`; that is where a vendor's routes, request
+validation and wire shapes live, and it is the part that grows when a fourth vendor is added.
 
 ## 60-second quickstart
 
@@ -464,7 +470,7 @@ authors ever need, and the multi-turn form for scripting an agentic loop.
 
 | Document | What it holds |
 |---|---|
-| This README | Quickstart, base URLs, namespaces, the admin surface, built-in scenarios. |
+| This README | Quickstart, base URLs, namespaces, the admin surface, built-in scenarios, and what is provider-neutral versus profile-specific. |
 | [`examples/`](examples) | A worked consumer, compiled and run by CI. The best thing to copy. |
 | [`docs/scenario-schema.md`](docs/scenario-schema.md) | The scenario YAML reference: single-shot form, multi-turn form, faults. |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptom-first answers: an unexpected 401, 404, 405, tests interfering, counts that differ per run under more than one replica, a container that will not become ready. |
