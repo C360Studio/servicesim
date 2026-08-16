@@ -476,13 +476,14 @@ A deterministic failure plan. Attempt *N* of a route receives `attempts[N]` afte
 | `content_type` | string | Overrides the `Content-Type` header, for `wrong_content_type`. |
 | `truncate_after_bytes` | integer | How many body bytes reach the client before the connection dies, for `truncate_body`. Zero means half the body. For `stream_truncate_chunk` the same key instead bounds one chunk: zero means half *that chunk's* own bytes, not half the body — see [Streaming fault kinds](#streaming-fault-kinds). |
 | `reset` | boolean | Sends a TCP RST instead of a clean FIN, so the client sees "connection reset by peer" rather than "unexpected EOF". |
+| `body_bytes` | integer | For `oversized_body`: the response body is padded with insignificant JSON whitespace to at least this many bytes. There is no default size — unlike `truncate_after_bytes`, a zero or absent value under `kind: oversized_body` is a load error, not a fallback. If the unpadded body is already this size or larger, nothing is appended. Setting it under any other explicit `kind` is also a load error. The padded response declares an exact `Content-Length`. |
 | `after_chunk` | integer | `stream_disconnect` \| `stream_truncate_chunk` \| `stream_stall` only: the zero-based index of the first chunk this attempt affects. See [Streaming fault kinds](#streaming-fault-kinds). |
 | `extra_fields` | map | Additive properties merged into this attempt's body. |
 | `repeat` | integer | Applies this attempt to N consecutive attempts. "Fail the first three, then succeed" is one attempt with `repeat: 3` and the default `after`. |
 
 An omitted `kind` is inferred, in this order: `raw_body` set means `invalid_json`; `content_type` set means
-`wrong_content_type`; `truncate_after_bytes` above zero or `reset: true` means `truncate_body`; a `status` of 400
-or above means `status`; everything else means no fault.
+`wrong_content_type`; `truncate_after_bytes` above zero or `reset: true` means `truncate_body`; `body_bytes` above
+zero means `oversized_body`; a `status` of 400 or above means `status`; everything else means no fault.
 
 ### Fault kinds
 
@@ -496,6 +497,7 @@ or above means `status`; everything else means no fault.
 | `wrong_content_type` | A valid body under the wrong `Content-Type`. |
 | `empty_body` | A successful response with a zero-length body. |
 | `extra_fields` | A successful response carrying additional unknown properties. |
+| `oversized_body` | The scenario response (or the provider's error shape, if `status:` is also set), padded with insignificant JSON whitespace to at least `body_bytes`. The decoded value is unchanged; only the size on the wire differs. |
 | `stream_disconnect` | Streaming only (see [Streaming](#streaming-stream)) — a clean mid-stream disconnect after a scripted chunk. |
 | `stream_truncate_chunk` | Streaming only — a malformed partial chunk, then disconnect. |
 | `stream_stall` | Streaming only — a mid-stream pause, then the stream continues. |
@@ -853,11 +855,14 @@ is a legitimate script, not a special case: an
 `after_chunk` naming the terminal chunk itself means every delta arrived but the frame confirming completion
 never did.
 
-`truncate_body` is the one existing kind that **cannot** apply to a streaming entry
-(`scenario.fault.stream_mismatch`): it sets a `Content-Length` before writing a prefix, which is correct for
-JSON and wrong for chunked SSE, and a byte-offset cut lands mid-frame. The streaming-aware equivalent is
-`stream_truncate_chunk`, which counts frames rather than bytes. The mirror direction holds too — a `stream_*`
-kind cannot apply to an entry whose effective policy is not `stream`.
+`truncate_body` and `oversized_body` are the two existing kinds that **cannot** apply to a streaming entry
+(`scenario.fault.stream_mismatch`): each sets a `Content-Length` before writing the body — `truncate_body`
+before writing a prefix, `oversized_body` before writing the padded whole — which is correct for JSON and wrong
+for chunked SSE; a byte-offset cut, or a padded JSON body, both land wrong on a chunked stream. `truncate_body`'s
+streaming-aware equivalent is `stream_truncate_chunk`, which counts frames rather than bytes; `oversized_body`
+has no streaming-aware equivalent, because a real vendor does not answer `stream: true` with a padded JSON
+document at all. The mirror direction holds too — a `stream_*` kind cannot apply to an entry whose effective
+policy is not `stream`.
 
 The four ways an adopter scripts a stream (docs/design/streaming.md §2.1; the built-in
 [`streaming`](../scenarios/protocol/streaming.yaml) scenario scripts all four, keyed by `call_index` on one
@@ -920,9 +925,9 @@ silently served as a plain 200.
 | `scenario.stream.deltas_ignored` | error | A turn declares `deltas` while the entry's effective policy is not `stream`. |
 | `scenario.stream.answer_mismatch` | warning | Concatenated `deltas` do not equal the turn's own `answer`. |
 | `scenario.fault.after_chunk.not_streaming` | error | `after_chunk` is nonzero on a kind that is not one of the three `stream_*` kinds. |
-| `scenario.fault.stream_mismatch` | error | `truncate_body` on a streaming entry, or a `stream_*` kind on one that is not. |
+| `scenario.fault.stream_mismatch` | error | `truncate_body` or `oversized_body` on a streaming entry, or a `stream_*` kind on one that is not. |
 | `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` is not in `[0, chunk_count)` for the smallest chunk count across the entry's turns. |
-| `scenario.stream.abort_unreachable` | error, per request | A claimed `stream_*` attempt cannot apply to this specific exchange's actual transport. |
+| `scenario.stream.abort_unreachable` | error, per request | A claimed attempt cannot apply to this specific exchange's actual transport — a `stream_*` kind on a call that will not stream, or `truncate_body`/`oversized_body` on one that will. |
 | `perplexity.stream.unimplemented` | warning | Sonar: `stream: true` under an entry whose effective policy is not `stream`. The request still receives the ordinary body. |
 | `perplexity.stream.agent_unsupported` | warning under `warn`, error (422) under `reject` | The Agent surface's analogue of the code above — renamed from `perplexity.agent.stream.unsupported` so it sorts under the `perplexity.stream.` prefix like every other streaming code. |
 | `perplexity.stream_mode.concise.unscripted` | warning | A request sets `stream_mode: concise` **and** will actually stream. Only `stream_mode: full` is rendered; the full-mode transcript is served instead of being rejected. |

@@ -360,6 +360,50 @@ func TestHandleStreamAbortUnreachable(t *testing.T) {
 	require.Equal(t, journal.SeverityError, found.Severity)
 }
 
+// TestHandleStreamAbortUnreachableOversizedBody is oversized_body's mirror of
+// TestHandleStreamAbortUnreachable, above: an oversized_body attempt claimed
+// against an exchange that will stream cannot apply either — it sets a
+// Content-Length over a padded JSON body, which is exactly as wrong for
+// chunked SSE as truncate_body's Content-Length is — so it is reported and
+// the stream is served in full, exactly as scripted, with no padding at all.
+func TestHandleStreamAbortUnreachableOversizedBody(t *testing.T) {
+	t.Parallel()
+
+	stream := twoChunkStream()
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{Kind: scenario.FaultOversizedBody, BodyBytes: 4 << 20},
+	}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream)))
+	defer srv.Close()
+
+	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"),
+		"the stream is served in full — the claimed attempt cannot apply to it")
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	want := append(append(append([]byte{}, stream.Chunks[0].Bytes...), stream.Chunks[1].Bytes...), doneChunk().Bytes...)
+	require.Equal(t, want, body, "the scripted attempt never touches the stream — no padding at all")
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1)
+	require.False(t, entries[0].Outcome.Aborted, "nothing was aborted: the attempt never applied")
+	require.Equal(t, string(scenario.FaultOversizedBody), entries[0].Outcome.FaultKind,
+		"the journal still names what was SCRIPTED, even though it never fired")
+
+	var oversizedFound *journal.Finding
+	for i := range entries[0].Findings {
+		if entries[0].Findings[i].Code == scenario.CodeStreamAbortUnreachable {
+			oversizedFound = &entries[0].Findings[i]
+		}
+	}
+	require.NotNil(t, oversizedFound, "findings: %+v", entries[0].Findings)
+	require.Equal(t, journal.SeverityError, oversizedFound.Severity)
+}
+
 // TestHandleStreamClientGone proves the third path a stream can end on: the
 // client hangs up mid-stream, with no fault involved at all.
 // TestHandleStreamClientGone proves the third path a stream can end on: the

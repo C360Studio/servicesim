@@ -276,15 +276,17 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 			// becomes an ordinary JSON error and the fault executes exactly as
 			// it always has.
 			resp = suppressStream(resp)
-		case attempt != nil && resp.Stream != nil && attempt.EffectiveKind() == scenario.FaultTruncateBody:
+		case attempt != nil && resp.Stream != nil &&
+			(attempt.EffectiveKind() == scenario.FaultTruncateBody || attempt.EffectiveKind() == scenario.FaultOversizedBody):
 			// The mirror case: this exchange WILL stream, but the claimed attempt
-			// cannot apply to it — truncate_body sets a Content-Length that is
-			// wrong for a chunked SSE body. Reported, never silently absorbed
-			// into a plain 200: see scenario.CodeStreamFaultMismatch, the
-			// load-time guard this catches when validation was skipped.
+			// cannot apply to it — truncate_body and oversized_body both set a
+			// Content-Length that is wrong for a chunked SSE body. Reported,
+			// never silently absorbed into a plain 200: see
+			// scenario.CodeStreamFaultMismatch, the load-time guard this catches
+			// when validation was skipped.
 			x.Fail(scenario.CodeStreamAbortUnreachable, "",
 				"fault attempt %q cannot apply to this exchange, which will stream; "+
-					"truncate_body assumes an ordinary JSON body", attempt.EffectiveKind())
+					"it assumes an ordinary JSON body it can set an exact Content-Length over", attempt.EffectiveKind())
 			scriptedUnreachableKind = string(attempt.EffectiveKind())
 			attempt = nil
 		case attempt != nil && resp.Stream == nil && attempt.EffectiveKind().IsStream():

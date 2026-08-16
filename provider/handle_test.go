@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -826,6 +827,212 @@ func TestHandleTruncateBody(t *testing.T) {
 			require.Equal(t, string(scenario.FaultTruncateBody), entries[0].Outcome.FaultKind)
 		})
 	}
+}
+
+// TestHandleOversizedBodyFault proves the wire shape of the padding kind: an
+// exact Content-Length declared up front (so net/http never falls back to
+// chunked transfer encoding across the several Write calls padding takes),
+// the requested minimum size reached, and the decoded value unchanged — only
+// trailing whitespace was appended.
+func TestHandleOversizedBodyFault(t *testing.T) {
+	t.Parallel()
+
+	const body = `{"results":[{"title":"a small body"}]}`
+
+	tests := []struct {
+		name       string
+		attempt    scenario.FaultAttempt
+		wantStatus int
+		wantLen    int
+	}{
+		{
+			// Past net/http's ~2 KiB bufferBeforeChunkingSize and across three
+			// 64 KiB padding-chunk boundaries: a small pad leaves net/http's own
+			// automatic Content-Length inference indistinguishable from this
+			// package's explicit one, so a body this size is what actually
+			// proves writeOversizedBody sets Content-Length itself rather than
+			// falling back to chunked transfer encoding.
+			name:       "pads to the requested minimum",
+			attempt:    scenario.FaultAttempt{Kind: scenario.FaultOversizedBody, BodyBytes: len(body) + 3*64*1024 + 17},
+			wantStatus: http.StatusOK,
+			wantLen:    len(body) + 3*64*1024 + 17,
+		},
+		{
+			name:       "a body already at or above the minimum appends nothing",
+			attempt:    scenario.FaultAttempt{Kind: scenario.FaultOversizedBody, BodyBytes: len(body) - 5},
+			wantStatus: http.StatusOK,
+			wantLen:    len(body),
+		},
+		{
+			name:       "status override composes: an oversized 500",
+			attempt:    scenario.FaultAttempt{Status: http.StatusInternalServerError, BodyBytes: len(body) + 200},
+			wantStatus: http.StatusInternalServerError,
+			wantLen:    len(body) + 200,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			j := journal.NewRing(8, 4096)
+			engine := &scriptedFaults{attempts: []scenario.FaultAttempt{tc.attempt}}
+			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+			defer srv.Close()
+
+			resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+
+			require.Equal(t, tc.wantStatus, resp.StatusCode)
+			require.Equal(t, strconv.Itoa(tc.wantLen), resp.Header.Get("Content-Length"),
+				"Content-Length must be set exactly, or net/http falls back to chunked encoding across the padding writes")
+
+			read, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantLen, len(read))
+
+			trimmed := bytes.TrimRight(read, " ")
+			require.Equal(t, body, string(trimmed),
+				"padding must be trailing whitespace only; nothing about the rendered body may change")
+
+			var got, want any
+			require.NoError(t, json.Unmarshal(trimmed, &got))
+			require.NoError(t, json.Unmarshal([]byte(body), &want))
+			require.Equal(t, want, got, "the decoded value must be byte-for-byte the unpadded response's value")
+
+			entries := j.Snapshot()
+			require.Len(t, entries, 1)
+			require.False(t, entries[0].Outcome.Aborted, "oversized_body completes normally; nothing aborts")
+			require.Equal(t, string(scenario.FaultOversizedBody), entries[0].Outcome.FaultKind)
+			require.Equal(t, tc.wantLen, entries[0].Outcome.BytesWritten,
+				"BytesWritten is the actual count written: JSON plus padding")
+		})
+	}
+}
+
+// TestHandleOversizedBodyUsesTheProviderShapedBody proves DoD (c) with a real
+// FaultBody callback, the way TestHandleStatusFaultUsesTheProviderShapedBody
+// does for kind status: a status override still renders through the
+// provider's own error-shape builder, and padding is applied to THAT body,
+// not the handler's ordinary 200 body.
+func TestHandleOversizedBodyUsesTheProviderShapedBody(t *testing.T) {
+	t.Parallel()
+
+	const errBody = `{"requestId":"abc","error":"500"}`
+	h := func(_ *Exchange) Response {
+		return Response{
+			Status:        http.StatusOK,
+			Body:          []byte(`{"ok":true}`),
+			FaultEligible: true,
+			FaultBody: func(a scenario.FaultAttempt) []byte {
+				return []byte(`{"requestId":"abc","error":"` + strconv.Itoa(a.Status) + `"}`)
+			},
+		}
+	}
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{Status: http.StatusInternalServerError, BodyBytes: len(errBody) + 64},
+	}}
+	j := journal.NewRing(8, 4096)
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, h))
+	defer srv.Close()
+
+	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	require.Equal(t, strconv.Itoa(len(errBody)+64), resp.Header.Get("Content-Length"))
+
+	read, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, len(errBody)+64, len(read))
+	require.Equal(t, errBody, string(bytes.TrimRight(read, " ")),
+		"the padded body must be the provider-shaped error, not the handler's ordinary 200 body")
+
+	entries := j.Snapshot()
+	require.Equal(t, string(scenario.FaultOversizedBody), entries[0].Outcome.FaultKind)
+	require.Equal(t, len(errBody)+64, entries[0].Outcome.BytesWritten)
+}
+
+// TestHandleOversizedBodyMergesExtraFieldsBeforePadding proves DoD (d):
+// extra_fields is not a transport change for oversized_body either — it
+// merges into the body exactly as it does for every other kind, and padding
+// is computed AFTER that merge, so the request that decodes the padded body
+// sees the merged field.
+func TestHandleOversizedBodyMergesExtraFieldsBeforePadding(t *testing.T) {
+	t.Parallel()
+
+	const bodyBytes = 4096
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{{
+		Kind:        scenario.FaultOversizedBody,
+		BodyBytes:   bodyBytes,
+		ExtraFields: scenario.ExtraFields{"newField": "surprise"},
+	}}}
+	j := journal.NewRing(8, 4096)
+	w := serve(Deps{Journal: j, Faults: engine}, okHandler(`{"ok":true}`), postJSON(`{}`))
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, bodyBytes, w.Body.Len())
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(bytes.TrimRight(w.Body.Bytes(), " "), &got))
+	require.Equal(t, "surprise", got["newField"])
+	require.Equal(t, true, got["ok"])
+}
+
+// discardResponseWriter is an http.ResponseWriter whose Write discards bytes
+// without retaining them, so TestOversizedBodyPaddingIsBounded can measure
+// this package's own allocations for a huge padded write without also
+// measuring httptest.ResponseRecorder's internal buffer growth, which would
+// otherwise swamp the signal this test is looking for.
+type discardResponseWriter struct {
+	header http.Header
+	code   int
+}
+
+func (w *discardResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *discardResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+func (w *discardResponseWriter) WriteHeader(code int) { w.code = code }
+
+// TestOversizedBodyPaddingIsBounded proves DoD (e): a scenario asking for a
+// large body_bytes must cost the process a fixed-size buffer, never an
+// allocation proportional to the request. 64 MiB is requested; the padding
+// mechanism is a 64 KiB buffer reused across bounded chunks
+// (oversizedBodyPaddingChunk in fault_exec.go), so the bytes actually
+// allocated on the heap during the call must stay orders of magnitude below
+// the 64 MiB requested — a regression that padded via make([]byte, bodyBytes)
+// would allocate the full 64 MiB and fail this bound loudly.
+//
+// Deliberately not t.Parallel(): the runtime.MemStats delta is process-wide,
+// so a concurrent test's allocations would land inside this one's window.
+func TestOversizedBodyPaddingIsBounded(t *testing.T) {
+	const bodyBytes = 64 << 20 // 64 MiB
+
+	body := []byte(`{"ok":true}`)
+	header := http.Header{"Content-Type": []string{"application/json"}}
+	w := &discardResponseWriter{}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	written := writeOversizedBody(w, http.StatusOK, header, body, bodyBytes)
+
+	runtime.ReadMemStats(&after)
+
+	require.Equal(t, bodyBytes, written)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	require.Lessf(t, allocated, uint64(2<<20),
+		"writeOversizedBody allocated %d bytes serving a %d-byte body; the padding buffer must stay fixed-size, "+
+			"not proportional to body_bytes", allocated, bodyBytes)
 }
 
 func TestHandleJournalsAPanickingHandlerAndRepanics(t *testing.T) {

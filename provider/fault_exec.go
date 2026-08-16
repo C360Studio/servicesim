@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net"
@@ -193,6 +194,10 @@ func execute(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttemp
 		out.BytesWritten = 0
 		return out
 
+	case scenario.FaultOversizedBody:
+		out.BytesWritten = writeOversizedBody(w, status, header, body, a.BodyBytes)
+		return out
+
 	default:
 		out.BytesWritten = writeResponse(w, status, header, header.Get("Content-Type"), body)
 		return out
@@ -238,11 +243,11 @@ func faultBody(a *scenario.FaultAttempt, resp Response) []byte {
 
 // suppressesStream reports whether kind is a fault a real vendor answers
 // before a stream would ever start — an ordinary JSON error, not SSE wrapping
-// one. truncate_body is deliberately absent: it is the one non-streaming kind
-// whose interaction with a streaming exchange is reported rather than
-// silently reinterpreted, because a byte-offset cut is wrong for a chunked
-// body in a way none of these six kinds are (see Handle's mirror-case
-// handling and scenario.CodeStreamFaultMismatch).
+// one. truncate_body and oversized_body are deliberately absent: they are the
+// two non-streaming kinds whose interaction with a streaming exchange is
+// reported rather than silently reinterpreted, because each sets an exact
+// Content-Length over a JSON body in a way none of these six kinds do (see
+// Handle's mirror-case handling and scenario.CodeStreamFaultMismatch).
 func suppressesStream(kind scenario.FaultKind) bool {
 	switch kind {
 	case scenario.FaultStatus, scenario.FaultInvalidJSON, scenario.FaultWrongContentType,
@@ -400,6 +405,60 @@ func truncateBody(w http.ResponseWriter, a *scenario.FaultAttempt, resp Response
 		// for a consumer's retry policy to branch on.
 		hijackReset(w)
 	}
+}
+
+// oversizedBodyPaddingChunk is the fixed-size buffer FaultOversizedBody reuses
+// to reach BodyBytes without ever allocating BodyBytes: a scenario asking for
+// 512 MiB must cost the process this one 64 KiB buffer, not 512 MiB. Its
+// content is a single insignificant JSON whitespace byte (space) repeated —
+// every JSON decoder accepts trailing whitespace after a complete top-level
+// value, so appending this after the rendered body changes nothing about the
+// decoded value, only its length on the wire.
+var oversizedBodyPaddingChunk = bytes.Repeat([]byte{' '}, 64*1024)
+
+// writeOversizedBody writes body, then enough bytes from
+// oversizedBodyPaddingChunk to bring the total to at least bodyBytes, and
+// returns the total byte count written (body plus padding). If body is
+// already >= bodyBytes, no padding is written at all — the scenario asked
+// for "at least this many bytes", not "exactly".
+//
+// Content-Length is declared exactly (len(body) plus the padding length)
+// BEFORE any Write call: padding is written in several Write calls, and
+// without a declared length net/http falls back to chunked transfer
+// encoding once headers are already committed, which is invisible to a
+// Content-Length-based size gate — the one thing this fault exists to
+// exercise. Write errors are ignored the same way writeResponse ignores
+// them: this is a simulator serving a local socket, not a production
+// server that needs to log a client hanging up mid-write.
+func writeOversizedBody(w http.ResponseWriter, status int, header http.Header, body []byte, bodyBytes int) int {
+	padding := bodyBytes - len(body)
+	if padding < 0 {
+		padding = 0
+	}
+
+	applyHeader(w, header)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)+padding))
+	w.WriteHeader(statusOr(status))
+
+	written, err := w.Write(body)
+	if err != nil {
+		return written
+	}
+	for padding > 0 {
+		chunk := oversizedBodyPaddingChunk
+		if padding < len(chunk) {
+			chunk = chunk[:padding]
+		}
+		n, err := w.Write(chunk)
+		written += n
+		padding -= n
+		if err != nil || n == 0 {
+			// n == 0 with a nil error is not something net/http's writer does,
+			// but a writer that did would otherwise spin here forever.
+			break
+		}
+	}
+	return written
 }
 
 // hijackReset hijacks w's connection and destroys it with a RST rather than a

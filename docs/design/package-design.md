@@ -1804,6 +1804,7 @@ for every kind.
 | `extra_fields` | No transport change | Merged into the body by `wire.MergeJSON` before `execute` is reached. Listed as a fault kind for symmetry with the plan's catalogue. |
 | `close_before_headers` | **`http.Hijacker`** | Cannot be done with a plain `ResponseWriter`: any write commits a status line. |
 | `truncate_body` | **`http.Flusher` + `panic(http.ErrAbortHandler)`** | Cannot be done with a plain `ResponseWriter`: `net/http` computes `Content-Length` from the completed write, so a short write is indistinguishable from a short body. |
+| `oversized_body` | Explicit `Content-Length` set before `w.WriteHeader`, then `w.Write(body)` followed by bounded `w.Write` calls against a reused 64 KiB whitespace buffer | **Shipped as (Phase 6 unit 3):** `Content-Length` must be declared exactly and up front — `net/http` falls back to chunked transfer encoding once the body spans several `Write` calls with no declared length, which a `Content-Length`-based size gate cannot see. The padding buffer is fixed-size and reused; `BodyBytes` is never allocated. |
 
 The two transport faults, concretely. Both were executed against `httptest.NewServer` on Go 1.26.4 and the observed
 client-side results are quoted.

@@ -15,6 +15,17 @@ const (
 	FaultEmptyBody          FaultKind = "empty_body"
 	FaultExtraFields        FaultKind = "extra_fields"
 
+	// FaultOversizedBody serves the response this attempt would otherwise have
+	// produced — the rendered scenario body, or the provider's error shape when
+	// Status is also set, with ExtraFields merged as for every kind — padded
+	// with insignificant JSON whitespace to at least BodyBytes bytes. Nothing
+	// semantic changes: every JSON decoder accepts trailing whitespace after a
+	// complete value, so the decoded value is byte-identical to the unpadded
+	// response and only the size differs, which is exactly what a size-limit
+	// ingress gate measures. If the unpadded body is already >= BodyBytes,
+	// nothing is appended and the response is served as is.
+	FaultOversizedBody FaultKind = "oversized_body"
+
 	// FaultStreamDisconnect writes chunks [0, AfterChunk) in full and then
 	// destroys the connection before chunk AfterChunk is written at all: the
 	// previous chunk is the last complete frame, so the client sees a clean
@@ -110,6 +121,14 @@ type FaultAttempt struct {
 	// across the streaming and non-streaming catalogue.
 	Reset bool `yaml:"reset,omitempty"`
 
+	// BodyBytes is the minimum size, in bytes, FaultOversizedBody pads the
+	// response body to: "at least this many bytes". Zero means unset — unlike
+	// TruncateAfterBytes, oversized_body has no default size to fall back to
+	// (there is no "half the body" analogue for padding upward), so a zero
+	// value under an explicit kind: oversized_body is a load error rather than
+	// a fallback.
+	BodyBytes int `yaml:"body_bytes,omitempty"`
+
 	// AfterChunk is the zero-based index of the first chunk a stream_* kind
 	// affects. Chunks before it are always delivered whole. It is meaningful
 	// only for the three stream_* kinds; a nonzero value on any other kind is
@@ -150,6 +169,9 @@ func (a FaultAttempt) EffectiveKind() FaultKind {
 	}
 	if a.TruncateAfterBytes > 0 || a.Reset {
 		return FaultTruncateBody
+	}
+	if a.BodyBytes > 0 {
+		return FaultOversizedBody
 	}
 	if a.Status >= 400 {
 		return FaultStatus

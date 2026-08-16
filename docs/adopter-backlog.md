@@ -16,7 +16,7 @@ Recorded 2026-08-16 (midday), against **v0.3.0**, tagged from `main` at `ae4c8e6
 | 3 — the async job machine | **shipped** in v0.2.0 (A1–A7) |
 | 4 — the remaining synchronous routes | **shipped** in v0.3.0 |
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
-| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`) and 2 (`malicious-content`) done; Phase 7's provenance-date item is already done |
+| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`), 2 (`malicious-content`) and 3 (`oversized_body`) done; Phase 7's provenance-date item is already done |
 
 **v0.3.0** is the last tag (2026-08-16): Phase 4's three routes, Phase 5's streaming end to end (four `.sse`
 goldens, the `streaming` built-in, four testkit assertions), honest provenance dates and goldens for the async
@@ -40,12 +40,12 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    pins moved in a follow-up commit — the CONTRIBUTING.md "Releasing" order.
 2. **Phase 6 — G-3 depth**, on branch `phase-6` (PR #2). Highest value per effort: most primitives exist. Unit 1
    (the journal `CompletedAt` defect: stamped before the delay on aborting faults, so `observed_ms` read 0 on a
-   hang) is done; unit 2 (the generic `malicious-content` built-in) is done; next is `body_bytes:` padding, the
-   timeout/brownout/hang-then-abort/rotation built-ins with `AssertDifferentCredential`,
-   delay-after-headers, the observed-pacing assertion per D5, and a closing docs sweep for onboarding and
-   correctness (owner, 2026-08-16) that also carries the D9 framing question. Trickle bodies now have Phase 5's
-   chunked-write path to sit on. Note the over-redaction defect listed there was fixed in v0.1.1 already — verify
-   before re-fixing.
+   hang) is done; unit 2 (the generic `malicious-content` built-in) is done; unit 3 (the `oversized_body` fault
+   kind and the `oversized-body` built-in) is done; next is the timeout/brownout/hang-then-abort/rotation built-ins
+   with `AssertDifferentCredential`, delay-after-headers, the observed-pacing assertion per D5, and a closing docs
+   sweep for onboarding and correctness (owner, 2026-08-16) that also carries the D9 framing question. Trickle
+   bodies now have Phase 5's chunked-write path to sit on. Note the over-redaction defect listed there was fixed in
+   v0.1.1 already — verify before re-fixing.
 3. Tell the adopter v0.3.0 exists; their questions in the two contract READMEs are still open.
 
 ### How the work has been run, for whoever picks it up
@@ -560,14 +560,14 @@ trickle-body vector in Phase 6 can now build on the same chunked-write path this
 
 > Phase 6 — G-3 depth: hostile content, brownout, timeouts, rotation, and the pacing evidence fix
 >
-> **State on 2026-08-16:** units 1 (`CompletedAt`) and 2 (the generic `malicious-content` built-in) done on
-> `phase-6`; otherwise not started, apart from three items that other phases already covered — marked in the list
-> below. Read the current `provider/handle.go` and
-> `provider/fault_exec.go` before trusting the line numbers quoted here; Phase 5 rewrote the execute path (a stream
-> branch, `hijackReset`, per-chunk `sleep`), and the journal-early record now also fires for streams (`if
-> out.Aborted || resp.Stream != nil { record() }`), a shape `phase-6` unit 1 has since split in two: streams still
-> record before the delay; a non-streaming aborting fault now waits out its delay, then records, so `CompletedAt`
-> observes the hang instead of the instant the attempt was decided.
+> **State on 2026-08-16:** units 1 (`CompletedAt`), 2 (the generic `malicious-content` built-in) and 3 (the
+> `oversized_body` fault kind and the `oversized-body` built-in) done on `phase-6`; otherwise not started, apart
+> from three items that other phases already covered — marked in the list below. Read the current
+> `provider/handle.go` and `provider/fault_exec.go` before trusting the line numbers quoted here; Phase 5 rewrote
+> the execute path (a stream branch, `hijackReset`, per-chunk `sleep`), and the journal-early record now also fires
+> for streams (`if out.Aborted || resp.Stream != nil { record() }`), a shape `phase-6` unit 1 has since split in
+> two: streams still record before the delay; a non-streaming aborting fault now waits out its delay, then records,
+> so `CompletedAt` observes the hang instead of the instant the attempt was decided.
 
 The highest value-per-effort phase in the backlog, because the audit found most of these primitives already exist and
 are missing only packaging. Delays are unbounded and context-aware with no WriteTimeout to cut them off; the
@@ -600,8 +600,16 @@ registry disable. The pacing fix is what makes journal timestamps usable as the 
   source one of the existing category prefixes (`inj-`/`cred-`/`markup-`/`exfil-`/`long-`), or add its new prefix to
   `hostileSourcePrefixes` in `scenarios/scenarios_test.go` in the same change: that variable, not this paragraph, is
   what the every-provider-projects-it guard actually enforces, and an unlisted prefix would silently escape it.
-- An oversized-body knob (body_bytes: padding) — cheap, and what actually exercises a size-limit ingress gate. Today
-  oversized is expressible only by embedding megabytes of text in the YAML.
+- ~~An oversized-body knob (body_bytes: padding)~~ **DONE on `phase-6` (unit 3).** A new `oversized_body` fault
+  kind, inferred from `body_bytes > 0` exactly as `truncate_after_bytes` infers `truncate_body`, pads the rendered
+  response with insignificant JSON whitespace to at least `body_bytes` — decoded value unchanged, only the size on
+  the wire differs — writing the padding from a fixed 64 KiB buffer in bounded chunks so a scenario asking for
+  hundreds of MiB never costs the process more than that one buffer. It cannot apply to a streaming entry (it sets
+  an exact `Content-Length`, which is wrong for chunked SSE), reported at load time and, per request, the same way
+  `truncate_body`'s mismatch already was. The `oversized-body` built-in pads the first response on every
+  synchronous route — Exa `/search`, `/answer`, `/contents`, `/findSimilar`, Tavily `/search`, `/extract`,
+  Perplexity Sonar and Agent, one per-route plan each, as `rate-limited` does — past 1 MiB, then serves a clean
+  retry; the async surfaces carry no plan, for the reason the built-in's header gives.
 - Trickle/slow-drip bodies — a genuinely new execution kind sharing its entire machinery with Phase 5's chunked
   writes. **Phase 5 has shipped that path** (`provider/stream.go`'s `executeStream`, per-chunk `sleep` through the
   injectable clock, flush per frame): build trickle as a JSON-body user of the same writer, never a second one.

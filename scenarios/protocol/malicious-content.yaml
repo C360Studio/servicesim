@@ -44,7 +44,8 @@
 #   long-*    one large-but-VALID text body (a few KiB), so a consumer's size
 #             handling can be exercised on a result that is merely big, not
 #             malformed. Oversized-proper — a valid body padded past a size
-#             limit — is the next backlog unit's `body_bytes:` padding knob,
+#             limit — is the shipped `oversized_body` fault kind's
+#             `body_bytes:` knob, exercised by the `oversized-body` built-in,
 #             not this one.
 #   benign-*  one ordinary, clean source (id `benign-report`, url
 #             https://example.test/report-benign) alongside the hostile ones,
@@ -327,7 +328,8 @@ sources:
 
   # long-* — one large-but-VALID body, a few KiB of repeated but
   # non-identical lines. Oversized-proper — a valid body padded past a size
-  # limit — is the next backlog unit's body_bytes: padding knob, not this one.
+  # limit — is the shipped oversized_body fault kind's body_bytes: knob,
+  # exercised by the oversized-body built-in, not this one.
   - id: long-content
     url: https://example.test/report-long-content
     title: Long-Form Appendix

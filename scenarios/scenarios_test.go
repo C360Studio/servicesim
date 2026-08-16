@@ -1,12 +1,15 @@
 package scenarios_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,6 +36,7 @@ var builtins = []string{
 	"malformed-json",
 	"malicious-content",
 	"namespaced",
+	"oversized-body",
 	"rate-limited",
 	"server-error",
 	"streaming",
@@ -760,6 +764,233 @@ func TestConversation_ScriptsAnAgenticLoop(t *testing.T) {
 		require.Lenf(t, entry.Turns, 1, "%s must stay single-shot", provider)
 		assert.True(t, entry.Turns[0].When.IsEmpty())
 	}
+}
+
+// oversizedBodyMinBytes is the built-in's own body_bytes: value, repeated here
+// so the test pins the same number the YAML declares rather than a
+// independently-chosen threshold that could silently drift from it.
+const oversizedBodyMinBytes = 4194304
+
+// TestOversizedBody_FirstAttemptPadsThenCleanRetry is the oversized-body
+// built-in's dedicated live test: on each synchronous surface, the first
+// response is padded to at least 4 MiB with an exact Content-Length, decodes
+// to the same JSON value the clean retry carries — proving padding is the
+// ONLY difference — and the journal shows the padding on the first attempt
+// alone, so a consumer's fail-closed ingress gate and its recovery path are
+// both provable from one running listener.
+func TestOversizedBody_FirstAttemptPadsThenCleanRetry(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("oversized-body"),
+		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+
+	cases := []struct {
+		name    string
+		p       provider.Name
+		path    string
+		body    string
+		headers map[string]string
+	}{
+		{
+			name:    "exa search",
+			p:       provider.Exa,
+			path:    "/search",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			// /answer, /contents and /findSimilar are separate routes with their
+			// own attempt budgets; the built-in declares a plan on each, as
+			// rate-limited does, so a consumer whose adapter uses any of them
+			// gets the same first-call padding.
+			name:    "exa answer",
+			p:       provider.Exa,
+			path:    "/answer",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name:    "exa contents",
+			p:       provider.Exa,
+			path:    "/contents",
+			body:    `{"urls":["https://example.test/report-a"]}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name:    "exa findSimilar",
+			p:       provider.Exa,
+			path:    "/findSimilar",
+			body:    `{"url":"https://example.test/report-a"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name:    "tavily search",
+			p:       provider.Tavily,
+			path:    "/search",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
+		},
+		{
+			// /extract is its own route with its own budget, Bearer-only.
+			name:    "tavily extract",
+			p:       provider.Tavily,
+			path:    "/extract",
+			body:    `{"urls":"https://example.test/report-a"}`,
+			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
+		},
+		{
+			name:    "perplexity sonar",
+			p:       provider.Perplexity,
+			path:    "/v1/sonar",
+			body:    `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+		{
+			// The Agent surface's own route: providers.perplexity_agent's
+			// top-level fault: is a separate plan from Sonar's, on the same
+			// physical listener, which is exactly why this test must filter
+			// journal entries by Route rather than assume ordinal position —
+			// see filterByRoute below.
+			name:    "perplexity agent",
+			p:       provider.Perplexity,
+			path:    "/v1/agent",
+			body:    `{"input":"report"}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			route := "POST " + tc.path
+			firstBody, firstLen := oversizedBodyPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+			secondBody, secondLen := oversizedBodyPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+
+			require.GreaterOrEqualf(t, firstLen, oversizedBodyMinBytes,
+				"%s: the first response's Content-Length must reach the padded minimum", tc.name)
+			require.Lessf(t, secondLen, oversizedBodyMinBytes,
+				"%s: the retry must not be padded", tc.name)
+
+			var firstVal, secondVal any
+			require.NoErrorf(t, json.Unmarshal(bytes.TrimRight(firstBody, " "), &firstVal),
+				"%s: the padded body must still decode once trailing whitespace is trimmed", tc.name)
+			require.NoErrorf(t, json.Unmarshal(secondBody, &secondVal), "%s: the clean retry must decode", tc.name)
+			// The route declares a fault plan, so internal/ids (§3.1) folds
+			// the claimed ATTEMPT INDEX into every generated identifier —
+			// deliberately, so two calls to the same faulted route never
+			// collide on a request/response id. That makes the id field(s)
+			// the one AUTHORED-content-independent way the two decoded
+			// values legitimately differ; normalizing them out is what
+			// leaves padding as the only difference this comparison is
+			// actually checking for.
+			require.Equalf(t, normalizeOversizedBodyIDs(secondVal), normalizeOversizedBodyIDs(firstVal),
+				"%s: padding must be the only difference between the two responses, once each call's own "+
+					"attempt-indexed identifier is set aside", tc.name)
+
+			entries := awaitRouteEntries(t, sim, tc.p, route, 2)
+			require.Equalf(t, "oversized_body", entries[0].Outcome.FaultKind,
+				"%s: the first entry's outcome must name the padding fault", tc.name)
+			require.GreaterOrEqualf(t, entries[0].Outcome.BytesWritten, oversizedBodyMinBytes,
+				"%s: the first entry's bytes_written must reach the padded minimum", tc.name)
+			require.Emptyf(t, entries[1].Outcome.FaultKind,
+				"%s: the second entry must carry no fault at all — the retry is clean", tc.name)
+		})
+	}
+}
+
+// oversizedBodyPost issues one POST against path and returns the raw response
+// body and its declared Content-Length, read as an int so a test can compare
+// it directly against oversizedBodyMinBytes.
+func oversizedBodyPost(
+	t *testing.T, sim *testkit.Sim, p provider.Name, path, body string, headers map[string]string,
+) (raw []byte, contentLength int) {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, sim.URL(p)+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := sim.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	raw, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	cl, err := strconv.Atoi(resp.Header.Get("Content-Length"))
+	require.NoError(t, err, "Content-Length must be declared exactly, not omitted in favour of chunked encoding")
+	require.Equal(t, len(raw), cl, "the declared Content-Length must match what was actually read")
+	return raw, cl
+}
+
+// awaitRouteEntries polls p's journal until at least n entries carrying
+// route exist, then returns them in arrival order. Filtering by Route,
+// rather than relying on ordinal position in p's whole journal, is what
+// keeps this test correct when Perplexity Sonar and the Agent surface run
+// as parallel subtests against the same physical listener: both routes
+// share one provider.Name and therefore one journal, so their entries
+// interleave, but never with each other's Route.
+func awaitRouteEntries(t *testing.T, sim *testkit.Sim, p provider.Name, route string, n int) []testkit.Entry {
+	t.Helper()
+	var out []testkit.Entry
+	require.Eventually(t, func() bool {
+		out = filterByRoute(sim.Requests(p), route)
+		return len(out) >= n
+	}, 5*time.Second, 10*time.Millisecond, "waiting for %d entries on route %q", n, route)
+	return out
+}
+
+// oversizedBodyIDKeys names every wire field an attempt-indexed identifier is
+// rendered under, across the four surfaces TestOversizedBody_
+// FirstAttemptPadsThenCleanRetry exercises: Exa's requestId, Tavily's
+// request_id, and "id" for both Perplexity Sonar's completion id and the
+// Agent surface's response id AND its nested message id (output[].id) — one
+// key name covers both since the walk below is recursive.
+var oversizedBodyIDKeys = map[string]bool{"requestId": true, "request_id": true, "id": true}
+
+// normalizeOversizedBodyIDs recursively replaces the value of any map key
+// named in oversizedBodyIDKeys with a fixed placeholder, walking into nested
+// maps and slices. See its call site for why: comparing two decoded
+// responses from different attempts of one faulted route needs identifiers
+// set aside first.
+func normalizeOversizedBodyIDs(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			if oversizedBodyIDKeys[k] {
+				out[k] = "<id>"
+				continue
+			}
+			out[k] = normalizeOversizedBodyIDs(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = normalizeOversizedBodyIDs(val)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// filterByRoute returns, in order, the entries whose Route equals route.
+func filterByRoute(entries []testkit.Entry, route string) []testkit.Entry {
+	var out []testkit.Entry
+	for _, e := range entries {
+		if e.Route == route {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // TestNamespaced_DeclaresOneLanePerModel pins the shape of the file: the two

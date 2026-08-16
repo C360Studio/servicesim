@@ -235,15 +235,18 @@ const (
 	CodeStreamAnswerMismatch = "scenario.stream.answer_mismatch"
 
 	// CodeStreamFaultMismatch is raised when a fault attempt cannot apply to
-	// the transport its entry actually uses: today, that is truncate_body
-	// declared on an entry whose effective policy is stream. truncateBody
-	// (provider/fault_exec.go) sets the full Content-Length before writing a
-	// prefix, which is correct for JSON and invalid for SSE — a byte-offset
-	// cut on a chunked stream lands mid-frame, testing a consumer's JSON
-	// parser rather than its SSE reconnect logic. The check keys on the
-	// entry's EFFECTIVE POLICY, never on the presence of a `stream:` key:
-	// `warn` and `reject` both produce an ordinary JSON body, so
-	// truncate_body stays valid with them exactly as it always has.
+	// the transport its entry actually uses: today, that is truncate_body or
+	// oversized_body declared on an entry whose effective policy is stream.
+	// truncateBody (provider/fault_exec.go) sets the full Content-Length
+	// before writing a prefix, which is correct for JSON and invalid for SSE
+	// — a byte-offset cut on a chunked stream lands mid-frame, testing a
+	// consumer's JSON parser rather than its SSE reconnect logic.
+	// writeOversizedBody sets an equally exact Content-Length over a padded
+	// JSON body, for the same reason: a size-limit gate probe is not a
+	// stream reconnect probe. The check keys on the entry's EFFECTIVE
+	// POLICY, never on the presence of a `stream:` key: `warn` and `reject`
+	// both produce an ordinary JSON body, so truncate_body stays valid with
+	// them exactly as it always has, and oversized_body on the same terms.
 	CodeStreamFaultMismatch = "scenario.fault.stream_mismatch"
 
 	// CodeStreamAbortUnreachable is raised per request, not at load, when a
@@ -477,6 +480,14 @@ func ValidateStreamFaultMismatch(e *ProviderEntry, entryPolicy StreamPolicy, tur
 					Path:     path + ".kind",
 					Message: "kind truncate_body cannot apply to a streaming entry: it sets a Content-Length that " +
 						"is wrong for a chunked SSE body; the streaming-aware equivalent is stream_truncate_chunk",
+				})
+			case a.EffectiveKind() == FaultOversizedBody && entryPolicy == StreamServe:
+				findings = append(findings, Finding{
+					Severity: SeverityError,
+					Code:     CodeStreamFaultMismatch,
+					Path:     path + ".kind",
+					Message: "kind oversized_body cannot apply to a streaming entry: it pads a JSON body and " +
+						"sets a Content-Length that is wrong for a chunked SSE body",
 				})
 			case a.EffectiveKind().IsStream() && entryPolicy != StreamServe:
 				findings = append(findings, Finding{

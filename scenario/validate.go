@@ -310,7 +310,7 @@ func validateFault(r *Report, path string, f *Fault) {
 func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 	switch a.Kind {
 	case FaultNone, FaultStatus, FaultCloseBeforeHeaders, FaultTruncateBody,
-		FaultInvalidJSON, FaultWrongContentType, FaultEmptyBody, FaultExtraFields,
+		FaultInvalidJSON, FaultWrongContentType, FaultEmptyBody, FaultExtraFields, FaultOversizedBody,
 		FaultStreamDisconnect, FaultStreamTruncateChunk, FaultStreamStall:
 	default:
 		r.add(SeverityError, "scenario.fault.kind.unknown", path+".kind",
@@ -323,6 +323,14 @@ func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 			r.add(SeverityError, CodeAfterChunkNotStreaming, path+".after_chunk",
 				"after_chunk is meaningful only for stream_disconnect, stream_truncate_chunk or stream_stall, not %q",
 				a.EffectiveKind())
+		}
+	}
+	if a.BodyBytes != 0 {
+		switch a.EffectiveKind() {
+		case FaultOversizedBody:
+		default:
+			r.add(SeverityError, "scenario.fault.body_bytes.not_oversized", path+".body_bytes",
+				"body_bytes is meaningful only for kind oversized_body, not %q", a.EffectiveKind())
 		}
 	}
 	if a.Status != 0 && (a.Status < 100 || a.Status > 599) {
@@ -341,6 +349,10 @@ func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 		r.add(SeverityError, "scenario.fault.truncate.negative", path+".truncate_after_bytes",
 			"truncate_after_bytes must not be negative")
 	}
+	if a.BodyBytes < 0 {
+		r.add(SeverityError, "scenario.fault.body_bytes.negative", path+".body_bytes",
+			"body_bytes must not be negative")
+	}
 	if a.Repeat < 0 {
 		r.add(SeverityError, "scenario.fault.repeat.negative", path+".repeat",
 			"repeat must not be negative")
@@ -348,5 +360,10 @@ func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 	if a.EffectiveKind() == FaultInvalidJSON && a.RawBody == "" {
 		r.add(SeverityWarning, "scenario.fault.raw_body.missing", path+".raw_body",
 			"kind invalid_json with no raw_body leaves the malformed bytes to the provider package")
+	}
+	if a.EffectiveKind() == FaultOversizedBody && a.BodyBytes == 0 {
+		r.add(SeverityError, "scenario.fault.body_bytes.missing", path+".body_bytes",
+			"kind oversized_body has no default size — unlike truncate_after_bytes, there is no "+
+				"\"zero means half the body\" fallback — so body_bytes must be set")
 	}
 }

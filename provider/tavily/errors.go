@@ -190,9 +190,15 @@ func faultBody(a scenario.FaultAttempt) []byte {
 	if a.Error != "" {
 		return errorBody(a.Error)
 	}
-	if a.EffectiveKind() != scenario.FaultStatus {
-		// A delay, a truncation, a wrong content type or a trailing
-		// "status: 200" attempt all keep the scenario's own body.
+	if a.Status < http.StatusBadRequest {
+		// A delay, a truncation, a wrong content type, an oversized-body pad
+		// with no status override, or a trailing "status: 200" attempt all
+		// keep the scenario's own body. Any kind paired with an error status
+		// — including "status: 500, body_bytes: N" — gets this surface's
+		// documented error envelope instead, matching Exa's and Perplexity's
+		// faultBody. That also means "status: 500, truncate_after_bytes: N"
+		// now truncates the error envelope rather than the scenario body,
+		// as its siblings already do.
 		return nil
 	}
 	if message, ok := statusMessages[a.Status]; ok {

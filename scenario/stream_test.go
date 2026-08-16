@@ -313,6 +313,28 @@ func TestValidateStreamFaultMismatch(t *testing.T) {
 		require.Equal(t, "providers.perplexity.fault.attempts[0].kind", findings[0].Path)
 	})
 
+	t.Run("oversized_body under a non-streaming policy stays valid — mirrors truncate_body", func(t *testing.T) {
+		t.Parallel()
+		e := &ProviderEntry{Name: "exa", Turns: []Turn{
+			{Fault: &Fault{Attempts: []FaultAttempt{{Kind: FaultOversizedBody, BodyBytes: 4194304}}}},
+		}}
+		for _, policy := range []StreamPolicy{StreamWarn, StreamReject, ""} {
+			require.Emptyf(t, ValidateStreamFaultMismatch(e, policy, nil), "policy %q", policy)
+		}
+	})
+
+	t.Run("oversized_body under a streaming policy is an error", func(t *testing.T) {
+		t.Parallel()
+		e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
+			{Fault: &Fault{Attempts: []FaultAttempt{{Kind: FaultOversizedBody, BodyBytes: 4194304}}}},
+		}}
+		findings := ValidateStreamFaultMismatch(e, StreamServe, threeDeltaTurns)
+		require.Len(t, findings, 1)
+		require.Equal(t, CodeStreamFaultMismatch, findings[0].Code)
+		require.Equal(t, SeverityError, findings[0].Severity)
+		require.Equal(t, "providers.perplexity.fault.attempts[0].kind", findings[0].Path)
+	})
+
 	t.Run("a non-truncate_body, non-stream_* kind under a streaming policy is untouched", func(t *testing.T) {
 		t.Parallel()
 		e := &ProviderEntry{Name: "perplexity", Turns: []Turn{

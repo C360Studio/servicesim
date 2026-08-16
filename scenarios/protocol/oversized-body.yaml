@@ -1,0 +1,163 @@
+# The default 200 on every one of this build's eight synchronous routes (see
+# "Coverage" below) is padded past a 1 MiB size-limit ingress gate, then a
+# clean retry — the same "fault first, clean second" shape as rate-limited,
+# but the failure mode under test here is a Gate-2 fail-closed size gate
+# rather than a status code (docs/adopter-backlog.md, Phase 6: "An
+# oversized-body knob (body_bytes: padding) — cheap, and what actually
+# exercises a size-limit ingress gate").
+#
+# `body_bytes: 4194304` (4 MiB — comfortably past a 1 MiB gate, cheap over
+# loopback) needs no explicit `kind:`: an attempt with body_bytes > 0 and no
+# other mangling field infers kind: oversized_body, mirroring how
+# truncate_after_bytes infers truncate_body. Padding is insignificant JSON
+# whitespace appended after the rendered response, so the padded call's
+# DECODED value is identical to what that same attempt would have carried
+# unpadded — only the size differs, which is exactly what a size-limit gate
+# measures. Against the clean retry, there is one OTHER difference beyond
+# padding: every route below declares a fault plan, so internal/ids folds
+# the attempt index into requestId/request_id/id (see internal/ids's package
+# doc) — attempt 0 and the attempt-1 retry mint different identifiers by
+# design, not because of padding.
+#
+# Coverage: this build serves eight synchronous routes, and a fault plan is
+# registered PER ROUTE (docs/scenario-schema.md "Faults and turns"), so the
+# same one-attempt plan is declared eight times — exactly as rate-limited
+# does — one per budget:
+#   - Exa `/search` — providers.exa's own top-level `fault:`; `/answer`,
+#     `/contents` and `/findSimilar` each carry their own under `answer:`,
+#     `contents:` and `find_similar:`, because each is a separate route with
+#     an independent attempt budget and a single block-level plan would leave
+#     the other three healthy.
+#   - Tavily `/search` — providers.tavily's top-level `fault:`; `/extract`
+#     carries its own under `extract:`, for the same reason.
+#   - Perplexity Sonar (`/v1/sonar` and its two OpenAI-SDK aliases) —
+#     providers.perplexity's top-level `fault:`.
+#   - The Perplexity Agent surface (`/v1/agent` and its two aliases) —
+#     providers.perplexity_agent's top-level `fault:`, its own independent
+#     budget from Sonar's.
+#
+# The two ASYNC surfaces — `exa_agent_runs` and `tavily_research` — carry
+# plain happy-shaped turns (borrowed verbatim from the `happy` built-in) and
+# NO fault attempt at all, on purpose: a poll snapshot's body size is the
+# client's own retry loop's concern, not a first-call ingress-gate probe, and
+# `create.fault` (a route-level plan on the CREATE route, independent of the
+# poll route's own budget) is where a create-route size test would go, if
+# anyone needs one — it is not declared here.
+version: 1
+name: oversized-body
+description: >-
+  Every synchronous route — Exa /search, /answer, /contents and /findSimilar,
+  Tavily /search and /extract, Perplexity Sonar and Agent — has its first
+  response padded past a 1 MiB size-limit ingress gate, then a clean retry,
+  so a consumer proves both fail-closed admission and recovery from one
+  scenario.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+providers:
+
+  exa:
+    fault:
+      attempts:
+        - body_bytes: 4194304
+      after: success
+    results:
+      - source: source-a
+    # /answer, /contents and /findSimilar are separate routes with their own
+    # attempt budgets, so each needs its own plan; a single block-level fault
+    # would leave them healthy. /contents needs no results of its own — it
+    # resolves requested URLs against the corpus — but it does need the plan.
+    answer:
+      fault:
+        attempts:
+          - body_bytes: 4194304
+        after: success
+      answer: Report A states the finding.
+      citations:
+        - source-a
+    contents:
+      fault:
+        attempts:
+          - body_bytes: 4194304
+        after: success
+    find_similar:
+      fault:
+        attempts:
+          - body_bytes: 4194304
+        after: success
+      results:
+        - source: source-a
+
+  tavily:
+    fault:
+      attempts:
+        - body_bytes: 4194304
+      after: success
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+    # /extract is its own route with its own budget, independent of /search's.
+    extract:
+      fault:
+        attempts:
+          - body_bytes: 4194304
+        after: success
+
+  perplexity:
+    fault:
+      attempts:
+        - body_bytes: 4194304
+      after: success
+    answer: A grounded answer citing Report A.
+    finish_reason: stop
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    fault:
+      attempts:
+        - body_bytes: 4194304
+      after: success
+    answer: Report A states the finding.
+    search_results:
+      - source-a
+
+  # Async surfaces: plain happy-shaped turns, no fault attempt — see the
+  # header comment for why.
+  exa_agent_runs:
+    turns:
+      - when: {call_index: 0}
+        respond:
+          status: running
+      - when: {call_index: 1}
+        respond:
+          status: running
+      - respond:
+          status: completed
+          output:
+            text: Report A states the finding.
+          cost_dollars:
+            total: 0.045
+
+  tavily_research:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - when: {call_index: 1}
+        respond: {status: in_progress}
+      - respond:
+          status: completed
+          content: Report A states the finding.
+          sources:
+            - source-a

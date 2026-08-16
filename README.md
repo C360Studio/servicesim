@@ -359,7 +359,7 @@ entirely and much later:
 
 ## Built-in protocol scenarios
 
-Fifteen scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
+Sixteen scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
 `testkit.WithBuiltin("<name>")`. They cover *protocol* behaviour, which is the same for every consumer;
 product-specific corpora belong in your own repository.
 
@@ -371,6 +371,7 @@ product-specific corpora belong in your own repository.
 | `async-stuck` | An Exa agent run and a Tavily research task never terminate, so your own poll timeout — not Servicesim — is what ends the loop. |
 | `unauthorized` | A 401 in each vendor's own error envelope is surfaced as an auth failure and is not retried. |
 | `rate-limited` | A 429 with `Retry-After`, then success — backoff and retry work, and the retry is counted. |
+| `oversized-body` | Every synchronous route (Exa `/search`, `/answer`, `/contents`, `/findSimilar`; Tavily `/search`, `/extract`; Perplexity Sonar and Agent) has its first response padded past a 1 MiB size-limit ingress gate (`body_bytes: 4194304`), then a clean retry — a fail-closed size gate and its recovery, from one scenario. |
 | `server-error` | A 500 is surfaced as an upstream failure rather than mistaken for an empty result set. |
 | `malformed-json` | A body that is not valid JSON fails cleanly instead of panicking or returning zero values. |
 | `extra-fields` | Unknown additive response fields do not break the decoder — vendors evolve additively. |

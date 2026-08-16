@@ -312,6 +312,52 @@ providers:
 	require.Contains(t, second.Body.String(), `"response_time":1.15`)
 }
 
+// TestOversizedBodyFaultServesTheDocumentedEnvelope proves the real seam
+// (Parse → faults.New → Handle) that TestFaultBodyGoldenWire's unit-level
+// call cannot: an oversized_body attempt with a status override pads this
+// surface's documented error envelope, not the scenario's search body. This
+// is the property that a stale `EffectiveKind() != FaultStatus` guard in
+// faultBody would silently miss, because a fake FaultBody in a unit test
+// renders regardless of kind.
+func TestOversizedBodyFaultServesTheDocumentedEnvelope(t *testing.T) {
+	t.Parallel()
+
+	src := `
+version: 1
+name: oversized-500
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  tavily:
+    fault:
+      attempts:
+        - status: 500
+          body_bytes: 100
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+`
+	loaded, report, err := scenario.Parse([]byte(src))
+	require.NoError(t, err)
+	require.True(t, report.OK(), "%v", report.Findings)
+
+	handler := New(provider.Deps{
+		Scenario: loaded,
+		Faults:   faults.New(loaded, Routes()),
+	})
+
+	rec := post(t, handler, "/search", `{"query":"report a"}`, bearer)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Equal(t, "100", rec.Header().Get("Content-Length"))
+
+	trimmed := strings.TrimRight(rec.Body.String(), " ")
+	require.Equal(t, goldenBytes(t, "tavily-500.json"), trimmed,
+		"an oversized 500 must pad the documented error envelope, not the search body")
+}
+
 // TestMultiTurnScript proves the handler serves a scripted provider, not only
 // the single-shot form: turns are matched in declaration order against the same
 // call counter the fault engine draws on, and a turn with no `when` is the

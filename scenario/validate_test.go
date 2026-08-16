@@ -146,6 +146,29 @@ func TestValidate_FailsClosed(t *testing.T) {
 			wantPath: "providers.exa.fault.attempts[0].repeat",
 		},
 		{
+			name:     "body_bytes inferred as oversized_body is not flagged",
+			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{body_bytes: 100}]}\n",
+			wantCode: "", // the happy case; see the guard below
+		},
+		{
+			name:     "body_bytes on an explicit kind other than oversized_body",
+			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{kind: status, status: 500, body_bytes: 100}]}\n",
+			wantCode: "scenario.fault.body_bytes.not_oversized",
+			wantPath: "providers.exa.fault.attempts[0].body_bytes",
+		},
+		{
+			name:     "negative body_bytes",
+			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{kind: oversized_body, body_bytes: -1}]}\n",
+			wantCode: "scenario.fault.body_bytes.negative",
+			wantPath: "providers.exa.fault.attempts[0].body_bytes",
+		},
+		{
+			name:     "oversized_body with no body_bytes",
+			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{kind: oversized_body}]}\n",
+			wantCode: "scenario.fault.body_bytes.missing",
+			wantPath: "providers.exa.fault.attempts[0].body_bytes",
+		},
+		{
 			name:     "negative retry_after",
 			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{status: 429, retry_after: -1}]}\n",
 			wantCode: "scenario.fault.retry_after.negative",
