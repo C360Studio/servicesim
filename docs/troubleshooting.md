@@ -24,7 +24,7 @@ Servicesim validates credential **placement**, not value. Any fake value works; 
 | Provider | Accepted placement |
 |---|---|
 | Exa | `x-api-key`, or `Authorization: Bearer` |
-| Tavily | `Authorization: Bearer` only |
+| Tavily | `Authorization: Bearer`, or a body `api_key` property (warns `tavily.api_key.in_body`) |
 | Perplexity | `Authorization: Bearer` only |
 
 Sending Tavily an `x-api-key` header is a 401 on purpose: Tavily's REST contract is Bearer, and an adapter that
@@ -64,9 +64,9 @@ single port cannot disambiguate them.
 
 | Port | Provider | Routes |
 |---:|---|---|
-| 8081 | exa | `POST /search`, `POST /answer` |
-| 8082 | tavily | `POST /search` |
-| 8083 | perplexity | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/agent`, `POST /v1/responses` |
+| 8081 | exa | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
+| 8082 | tavily | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
+| 8083 | perplexity | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
 
 Sending Tavily's request to port 8081 reaches Exa's handler, which will reject it as a malformed Exa request. Check
 the `provider` field on the journal entry — it tells you which listener actually received the call.
@@ -400,6 +400,40 @@ To fault a specific call, say so with attempts. A leading `- status: 200` is an 
 The other half of this: a request answered by a fault attempt has still consumed its call index. `call_index: 0`
 and `attempts[0]` describe the *same* request, so a turn scripted for `call_index: 0` behind a leading 429 is
 unreachable.
+
+A related trap, specific to combining `auth.expect_key` with a fault plan on the same provider entry: an auth
+rejection claims **no** call index at all (see
+["What claims a call index, and what does not"](scenario-schema.md#what-claims-a-call-index-and-what-does-not)), so
+a plan written next to `expect_key` does not start consuming from the first request a client sends — it starts
+consuming from the first request that actually **authenticates**. Two calls with the wrong key, then the correct
+one, land the plan's first attempt on that third call, not the first. `outcome.attempt_index: -1` on the rejected
+entries is how you tell the two apart in the journal. The `credential-rotation` built-in never combines the two, on
+purpose, and pins this exact behaviour in a regression test.
+
+## My timeout test passes instantly
+
+You called `testkit.WithSkippedDelays()`. It exists for a backoff test that only needs to assert "the scenario
+asked for this delay" without paying for it — under it a delay fault returns immediately and `outcome.delay_ms`
+still records the requested value. A client *deadline*, by contrast, is observed by bytes not arriving: nothing on
+the server side of a real socket can fake that, so `WithSkippedDelays` turns a 30-second hang into an instant 200
+and the "timeout" your test meant to exercise never happens at all.
+
+For a deadline, timeout or cancellation test, leave delays real (the default) and give the scenario attempt a delay
+LONGER than your client's deadline — the `timeout` built-in's 30s, or a `delay: 150ms` of your own against a client
+deadline shorter than that. The client's own context (a short `context.WithTimeout`, or the deadline your adapter
+sets) is what ends the request; the server's sleep is released by that same cancellation, so the test does not
+actually wait out the declared delay. See
+[`provider/clock.go`](../provider/clock.go)'s `DelayMode` doc comment, which is the authority on this, and the
+`timeout` built-in's own header comment for a worked example.
+
+## My timeout test's abandoned call never appears in the journal
+
+Your client deadline was too short for the runner it ran on. The deadline runs from before the client dials, and
+a starved CI runner (race detector, packages tested in parallel, few vCPUs) can take tens of milliseconds just to
+deliver the request; if the deadline fires before the simulator has read it, no handler ever ran, nothing was
+abandoned server-side, and there is no entry for `AwaitRequests` to find — the route looks idle and the await
+times out. Give the deadline real margin over request-delivery latency: a second or two is safe and still tiny
+beside the `timeout` built-in's 30s hang. `100ms` has flaked in this repository's own CI for exactly this reason.
 
 ## The wrong turn answered, or two callers got each other's responses
 

@@ -360,6 +360,109 @@ func TestHandleStreamAbortUnreachable(t *testing.T) {
 	require.Equal(t, journal.SeverityError, found.Severity)
 }
 
+// TestHandleStreamAbortUnreachableOversizedBody is oversized_body's mirror of
+// TestHandleStreamAbortUnreachable, above: an oversized_body attempt claimed
+// against an exchange that will stream cannot apply either — it sets a
+// Content-Length over a padded JSON body, which is exactly as wrong for
+// chunked SSE as truncate_body's Content-Length is — so it is reported and
+// the stream is served in full, exactly as scripted, with no padding at all.
+func TestHandleStreamAbortUnreachableOversizedBody(t *testing.T) {
+	t.Parallel()
+
+	stream := twoChunkStream()
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{Kind: scenario.FaultOversizedBody, BodyBytes: 4 << 20},
+	}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream)))
+	defer srv.Close()
+
+	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"),
+		"the stream is served in full — the claimed attempt cannot apply to it")
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	want := append(append(append([]byte{}, stream.Chunks[0].Bytes...), stream.Chunks[1].Bytes...), doneChunk().Bytes...)
+	require.Equal(t, want, body, "the scripted attempt never touches the stream — no padding at all")
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1)
+	require.False(t, entries[0].Outcome.Aborted, "nothing was aborted: the attempt never applied")
+	require.Equal(t, string(scenario.FaultOversizedBody), entries[0].Outcome.FaultKind,
+		"the journal still names what was SCRIPTED, even though it never fired")
+
+	var oversizedFound *journal.Finding
+	for i := range entries[0].Findings {
+		if entries[0].Findings[i].Code == scenario.CodeStreamAbortUnreachable {
+			oversizedFound = &entries[0].Findings[i]
+		}
+	}
+	require.NotNil(t, oversizedFound, "findings: %+v", entries[0].Findings)
+	require.Equal(t, journal.SeverityError, oversizedFound.Severity)
+}
+
+// TestHandleStreamAbortUnreachableDelayAfterHeaders is Phase 6 unit 5's
+// mirror case, DoD (f), copying TestHandleStreamAbortUnreachableOversizedBody's
+// shape: a claimed attempt carrying delay_after_headers cannot apply to an
+// exchange that will stream — it assumes an ordinary JSON body to hang
+// before writing — so it is reported and the stream is served in full,
+// exactly as scripted, with no hang at all. The attempt's kind must be one
+// that does NOT suppress the stream (status and friends already convert this
+// into an ordinary JSON error, where delay_after_headers legitimately
+// applies), so this uses a bare delay_after_headers attempt with no other
+// kind — the same shape TestHandleDelayAfterHeadersHeadersArriveBeforeTheHang
+// uses on the non-streaming path.
+func TestHandleStreamAbortUnreachableDelayAfterHeaders(t *testing.T) {
+	t.Parallel()
+
+	stream := twoChunkStream()
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{DelayAfterHeaders: scenario.Duration(50 * time.Millisecond)},
+	}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream)))
+	defer srv.Close()
+
+	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"),
+		"the stream is served in full — the claimed attempt cannot apply to it")
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	// No wall-clock bound: the byte-exact body equality below, together with
+	// DelayAfterHeadersMS == 0 and the absent FaultKind checked below, already
+	// prove the attempt never applied — a Less(...) bound here would add a
+	// flake surface for no discriminating power, since executeStream never
+	// calls afterHeadersDelay at all, mirroring the oversized_body sibling's
+	// shape, which asserts no bound either.
+	want := append(append(append([]byte{}, stream.Chunks[0].Bytes...), stream.Chunks[1].Bytes...), doneChunk().Bytes...)
+	require.Equal(t, want, body, "the scripted attempt never touches the stream")
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1)
+	require.False(t, entries[0].Outcome.Aborted, "nothing was aborted: the attempt never applied")
+	require.Zero(t, entries[0].Outcome.DelayAfterHeadersMS,
+		"the attempt's delay_after_headers, if any, is scoped to the ordinary body that never happens")
+	require.Equal(t, faultKindDelay, entries[0].Outcome.FaultKind,
+		"a bare delay_after_headers attempt has no other kind to name, so the mirror case restores the modifier's "+
+			"own label — \"delay\" — the same one faultOutcome gives the identical shape on the non-streaming path, "+
+			"rather than leaving FaultKind empty")
+
+	var found *journal.Finding
+	for i := range entries[0].Findings {
+		if entries[0].Findings[i].Code == scenario.CodeStreamAbortUnreachable {
+			found = &entries[0].Findings[i]
+		}
+	}
+	require.NotNil(t, found, "findings: %+v", entries[0].Findings)
+	require.Equal(t, journal.SeverityError, found.Severity)
+}
+
 // TestHandleStreamClientGone proves the third path a stream can end on: the
 // client hangs up mid-stream, with no fault involved at all.
 // TestHandleStreamClientGone proves the third path a stream can end on: the

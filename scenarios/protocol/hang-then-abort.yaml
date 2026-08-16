@@ -1,0 +1,224 @@
+# Three abort shapes, each with a 700ms hang before the abort (the third only
+# after headers have arrived), then a clean call.
+#
+# Your client's own deadline must outlast the 700ms hang. A shorter one ends
+# the call on its own cancellation before the scripted abort ever reaches the
+# wire, which degenerates this into the `timeout` shape instead of the one
+# this file scripts.
+#
+# This is "the registry disabled us mid-flight" as it looks on the wire
+# today, in every shape it can currently take: a hang, then an RST before any
+# header arrives; a hang, then headers and a partial body, then an RST; and
+# headers arriving normally, THEN a hang, THEN a partial body and an RST — a
+# mid-flight disconnect after the response has already started, which is
+# what a Temporal activity's heartbeat actually has to notice. The third
+# attempt is `delay_after_headers` (Phase 6 unit 5): it carries no
+# pre-dispatch `delay:` at all, so headers reach the client immediately, and
+# the hang happens only after them.
+#
+# What the journal shows: entry 0 carries `outcome.aborted: true`,
+# `outcome.fault_kind: "close_before_headers"`, `outcome.bytes_written: 0`;
+# entry 1 carries `outcome.aborted: true`,
+# `outcome.fault_kind: "truncate_body"`, and a non-zero `outcome.bytes_written`
+# for the partial body the client did receive before the reset; entry 2
+# carries the same `outcome.aborted: true`, `outcome.fault_kind:
+# "truncate_body"` and non-zero `outcome.bytes_written` as entry 1, plus
+# `outcome.delay_after_headers_ms: 700`. On ALL THREE entries, `completed_at -
+# arrived_at` observes the full 700ms hang — for entries 0 and 1 that is
+# Phase 6 unit 1's fix (CompletedAt stamped after the pre-dispatch delay runs
+# and before the socket is touched); for entry 2 it is unit 5's: CompletedAt
+# is stamped after the AFTER-headers hang runs, immediately before the
+# partial write and reset, which is deliberately a different point on the
+# wire than entries 0/1's (headers are already on the client by then) but the
+# same property — journaled before the client can observe the abort. This is
+# the built-in that makes both fixes visible to a consumer rather than only
+# to Servicesim's own tests. Every scripted reset is journaled BEFORE the
+# socket is destructively touched (package-design.md §2.2 rule 3: the client
+# cannot observe the reset before this entry exists), so `sim.Requests` right
+# after the error already sees it for all three attempts specifically; read
+# it with `testkit.Sim.AwaitRequests` anyway, because if a client's own
+# deadline fires during a 700ms hang instead — the same race `timeout`
+# exercises — that entry lands only after the client has already returned.
+#
+# Coverage: one plan per route, exactly as `rate-limited` and `oversized-body`
+# declare theirs — Exa `/search`, `/answer`, `/contents`, `/findSimilar`,
+# Tavily `/search`, `/extract`, Perplexity Sonar and Agent. The two async
+# surfaces carry plain happy-shaped turns and no fault attempt, on the same
+# terms `timeout`'s header comment explains: a poll snapshot's abort shape is
+# the client's own retry loop's concern, and `create.fault` is where a
+# create-route variant would go, if anyone needs one.
+version: 1
+name: hang-then-abort
+description: >-
+  Every synchronous route hangs 700ms then resets before any header arrives,
+  hangs 700ms again then resets mid-body, then serves headers immediately
+  followed by a 700ms hang and a reset mid-body, then serves a clean call —
+  the three abort shapes a mid-flight disconnect takes on the wire today,
+  each with the hang a consumer's own timeout has to survive before the
+  abort — the third only after headers have already arrived.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+providers:
+
+  exa:
+    fault:
+      attempts:
+        - delay: 700ms
+          kind: close_before_headers
+        - delay: 700ms
+          kind: truncate_body
+          reset: true
+        - kind: truncate_body
+          delay_after_headers: 700ms
+          reset: true
+      after: success
+    results:
+      - source: source-a
+    # /answer, /contents and /findSimilar are separate routes with their own
+    # attempt budgets, so each needs its own plan; a single block-level fault
+    # would leave them healthy. /contents needs no results of its own — it
+    # resolves requested URLs against the corpus — but it does need the plan.
+    answer:
+      fault:
+        attempts:
+          - delay: 700ms
+            kind: close_before_headers
+          - delay: 700ms
+            kind: truncate_body
+            reset: true
+          - kind: truncate_body
+            delay_after_headers: 700ms
+            reset: true
+        after: success
+      answer: Report A states the finding.
+      citations:
+        - source-a
+    contents:
+      fault:
+        attempts:
+          - delay: 700ms
+            kind: close_before_headers
+          - delay: 700ms
+            kind: truncate_body
+            reset: true
+          - kind: truncate_body
+            delay_after_headers: 700ms
+            reset: true
+        after: success
+    find_similar:
+      fault:
+        attempts:
+          - delay: 700ms
+            kind: close_before_headers
+          - delay: 700ms
+            kind: truncate_body
+            reset: true
+          - kind: truncate_body
+            delay_after_headers: 700ms
+            reset: true
+        after: success
+      results:
+        - source: source-a
+
+  tavily:
+    fault:
+      attempts:
+        - delay: 700ms
+          kind: close_before_headers
+        - delay: 700ms
+          kind: truncate_body
+          reset: true
+        - kind: truncate_body
+          delay_after_headers: 700ms
+          reset: true
+      after: success
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+    # /extract is its own route with its own budget, independent of /search's.
+    extract:
+      fault:
+        attempts:
+          - delay: 700ms
+            kind: close_before_headers
+          - delay: 700ms
+            kind: truncate_body
+            reset: true
+          - kind: truncate_body
+            delay_after_headers: 700ms
+            reset: true
+        after: success
+
+  perplexity:
+    fault:
+      attempts:
+        - delay: 700ms
+          kind: close_before_headers
+        - delay: 700ms
+          kind: truncate_body
+          reset: true
+        - kind: truncate_body
+          delay_after_headers: 700ms
+          reset: true
+      after: success
+    answer: A grounded answer citing Report A.
+    finish_reason: stop
+    search_results:
+      - source-a
+
+  perplexity_agent:
+    fault:
+      attempts:
+        - delay: 700ms
+          kind: close_before_headers
+        - delay: 700ms
+          kind: truncate_body
+          reset: true
+        - kind: truncate_body
+          delay_after_headers: 700ms
+          reset: true
+      after: success
+    answer: Report A states the finding.
+    search_results:
+      - source-a
+
+  # Async surfaces: plain happy-shaped turns, no fault attempt — see the
+  # header comment for why.
+  exa_agent_runs:
+    turns:
+      - when: {call_index: 0}
+        respond:
+          status: running
+      - when: {call_index: 1}
+        respond:
+          status: running
+      - respond:
+          status: completed
+          output:
+            text: Report A states the finding.
+          cost_dollars:
+            total: 0.045
+
+  tavily_research:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - when: {call_index: 1}
+        respond: {status: in_progress}
+      - respond:
+          status: completed
+          content: Report A states the finding.
+          sources:
+            - source-a

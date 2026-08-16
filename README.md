@@ -1,7 +1,7 @@
 # Servicesim
 
-A deterministic HTTP simulator for the **Exa**, **Tavily** and **Perplexity** research APIs. One binary, one image,
-one listener per provider.
+A deterministic service-simulator framework — one binary, one image, one listener per provider profile — shipping
+three research-API profiles out of the box: **Exa**, **Tavily** and **Perplexity**.
 
 Point your code's base URLs at it instead of the real vendors. Your tests then run *fast, offline and for free* —
 and, more importantly, they can prove your client sent the **correct vendor request**, not merely that it got a
@@ -19,6 +19,12 @@ response back.
 It is not a proxy, a ranking engine or a fake LLM. It does not generate answers from arbitrary input and does not
 implement every field of every vendor — only the *consumed contract*.
 
+What is provider-neutral and what is not: the scenario schema and turn model, the fault engine and its catalogue,
+the redacted journal and admin surface, `testkit`, the built-in scenarios mechanism and the image are the
+framework — the same for every profile. A profile is one provider package (`provider/exa`, `provider/tavily`,
+`provider/perplexity`) plus its verified contract under `contracts/`; that is where a vendor's routes, request
+validation and wire shapes live, and it is the part that grows when a fourth vendor is added.
+
 ## 60-second quickstart
 
 No account, no credentials, no configuration, and nothing to clone:
@@ -28,9 +34,10 @@ docker run --rm -p 8080-8083:8080-8083 ghcr.io/c360studio/servicesim:v0.3.0
 ```
 
 The image is public and multi-architecture (`linux/amd64`, `linux/arm64`). Tags are published in both spellings
-against one digest — `v0.1.0` and `0.1.0`, `v0.1` and `0.1`, `v0` and `0` — plus `latest` and `sha-<commit>`.
+against one digest — `v0.3.0` and `0.3.0`, `v0.3` and `0.3`, `v0` and `0` — plus `latest` and `sha-<commit>`.
 
-For release-critical CI, pin the digest rather than a tag, so a re-publish cannot move under you:
+For release-critical CI, pin the digest rather than a tag, so a re-publish cannot move under you — this is the
+`v0.3.0` digest:
 
 ```text
 ghcr.io/c360studio/servicesim@sha256:6009f34cfb91cde0704dfc61d25c06587f22dd09ffc15e2004446a407bea7e18
@@ -79,13 +86,18 @@ preserving each vendor's real path requires a separate port per provider.
 | Listener | Port | Routes |
 |---|---:|---|
 | admin | `8080` | `GET /healthz`, `GET /readyz`, `GET /__admin/requests`, `GET /__admin/namespaces`, `GET /__admin/scenario`, `GET /__admin/jobs`, `POST /__admin/reset` |
-| exa | `8081` | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar` |
-| tavily | `8082` | `POST /search`, `POST /extract` |
-| perplexity | `8083` | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/agent`, `POST /v1/responses` |
+| exa | `8081` | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
+| tavily | `8082` | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
+| perplexity | `8083` | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
 
-`/chat/completions` and `/v1/responses` are aliases the OpenAI SDK produces when pointed at Perplexity — same
-handler, same shapes, and the journal records which path was actually used. Sonar is supported by Perplexity until
-2026-09-27; `/v1/agent` is its successor and both are simulated.
+`/agent/runs` and `/research` are the asynchronous create-then-poll surfaces — Exa agent runs and Tavily research
+— covered in [the testkit section below](#in-a-go-test-with-no-container-at-all); their `HEAD` route answers an
+existence check without advancing the poll's own turn cursor. On Perplexity, each surface is served under three
+spellings: its canonical vendor path, and both of the paths the OpenAI SDK produces when it appends
+`/chat/completions` or `/responses` to whatever `base_url` a consumer configured — a `base_url` that may or may not
+already end in `/v1`. All three spellings of a surface share one handler, one wire shape and one fault budget, and
+the journal records which path was actually used. Sonar is supported by Perplexity until 2026-09-27; `/v1/agent` is
+its successor and both surfaces are simulated.
 
 Both Perplexity surfaces can also serve `text/event-stream`: a scenario turn scripts `stream: {when_requested:
 stream, deltas: [...]}` and a request that sets `"stream": true` gets the real SSE dialect back — unnamed
@@ -95,7 +107,9 @@ and Tavily do not stream. See [`docs/scenario-schema.md`](docs/scenario-schema.m
 scripting grammar and the built-in `streaming` scenario for a worked example.
 
 Every port is configurable (`-exa-port`, `-tavily-port`, `-perplexity-port`, `-admin-port`), and `-providers`
-limits which listeners bind. Run `servicesim -h` for the full flag list.
+limits which listeners bind. Run `servicesim -h` for the full flag list. Go's `flag` package treats a single dash
+and a double dash the same, so `-scenario` and `--scenario` are identical; this document uses whichever spelling
+reads better in context.
 
 ## Pointing your code at it
 
@@ -117,14 +131,23 @@ fake value works. Servicesim never stores it; the journal keeps only a fingerpri
 | Tavily | `Authorization: Bearer` |
 | Perplexity | `Authorization: Bearer` |
 
+Tavily's `POST /search` and `POST /research` also authenticate a body `api_key` property — real client code sends
+it — and on both routes that draws the same warning-severity finding, `tavily.api_key.in_body`, rather than an
+error. `Authorization: Bearer` is the placement to send.
+
 ## In a Go test, with no container at all
+
+Requires Go 1.26, this repository's own `go.mod` version. Add it as a dependency —
+`go get github.com/c360studio/servicesim` — then import `github.com/c360studio/servicesim/testkit` and
+`github.com/c360studio/servicesim/provider`.
 
 `testkit` starts one `httptest.Server` per provider in-process and registers its own cleanup, so there is nothing
 to defer, no port to pick and no Docker to wait for.
 
 The worked example lives in [`examples/`](examples) and is **compiled by `go build ./...` and run by
 `go test -race ./...` in this repository's CI** — an example that is not built is an example that rots. Copy from
-there rather than from this README. This is the shape of it, excerpted from
+there rather than from this README (the example uses testify's `require`; `testkit` itself needs only the
+standard library). This is the shape of it, excerpted from
 [`examples/adapter_test.go`](examples/adapter_test.go):
 
 ```go
@@ -151,12 +174,27 @@ func TestAdapterSendsACorrectExaRequest(t *testing.T) {
 }
 ```
 
+`sim.Client()` returns an `*http.Client` with keep-alives disabled and the proxy environment ignored, so a
+connection-abort fault is observed rather than absorbed by a pooled connection — the property the `hang-then-abort`
+and `timeout` built-ins below rely on. Any `http.Client` reaches the simulator; reach for `sim.Client()` when that
+property matters. Each journal entry is a `testkit.Entry` (`go doc github.com/c360studio/servicesim/testkit Entry`
+lists its fields); `testkit.AssertAPIKeyHeader` above is Exa's credential-placement check, and
+`testkit.AssertBearerAuth(t, entry)` is its Tavily/Perplexity sibling.
+
 Note what it does *not* assert: that the call returned 200. A simulator will happily return 200 for a request the
 real vendor would reject, so a green status proves nothing. The assertions are on the journal.
 
+For a client that rotates credentials, `testkit.AssertSameCredential(t, a, b)` and
+`testkit.AssertDifferentCredential(t, a, b)` compare two journal entries by credential fingerprint rather than
+value — the journal never holds a credential at all — so a test can prove a retry reused the same key, or that a
+rotation actually switched to a new one, from two entries alone. The `credential-rotation` built-in scripts the
+scenario both exist to test against.
+
 `sim.BaseURLs()` returns the URLs keyed exactly as the environment variables above, so one helper configures your
-client from either a `*testkit.Sim` or a container. `testkit.WithScenarioYAML` keeps a single-purpose fixture inline
-next to the test; `testkit.WithScenarioFile` and `testkit.WithScenario` cover the rest.
+client from either a `*testkit.Sim` or a container. `sim.URL(provider.Exa)` returns one provider's base URL
+directly, for a test that only needs the one. `testkit.WithScenarioYAML(yaml string)` keeps a single-purpose
+fixture inline next to the test; `testkit.WithScenarioFile(path string)` loads one from disk, and
+`testkit.WithScenario(s *scenario.Scenario)` takes one already parsed with the `scenario` package.
 
 For the async create-then-poll surfaces (Exa agent runs, Tavily research), `sim.Jobs()` returns every live job
 record across every namespace, and `testkit.AssertPollSequence(t, sim.Requests(provider.Exa), id, 200, 200, 200)`
@@ -172,6 +210,16 @@ unreadable whole-file one. `sim.AwaitStreamClosed(t, entry.Seq)` is the wait for
 once the exchange closes (`bytes_written`, `chunks_sent`, `state`); everything else on `entry.Outcome.Stream` —
 `testkit.AssertStreamPacing` included — is final before the client sees a byte and needs no wait at all.
 
+For a client-side rate limiter, `testkit.AssertMaxRate(t, entries, limit, per)` and
+`testkit.AssertMinGap(t, entries, gap)` are the request-level evidence decision D5, in
+[`docs/adopter-backlog.md`](docs/adopter-backlog.md), chose over an enforced limiter: proving a budget held
+from the journal's real `arrived_at` timestamps, rather than a simulator making
+response status a function of wall-clock time. `testkit.AssertObservedDuration(t, e, atLeast)` is the
+single-entry sibling, for proving a `delay:` or `delay_after_headers:` attempt was really observed. All three
+are safe on a loaded machine in only one direction — real time can only spread arrivals out or lengthen a
+duration, never manufacture a tighter or shorter one — so only a client that genuinely broke its budget, or a
+hang that genuinely was not observed, fails them.
+
 | Example file | What it shows |
 |---|---|
 | [`examples/adapter_test.go`](examples/adapter_test.go) | The canonical first test: prove the request was correct. |
@@ -179,6 +227,7 @@ once the exchange closes (`bytes_written`, `chunks_sent`, `state`); everything e
 | [`examples/namespace_test.go`](examples/namespace_test.go) | Parallel subtests sharing one simulator, each in its own state lane. |
 | [`examples/async_test.go`](examples/async_test.go) | Create-then-poll through `testkit`, and the same flow wired by hand through `provider.Deps`. |
 | [`examples/stream_test.go`](examples/stream_test.go) | A scripted Perplexity SSE response: `testkit.AssertGoldenSSE` against a golden transcript, `testkit.AssertStreamPacing` before the first byte, `sim.AwaitStreamClosed` after the exchange closes. |
+| [`examples/pacing_test.go`](examples/pacing_test.go) | A tiny client-side limiter proven against the journal with `testkit.AssertMaxRate` — decision D5's evidence-not-enforcement pattern. |
 
 ## As a container
 
@@ -359,9 +408,18 @@ entirely and much later:
 
 ## Built-in protocol scenarios
 
-Fourteen scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
+Twenty scenarios ship inside the binary. Select one with `--scenario builtin:<name>` — for example,
+`docker run --rm -p 8080-8083:8080-8083 ghcr.io/c360studio/servicesim:v0.3.0 --scenario builtin:rate-limited` — or
 `testkit.WithBuiltin("<name>")`. They cover *protocol* behaviour, which is the same for every consumer;
 product-specific corpora belong in your own repository.
+
+Several rows below tell you to read the journal with `sim.AwaitRequests` rather than a bare `sim.Requests` call:
+`func (s *Sim) AwaitRequests(tb testing.TB, p provider.Name, n int) []Entry` blocks until `p` has recorded `n`
+entries, or fails `tb` after a short deadline, and returns them — `entries := sim.AwaitRequests(t, provider.Exa,
+2)` is the shape. Use it instead of `sim.Requests` whenever a row below says the client sees the exchange end at
+the transport level (a reset, a client-side timeout, an off-goroutine retry): the server goroutine can still be
+completing the entry after your client already returned, and a bare `sim.Requests` call is a race that passes on a
+slow machine and fails on a fast one.
 
 | Scenario | What it proves about your client |
 |---|---|
@@ -369,11 +427,17 @@ product-specific corpora belong in your own repository.
 | `empty-results` | Zero results in a well-shaped envelope is handled as "no results", not as an error. |
 | `async-failed` | An Exa agent run and a Tavily research task each reach a terminal `failed` status — Exa's poll carries an `error` object with the detail, Tavily's carries none beyond the status itself — so your failure branch handles both shapes rather than mis-parsing either as success. |
 | `async-stuck` | An Exa agent run and a Tavily research task never terminate, so your own poll timeout — not Servicesim — is what ends the loop. |
-| `unauthorized` | A 401 in each vendor's own error envelope is surfaced as an auth failure and is not retried. |
-| `rate-limited` | A 429 with `Retry-After`, then success — backoff and retry work, and the retry is counted. |
+| `unauthorized` | A 401 in each vendor's own error envelope is surfaced as an auth failure and is not retried — every key is rejected (`mode: reject`), unlike `credential-rotation` below, where refreshing to the one accepted key and retrying once is exactly what must happen. |
+| `rate-limited` | A 429 with `Retry-After`, then success — backoff and retry work, and the retry is counted. If your client retries off the calling goroutine, read the journal with `sim.AwaitRequests` rather than a bare `sim.Requests` call. |
+| `oversized-body` | Every synchronous route (Exa `/search`, `/answer`, `/contents`, `/findSimilar`; Tavily `/search`, `/extract`; Perplexity Sonar and Agent) has its first response padded past a 1 MiB size-limit ingress gate (`body_bytes: 4194304`), then a clean retry — a fail-closed size gate and its recovery, from one scenario. |
+| `timeout` | Every synchronous route hangs for 30s on its first call, then a clean retry — your own client deadline, not a status code, is what ends the first call. Assert the hang with `testkit.AssertObservedDuration`, and read the journal afterward with `sim.AwaitRequests`: the entry for a client-timed-out attempt is still being completed server-side the instant your client gives up. **Do not use `testkit.WithSkippedDelays()` with this scenario**: under `DelaySkip` the 30s is not slept and the "timeout" arrives as an instant 200, and a deadline is only ever observed by bytes not arriving. |
+| `brownout` | Every synchronous route serves a rising-latency ladder (50ms, 100ms, 200ms, 400ms), then two 503s carrying `Retry-After`, then recovers — a latency budget or circuit breaker, a retry policy, and counted recovery, all from one scenario. `testkit.AssertObservedDuration` proves each rung's delay was really observed. |
+| `hang-then-abort` | Every synchronous route hangs 700ms then resets before any header arrives, hangs 700ms again then resets mid-body, then serves headers immediately followed by a 700ms hang and a reset mid-body, then serves a clean call — the three abort shapes a mid-flight disconnect takes on the wire today, with every hang visible in `completed_at - arrived_at` (`testkit.AssertObservedDuration` reads that gap). Your client sees all three as transport failures (a round trip that never got a header, then twice a 200 whose body read fails mid-stream) — never as an empty result set — and each retry is counted. Every scripted reset here is journaled before the socket is touched, so `sim.Requests` already sees all three the instant your client returns — but read it with `sim.AwaitRequests` anyway: if your own deadline fires during the 700ms hang instead, that entry lands only after your client has already returned. Its own deadline must outlast 700ms, or a hang aborts on your side first and this degenerates into `timeout`. |
+| `credential-rotation` | Every provider requires the fixed key `rotated-key-EXAMPLE`; any other credential draws the vendor's own 401. Proves a client actually rotates rather than retries with the key it already had. **Do not combine `expect_key` with a fault plan**: an auth rejection claims no attempt, so a plan written next to `expect_key` fires one call later than its author expects. |
 | `server-error` | A 500 is surfaced as an upstream failure rather than mistaken for an empty result set. |
 | `malformed-json` | A body that is not valid JSON fails cleanly instead of panicking or returning zero values. |
 | `extra-fields` | Unknown additive response fields do not break the decoder — vendors evolve additively. |
+| `malicious-content` | A generic hostile-content pack — prompt injection (`IGNORE ALL PREVIOUS INSTRUCTIONS`, `<\|im_start\|>system`), credential-shaped bait (`sk-live-FAKE`, `AKIAFAKE`, `xoxb-FAKE`, `-----BEGIN RSA PRIVATE KEY-----`), unescaped `<script>` markup and an exfiltration instruction to `exfil.example`, plus one benign source — projected through every provider block, so your guardrail or fail-closed ingress gate is exercised on every dispatch path from one scenario. Ask for the whole pack: `numResults:20` on Exa and `max_results:20` on Tavily (the vendor defaults truncate it), `text:true` on Exa `/answer`, `include_raw_content` on Tavily; the file's header comment records the rest, including which surfaces carry only the injection marker. |
 | `fusion-overlap` | One canonical source rendered through all three providers, with a claim repeated across sources: deduplication by URL and corroboration counting are exercised deliberately, not by accident. |
 | `conversation` | A scripted agentic loop: successive calls to one route get successive turns, matched by call index and by body substring, with an unconditional fallback last. |
 | `namespaced` | One route serving two concurrent callers, kept in separate turn lanes by `turn_key`, so neither draws the turn scripted for the other. |
@@ -406,7 +470,7 @@ authors ever need, and the multi-turn form for scripting an agentic loop.
 
 | Document | What it holds |
 |---|---|
-| This README | Quickstart, base URLs, namespaces, the admin surface, built-in scenarios. |
+| This README | Quickstart, base URLs, namespaces, the admin surface, built-in scenarios, and what is provider-neutral versus profile-specific. |
 | [`examples/`](examples) | A worked consumer, compiled and run by CI. The best thing to copy. |
 | [`docs/scenario-schema.md`](docs/scenario-schema.md) | The scenario YAML reference: single-shot form, multi-turn form, faults. |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptom-first answers: an unexpected 401, 404, 405, tests interfering, counts that differ per run under more than one replica, a container that will not become ready. |
@@ -419,21 +483,26 @@ authors ever need, and the multi-turn form for scripting an agentic loop.
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Start here: the pre-push gate, lint expectations, and how to add a provider. |
 | [`docs/adopter-backlog.md`](docs/adopter-backlog.md) | What is being built next, why, in what order, and the decisions already settled. |
 | [`CLAUDE.md`](CLAUDE.md) | The house rules — determinism, redaction, fail-closed, the dependency budget. |
-| [`docs/design/package-design.md`](docs/design/package-design.md) | The Go design of record: packages, import levels, exact signatures. |
+| [`docs/design/package-design.md`](docs/design/package-design.md) | The Go design of record: packages, import levels, the reasoning behind each seam (Go blocks illustrative). |
 | [`docs/design/extended-surfaces.md`](docs/design/extended-surfaces.md) | Addendum: the Agent surface, the open provider registry, the turn model. |
+| [`docs/design/async-jobs.md`](docs/design/async-jobs.md) | The async create-then-poll design: job lifecycle, lanes, fault budgets. |
+| [`docs/design/streaming.md`](docs/design/streaming.md) | The SSE streaming design: the two grammars, journal-early append, pacing. |
 | [`docs/architecture-and-implementation-plan.md`](docs/architecture-and-implementation-plan.md) | The product requirements the design implements. |
 | [`docs/adr/`](docs/adr) | Decisions already taken, with the reasoning that forced them. |
 
 **`contracts/` outranks every other document here, including the design.** The plan was written from a snapshot and
 has already been wrong about Exa's `score` field, Tavily's `response_time` type and Perplexity's required `cost`
 object. Never write a wire field from memory — see [ADR 0002](docs/adr/0002-verified-contract-precedence.md).
+The four `docs/design/` documents are records of what shipped, not specifications: every Go block in them is
+illustrative, not a compiled contract, and where one disagrees with the source under `provider/`, `internal/`,
+`scenario/` or `testkit/`, the code wins.
 
 ## Working on Servicesim
 
 ```bash
 task check   # everything CI gates on: lint, race tests, build, image smoke test
 task test    # go test -race -count=1 ./...
-task lint    # vet, gofmt, revive, live-host guard
+task lint    # vet, gofmt, revive, live-host guard, docs guard, markdownlint
 task build   # bin/servicesim
 ```
 

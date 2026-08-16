@@ -1,15 +1,16 @@
 # SSE streaming
 
-> ## IMPLEMENTED — Phase 5 shipped 2026-08-15/16 (units 1–4)
+> ## IMPLEMENTED — Phase 5 shipped 2026-08-15/16 (units 1–4), released in v0.3.0
 >
-> Unreleased until the next tag. This document is now the record of the streaming design **as built**. The code
-> is authoritative; each unit's banner below and every "Shipped as (Phase 5 unit N)" note in the body record where
-> the illustrative sketches and the shipped code parted ways and why. What shipped: the provider-blind SSE
+> Released in `v0.3.0` (2026-08-16). This document is now the record of the streaming design **as built**. The
+> code is authoritative; each unit's banner below and every "Shipped as (Phase 5 unit N)" note in the body record
+> where the illustrative sketches and the shipped code parted ways and why. What shipped: the provider-blind SSE
 > transport, journal-early append and close, `GrammarDelta` in `stream_mode: full` on the three Sonar routes, the
 > three `stream_*` fault kinds and per-chunk pacing, `GrammarTyped` on the three Agent routes, testkit
 > `AssertGoldenSSE` / `AwaitStreamClosed` / `AssertStreamPacing` / `AssertStreamUsage`, the `streaming` built-in,
 > and the consumer docs. Not shipped, by decision: `stream_mode: concise` (served as full with a warning), the
-> `response.reasoning.*` and `response.failed` events, Exa/Tavily streaming.
+> `response.reasoning.*` and `response.failed` events, Exa/Tavily streaming. `contracts/perplexity/README.md`
+> outranks this document on any wire field ([ADR 0002](../adr/0002-verified-contract-precedence.md)).
 >
 > ## SHIPPED (unit 3) — 2026-08-15
 >
@@ -1299,6 +1300,21 @@ Both checks key on the entry's **effective policy**, never on the presence of a 
 declare a policy and produce no stream, so `truncate_body` remains valid with them. See
 [§9](#9-validation-findings-this-adds) for why that distinction is load-bearing and for the fixture that guards it.
 
+**Shipped as (Phase 6 unit 3):** `oversized_body` is the second non-streaming kind rejected at load under `stream`
+(`scenario.fault.stream_mismatch`, same as `truncate_body`, for the same reason: it sets an exact `Content-Length`
+before writing, which is wrong for chunked SSE), and its request-time mirror case raises the same
+`scenario.stream.abort_unreachable` that `truncate_body`'s does. It is likewise absent from `suppressesStream` — a
+real vendor does not answer `stream: true` with a padded JSON document either.
+
+**Shipped as (Phase 6 unit 5):** `delay_after_headers` — a modifier, not a kind, so it rides along with whatever
+kind an attempt carries — is rejected at load on a streaming entry too, but only for a kind that would not
+otherwise reach `suppressStream` above: `truncate_body` and `oversized_body` already have their own rejection, and
+a kind IN `suppressesStream`'s set stays valid, because it turns the response into the ordinary JSON body
+`delay_after_headers` already knows how to hang before writing. `stream_stall` with `after_chunk: 0` is the
+streaming-aware spelling. The request-time mirror raises the same `scenario.stream.abort_unreachable`, from a
+third mirror direction (the fourth `case` in `Handle`'s suppression switch) beside the two §4.2 names — never a
+change to `suppressesStream` itself, which the modifier does not touch.
+
 #### Suppression is decided once, before the entry is journaled
 
 An earlier draft decided suppression inside `execute`, against `execute`'s own copy of the response. That is too
@@ -1991,9 +2007,10 @@ All are load-time unless marked, so a bad streaming fixture fails at readiness r
 | `scenario.stream.deltas_ignored` | error | a turn declares `deltas:` while the entry's policy is **not** `stream` — the script is dead and would serve JSON silently |
 | `scenario.stream.answer_mismatch` | warning | concatenated `deltas` do not equal the projection's `answer` |
 | `scenario.fault.after_chunk.not_streaming` | error | `after_chunk` set on a kind that is not `stream_*` |
-| `scenario.fault.stream_mismatch` | error | a `stream_*` kind on an **entry whose policy is not `stream`**, or `truncate_body` on an **entry whose policy is `stream`** |
+| `scenario.fault.delay_after_headers.streaming` | error | `delay_after_headers` set on a `stream_*` kind, regardless of the entry's policy (Phase 6 unit 5) |
+| `scenario.fault.stream_mismatch` | error | a `stream_*` kind on an **entry whose policy is not `stream`**; `truncate_body` (or, since Phase 6 unit 3, `oversized_body`) on an **entry whose policy is `stream`**; or, since Phase 6 unit 5, `delay_after_headers` on an **entry whose policy is `stream`**, on a kind that would not otherwise suppress the stream |
 | `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` is **not less than** the smallest chunk count any of the entry's turns will produce |
-| `scenario.stream.abort_unreachable` | error (per request) | a claimed attempt cannot apply to this exchange's actual transport — a `stream_*` kind claimed by a request that will not stream (§4.2; the entry's policy is `stream` but this particular request did not ask for one), or the load-time `stream_mismatch` case reached at request time by a hand-built entry that skipped validation |
+| `scenario.stream.abort_unreachable` | error (per request) | a claimed attempt cannot apply to this exchange's actual transport — a `stream_*` kind claimed by a request that will not stream (§4.2; the entry's policy is `stream` but this particular request did not ask for one); the load-time `stream_mismatch` case reached at request time by a hand-built entry that skipped validation; or, since Phase 6 unit 5, an attempt carrying `delay_after_headers` claimed by a request that will stream, on a kind that would not otherwise suppress it |
 | `perplexity.stream_mode.concise.unscripted` | warning (per request) | a request carries `stream_mode: concise` AND will actually stream (`resp.Stream != nil` — i.e. `stream: true`, on an entry whose policy is `stream`); unit 1 renders only the full-mode sequence, so the full-mode transcript is served anyway. A `stream_mode: concise` request that does not itself set `stream: true` never reaches this — nothing streams for it to diverge from (§7, A2) |
 | `perplexity.stream.done_ignored` | warning | `terminal.omit_done` declared on the typed grammar, which has no sentinel |
 

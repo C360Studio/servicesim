@@ -1,5 +1,18 @@
 # Servicesim Go Package Design
 
+> ## Status: record of what shipped, amended in place
+>
+> This is the Go-level engineering design for the system as built through Phase 6 (`v0.3.0` plus the completed
+> units on branch `phase-6`). It was written ahead of the code and is corrected in place as phases land: most of
+> what follows describes code that exists today, and inline **"Shipped as (Phase N unit M)"** notes mark the
+> specific points where a later phase's shipped shape diverged from the original sketch below. **The code is
+> authoritative** wherever this document and `provider/*`, `internal/*`, `scenario/*` or `testkit/*` disagree —
+> read the source before trusting a signature here. **Every Go block in this document is illustrative**, a record
+> of intent and reasoning, not a compiled contract; where a block and the shipped code disagree, the code wins.
+> `contracts/<provider>/README.md` outranks this document on any wire field
+> ([ADR 0002](../adr/0002-verified-contract-precedence.md)). See `docs/architecture-and-implementation-plan.md`
+> for the product requirements this implements, and `docs/adopter-backlog.md` for the current phased state.
+
 ## Status and scope
 
 This document is the Go-level engineering design that sits *under*
@@ -1311,6 +1324,36 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
    zero entries — on a fast machine, sometimes. Recording before the abort closes that window for the fault the design
    itself creates; `testkit.Sim.AwaitRequests` closes it for the symmetrical case the *client* creates (its own
    cancellation or deadline), where the server necessarily finishes after the client returns.
+
+   **Shipped as (Phase 6 unit 1):** when the claimed attempt also carries a `delay:`, the hang is served FIRST and
+   `record` runs after it, not before — so `completed_at` is the instant the socket was touched, not the instant
+   the attempt was decided. The ordering relative to the abort itself does not change: the record still precedes
+   `close_before_headers`/`truncate_body` touching the connection (refined by unit 5 below: for `truncate_body`
+   carrying `delay_after_headers`, the headers are already on the wire when the record runs). A client cancellation
+   during that hang is the symmetrical case named above: nothing is written, but the entry still lands, stamped at
+   the instant the server
+   observed the cancellation. Consequently the entry for a client-cancelled DELAYED aborting fault now lands
+   *after* the client has returned — read it through `testkit.Sim.AwaitRequests`, not a synchronous
+   `Requests()`/`Snapshot()`; before this unit it was already present (with the wrong `completed_at` and, for
+   `truncate_body`, the wrong `bytes_written`) at that moment, because the early record ran before the delay.
+
+   **Shipped as (Phase 6 unit 5):** rule 3's wording refines to *journaled before the connection is destroyed —
+   after every hang, before the abort*. `delay_after_headers:` adds a hang that cannot be moved before the
+   socket is touched, because headers ARE the socket being touched: for `truncate_body` carrying it, `record`
+   cannot run until the headers are written, flushed, AND the after-headers hang has finished — so it runs from
+   inside `truncateBody` (`fault_exec.go`) itself, immediately before the destructive partial write and reset,
+   rather than from `Handle` before `execute` is even called. The property rule 3 exists for still holds exactly:
+   the client cannot observe the abort before this entry exists. What changes is only that a client which
+   received headers and then reads the journal DURING the after-headers hang sees no entry yet — the same as it
+   already sees during any pre-dispatch hang since unit 1, and during every delayed non-aborting response since
+   v0.1.0. `completed_at` then observes the whole exchange. A client cancellation during THIS hang is the
+   symmetrical case once more: `truncateBody` returns before `record` is ever called, so the deferred record at
+   the top of `Handle` is the one that lands, exactly as it already does for a cancellation during `delay:`'s
+   pre-dispatch hang. For a non-aborting kind nothing about the record moves at all: it stays the deferred record
+   after `execute` returns, and `completed_at` observes the hang for free. Two alternatives were rejected: record
+   before headers and leave `completed_at` stale for this one shape (a permanent version of the ambiguity unit 1
+   removed); record before headers and amend `completed_at` before the reset (needs a non-stream amend path the
+   journal design deliberately does not have — `journal.StreamCloser` is narrow on purpose, §2.3).
 4. **The entry is redacted where it is built, not only where it is stored.** `Journal.Append` takes `Entry` by value, so
    redacting inside `Append` leaves the caller's copy — the one `logRequest` is about to serialise — holding the raw
    `Authorization` header and the raw body. That leak is silent, because `testkit.AssertNoCredentialLeak` scans the
@@ -1340,6 +1383,15 @@ func faultOutcome(dec FaultDecision, resp Response) journal.Outcome
 func execute(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttempt,
 	resp Response, mode DelayMode, out journal.Outcome) journal.Outcome
 ```
+
+**Shipped as (Phase 6 unit 1):** the pre-dispatch delay is no longer `execute`'s job — `preDispatchDelay(ctx, a,
+mode)` (same file) runs it from `Handle`, before the non-streaming aborting record described under rule 3 above;
+`execute` keeps `mode` only because `executeStream` still paces chunks through `sleep`.
+
+**Shipped as (Phase 6 unit 5):** `execute` also grew a `recordAbort func()` parameter, threaded into `truncateBody`
+for the one combination that has to journal from inside a writer (§2.2 rule 3's unit 5 note); `mode` is kept for a
+second reason now too, because `afterHeadersDelay` paces the one non-streaming hang every JSON writer can carry
+(§2.5).
 
 There is no second `Response` type. The engine deals in `FaultDecision` and `scenario.FaultAttempt`; execution deals in
 `provider.Response`; nothing converts between two near-identical structs.
@@ -1783,6 +1835,7 @@ for every kind.
 | Kind | Mechanism | Notes |
 |---|---|---|
 | `delay` (modifier) | `sleep(ctx, d, mode)` | `DelayReal` (the default, including in testkit) selects on a `time.Timer` and `ctx.Done()`, so the delay is real on the wire — which is the only way a client deadline, a cancellation or a transport timeout can be exercised — while a client deadline still releases the goroutine instead of pinning it. `DelaySkip` returns immediately: this is what "no arbitrary multi-second sleeps in unit tests" means concretely. The journal records the *requested* delay under both modes. |
+| `delay_after_headers` (modifier) | `afterHeadersDelay(ctx, w, a, mode)`: a `http.Flusher` flush, then `sleep` | **Shipped as (Phase 6 unit 5):** the after-headers sibling of `delay` above — one helper, called at the single point after `WriteHeader` each writer (`writeResponse`, `truncateBody`, `writeOversizedBody`, the inline `empty_body` case) already reaches, rather than a second sleep copied into each. The explicit flush is what makes "headers reach the client before the hang" actually true instead of aspirational — without it `net/http` may still be buffering, deciding `Content-Length` from the completed write. Cancelled mid-hang, every caller reports `Aborted: true`, `BytesWritten: 0` the same way. |
 | `status` | `w.Header().Set(...)`, `w.WriteHeader(status)`, `w.Write(body)` | Plain `ResponseWriter`. `RetryAfter` sets `Retry-After` in seconds. The body is provider-shaped and built by the provider package, not here. |
 | `wrong_content_type` | Same as a normal write with `Content-Type` overridden | Body bytes are the valid JSON response. Default override `text/html; charset=utf-8`. |
 | `invalid_json` | Normal write, `Content-Type: application/json`, body replaced | Transport-valid, JSON-invalid: correct `Content-Length`, connection reusable. Distinct from truncation. Default body when `RawBody` is empty: `{"results": [{"title": "unterminated"` |
@@ -1790,6 +1843,7 @@ for every kind.
 | `extra_fields` | No transport change | Merged into the body by `wire.MergeJSON` before `execute` is reached. Listed as a fault kind for symmetry with the plan's catalogue. |
 | `close_before_headers` | **`http.Hijacker`** | Cannot be done with a plain `ResponseWriter`: any write commits a status line. |
 | `truncate_body` | **`http.Flusher` + `panic(http.ErrAbortHandler)`** | Cannot be done with a plain `ResponseWriter`: `net/http` computes `Content-Length` from the completed write, so a short write is indistinguishable from a short body. |
+| `oversized_body` | Explicit `Content-Length` set before `w.WriteHeader`, then `w.Write(body)` followed by bounded `w.Write` calls against a reused 64 KiB whitespace buffer | **Shipped as (Phase 6 unit 3):** `Content-Length` must be declared exactly and up front — `net/http` falls back to chunked transfer encoding once the body spans several `Write` calls with no declared length, which a `Content-Length`-based size gate cannot see. The padding buffer is fixed-size and reused; `BodyBytes` is never allocated. |
 
 The two transport faults, concretely. Both were executed against `httptest.NewServer` on Go 1.26.4 and the observed
 client-side results are quoted.
@@ -1852,9 +1906,11 @@ Two consequences worth stating once:
   `httptest.NewRecorder` implements neither and will silently record a complete body for a truncation fault.
 - The `panic(http.ErrAbortHandler)` must travel through `provider.Handle`'s recover. See §2.2.
 - **Both of these destroy the connection while the handler goroutine is still unwinding**, so the journal entry for an
-  aborting fault is written by `Handle` *before* `execute` is called, not by the deferred append. The deferred append
-  is idempotent and becomes a no-op. Without that ordering, a client that observed the reset and immediately read the
-  journal saw nothing — intermittently, and more often under `-race`.
+  aborting fault is written by `Handle` *before* `execute` is called, not by the deferred append (since Phase 6 unit
+  5, for `truncate_body` carrying `delay_after_headers`, instead from inside `truncateBody` itself, after the
+  after-headers hang and immediately before the destructive partial write — §2.2 rule 3's unit 5 note). The deferred
+  append is idempotent and becomes a no-op. Without that ordering, a client that observed the reset and immediately
+  read the journal saw nothing — intermittently, and more often under `-race`.
 
 ### 2.6 `internal/httpx`, `internal/wire`, `internal/ids`
 
@@ -2794,6 +2850,12 @@ written against, and all three must run **under the default configuration**:
   `context.DeadlineExceeded` — fusion invariant 9's mechanism, and the thing a fake clock silently made untestable.
 - An aborting fault (`close_before_headers`) followed by `AwaitRequests`, asserting the entry is present with
   `Outcome.Aborted`.
+
+**Shipped as (Phase 6 unit 6):** `AssertMaxRate`, `AssertMinGap` and `AssertObservedDuration` are the pacing
+evidence decision D5 (`docs/adopter-backlog.md`) chose over an enforced rate limiter — the request-level half
+of the pacing story `AssertStreamPacing` already gives the streamed one. All three read the same real-time
+`ArrivedAt`/`CompletedAt` pair `AssertOverlapped` does, and are safe on a loaded machine in only one
+direction: real time can only spread arrivals out or lengthen a duration, never invent a tighter one.
 
 ---
 

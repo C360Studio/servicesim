@@ -1,8 +1,8 @@
 # Servicesim Project Context
 
-A deterministic HTTP simulator for the Exa, Tavily and Perplexity research APIs. One binary, one image, one
-listener per provider. It exists so that consuming repositories can test their research adapters fast, offline,
-and without spending money on paid APIs.
+A deterministic service-simulator framework: one binary, one image, one listener per provider profile. It ships
+three research-API profiles today — Exa, Tavily and Perplexity — so that consuming repositories can test their
+research adapters fast, offline, and without spending money on paid APIs.
 
 ## Tech Stack
 
@@ -30,7 +30,8 @@ scenario YAML ──► canonical sources ──► per-provider projection ─�
                                              ├─► tavily   listener :8082  POST /search
                                              └─► perplexity listener :8083  POST /v1/sonar, /chat/completions
 
-                        admin listener :8080  /healthz  /readyz  /__admin/requests  /__admin/jobs  /__admin/reset
+     admin listener :8080  /healthz  /readyz  /__admin/requests  /__admin/namespaces  /__admin/scenario
+                            /__admin/jobs  /__admin/reset
 ```
 
 Separate listeners are not a stylistic choice — Exa and Tavily both serve `POST /search`, so preserving each
@@ -100,7 +101,7 @@ is a compatibility obligation. Keep the exported surface small; put everything e
 ```bash
 task check          # everything CI gates on: lint, race tests, build, image smoke test
 task test           # go test -race -count=1 ./...
-task lint           # vet, gofmt, revive, live-host guard
+task lint           # vet, gofmt, revive, live-host guard, docs guard, markdownlint
 task build          # bin/servicesim
 task image:smoke    # build the image, assert non-root + healthy + all listeners answer
 ```
@@ -125,5 +126,7 @@ needs a doc comment, every package needs a package comment, initialisms are capi
 
 It does not reproduce ranking or semantic relevance, does not generate realistic answers from arbitrary input,
 is not a proxy or gateway, does not store real credentials or unsanitised recorded traffic, and does not
-implement every field of every vendor. Requests to make it "more realistic" in these directions are out of
-scope — the value here is determinism, not fidelity to a vendor's ML behaviour.
+implement every field of every vendor — for the three shipped profiles or for any profile added later. Requests to
+make it "more realistic" in these directions are out of scope — the value here is determinism, not fidelity to a
+vendor's ML behaviour. It is also not a generic mock server: a profile is a verified vendor contract plus
+deterministic scenarios, added the way the first three were, not free-form request/response configuration.

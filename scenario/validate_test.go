@@ -146,6 +146,29 @@ func TestValidate_FailsClosed(t *testing.T) {
 			wantPath: "providers.exa.fault.attempts[0].repeat",
 		},
 		{
+			name:     "body_bytes inferred as oversized_body is not flagged",
+			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{body_bytes: 100}]}\n",
+			wantCode: "", // the happy case; see the guard below
+		},
+		{
+			name:     "body_bytes on an explicit kind other than oversized_body",
+			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{kind: status, status: 500, body_bytes: 100}]}\n",
+			wantCode: "scenario.fault.body_bytes.not_oversized",
+			wantPath: "providers.exa.fault.attempts[0].body_bytes",
+		},
+		{
+			name:     "negative body_bytes",
+			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{kind: oversized_body, body_bytes: -1}]}\n",
+			wantCode: "scenario.fault.body_bytes.negative",
+			wantPath: "providers.exa.fault.attempts[0].body_bytes",
+		},
+		{
+			name:     "oversized_body with no body_bytes",
+			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{kind: oversized_body}]}\n",
+			wantCode: "scenario.fault.body_bytes.missing",
+			wantPath: "providers.exa.fault.attempts[0].body_bytes",
+		},
+		{
 			name:     "negative retry_after",
 			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{status: 429, retry_after: -1}]}\n",
 			wantCode: "scenario.fault.retry_after.negative",
@@ -156,6 +179,33 @@ func TestValidate_FailsClosed(t *testing.T) {
 			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{delay: -1s}]}\n",
 			wantCode: "scenario.fault.delay.negative",
 			wantPath: "providers.exa.fault.attempts[0].delay",
+		},
+		{
+			name:     "negative delay_after_headers",
+			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{delay_after_headers: -1s}]}\n",
+			wantCode: "scenario.fault.delay_after_headers.negative",
+			wantPath: "providers.exa.fault.attempts[0].delay_after_headers",
+		},
+		{
+			name: "delay_after_headers with close_before_headers",
+			src: "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: " +
+				"[{kind: close_before_headers, delay_after_headers: 1s}]}\n",
+			wantCode: "scenario.fault.delay_after_headers.no_headers",
+			wantPath: "providers.exa.fault.attempts[0].delay_after_headers",
+		},
+		{
+			name: "delay_after_headers with a stream_* kind",
+			src: "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: " +
+				"[{kind: stream_disconnect, delay_after_headers: 1s}]}\n",
+			wantCode: "scenario.fault.delay_after_headers.streaming",
+			wantPath: "providers.exa.fault.attempts[0].delay_after_headers",
+			wantMsg:  "stream_stall",
+		},
+		{
+			name: "delay_after_headers with truncate_body is not flagged",
+			src: "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: " +
+				"[{kind: truncate_body, delay_after_headers: 1s}]}\n",
+			wantCode: "", // the happy case; see the guard below
 		},
 		{
 			name:     "unknown turn key extractor",
@@ -255,6 +305,30 @@ func TestValidate_UnsupportedVersionOnAnInMemoryScenario(t *testing.T) {
 	}
 	if report.Err() == nil || !strings.Contains(report.Err().Error(), "version") {
 		t.Fatalf("Err() = %v", report.Err())
+	}
+}
+
+// TestValidate_DelayAfterHeadersWithEmptyBodyIsOnlyAWarning proves DoD (h):
+// empty_body sets Content-Length: 0, so a hang after headers is never
+// observable by the client — the scenario is not wrong, only pointless, so
+// it is a warning and the scenario still loads.
+func TestValidate_DelayAfterHeadersWithEmptyBodyIsOnlyAWarning(t *testing.T) {
+	t.Parallel()
+
+	s, report, err := Parse([]byte(
+		"version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{kind: empty_body, delay_after_headers: 1s}]}\n"))
+	if err != nil {
+		t.Fatalf("empty_body with delay_after_headers must not block loading: %v", err)
+	}
+	warnings := report.Warnings()
+	if len(warnings) != 1 || warnings[0].Code != "scenario.fault.delay_after_headers.unobservable" {
+		t.Fatalf("warnings = %+v", report.Findings)
+	}
+	if warnings[0].Path != "providers.exa.fault.attempts[0].delay_after_headers" {
+		t.Errorf("path = %q", warnings[0].Path)
+	}
+	if s.Providers.Get("exa") == nil {
+		t.Error("the scenario should still have loaded")
 	}
 }
 

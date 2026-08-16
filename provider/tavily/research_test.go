@@ -256,6 +256,46 @@ func TestResearchCredentialPlacementsDifferPerRoute(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, unauth.Code)
 }
 
+// TestResearchCreateBodyAPIKeyWarns mirrors TestBodyAPIKeyAuthenticates
+// (handler_test.go) for POST /research. contracts/tavily/README.md's route
+// table ("POST /research and GET /research/{request_id}" § "Credential
+// placement") says a body-placed api_key on /research is "Same as POST
+// /search": it authenticates AND draws the warning-severity finding
+// tavily.api_key.in_body. Before this test, validateResearchCreate accepted
+// the placement (checkAuth authenticates it) but never raised the finding,
+// leaving it invisible to a consumer asserting on it — the same defect
+// TestBodyAPIKeyAuthenticates once caught on /search.
+func TestResearchCreateBodyAPIKeyWarns(t *testing.T) {
+	t.Parallel()
+
+	const secret = "tvly-research-body-key"
+
+	ring := journal.NewRing(8, 1<<16)
+	rec := post(t, newHandler(t, researchScenario, ring),
+		"/research", `{"input":"research this","api_key":"`+secret+`"}`, "")
+
+	require.Equal(t, http.StatusCreated, rec.Code,
+		"a body-placed api_key must authenticate a create: %s", rec.Body.String())
+
+	entries := ring.Snapshot()
+	require.Len(t, entries, 1)
+	entry := entries[0]
+
+	require.Empty(t, entry.Errors(),
+		"testkit.AssertNoErrors must pass for a create authenticated by its body key")
+
+	placement := findingByCode(t, entry, CodeAPIKeyInBody)
+	assert.Equal(t, journal.SeverityWarning, placement.Severity,
+		"the placement is an observation, not a rejection")
+	assert.NotContains(t, placement.Message, secret)
+
+	serialized, err := json.Marshal(entry)
+	require.NoError(t, err)
+	assert.NotContains(t, string(serialized), secret,
+		"a credential must not reach a retained structure by any path")
+	assert.NotContains(t, rec.Body.String(), secret)
+}
+
 // An identifier this process never minted is a 404 and must not consume a poll
 // from any task's script.
 func TestResearchPollUnknownIdentifier(t *testing.T) {

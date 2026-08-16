@@ -322,10 +322,16 @@ func selectResearchProjection(x *provider.Exchange, e *scenario.ProviderEntry) (
 // /search's request field name, and accepting `query` here would accept traffic
 // the live API rejects — which is the failure mode a strict simulator exists to
 // prevent.
+//
+// A body-placed api_key draws the same warning-severity finding it does on
+// /search (warnAPIKeyInBody): contracts/tavily/README.md's research route
+// table records the placement as "Same as POST /search". days is NOT checked
+// here — it is a /search-only field and has no meaning on a research create.
 func validateResearchCreate(x *provider.Exchange) {
 	if _, ok := x.String("input"); !ok {
 		x.Fail(CodeResearchInputMissing, "input", "Missing input. 'input' is a required string.")
 	}
+	warnAPIKeyInBody(x)
 	if model, ok := x.String("model"); ok && !knownResearchModel(model) {
 		x.Warn(CodeResearchModelInvalid, "model",
 			"model %q is not one of mini, pro, auto; the live API may reject it", model)

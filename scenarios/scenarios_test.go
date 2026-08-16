@@ -1,12 +1,18 @@
 package scenarios_test
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,16 +31,22 @@ import (
 var builtins = []string{
 	"async-failed",
 	"async-stuck",
+	"brownout",
 	"conversation",
+	"credential-rotation",
 	"empty-results",
 	"extra-fields",
 	"fusion-overlap",
+	"hang-then-abort",
 	"happy",
 	"malformed-json",
+	"malicious-content",
 	"namespaced",
+	"oversized-body",
 	"rate-limited",
 	"server-error",
 	"streaming",
+	"timeout",
 	"unauthorized",
 	"unknown-provider",
 }
@@ -66,8 +78,11 @@ var documentedProjectionKeys = map[string]map[string]bool{
 
 // refListKeys are the projection keys whose list elements may be the scalar
 // shorthand for a source reference. Every other scalar list — queries,
-// snippets, highlights — is content, not a reference.
-var refListKeys = keySet("citations", "search_results", "results")
+// snippets, highlights — is content, not a reference. "sources" is safe to
+// include here even though the scenario root also declares a top-level
+// "sources:" list of source objects: collectRefs only ever walks a turn's
+// respond body, never the root document, so the two never collide.
+var refListKeys = keySet("citations", "search_results", "results", "sources")
 
 func keySet(keys ...string) map[string]bool {
 	out := make(map[string]bool, len(keys))
@@ -299,6 +314,410 @@ func TestFusionOverlap_OverlapsOnPurpose(t *testing.T) {
 		"SourcesForClaim must report in corpus declaration order")
 }
 
+// hostileSourcePrefixes are malicious-content's category prefixes, minus
+// benign-, which is deliberately exempt from "every provider must project
+// it" — see the built-in's own header comment for why.
+var hostileSourcePrefixes = []string{"inj-", "cred-", "markup-", "exfil-", "long-"}
+
+// maliciousContentMarkers is the canonical marker vocabulary
+// scenarios/protocol/malicious-content.yaml carries. It is kept in sync BY
+// HAND with that file's own header comment and with the README's built-in
+// table — see the built-in's header comment for the cross-reference — so a
+// consumer's own guardrail test can copy this exact list and
+// strings.Contains() against it.
+var maliciousContentMarkers = []string{
+	"IGNORE ALL PREVIOUS INSTRUCTIONS",
+	"<|im_start|>system",
+	"sk-live-FAKE",
+	"AKIAFAKE",
+	"xoxb-FAKE",
+	"-----BEGIN RSA PRIVATE KEY-----",
+	"<script>",
+	"exfil.example",
+}
+
+// maliciousContentBaitTokens are the LITERAL fake credential byte sequences
+// the cred-* sources embed, verbatim, so the live-wire test can assert on
+// more than a prefix: the whole placeholder token must survive rendering.
+var maliciousContentBaitTokens = []string{
+	"sk-live-FAKE0000000000000000EXAMPLE",
+	"AKIAFAKEFAKEFAKEFAKE",
+	"xoxb-FAKE-0000000000-EXAMPLE0000FAKE0000FAKE",
+	"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJGQUtFIn0.FAKESIGNATUREEXAMPLE00000000",
+}
+
+// maliciousContentLongContentMinBytes is the floor TestMaliciousContent_EachCategoryHasASource
+// holds long-*'s text to — comfortably below the shipped source's actual size,
+// but high enough that "a few KiB" in the header comment stays a fixture
+// property rather than a description nobody checks.
+const maliciousContentLongContentMinBytes = 2048
+
+// TestMaliciousContent_EachCategoryHasASource pins the vector-coverage claim
+// that every hostile category is actually represented, not merely described
+// in the header comment. It also pins the benign control's existence and the
+// long-* category's size, both of which the header comment promises but
+// neither of which the every-provider test below can see.
+func TestMaliciousContent_EachCategoryHasASource(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "malicious-content")
+
+	for _, prefix := range hostileSourcePrefixes {
+		found := false
+		for i := range s.Sources {
+			if strings.HasPrefix(s.Sources[i].ID, prefix) {
+				found = true
+				break
+			}
+		}
+		assert.Truef(t, found, "no source id carries the %q prefix", prefix)
+	}
+
+	benignFound := false
+	for i := range s.Sources {
+		if strings.HasPrefix(s.Sources[i].ID, "benign-") {
+			benignFound = true
+		}
+		if strings.HasPrefix(s.Sources[i].ID, "long-") {
+			assert.GreaterOrEqualf(t, len(s.Sources[i].Text), maliciousContentLongContentMinBytes,
+				"%s: text is only %d bytes, short of the %d-byte floor the header comment's "+
+					"'a few KiB' promises", s.Sources[i].ID, len(s.Sources[i].Text), maliciousContentLongContentMinBytes)
+		}
+	}
+	assert.True(t, benignFound, "no source id carries the benign- prefix")
+}
+
+// TestMaliciousContent_EveryHostileSourceCarriesAMarker pins that every
+// hostile source individually carries a canonical marker, not only the
+// corpus as a whole: TestMaliciousContent_MarkerVocabularyAppearsInTheScenario
+// passes as long as SOME source supplies each marker, so one source quietly
+// losing its own marker (while its neighbours keep the vocabulary-level
+// check green) would otherwise go uncaught. long- is exempt: it is
+// documented as marker-free by design, a large but ordinary body.
+func TestMaliciousContent_EveryHostileSourceCarriesAMarker(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "malicious-content")
+
+	for i := range s.Sources {
+		src := &s.Sources[i]
+		hostile := false
+		for _, prefix := range hostileSourcePrefixes {
+			if prefix == "long-" {
+				continue
+			}
+			if strings.HasPrefix(src.ID, prefix) {
+				hostile = true
+				break
+			}
+		}
+		if !hostile {
+			continue
+		}
+		found := false
+		for _, marker := range maliciousContentMarkers {
+			if sourceContainsMarker(src, marker) {
+				found = true
+				break
+			}
+		}
+		assert.Truef(t, found, "%s carries none of the canonical markers in its title, text or snippets", src.ID)
+	}
+}
+
+// TestMaliciousContent_EveryHostileSourceReachesEveryProvider is the static
+// half of the fusion-overlap pattern applied to hostile content: one corpus,
+// every provider, so a consumer's guardrail is exercised on every dispatch
+// path by this one scenario. benign-report is deliberately not required
+// here — only that it be projected somewhere, which
+// TestBuiltins_SourceReferencesResolve already guarantees for every
+// declared source.
+func TestMaliciousContent_EveryHostileSourceReachesEveryProvider(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "malicious-content")
+
+	var hostileIDs []string
+	for i := range s.Sources {
+		id := s.Sources[i].ID
+		for _, prefix := range hostileSourcePrefixes {
+			if strings.HasPrefix(id, prefix) {
+				hostileIDs = append(hostileIDs, id)
+				break
+			}
+		}
+	}
+	require.NotEmpty(t, hostileIDs)
+
+	for _, p := range implementedProviders {
+		entry := s.Provider(p)
+		require.NotNilf(t, entry, "malicious-content declares no %q block", p)
+
+		var refs []string
+		for i := range entry.Turns {
+			collectRefs(&entry.Turns[i].Respond, "", &refs)
+		}
+		for _, id := range hostileIDs {
+			assert.Containsf(t, refs, id, "%s does not project hostile source %q", p, id)
+		}
+	}
+}
+
+// TestMaliciousContent_MarkerVocabularyAppearsInTheScenario asserts the
+// canonical vocabulary is actually present in the loaded scenario — in a
+// source's text, title or snippets, or in a provider-authored string such as
+// an answer — rather than only promised in the header comment.
+func TestMaliciousContent_MarkerVocabularyAppearsInTheScenario(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "malicious-content")
+
+	for _, marker := range maliciousContentMarkers {
+		found := markerInSources(s, marker) || markerInProviders(s, marker)
+		assert.Truef(t, found, "marker %q does not appear anywhere in malicious-content", marker)
+	}
+}
+
+// markerInSources reports whether any source's title, text or snippets
+// contains marker.
+func markerInSources(s *scenario.Scenario, marker string) bool {
+	for i := range s.Sources {
+		if sourceContainsMarker(&s.Sources[i], marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// sourceContainsMarker reports whether one source's title, text or snippets
+// contains marker.
+func sourceContainsMarker(src *scenario.Source, marker string) bool {
+	if strings.Contains(src.Title, marker) || strings.Contains(src.Text, marker) {
+		return true
+	}
+	for _, snippet := range src.Snippets {
+		if strings.Contains(snippet, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// markerInProviders reports whether any provider-authored scalar value —
+// an answer, a summary, a related question, and so on — contains marker.
+func markerInProviders(s *scenario.Scenario, marker string) bool {
+	for _, name := range s.Providers.Names() {
+		entry := s.Provider(name)
+		for i := range entry.Turns {
+			if scalarsContain(&entry.Turns[i].Respond, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// scalarsContain reports whether any scalar value reachable from n contains
+// substr, walking mapping and sequence nodes recursively. It is deliberately
+// blind to structure — unlike collectRefs it does not care whether a node is
+// a source reference — because a provider-authored answer string is not one.
+func scalarsContain(n *yaml.Node, substr string) bool {
+	if n == nil {
+		return false
+	}
+	if n.Kind == yaml.ScalarNode && strings.Contains(n.Value, substr) {
+		return true
+	}
+	for _, c := range n.Content {
+		if scalarsContain(c, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestMaliciousContent_WireResponsesCarryMarkersVerbatim is the live-wire
+// half: every marker substring, and every literal cred-* bait token, must
+// reach the client byte for byte — including <script> UN-escaped — on every
+// surface that has a synthesised answer or a rendered corpus, proving
+// scenario/render.go and internal/wire/render.go's SetEscapeHTML(false)
+// claim from the built-in's own header comment rather than trusting it.
+func TestMaliciousContent_WireResponsesCarryMarkersVerbatim(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("malicious-content"))
+
+	cases := []struct {
+		name    string
+		p       provider.Name
+		path    string
+		body    string
+		headers map[string]string
+		// mustContain is an extra substring unique to what THIS request's own
+		// gating flag unlocks, so the flag itself is load-bearing rather than
+		// decorative — a marker every other case's request would carry
+		// regardless would not prove the flag did anything.
+		mustContain string
+	}{
+		{
+			name:    "exa search",
+			p:       provider.Exa,
+			path:    "/search",
+			body:    `{"query":"malicious content probe","numResults":20}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			// text:true is what makes /answer's citations carry the source's
+			// full text (provider/exa/render.go renderAnswer), not only titles.
+			name:    "exa answer",
+			p:       provider.Exa,
+			path:    "/answer",
+			body:    `{"query":"malicious content probe","text":true}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			// include_raw_content:true is what makes /search's raw_content field
+			// carry markup-script's override sentence (provider/tavily/render.go
+			// renderRawContent) — the one string on this surface that reaches the
+			// wire ONLY through raw_content, since content already falls back
+			// through snippet then text and would carry every other marker even
+			// without this flag.
+			name: "tavily search",
+			p:    provider.Tavily,
+			path: "/search",
+			body: `{"query":"malicious content probe","max_results":20,` +
+				`"include_raw_content":true,"include_answer":true}`,
+			headers:     map[string]string{"authorization": "Bearer test-tavily-key"},
+			mustContain: "Raw crawl capture, byte for byte:",
+		},
+		{
+			name:    "perplexity sonar",
+			p:       provider.Perplexity,
+			path:    "/v1/sonar",
+			body:    `{"model":"sonar","messages":[{"role":"user","content":"malicious content probe"}]}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+		{
+			name:    "perplexity agent",
+			p:       provider.Perplexity,
+			path:    "/v1/agent",
+			body:    `{"input":"malicious content probe"}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+				sim.URL(tc.p)+tc.path, strings.NewReader(tc.body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+
+			resp, err := sim.Client().Do(req)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+
+			raw, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+
+			body := string(raw)
+			for _, marker := range maliciousContentMarkers {
+				assert.Containsf(t, body, marker, "%s response missing marker %q", tc.name, marker)
+			}
+			for _, token := range maliciousContentBaitTokens {
+				assert.Containsf(t, body, token, "%s response missing literal bait token %q", tc.name, token)
+			}
+			// `&`, alongside `<` and `>`, must survive un-entity-escaped — the
+			// header comment's SetEscapeHTML(false) claim, proven rather than
+			// merely stated. markup-imgonerror's title carries one, so it
+			// reaches every surface regardless of paging or gating flags.
+			assert.Containsf(t, body, "&", "%s response missing an unescaped '&'", tc.name)
+			if tc.mustContain != "" {
+				assert.Containsf(t, body, tc.mustContain,
+					"%s response missing %q — the surface's own gating flag may not be doing anything",
+					tc.name, tc.mustContain)
+			}
+		})
+	}
+}
+
+// TestMaliciousContent_CredentialBaitNeverReachesTheJournal is the journal
+// half of the interplay the built-in's header comment documents: response-
+// side bait never touches the journal, but a REQUEST that echoes one of the
+// same tokens is still redacted there — the two are different mechanisms
+// (there is no response-body field on a journal Entry at all; a request body
+// is redacted by internal/redact's vendor-key pattern) and both must hold at
+// once for the header comment's claim to be true rather than merely stated.
+func TestMaliciousContent_CredentialBaitNeverReachesTheJournal(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("malicious-content"), testkit.WithProviders(provider.Exa))
+
+	// An ordinary probe first, so the journal holds real traffic to scan —
+	// the bait is response-side and must never appear in it.
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		sim.URL(provider.Exa)+"/search", strings.NewReader(`{"query":"malicious content probe","numResults":20}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-exa-key")
+	resp, err := sim.Client().Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	testkit.AssertNoCredentialLeak(t, sim, maliciousContentBaitTokens...)
+
+	// Now a request whose OWN body echoes a cred-* token — the interplay case:
+	// journal redaction of request text still works in the presence of bait.
+	echoed := maliciousContentBaitTokens[0] // sk-live-FAKE0000000000000000EXAMPLE
+	echoReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		sim.URL(provider.Exa)+"/search", strings.NewReader(`{"query":"`+echoed+`"}`))
+	require.NoError(t, err)
+	echoReq.Header.Set("Content-Type", "application/json")
+	echoReq.Header.Set("x-api-key", "test-exa-key")
+	echoResp, err := sim.Client().Do(echoReq)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, echoResp.Body)
+	_ = echoResp.Body.Close()
+	require.Equal(t, http.StatusOK, echoResp.StatusCode)
+
+	entries := sim.AwaitRequests(t, provider.Exa, 2)
+	last := entries[len(entries)-1]
+	// Positive half first: the journal actually masked something (internal/
+	// redact.Mask, quoted literally so this fails loudly if that constant's
+	// value ever changes), rather than merely not containing the raw token —
+	// which would also pass, vacuously, if the body were never journaled at
+	// all.
+	assert.Containsf(t, string(last.Body), "[REDACTED]",
+		"the journaled request body should carry a masked value, got: %s", last.Body)
+	assert.NotContainsf(t, string(last.Body), echoed,
+		"the journaled request body must not carry the raw echoed token: %s", last.Body)
+	// The broader scan: the raw token must not have reached ANY journal field
+	// (path, query, headers, findings), not only the request body.
+	testkit.AssertNoCredentialLeak(t, sim, echoed)
+}
+
+// TestMaliciousContent_AsyncTerminalSnapshotsCarryAMarker is the static
+// check for the two async surfaces: a live poll loop is optional per the
+// unit spec, and the terminal snapshot's own text is reachable statically.
+func TestMaliciousContent_AsyncTerminalSnapshotsCarryAMarker(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "malicious-content")
+
+	for _, p := range []string{"exa_agent_runs", "tavily_research"} {
+		entry := s.Provider(p)
+		require.NotNilf(t, entry, "malicious-content declares no %q block", p)
+		require.NotEmpty(t, entry.Turns)
+
+		terminal := &entry.Turns[len(entry.Turns)-1].Respond
+		assert.Truef(t, scalarsContain(terminal, "IGNORE ALL PREVIOUS INSTRUCTIONS"),
+			"%s's terminal snapshot carries no injection marker", p)
+	}
+}
+
 // TestConversation_ScriptsAnAgenticLoop is the regression test for the turn
 // model. Selection itself lives in provider.SelectTurn; what is assertable here
 // is that the three documented predicate forms are present, ordered so the
@@ -352,6 +771,805 @@ func TestConversation_ScriptsAnAgenticLoop(t *testing.T) {
 		require.Lenf(t, entry.Turns, 1, "%s must stay single-shot", provider)
 		assert.True(t, entry.Turns[0].When.IsEmpty())
 	}
+}
+
+// oversizedBodyMinBytes is the built-in's own body_bytes: value, repeated here
+// so the test pins the same number the YAML declares rather than a
+// independently-chosen threshold that could silently drift from it.
+const oversizedBodyMinBytes = 4194304
+
+// TestOversizedBody_FirstAttemptPadsThenCleanRetry is the oversized-body
+// built-in's dedicated live test: on each synchronous surface, the first
+// response is padded to at least 4 MiB with an exact Content-Length, decodes
+// to the same JSON value the clean retry carries — proving padding is the
+// ONLY difference — and the journal shows the padding on the first attempt
+// alone, so a consumer's fail-closed ingress gate and its recovery path are
+// both provable from one running listener.
+func TestOversizedBody_FirstAttemptPadsThenCleanRetry(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("oversized-body"),
+		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+
+	cases := []struct {
+		name    string
+		p       provider.Name
+		path    string
+		body    string
+		headers map[string]string
+	}{
+		{
+			name:    "exa search",
+			p:       provider.Exa,
+			path:    "/search",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			// /answer, /contents and /findSimilar are separate routes with their
+			// own attempt budgets; the built-in declares a plan on each, as
+			// rate-limited does, so a consumer whose adapter uses any of them
+			// gets the same first-call padding.
+			name:    "exa answer",
+			p:       provider.Exa,
+			path:    "/answer",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name:    "exa contents",
+			p:       provider.Exa,
+			path:    "/contents",
+			body:    `{"urls":["https://example.test/report-a"]}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name:    "exa findSimilar",
+			p:       provider.Exa,
+			path:    "/findSimilar",
+			body:    `{"url":"https://example.test/report-a"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name:    "tavily search",
+			p:       provider.Tavily,
+			path:    "/search",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
+		},
+		{
+			// /extract is its own route with its own budget, Bearer-only.
+			name:    "tavily extract",
+			p:       provider.Tavily,
+			path:    "/extract",
+			body:    `{"urls":"https://example.test/report-a"}`,
+			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
+		},
+		{
+			name:    "perplexity sonar",
+			p:       provider.Perplexity,
+			path:    "/v1/sonar",
+			body:    `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+		{
+			// The Agent surface's own route: providers.perplexity_agent's
+			// top-level fault: is a separate plan from Sonar's, on the same
+			// physical listener, which is exactly why this test must filter
+			// journal entries by Route rather than assume ordinal position —
+			// see filterByRoute below.
+			name:    "perplexity agent",
+			p:       provider.Perplexity,
+			path:    "/v1/agent",
+			body:    `{"input":"report"}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			route := "POST " + tc.path
+			firstBody, firstLen := oversizedBodyPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+			secondBody, secondLen := oversizedBodyPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+
+			require.GreaterOrEqualf(t, firstLen, oversizedBodyMinBytes,
+				"%s: the first response's Content-Length must reach the padded minimum", tc.name)
+			require.Lessf(t, secondLen, oversizedBodyMinBytes,
+				"%s: the retry must not be padded", tc.name)
+
+			var firstVal, secondVal any
+			require.NoErrorf(t, json.Unmarshal(bytes.TrimRight(firstBody, " "), &firstVal),
+				"%s: the padded body must still decode once trailing whitespace is trimmed", tc.name)
+			require.NoErrorf(t, json.Unmarshal(secondBody, &secondVal), "%s: the clean retry must decode", tc.name)
+			// The route declares a fault plan, so internal/ids (§3.1) folds
+			// the claimed ATTEMPT INDEX into every generated identifier —
+			// deliberately, so two calls to the same faulted route never
+			// collide on a request/response id. That makes the id field(s)
+			// the one AUTHORED-content-independent way the two decoded
+			// values legitimately differ; normalizing them out is what
+			// leaves padding as the only difference this comparison is
+			// actually checking for.
+			require.Equalf(t, normalizeOversizedBodyIDs(secondVal), normalizeOversizedBodyIDs(firstVal),
+				"%s: padding must be the only difference between the two responses, once each call's own "+
+					"attempt-indexed identifier is set aside", tc.name)
+
+			entries := awaitRouteEntries(t, sim, tc.p, route, 2)
+			require.Equalf(t, "oversized_body", entries[0].Outcome.FaultKind,
+				"%s: the first entry's outcome must name the padding fault", tc.name)
+			require.GreaterOrEqualf(t, entries[0].Outcome.BytesWritten, oversizedBodyMinBytes,
+				"%s: the first entry's bytes_written must reach the padded minimum", tc.name)
+			require.Emptyf(t, entries[1].Outcome.FaultKind,
+				"%s: the second entry must carry no fault at all — the retry is clean", tc.name)
+		})
+	}
+}
+
+// oversizedBodyPost issues one POST against path and returns the raw response
+// body and its declared Content-Length, read as an int so a test can compare
+// it directly against oversizedBodyMinBytes.
+func oversizedBodyPost(
+	t *testing.T, sim *testkit.Sim, p provider.Name, path, body string, headers map[string]string,
+) (raw []byte, contentLength int) {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, sim.URL(p)+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := sim.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	raw, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	cl, err := strconv.Atoi(resp.Header.Get("Content-Length"))
+	require.NoError(t, err, "Content-Length must be declared exactly, not omitted in favour of chunked encoding")
+	require.Equal(t, len(raw), cl, "the declared Content-Length must match what was actually read")
+	return raw, cl
+}
+
+// awaitRouteEntries polls p's journal until at least n entries carrying
+// route exist, then returns them in arrival order. Filtering by Route,
+// rather than relying on ordinal position in p's whole journal, is what
+// keeps this test correct when Perplexity Sonar and the Agent surface run
+// as parallel subtests against the same physical listener: both routes
+// share one provider.Name and therefore one journal, so their entries
+// interleave, but never with each other's Route.
+func awaitRouteEntries(t *testing.T, sim *testkit.Sim, p provider.Name, route string, n int) []testkit.Entry {
+	t.Helper()
+	var out []testkit.Entry
+	require.Eventually(t, func() bool {
+		out = filterByRoute(sim.Requests(p), route)
+		return len(out) >= n
+	}, 5*time.Second, 10*time.Millisecond, "waiting for %d entries on route %q", n, route)
+	return out
+}
+
+// oversizedBodyIDKeys names every wire field an attempt-indexed identifier is
+// rendered under, across the four surfaces TestOversizedBody_
+// FirstAttemptPadsThenCleanRetry exercises: Exa's requestId, Tavily's
+// request_id, and "id" for both Perplexity Sonar's completion id and the
+// Agent surface's response id AND its nested message id (output[].id) — one
+// key name covers both since the walk below is recursive.
+var oversizedBodyIDKeys = map[string]bool{"requestId": true, "request_id": true, "id": true}
+
+// normalizeOversizedBodyIDs recursively replaces the value of any map key
+// named in oversizedBodyIDKeys with a fixed placeholder, walking into nested
+// maps and slices. See its call site for why: comparing two decoded
+// responses from different attempts of one faulted route needs identifiers
+// set aside first.
+func normalizeOversizedBodyIDs(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			if oversizedBodyIDKeys[k] {
+				out[k] = "<id>"
+				continue
+			}
+			out[k] = normalizeOversizedBodyIDs(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = normalizeOversizedBodyIDs(val)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// filterByRoute returns, in order, the entries whose Route equals route.
+func filterByRoute(entries []testkit.Entry, route string) []testkit.Entry {
+	var out []testkit.Entry
+	for _, e := range entries {
+		if e.Route == route {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// syncRouteCase names one synchronous route this build serves and the
+// request that reaches it. brownout and hang-then-abort's live tests both
+// walk the identical eight routes TestOversizedBody_FirstAttemptPadsThenCleanRetry's
+// own table declares inline; factored out once here rather than duplicated a
+// third and fourth time.
+type syncRouteCase struct {
+	name    string
+	p       provider.Name
+	path    string
+	body    string
+	headers map[string]string
+}
+
+// syncRouteCases returns the eight synchronous routes this build serves —
+// Exa /search, /answer, /contents, /findSimilar; Tavily /search, /extract;
+// Perplexity Sonar and Agent — each with a well-formed request and its
+// accepted credential placement.
+func syncRouteCases() []syncRouteCase {
+	return []syncRouteCase{
+		{
+			name: "exa search", p: provider.Exa, path: "/search",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name: "exa answer", p: provider.Exa, path: "/answer",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name: "exa contents", p: provider.Exa, path: "/contents",
+			body:    `{"urls":["https://example.test/report-a"]}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name: "exa findSimilar", p: provider.Exa, path: "/findSimilar",
+			body:    `{"url":"https://example.test/report-a"}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			name: "tavily search", p: provider.Tavily, path: "/search",
+			body:    `{"query":"report"}`,
+			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
+		},
+		{
+			name: "tavily extract", p: provider.Tavily, path: "/extract",
+			body:    `{"urls":"https://example.test/report-a"}`,
+			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
+		},
+		{
+			name: "perplexity sonar", p: provider.Perplexity, path: "/v1/sonar",
+			body:    `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+		{
+			name: "perplexity agent", p: provider.Perplexity, path: "/v1/agent",
+			body:    `{"input":"report"}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+	}
+}
+
+// TestTimeout_ClientDeadlineAbandonsTheHangThenRetrySucceeds is the timeout
+// built-in's dedicated live test: a client with a real deadline observes
+// bytes not arriving rather than any HTTP response, its own context ends in
+// context.DeadlineExceeded, and its retry — which draws the SECOND attempt on
+// that route, the one past the built-in's single declared attempt — gets a
+// clean response. testkit.WithSkippedDelays is deliberately never used here;
+// see the built-in's own header comment and provider/clock.go's DelayMode
+// doc comment for why a timeout test cannot use it.
+//
+// All eight of the built-in's routes are exercised, from the shared
+// syncRouteCases() table, rather than a hand-picked subset: each subtest is
+// t.Parallel() with only a 100ms client deadline, so the eight cost about the
+// same wall clock as three would, and covering all eight is what actually
+// pins that the fault plan is declared on every route rather than a handful
+// — a plan missing from one route was otherwise invisible to this test.
+func TestTimeout_ClientDeadlineAbandonsTheHangThenRetrySucceeds(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("timeout"),
+		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+
+	for _, tc := range syncRouteCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			route := "POST " + tc.path
+
+			// A real deadline well short of the scenario's 30s delay — but not
+			// short. The deadline starts before Do dials, so on a starved runner
+			// (-race, eight parallel subtests, packages tested in parallel on
+			// two vCPUs) a 100ms deadline can fire before the simulator has even
+			// READ the request; then no handler ran, nothing was abandoned
+			// server-side, and there is no entry to await — CI saw exactly that
+			// once. Two seconds is comfortably longer than any request-delivery
+			// latency a loaded runner produces and still far short of the 30s
+			// hang the scenario scripts; the subtests run in parallel, so the
+			// package pays it once. This is the same trap a consumer's own
+			// timeout test can hit — the timeout built-in's header and
+			// docs/troubleshooting.md say so.
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+				sim.URL(tc.p)+tc.path, strings.NewReader(tc.body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+
+			_, err = sim.Client().Do(req) //nolint:bodyclose // err is non-nil, so there is no body to close
+			require.Error(t, err, "the client's own deadline must end the request")
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+
+			// The property that the server's sleep actually releases on the
+			// client's cancellation, rather than lingering for the full 30s, is
+			// NOT provable from the client's side: Do returns at the client's own
+			// 100ms deadline regardless of what the server goroutine does, so a
+			// wall-clock bound on this line could never fail even if the sleep
+			// never released. awaitRouteEntries below is the real guard — its 5s
+			// require.Eventually times out, naming the route, if the abandoned
+			// call's entry never lands.
+			//
+			// The abandoned call's own entry lands on the server goroutine
+			// AFTER the client above already returned; AwaitRequests, never a
+			// bare sim.Requests, is mandatory here.
+			abandoned := awaitRouteEntries(t, sim, tc.p, route, 1)[0]
+			assert.True(t, abandoned.Outcome.Aborted, "the abandoned call's outcome must be marked aborted")
+			assert.Equal(t, 0, abandoned.Outcome.BytesWritten, "nothing reached the client")
+			assert.Equal(t, int64(30000), abandoned.Outcome.DelayMS,
+				"the journal records the requested 30s delay, not however long the client actually waited")
+
+			// The retry: a plain request with no short deadline, drawing the
+			// SECOND attempt on this route — past the plan's one declared
+			// attempt, so `after: success` serves it clean.
+			retryReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+				sim.URL(tc.p)+tc.path, strings.NewReader(tc.body))
+			require.NoError(t, err)
+			retryReq.Header.Set("Content-Type", "application/json")
+			for k, v := range tc.headers {
+				retryReq.Header.Set(k, v)
+			}
+			resp, err := sim.Client().Do(retryReq)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			raw, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+
+			retried := awaitRouteEntries(t, sim, tc.p, route, 2)[1]
+			assert.Empty(t, retried.Outcome.FaultKind, "the retry must carry no fault at all")
+			assert.Equal(t, 1, retried.Outcome.AttemptIndex,
+				"the retry claims the second attempt: the abandoned call already claimed the first")
+		})
+	}
+}
+
+// brownoutLadderMS is the delay, in milliseconds, each of the first four
+// calls on a brownout route declares — repeated here so the test pins the
+// same numbers the YAML declares rather than an independently chosen ladder
+// that could silently drift from it.
+var brownoutLadderMS = []int64{50, 100, 200, 400}
+
+// TestBrownout_LadderThenOutageThenRecovery is the brownout built-in's
+// dedicated live test, run under the default DelayReal: four calls of
+// successively worse real latency, two 503s carrying Retry-After, then a
+// clean seventh call whose journal entry carries no fault at all — the
+// "counted, not reset" property rate-limited pins for one 429, here pinned
+// for a whole ladder. Total wall clock per route is the sum of the ladder,
+// about 750ms; run across all eight routes as parallel subtests, that stays
+// well short of anything a loaded CI runner would call slow.
+func TestBrownout_LadderThenOutageThenRecovery(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("brownout"),
+		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+
+	for _, tc := range syncRouteCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			route := "POST " + tc.path
+
+			for i, wantMS := range brownoutLadderMS {
+				start := time.Now()
+				status, _ := brownoutPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+				elapsed := time.Since(start)
+				require.Equalf(t, http.StatusOK, status, "call %d", i)
+				assert.GreaterOrEqualf(t, elapsed, time.Duration(wantMS)*time.Millisecond,
+					"call %d: the client must observe the declared delay", i)
+			}
+			for i := range 2 {
+				status, retryAfter := brownoutPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+				assert.Equalf(t, http.StatusServiceUnavailable, status, "call %d", i+len(brownoutLadderMS))
+				assert.Equalf(t, "1", retryAfter, "call %d", i+len(brownoutLadderMS))
+			}
+			status, _ := brownoutPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+			require.Equal(t, http.StatusOK, status, "the seventh call must recover")
+
+			entries := awaitRouteEntries(t, sim, tc.p, route, 7)
+			for i, wantMS := range brownoutLadderMS {
+				assert.Equalf(t, wantMS, entries[i].Outcome.DelayMS, "entry %d delay_ms", i)
+				assert.GreaterOrEqualf(t, entries[i].CompletedAt.Sub(entries[i].ArrivedAt),
+					time.Duration(wantMS)*time.Millisecond, "entry %d completed_at - arrived_at", i)
+			}
+			assert.Equal(t, http.StatusServiceUnavailable, entries[4].Outcome.Status, "entry 4 status")
+			assert.Equal(t, http.StatusServiceUnavailable, entries[5].Outcome.Status, "entry 5 status")
+			assert.Equal(t, http.StatusOK, entries[6].Outcome.Status, "entry 6 status")
+			assert.Empty(t, entries[6].Outcome.FaultKind, "the seventh entry must carry no fault at all")
+		})
+	}
+}
+
+// brownoutPost issues one POST and returns the response's status code and
+// Retry-After header, discarding the body: brownout's ladder and outage
+// attempts are asserted on status and journal fields, and the body is the
+// ordinary happy-shaped projection throughout, unaffected by any of them.
+func brownoutPost(
+	t *testing.T, sim *testkit.Sim, p provider.Name, path, body string, headers map[string]string,
+) (status int, retryAfter string) {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, sim.URL(p)+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := sim.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode, resp.Header.Get("Retry-After")
+}
+
+// TestHangThenAbort_ThreeAbortShapesThenSuccess is the hang-then-abort
+// built-in's dedicated live test: a hang then a reset before any header
+// arrives, a hang then a reset mid-body, headers immediately followed by a
+// hang and a reset mid-body, then a clean fourth call — the three abort
+// shapes a mid-flight disconnect takes on the wire today, each preceded by
+// the hang unit 1 (calls 1-2) or unit 5 (call 3) made observable in
+// completed_at. Call 3 asserts no upper bound on when headers arrive — only
+// that they do, and cleanly, before the hang the client cannot see coming —
+// because a bounded-time assertion there would prove nothing that isn't
+// already proven by TestHandleDelayAfterHeadersHeadersArriveBeforeTheHang at
+// the provider-package level and would cost this test a flake surface for no
+// benefit. Total wall clock per route is about 2.1s (three 700ms hangs); run
+// across all eight routes as parallel subtests, that stays well short of
+// anything a loaded CI runner would call slow.
+func TestHangThenAbort_ThreeAbortShapesThenSuccess(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("hang-then-abort"),
+		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+
+	const hang = 700 * time.Millisecond
+
+	for _, tc := range syncRouteCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			route := "POST " + tc.path
+
+			start := time.Now()
+			hangThenAbortCall(t, sim, tc.p, tc.path, tc.body, tc.headers, false)
+			require.GreaterOrEqual(t, time.Since(start), hang, "call 1 must observe the hang before it errors")
+
+			start = time.Now()
+			hangThenAbortCall(t, sim, tc.p, tc.path, tc.body, tc.headers, true)
+			require.GreaterOrEqual(t, time.Since(start), hang, "call 2 must observe the hang before it errors")
+
+			// Call 3: headers arrive normally — no pre-dispatch delay: on this
+			// attempt at all — and only the body is affected. hangThenAbortCall's
+			// wantHeaders=true branch already asserts exactly what the client
+			// side of that looks like: a response with headers, then a body read
+			// that fails with a reset. No wall-clock bound is asserted on the
+			// call itself; the hang is proven from the journal entry below.
+			hangThenAbortCall(t, sim, tc.p, tc.path, tc.body, tc.headers, true)
+
+			status, _ := brownoutPost(t, sim, tc.p, tc.path, tc.body, tc.headers)
+			require.Equal(t, http.StatusOK, status, "call 4 must recover")
+
+			entries := awaitRouteEntries(t, sim, tc.p, route, 4)
+
+			assert.True(t, entries[0].Outcome.Aborted, "entry 0 must be marked aborted")
+			assert.Equal(t, "close_before_headers", entries[0].Outcome.FaultKind, "entry 0 fault_kind")
+			assert.GreaterOrEqual(t, entries[0].CompletedAt.Sub(entries[0].ArrivedAt), hang,
+				"entry 0 completed_at - arrived_at must observe the hang (Phase 6 unit 1's fix)")
+
+			assert.True(t, entries[1].Outcome.Aborted, "entry 1 must be marked aborted")
+			assert.Equal(t, "truncate_body", entries[1].Outcome.FaultKind, "entry 1 fault_kind")
+			assert.GreaterOrEqual(t, entries[1].CompletedAt.Sub(entries[1].ArrivedAt), hang,
+				"entry 1 completed_at - arrived_at must observe the hang (Phase 6 unit 1's fix)")
+
+			assert.True(t, entries[2].Outcome.Aborted, "entry 2 must be marked aborted")
+			assert.Equal(t, "truncate_body", entries[2].Outcome.FaultKind, "entry 2 fault_kind")
+			assert.NotZero(t, entries[2].Outcome.BytesWritten, "entry 2 must carry the partial body's byte count")
+			assert.Equal(t, hang.Milliseconds(), entries[2].Outcome.DelayAfterHeadersMS, "entry 2 delay_after_headers_ms")
+			assert.GreaterOrEqual(t, entries[2].CompletedAt.Sub(entries[2].ArrivedAt), hang,
+				"entry 2 completed_at - arrived_at must observe the after-headers hang (Phase 6 unit 5)")
+
+			assert.Empty(t, entries[3].Outcome.FaultKind, "entry 3 must carry no fault at all")
+		})
+	}
+}
+
+// hangThenAbortCall issues one POST and requires the connection to die in
+// the shape wantHeaders names: false for close_before_headers, where the
+// round trip itself must fail because no status line ever arrives; true for
+// truncate_body+reset, where headers and a partial body must arrive first and
+// only the body read fails, with the failure specifically wrapping
+// syscall.ECONNRESET — an ordinary closed connection (io.ErrUnexpectedEOF)
+// would NOT satisfy this, which is what lets this assertion tell a scripted
+// reset apart from `reset: true` being silently dropped from the fixture.
+func hangThenAbortCall(
+	t *testing.T, sim *testkit.Sim, p provider.Name, path, body string, headers map[string]string, wantHeaders bool,
+) {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, sim.URL(p)+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, postErr := sim.Client().Do(req) //nolint:bodyclose // closed below only when postErr is nil
+	if !wantHeaders {
+		require.Error(t, postErr, "close_before_headers must fail before any header arrives")
+		return
+	}
+	require.NoError(t, postErr, "truncate_body must serve headers before the reset")
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "truncate_body must serve a 200 before the reset")
+	_, readErr := io.ReadAll(resp.Body)
+	require.Errorf(t, readErr, "truncate_body must fail the body read")
+	require.Truef(t, errors.Is(readErr, syscall.ECONNRESET),
+		"truncate_body's reset must surface as ECONNRESET, not an ordinary close (got %v)", readErr)
+}
+
+// credentialRotationCase is one placement credential-rotation's live test
+// covers, naming both the request that presents the OLD key and the one that
+// presents the ROTATED key so the two bodies can differ, as they must for
+// Tavily's body:api_key placement.
+type credentialRotationCase struct {
+	name             string
+	p                provider.Name
+	path             string
+	oldBody, newBody string
+	oldHdrs, newHdrs map[string]string
+}
+
+// TestCredentialRotation_OldKeyRejectedRotatedKeyAccepted is the
+// credential-rotation built-in's dedicated live test: the old key draws the
+// vendor's own 401 envelope, the rotated key draws the ordinary 200, and
+// AssertDifferentCredential on the two journal entries passes while
+// AssertSameCredential on the same pair fails — the assertion pair this
+// unit's testkit helper exists for, exercised end to end rather than only
+// unit-tested against synthetic entries. It covers one credential placement
+// per provider the auth table documents: Exa x-api-key, Tavily Bearer AND
+// body:api_key on /search, Perplexity Bearer.
+func TestCredentialRotation_OldKeyRejectedRotatedKeyAccepted(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithBuiltin("credential-rotation"),
+		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+
+	cases := []credentialRotationCase{
+		{
+			name: "exa x-api-key", p: provider.Exa, path: "/search",
+			oldBody: `{"query":"report"}`, newBody: `{"query":"report"}`,
+			oldHdrs: map[string]string{"x-api-key": "old-key-EXAMPLE"},
+			newHdrs: map[string]string{"x-api-key": "rotated-key-EXAMPLE"},
+		},
+		{
+			name: "tavily bearer", p: provider.Tavily, path: "/search",
+			oldBody: `{"query":"report"}`, newBody: `{"query":"report"}`,
+			oldHdrs: map[string]string{"authorization": "Bearer old-key-EXAMPLE"},
+			newHdrs: map[string]string{"authorization": "Bearer rotated-key-EXAMPLE"},
+		},
+		{
+			name: "tavily body api_key", p: provider.Tavily, path: "/search",
+			oldBody: `{"query":"report","api_key":"old-key-EXAMPLE"}`,
+			newBody: `{"query":"report","api_key":"rotated-key-EXAMPLE"}`,
+			oldHdrs: nil, newHdrs: nil,
+		},
+		{
+			name: "perplexity bearer", p: provider.Perplexity, path: "/v1/sonar",
+			oldBody: `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
+			newBody: `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
+			oldHdrs: map[string]string{"authorization": "Bearer old-key-EXAMPLE"},
+			newHdrs: map[string]string{"authorization": "Bearer rotated-key-EXAMPLE"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Two of these cases (tavily bearer, tavily body api_key) target
+			// the SAME physical route — Tavily accepts both placements on
+			// /search — so a shared journal read here would race the two
+			// subtests' entries against each other. A namespace per subtest
+			// is what keeps each one reading only its own traffic, the same
+			// isolation testkit.NamespaceFor exists for.
+			ns := sim.NamespaceFor(t)
+			url := ns.URL(tc.p) + tc.path
+
+			oldStatus := credentialRotationPost(t, ns.Client(), url, tc.oldBody, tc.oldHdrs)
+			require.Equal(t, http.StatusUnauthorized, oldStatus, "the old key must draw the vendor's own 401")
+
+			newStatus := credentialRotationPost(t, ns.Client(), url, tc.newBody, tc.newHdrs)
+			require.Equal(t, http.StatusOK, newStatus, "the rotated key must draw the ordinary 200")
+
+			// ns.AwaitRequests already scopes to this namespace and this
+			// provider; a route filter on top would be redundant, since each
+			// subtest's namespace only ever carries its own two calls on one
+			// route.
+			entries := ns.AwaitRequests(t, tc.p, 2)
+			rejected, accepted := entries[0], entries[1]
+
+			testkit.AssertDifferentCredential(t, rejected, accepted)
+
+			stub := &rotationStubTB{}
+			testkit.AssertSameCredential(stub, rejected, accepted)
+			assert.True(t, stub.failed, "AssertSameCredential must fail on two different credentials")
+		})
+	}
+}
+
+// rotationStubTB is the minimal testing.TB stand-in this file needs to prove
+// AssertSameCredential fails without failing the real test: it records
+// whether Errorf was ever called and does nothing else.
+type rotationStubTB struct {
+	testing.TB
+	failed bool
+}
+
+func (s *rotationStubTB) Helper() {}
+
+func (s *rotationStubTB) Errorf(string, ...any) { s.failed = true }
+
+// credentialRotationPost issues one POST against url and returns the
+// response's status code, discarding the body: this test asserts on the
+// status and on the journal's credential fingerprints, never on response
+// content.
+func credentialRotationPost(
+	t *testing.T, client *http.Client, url, body string, headers map[string]string,
+) int {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode
+}
+
+// TestCredentialRotation_EveryBlockRequiresTheRotatedKey is a static guard on
+// the credential-rotation built-in's YAML: every one of the six provider
+// blocks — sync and async alike — must expect the documented rotated key and
+// declare no fault plan (the trap the header comment names). The live test
+// above only exercises the four placements docs/scenario-schema.md documents
+// (Exa x-api-key, Tavily Bearer and body:api_key, Perplexity Bearer), which
+// leaves perplexity_agent, exa_agent_runs and tavily_research unreachable
+// from a real HTTP call in this package; this check reads the loaded
+// scenario directly so those three blocks are still pinned against silently
+// losing their auth policy or gaining a fault plan next to it.
+func TestCredentialRotation_EveryBlockRequiresTheRotatedKey(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "credential-rotation")
+
+	for _, name := range implementedProviders {
+		t.Run(name, func(t *testing.T) {
+			entry := s.Provider(name)
+			require.NotNilf(t, entry, "%s: credential-rotation must declare this block", name)
+			require.NotNilf(t, entry.Auth, "%s: must declare an auth policy", name)
+			assert.Equalf(t, "rotated-key-EXAMPLE", entry.Auth.ExpectKey,
+				"%s: must expect the documented rotated key", name)
+
+			require.NotEmptyf(t, entry.Turns, "%s: must have at least one turn", name)
+			assert.Nilf(t, entry.Turns[0].Fault, "%s: no fault plan next to expect_key — the documented trap", name)
+			if entry.Create != nil {
+				assert.Nilf(t, entry.Create.Fault, "%s: no create-route fault plan either", name)
+			}
+		})
+	}
+}
+
+// credentialRotationTrapScenario pins the trap docs/troubleshooting.md and
+// the credential-rotation built-in's own header comment document: combining
+// expect_key with a fault plan makes the plan's first attempt fire on the
+// first AUTHENTICATED call, not the first call overall, because an auth
+// rejection never claims one (provider/handle.go: resp.FaultEligible is
+// forced false whenever the exchange already failed).
+const credentialRotationTrapScenario = `
+version: 1
+name: credential-rotation-trap
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa:
+    auth:
+      expect_key: rotated-key-EXAMPLE
+    fault:
+      attempts:
+        - status: 429
+          error: Rate limit exceeded.
+        - status: 200
+    results:
+      - source: source-a
+`
+
+// TestCredentialRotation_ExpectKeyPlusFaultPlanFiresOnFirstAuthenticatedCall
+// is the pinned regression for the trap credential-rotation's header comment
+// documents: two calls with the wrong key are rejected and claim no attempt
+// at all (attempt_index -1), and the fault plan's first attempt — a 429, not
+// the 200 an author counting from the first HTTP request would expect —
+// fires on the THIRD call, the first one presenting the correct key.
+func TestCredentialRotation_ExpectKeyPlusFaultPlanFiresOnFirstAuthenticatedCall(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t,
+		testkit.WithScenarioYAML(credentialRotationTrapScenario),
+		testkit.WithProviders(provider.Exa))
+
+	post := func(key string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+			sim.URL(provider.Exa)+"/search", strings.NewReader(`{"query":"report"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", key)
+		resp, err := sim.Client().Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		_, err = io.Copy(io.Discard, resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode
+	}
+
+	require.Equal(t, http.StatusUnauthorized, post("wrong-key-EXAMPLE"))
+	require.Equal(t, http.StatusUnauthorized, post("wrong-key-EXAMPLE"))
+	require.Equalf(t, http.StatusTooManyRequests, post("rotated-key-EXAMPLE"),
+		"the fault plan's first attempt must claim the first AUTHENTICATED call, not the first call overall")
+	require.Equal(t, http.StatusOK, post("rotated-key-EXAMPLE"))
+
+	entries := sim.AwaitRequests(t, provider.Exa, 4)
+	require.Len(t, entries, 4)
+	assert.Equal(t, -1, entries[0].Outcome.AttemptIndex, "an auth rejection claims no attempt")
+	assert.Equal(t, -1, entries[1].Outcome.AttemptIndex, "an auth rejection claims no attempt")
+	assert.Equal(t, 0, entries[2].Outcome.AttemptIndex, "the first authenticated call claims attempt 0")
+	assert.Equal(t, 1, entries[3].Outcome.AttemptIndex, "the second authenticated call claims attempt 1")
 }
 
 // TestNamespaced_DeclaresOneLanePerModel pins the shape of the file: the two

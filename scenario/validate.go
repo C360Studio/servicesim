@@ -310,7 +310,7 @@ func validateFault(r *Report, path string, f *Fault) {
 func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 	switch a.Kind {
 	case FaultNone, FaultStatus, FaultCloseBeforeHeaders, FaultTruncateBody,
-		FaultInvalidJSON, FaultWrongContentType, FaultEmptyBody, FaultExtraFields,
+		FaultInvalidJSON, FaultWrongContentType, FaultEmptyBody, FaultExtraFields, FaultOversizedBody,
 		FaultStreamDisconnect, FaultStreamTruncateChunk, FaultStreamStall:
 	default:
 		r.add(SeverityError, "scenario.fault.kind.unknown", path+".kind",
@@ -325,6 +325,14 @@ func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 				a.EffectiveKind())
 		}
 	}
+	if a.BodyBytes != 0 {
+		switch a.EffectiveKind() {
+		case FaultOversizedBody:
+		default:
+			r.add(SeverityError, "scenario.fault.body_bytes.not_oversized", path+".body_bytes",
+				"body_bytes is meaningful only for kind oversized_body, not %q", a.EffectiveKind())
+		}
+	}
 	if a.Status != 0 && (a.Status < 100 || a.Status > 599) {
 		r.add(SeverityError, "scenario.fault.status.invalid", path+".status",
 			"status %d is not an HTTP status code", a.Status)
@@ -332,6 +340,26 @@ func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 	if a.Delay < 0 {
 		r.add(SeverityError, "scenario.fault.delay.negative", path+".delay",
 			"delay must not be negative")
+	}
+	if a.DelayAfterHeaders < 0 {
+		r.add(SeverityError, "scenario.fault.delay_after_headers.negative", path+".delay_after_headers",
+			"delay_after_headers must not be negative")
+	}
+	if a.DelayAfterHeaders > 0 {
+		switch a.EffectiveKind() {
+		case FaultCloseBeforeHeaders:
+			r.add(SeverityError, "scenario.fault.delay_after_headers.no_headers", path+".delay_after_headers",
+				"delay_after_headers cannot apply to close_before_headers: no headers ever reach the client to hang after")
+		case FaultEmptyBody:
+			r.add(SeverityWarning, "scenario.fault.delay_after_headers.unobservable", path+".delay_after_headers",
+				"empty_body sets Content-Length: 0, so the client considers THIS response complete at the headers "+
+					"and the hang is invisible on it; it still delays the journal entry and stalls the next "+
+					"request on the same keep-alive connection")
+		}
+		if a.EffectiveKind().IsStream() {
+			r.add(SeverityError, "scenario.fault.delay_after_headers.streaming", path+".delay_after_headers",
+				"delay_after_headers assumes an ordinary JSON body; the streaming equivalent is stream_stall with after_chunk: 0")
+		}
 	}
 	if a.RetryAfter != nil && *a.RetryAfter < 0 {
 		r.add(SeverityError, "scenario.fault.retry_after.negative", path+".retry_after",
@@ -341,6 +369,10 @@ func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 		r.add(SeverityError, "scenario.fault.truncate.negative", path+".truncate_after_bytes",
 			"truncate_after_bytes must not be negative")
 	}
+	if a.BodyBytes < 0 {
+		r.add(SeverityError, "scenario.fault.body_bytes.negative", path+".body_bytes",
+			"body_bytes must not be negative")
+	}
 	if a.Repeat < 0 {
 		r.add(SeverityError, "scenario.fault.repeat.negative", path+".repeat",
 			"repeat must not be negative")
@@ -348,5 +380,10 @@ func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 	if a.EffectiveKind() == FaultInvalidJSON && a.RawBody == "" {
 		r.add(SeverityWarning, "scenario.fault.raw_body.missing", path+".raw_body",
 			"kind invalid_json with no raw_body leaves the malformed bytes to the provider package")
+	}
+	if a.EffectiveKind() == FaultOversizedBody && a.BodyBytes == 0 {
+		r.add(SeverityError, "scenario.fault.body_bytes.missing", path+".body_bytes",
+			"kind oversized_body has no default size — unlike truncate_after_bytes, there is no "+
+				"\"zero means half the body\" fallback — so body_bytes must be set")
 	}
 }

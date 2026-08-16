@@ -109,6 +109,11 @@ type Outcome struct {
 	// provider.DelaySkip no time passes, and this is still the asserted value.
 	DelayMS int64 `json:"delay_ms,omitempty"`
 
+	// DelayAfterHeadersMS is DelayMS's sibling for the after-headers hang: the
+	// requested delay_after_headers, not the delay observed. Under
+	// provider.DelaySkip no time passes, and this is still the asserted value.
+	DelayAfterHeadersMS int64 `json:"delay_after_headers_ms,omitempty"`
+
 	BytesWritten int  `json:"bytes_written"`
 	Aborted      bool `json:"aborted,omitempty"`
 

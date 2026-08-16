@@ -591,6 +591,9 @@ func TestFaultAttempt_EffectiveKind(t *testing.T) {
 		{"content type", FaultAttempt{ContentType: "text/plain"}, FaultWrongContentType},
 		{"truncation", FaultAttempt{TruncateAfterBytes: 8}, FaultTruncateBody},
 		{"reset", FaultAttempt{Reset: true}, FaultTruncateBody},
+		{"body_bytes inferred", FaultAttempt{BodyBytes: 100}, FaultOversizedBody},
+		{"body_bytes composes with a status override", FaultAttempt{BodyBytes: 100, Status: 500}, FaultOversizedBody},
+		{"explicit oversized_body wins over status", FaultAttempt{Kind: FaultOversizedBody, Status: 500}, FaultOversizedBody},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

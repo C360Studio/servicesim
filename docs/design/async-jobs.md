@@ -10,7 +10,8 @@
 > `provider/lane.go`, `scenario/alias.go`, `provider/exa/agentrun*.go`, `provider/tavily/research*.go`,
 > `internal/admin`, `internal/config`, `internal/server`, `testkit`, `scenario/model.go` or
 > `scenarios/protocol/*.yaml`, the disagreement is a defect in this document, never in the code. Read the source
-> before trusting a claim made here.
+> before trusting a claim made here. `contracts/exa/README.md` and `contracts/tavily/README.md` outrank this
+> document on any wire field ([ADR 0002](../adr/0002-verified-contract-precedence.md)).
 >
 > **The Go blocks stay illustrative.** Round 3 (below) already demoted them from normative to illustrative, and
 > that has not changed now that the code exists: they are not being reconciled line-by-line against shipped
