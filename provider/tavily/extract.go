@@ -22,26 +22,21 @@ const PatternExtract = "POST /extract"
 const FaultKeyExtract = "tavily:extract"
 
 // extractPlacements are the placements POST /extract accepts: the documented
-// Authorization: Bearer header, plus the body api_key placement /search and
-// /research already accept.
+// Authorization: Bearer header only.
 //
-// This used to be Bearer-only, on the reasoning that /extract's own "Auth"
-// section had verified the page and found no evidence — vendor or client —
-// for the body placement on THIS route specifically. That reasoning is
-// superseded: D2 (docs/adopter-backlog.md, "Decisions already taken") was made
-// on CLIENT-level evidence, not endpoint-level evidence — the recorded
-// observation is that a consumer's production client sends the key as a body
-// property on its POSTs, and the placement is a property of the client, not of
-// the endpoint. A client that sends it on /search sends it on /extract too.
-// /research already extended acceptance by exactly this reasoning, with no
-// more direct evidence for /research than existed here, and narrowing /extract
-// alone recreates the Phase 0 failure — a simulator that 401s traffic the live
-// API serves — the day the adopter's client calls this route. The vendor
-// documentation still records Bearer only for /extract; see
-// contracts/tavily/README.md's "POST /extract" → "Auth" section for the full
-// reasoning and the still-open question asking the adopter to confirm their
-// client's behaviour.
-var extractPlacements = []string{provider.PlacementAuthorization, PlacementBodyAPIKey}
+// This briefly also accepted a body-placed api_key, on D2's client-level
+// reasoning (docs/adopter-backlog.md, "Decisions already taken") extended past
+// /search and /research to every route by analogy. The owner reaffirmed on
+// 2026-08-15 that vendor documentation, not a consumer's client code, decides
+// a wire contract (ADR-0002) — see contracts/tavily/README.md's "POST
+// /extract" → "Auth" section. D2 itself stands exactly as shipped for /search
+// and /research; it is not a precedent for routes verified after it. A body
+// api_key on /extract is still recognised — see extractKnownFields and
+// warnExtractCredentialField — so it is flagged with
+// tavily.api_key.in_body, but it does not authenticate: a request presenting
+// only a body api_key fails auth.missing here, the same as any other
+// unaccepted placement.
+var extractPlacements = []string{provider.PlacementAuthorization}
 
 // RouteExtract returns POST /extract, keyed "tavily:extract". It serves the
 // same "tavily" scenario entry /search does — Route.Entry defaults to the
@@ -153,8 +148,9 @@ var extractKnownFields = map[string]bool{
 	"include_images": true, "include_favicon": true, "format": true, "timeout": true,
 	"include_usage": true,
 
-	// Recognised in order to be flagged, not in order to be accepted by
-	// itself — see extractPlacements for why it now also authenticates.
+	// Recognised in order to be flagged by warnExtractCredentialField, not in
+	// order to be accepted: /extract authenticates on Authorization: Bearer
+	// only — see extractPlacements.
 	"api_key": true,
 }
 
@@ -298,11 +294,11 @@ func warnExtractUnknownFields(x *provider.Exchange) {
 }
 
 // warnExtractCredentialField raises CodeAPIKeyInBody for a body-placed
-// api_key, the same warning /search raises for the same property — see
-// extractPlacements for why /extract now accepts this placement too. It stays
-// a WARNING and the request still authenticates on it: the finding is what a
-// consumer asserts on to prove which placement its adapter used, so accepting
-// the placement must not make it invisible.
+// api_key, the same code /search raises for the same property. Unlike
+// /search, /extract does not accept this placement — see extractPlacements —
+// so a request presenting only a body api_key still fails auth.missing; the
+// finding exists so a consumer can see which placement its adapter used
+// instead of debugging a bare 401.
 //
 // States presence and nothing else. Not the value, not a prefix of it, not
 // its length: this message reaches the journal, /__admin/requests and the

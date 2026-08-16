@@ -31,10 +31,11 @@ round-3 re-review and its banner names unit 1: `Response.Stream` + the `execute`
 journal condition + the SSE writer. §10 of that document is the ordered prerequisite — regenerate the Perplexity SSE
 contract from the vendor's openapi.json first, with every simulator-chosen frame-level choice recorded in
 provenance. Build unit 1 and let the compiler settle the mechanical layer, as Phase 3 did; do not open a fourth
-prose round. Also worth doing first, cheaply: tell the adopter v0.2.0 exists, and hand them the seven D7 questions
-now inlined in `contracts/tavily/README.md` and `contracts/exa/README.md` ("Open questions for the adopter") — the
-answers about the `/extract` body `api_key` and whether they still call `/findSimilar` decide whether two Phase 4
-choices stand.
+prose round. Also worth doing first, cheaply: tell the adopter v0.2.0 exists, and hand them the D7 questions now
+inlined in `contracts/tavily/README.md` and `contracts/exa/README.md` ("Open questions for the adopter") — those
+are informational under the owner's 2026-08-15 vendor-documentation-is-authority reaffirmation (the `/extract` body
+`api_key` question no longer decides the placement; see the contract's "Auth" section), but whether they still call
+`/findSimilar` still decides whether that Phase 4 choice stands.
 
 ### What closed today, beyond A5–A7
 
@@ -110,6 +111,13 @@ documentation outranks other sources — even though applying that same rule to 
 CONTRADICTED by a working client, whereas these three endpoints have no vendor verification at all. If a
 re-verification contradicts the adopter's working client again, surface it as a decision rather than silently siding
 with the documentation.
+
+On 2026-08-15 the owner reaffirmed vendor documentation as the authority for a wire contract and, on that basis,
+reversed a same-day extension of D2's body-`api_key` placement to Tavily `/extract` (D2 was cited for the
+extension, but D2 itself is untouched): D2 stands exactly as shipped in v0.1.1 for `/search` and `/research` and is
+not a precedent for extending acceptance to routes verified after it. This qualifies the D7 sentence above: a
+contradiction between vendor documentation and an adopter's client is reported to the adopter as a divergence, not
+silently sided with — but it is no longer, by itself, grounds to change what a route accepts.
 
 ## Phases
 
@@ -426,14 +434,13 @@ that wired the built-ins, docs and image smoke once all three landed.
 - Tavily POST /extract — **DONE.** Verified against `https://docs.tavily.com/documentation/api-reference/endpoint/extract`,
   2026-08-15. Same fetch-shaped pattern as `/contents`: requested `urls` (string or array, both accepted) resolve
   against the turn's `results`, then the corpus; an unresolved URL renders a `failed_results[]` entry rather than a
-  top-level error, so an all-failed request still answers 200. Auth now shares `/search`'s and `/research`'s D2
-  placement set (`Authorization: Bearer` or a body `api_key`) rather than the Bearer-only reading first recorded:
-  D2's evidence is client-level, not endpoint-level — a client that sends the key as a body property on its POSTs
-  sends it on `/extract` too, and narrowing this one route alone recreates the Phase 0 failure a simulator must
-  never have. The `tavily.api_key.in_body` warning still raises and `auth.headers` overrides still work; the
-  vendor documentation still records Bearer only, and the adopter question asking them to confirm their client's
-  behaviour stays open (see the contract's "Open questions for the adopter"). Goldens: happy, empty,
-  partial-failure, 400, 401 — `contracts/tavily/`.
+  top-level error, so an all-failed request still answers 200. Auth accepts `Authorization: Bearer` only, per the
+  vendor's `/extract` page — a body-placed `api_key` was briefly accepted here too on D2's client-level reasoning
+  extended by analogy, but the owner reaffirmed on 2026-08-15 that vendor documentation, not a consumer's client,
+  decides a wire contract, and D2 stands exactly as shipped for `/search`/`/research` without extending to routes
+  verified after it. A body `api_key` is still recognised and still raises `tavily.api_key.in_body`, but it does
+  not authenticate; `auth.headers` overrides still work. Goldens: happy, empty, partial-failure, 400, 401 —
+  `contracts/tavily/`.
   Alongside the new route, a real defect surfaced and was fixed in the same pass: a `failed` research poll (the
   async surface Phase 3 shipped) was rendering `created_at` on every terminal status; the verified contract says
   only `completed` carries it. Fixed, golden and the one disagreeing README row corrected with citation and date.

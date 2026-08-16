@@ -321,16 +321,20 @@ The page's own auth description documents **Bearer token in the `Authorization` 
 ("`Bearer <token>`, where `<token>` is your Tavily API key"), and does not document a body-placed `api_key`
 field for `/extract` — neither fetch of it found one.
 
-**Servicesim accepts a body-placed `api_key` on `/extract` anyway, the same as `/search` and `/research`.**
-Decision D2 (`docs/adopter-backlog.md`, "Decisions already taken") was made on CLIENT-level evidence, not
-endpoint-level evidence: the recorded observation is that a consumer's production client sends the key as a
-body property on its POSTs, and the placement is a property of the client, not of the endpoint. A client that
-sends it on `/search` sends it on `/extract` too. `/research` already extended acceptance by exactly this
-reasoning, with no more direct evidence for `/research` than existed here, and rejecting it on `/extract` alone
-recreates the Phase 0 failure — a simulator that 401s traffic the live API serves — the day the adopter's
-client calls this route. The vendor documentation still records Bearer only, unchanged by this decision. See
-"Open questions for the adopter" below, which still asks the adopter to confirm their client's actual
-behaviour on this route.
+**Servicesim accepts exactly that: `Authorization: Bearer` only.** A body-placed `api_key` is recognised (so it
+is flagged, not silently treated as an unmodelled field) but does not authenticate; a request presenting only a
+body `api_key` fails the same way any other unaccepted placement does on this provider.
+
+This route briefly accepted a body-placed `api_key` too, on decision D2's (`docs/adopter-backlog.md`, "Decisions
+already taken") client-level reasoning — that a consumer's production client sends the key as a body property on
+every POST, so the placement is a property of the client rather than of the endpoint — extended here by analogy.
+**The owner reaffirmed on 2026-08-15 that vendor documentation, not a consumer's client, is the authority for a
+wire contract** (ADR-0002): "we have no idea if their client works; we use the vendor docs." D2 itself is a
+shipped v0.1.1 decision, made and applied when `/search` and `/research` were the only routes on this contract's
+authentication rule, and it stands exactly as shipped — see "Decisions already taken" in
+`docs/adopter-backlog.md` for the D2 row and the paragraph beneath it recording this reaffirmation. It is not a
+precedent for extending acceptance to routes verified after it, `/extract` included. See "Open questions for the
+adopter" below.
 
 ### Request
 
@@ -429,11 +433,10 @@ route.
 
 ### What is NOT verified, and must not be invented
 
-1. **Whether the live API itself authenticates a body-placed `api_key` on `/extract`.** Not documented (same as
-   `/search`), and — unlike `/search` — not directly evidenced by observed client code on THIS route. Servicesim
-   accepts it anyway, per the "Auth" section above: D2's evidence is that a client sends the key as a body
-   property on its POSTs generally, not that any specific route was observed doing so, and `/extract` is a POST.
-   This is a statement about what the vendor's own page does not say, not about what Servicesim does.
+1. **Whether the live API itself authenticates a body-placed `api_key` on `/extract`.** Not documented — the
+   page's own auth description names `Authorization: Bearer` only, with no body-placed alternative. Per the
+   "Auth" section above, Servicesim does not accept one either: this is a statement about what the vendor's own
+   page does not say, and it is also now what Servicesim does.
 2. **`request_id`'s format.**
 3. **`failed_results[].error`'s possible values** — documented only as free text, with no enum or set of causes
    listed.
@@ -445,14 +448,16 @@ route.
 
 ### Open questions for the adopter
 
-Decision D7 says a re-verification that contradicts the adopter's working client must surface as a decision, not
-be silently resolved by siding with the documentation — the same reasoning that produced D2 for `/search`'s
-body-placed `api_key`. The adopter's client (`src/pkg/agent/`) is not in this repository, so that check could not
-be run as part of this verification pass. Ask the adopter:
+The adopter's client (`src/pkg/agent/`) is not in this repository, so its actual behaviour on this route could
+not be checked as part of this verification pass. These are informational — under the repository's authority
+rule (ADR-0002, reaffirmed by the owner 2026-08-15), vendor documentation decides this contract, and the answers
+below do not change it. Tell us what your client sends so we can tell you where it diverges from the vendor's
+documentation:
 
-1. **Does your client send a body-placed `api_key` on `POST /extract`, the way D2 already established it does on
-   `POST /search`?** If yes, this confirms the acceptance already recorded above. If no, the acceptance recorded
-   above is broader than the client needs and can be revisited.
+1. **Does your client send a body-placed `api_key` on `POST /extract`?** The vendor documents `Authorization:
+   Bearer` only for this route, and that is all Servicesim accepts here. If your client sends a body `api_key`,
+   Servicesim's `/extract` will 401 it — that is a divergence to fix in the client, not a placement for this
+   simulator to widen; see the "Auth" section above for why D2 does not extend to this route.
 2. **Does your client send `chunks_per_source` without `query`?** The vendor page does not document the result.
 3. **Does your client rely on `usage.credits` being present when `include_usage` is unset**, or only when set?
    This file records it as conditional on `include_usage`, inferred rather than read verbatim on the field itself.

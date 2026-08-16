@@ -207,14 +207,14 @@ func TestExtractUnknownFieldIsAWarning(t *testing.T) {
 	require.Contains(t, findingCodes(t, ring), CodeUnknownField)
 }
 
-// TestExtractAcceptsBodyAPIKey makes assertable D2's client-level reasoning
-// carried across to /extract (see extractPlacements' own comment for the
-// decision that superseded the earlier Bearer-only reading): a body-placed
-// api_key authenticates /extract exactly as it does /search and /research,
-// raising the shared CodeAPIKeyInBody warning rather than authenticating
-// silently — and an x-api-key header still does not authenticate anything on
-// this provider.
-func TestExtractAcceptsBodyAPIKey(t *testing.T) {
+// TestExtractAuthPlacements makes assertable the owner's 2026-08-15
+// reaffirmation that vendor documentation, not a consumer's client, decides a
+// wire contract (see extractPlacements' own comment): /extract's vendor page
+// documents Authorization: Bearer only, D2's body-api_key placement is not
+// extended to this route, and a body-placed api_key is still recognised and
+// flagged — via the shared CodeAPIKeyInBody warning — without authenticating.
+// An x-api-key header never authenticates anything on this provider.
+func TestExtractAuthPlacements(t *testing.T) {
 	t.Parallel()
 
 	ring := journal.NewRing(8, 1<<16)
@@ -222,14 +222,16 @@ func TestExtractAcceptsBodyAPIKey(t *testing.T) {
 
 	rec := post(t, handler, "/extract",
 		`{"urls":"https://example.test/report-a","api_key":"tvly-test-key"}`, "")
-	require.Equal(t, http.StatusOK, rec.Code, "a body api_key must authenticate /extract, same as /search")
+	require.Equal(t, http.StatusUnauthorized, rec.Code,
+		"a body api_key must not authenticate /extract; the vendor documents Bearer only")
 
 	codes := findingCodes(t, ring)
-	require.Contains(t, codes, CodeAPIKeyInBody, "the body placement stays visible even though it authenticates")
+	require.Contains(t, codes, CodeAuthMissing, "no accepted placement carried a value")
+	require.Contains(t, codes, CodeAPIKeyInBody, "the unaccepted body placement is still named, not silently dropped")
 	require.NotContains(t, codes, CodeUnknownField, "api_key is a recognised credential field, not an unmodelled one")
 
 	rec = post(t, handler, "/extract", `{"urls":"https://example.test/report-a"}`, bearer)
-	require.Equal(t, http.StatusOK, rec.Code, "the documented Bearer header still authenticates")
+	require.Equal(t, http.StatusOK, rec.Code, "the documented Bearer header authenticates")
 
 	req := httptest.NewRequest(http.MethodPost, "/extract",
 		strings.NewReader(`{"urls":"https://example.test/report-a"}`))
@@ -240,9 +242,12 @@ func TestExtractAcceptsBodyAPIKey(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, rec2.Code, "x-api-key never authenticates on Tavily, /extract included")
 }
 
-// extractHeaderOnlyScenario narrows the accepted placements back to the
-// Authorization header alone via a scenario auth.headers override, the same
-// mechanism request_test.go pins on /search.
+// extractHeaderOnlyScenario pins the accepted placements to the Authorization
+// header alone via an explicit scenario auth.headers override, the same
+// mechanism request_test.go pins on /search. /extract's own default is
+// already Authorization-only, so this override changes nothing in practice —
+// the test exists to prove the override mechanism still applies on /extract
+// rather than being ignored by a route with narrowed Route.Credentials.
 const extractHeaderOnlyScenario = `
 version: 1
 name: extract-header-only
@@ -258,11 +263,12 @@ providers:
     response_time: 1.15
 `
 
-// TestExtractAuthHeadersOverrideNarrowsPlacements proves a scenario's
-// auth.headers override still applies on /extract: it can narrow the
-// accepted set back to the Authorization header alone, at which point a
-// body-placed api_key no longer authenticates.
-func TestExtractAuthHeadersOverrideNarrowsPlacements(t *testing.T) {
+// TestExtractAuthHeadersOverrideStillApplies proves a scenario's
+// auth.headers override still applies on /extract, and — since a body-placed
+// api_key never authenticates this route regardless of the override — that
+// the override does not somehow re-open a placement Route.Credentials
+// already excludes.
+func TestExtractAuthHeadersOverrideStillApplies(t *testing.T) {
 	t.Parallel()
 
 	ring := journal.NewRing(8, 1<<16)
@@ -271,7 +277,7 @@ func TestExtractAuthHeadersOverrideNarrowsPlacements(t *testing.T) {
 	rec := post(t, handler, "/extract",
 		`{"urls":"https://example.test/report-a","api_key":"tvly-test-key"}`, "")
 	require.Equal(t, http.StatusUnauthorized, rec.Code,
-		"a body api_key must not authenticate /extract once auth.headers narrows to authorization only")
+		"a body api_key must not authenticate /extract under an explicit authorization-only override")
 
 	codes := findingCodes(t, ring)
 	require.Contains(t, codes, CodeAuthMissing)

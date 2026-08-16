@@ -479,8 +479,8 @@ func quoteAlternatives(values []string) string {
 
 // checkAuth applies §6.4's rule for Tavily: on the default route, either the
 // documented Authorization: Bearer header or a body api_key authenticates; a
-// narrower route (its own Route.Credentials, e.g. the research GET polls'
-// Bearer-only researchPollPlacements) or a
+// narrower route (its own Route.Credentials, e.g. the research GET polls' and
+// /extract's Bearer-only placement sets) or a
 // scenario's AuthPolicy can shrink or replace that set. An x-api-key is seen
 // and journaled but never authenticates. Every finding message this raises is
 // derived from the route's own accepted set (describeAcceptedPlacements), not

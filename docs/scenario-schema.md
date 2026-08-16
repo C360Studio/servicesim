@@ -407,7 +407,8 @@ Defaults are **per route**, because the real vendors vary placement per route:
 | Provider | Route | Accepts by default |
 |---|---|---|
 | Exa | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar` | `authorization`, `x-api-key` |
-| Tavily | `POST /search`, `POST /research`, `POST /extract` | `authorization`, `body:api_key` — D2's reasoning is client-level, not endpoint-level: a client that sends the key as a body property on its POSTs sends it on every one of them. See `contracts/tavily/README.md`'s "POST /extract" § "Auth". |
+| Tavily | `POST /search`, `POST /research` | `authorization`, `body:api_key` — decision D2, a v0.1.1 owner decision on client-level evidence. |
+| Tavily | `POST /extract` | `authorization` only — the vendor's `/extract` page documents Bearer only, and D2 is not extended to routes verified after it. See `contracts/tavily/README.md`'s "POST /extract" § "Auth". |
 | Perplexity | all six routes | `authorization` |
 
 (The two Exa agent-run routes and Tavily's `GET /research/{request_id}` poll are omitted from this table as a

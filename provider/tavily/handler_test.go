@@ -481,14 +481,15 @@ func TestRoutesDeclareTheFaultKeyAndSelector(t *testing.T) {
 		byPattern[PatternResearchPoll].Credentials,
 		"a GET has no body to carry a key in")
 
-	// /extract accepts the same two placements /search and /research do:
-	// contracts/tavily/README.md "POST /extract" § "Auth" records D2's
-	// client-level reasoning — the placement is a property of the client, not
-	// of the endpoint — carried across to this route.
+	// /extract accepts Authorization: Bearer only: the vendor's /extract page
+	// documents Bearer alone, and D2's client-level reasoning is not extended
+	// to routes verified after it — contracts/tavily/README.md "POST
+	// /extract" § "Auth" records the owner's 2026-08-15 reaffirmation that
+	// vendor documentation, not a consumer's client, decides a wire contract.
 	require.Equal(t,
-		[]string{provider.PlacementAuthorization, PlacementBodyAPIKey},
+		[]string{provider.PlacementAuthorization},
 		byPattern[PatternExtract].Credentials,
-		"a body api_key authenticates /extract, same as /search and /research")
+		"a body api_key does not authenticate /extract; the vendor documents Bearer only")
 
 	for _, p := range []string{PatternResearchCreate, PatternResearchPoll, PatternResearchHead} {
 		require.Equal(t, NameResearch, byPattern[p].Entry, "%s resolves the wrong scenario entry", p)
