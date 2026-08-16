@@ -2,8 +2,9 @@
 # answered in time by any reasonable client; a clean retry follows.
 #
 # This proves a consumer's own deadline, not a status code: a client with a
-# real timeout (say 100ms) sends the first request, observes bytes NOT
-# arriving, and its context is cancelled out from under it — the request ends
+# real timeout (a second or two — see the second TRAP) sends the first
+# request, observes bytes NOT arriving, and its context is cancelled out from
+# under it — the request ends
 # in context.DeadlineExceeded (or your transport's own timeout error), not in
 # any HTTP response at all. The attempt index was claimed by the call the
 # client abandoned, so its retry lands on `after: success` and gets a clean
@@ -25,6 +26,15 @@
 # the caller (package-design.md §2.2's ordering, unaffected by this being a
 # plain delay rather than an aborting fault kind); read it with
 # `testkit.Sim.AwaitRequests`, never a bare `sim.Requests`.
+#
+# TRAP: a client deadline that is too SHORT can fire before the simulator has
+# even read the request — the deadline runs from before the dial, and a
+# starved CI runner (race detector, parallel packages, few vCPUs) can take
+# tens of milliseconds to deliver a request — and then no handler ran, nothing
+# was abandoned server-side, and there is no entry to await: AwaitRequests
+# times out on a route that looks idle. Give the deadline real margin over
+# your runner's request-delivery latency (a second or two is safe; 100ms has
+# flaked in this repository's own CI) — it is still tiny beside the 30s hang.
 #
 # Coverage: one plan per route, exactly as `rate-limited` and `oversized-body`
 # declare theirs — Exa `/search`, `/answer`, `/contents`, `/findSimilar`,

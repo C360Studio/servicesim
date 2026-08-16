@@ -426,6 +426,15 @@ actually wait out the declared delay. See
 [`provider/clock.go`](../provider/clock.go)'s `DelayMode` doc comment, which is the authority on this, and the
 `timeout` built-in's own header comment for a worked example.
 
+## My timeout test's abandoned call never appears in the journal
+
+Your client deadline was too short for the runner it ran on. The deadline runs from before the client dials, and
+a starved CI runner (race detector, packages tested in parallel, few vCPUs) can take tens of milliseconds just to
+deliver the request; if the deadline fires before the simulator has read it, no handler ever ran, nothing was
+abandoned server-side, and there is no entry for `AwaitRequests` to find — the route looks idle and the await
+times out. Give the deadline real margin over request-delivery latency: a second or two is safe and still tiny
+beside the `timeout` built-in's 30s hang. `100ms` has flaked in this repository's own CI for exactly this reason.
+
 ## The wrong turn answered, or two callers got each other's responses
 
 Turn cursors are per **lane**, and the default lane is one per route. One route serving several concurrent callers

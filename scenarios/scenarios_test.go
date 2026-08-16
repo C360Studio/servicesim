@@ -1090,10 +1090,19 @@ func TestTimeout_ClientDeadlineAbandonsTheHangThenRetrySucceeds(t *testing.T) {
 
 			route := "POST " + tc.path
 
-			// A real deadline well short of the scenario's 30s delay: long
-			// enough not to flake on a loaded CI runner, short enough that
-			// the test does not meaningfully wait for it.
-			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			// A real deadline well short of the scenario's 30s delay — but not
+			// short. The deadline starts before Do dials, so on a starved runner
+			// (-race, eight parallel subtests, packages tested in parallel on
+			// two vCPUs) a 100ms deadline can fire before the simulator has even
+			// READ the request; then no handler ran, nothing was abandoned
+			// server-side, and there is no entry to await — CI saw exactly that
+			// once. Two seconds is comfortably longer than any request-delivery
+			// latency a loaded runner produces and still far short of the 30s
+			// hang the scenario scripts; the subtests run in parallel, so the
+			// package pays it once. This is the same trap a consumer's own
+			// timeout test can hit — the timeout built-in's header and
+			// docs/troubleshooting.md say so.
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 			defer cancel()
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 				sim.URL(tc.p)+tc.path, strings.NewReader(tc.body))
