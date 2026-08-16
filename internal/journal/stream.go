@@ -39,6 +39,16 @@ type StreamOutcome struct {
 	// BytesPlanned is the total bytes the plan will write, [DONE] included.
 	BytesPlanned int `json:"bytes_planned"`
 
+	// PaceMS is the PLANNED gap before each indexed chunk, in the same order
+	// as Stream.Chunks — the scenario's scripted pace, folding in a
+	// stream_stall's extra Delay at its AfterChunk index (so PaceMS[N]
+	// already includes the stall; see StallBeforeMS below). It is the
+	// schedule, not a measurement: nothing here reads the wall clock, so
+	// this is stable under both provider.DelayReal and provider.DelaySkip
+	// and safe to read before the exchange closes. len(PaceMS) ==
+	// ChunkCount; [DONE], never being indexed, is not one of them.
+	PaceMS []int64 `json:"pace_ms,omitempty"`
+
 	// TerminalIndex is the chunk carrying usage and cost, or -1 when no
 	// chunk is marked terminal — reserved for a future grammar this build
 	// does not define; every grammar this build renders has exactly one.
@@ -52,6 +62,22 @@ type StreamOutcome struct {
 	// CostTotal is the same number lifted to a provider-neutral field, so a
 	// cross-provider spend assertion is one field read.
 	CostTotal *float64 `json:"cost_total,omitempty"`
+
+	// AbortAfterChunk and TruncatedAtByte record the SCRIPTED fault, not what
+	// happened: both are nil when the script aborts nothing. AbortAfterChunk
+	// is set for either aborting stream_* kind (stream_disconnect and
+	// stream_truncate_chunk); TruncatedAtByte is set only for the latter,
+	// alongside it. A claimed attempt that could not apply to this exchange
+	// (provider.Handle's abort_unreachable mismatch) leaves both nil, exactly
+	// as it leaves Outcome.Aborted false — the attempt is named in
+	// Outcome.FaultKind but never affected the plan these fields describe.
+	AbortAfterChunk *int `json:"abort_after_chunk,omitempty"`
+	TruncatedAtByte *int `json:"truncated_at_byte,omitempty"`
+
+	// StallBeforeMS is a stream_stall's extra Delay, lifted back out as its
+	// own field so a reader does not have to know which PaceMS index carries
+	// a fold-in to recover it. Nil when no stall is scripted.
+	StallBeforeMS *int64 `json:"stall_before_ms,omitempty"`
 
 	// ---- observed: written by CloseStreamIn -------------------------------
 

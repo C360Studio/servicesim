@@ -35,17 +35,71 @@ type StreamScript struct {
 	// they are the answer.
 	Policy StreamPolicy `yaml:"when_requested,omitempty"`
 
+	// Pace is the default minimum gap before every chunk this turn writes —
+	// every scripted delta, the terminal chunk (unless StreamTerminal.Pace
+	// overrides it) and, on GrammarDelta, the [DONE] sentinel, which has no
+	// per-frame override of its own since it is never an indexed chunk. Zero
+	// writes the whole sequence as fast as the socket accepts it.
+	//
+	// Landing here, rather than staying a unit-1 seam with no scenario key,
+	// is what docs/design/streaming.md's unit-1 "Shipped as" note already
+	// named as unit 2's job: pacing is otherwise inert, since stream_stall
+	// (also unit 2) is the only OTHER thing that ever produces a nonzero
+	// gap, and the two are designed together.
+	Pace Duration `yaml:"pace,omitempty"`
+
 	// Deltas are the incremental content fragments, in order. Concatenated
-	// they should equal the projection's non-streaming answer;
+	// their text should equal the projection's non-streaming answer;
 	// [ValidateStreamScripts] warns when they do not, because a consumer
 	// that reassembles the stream and compares it against a non-streaming
 	// golden would otherwise fail for a fixture reason rather than a code
 	// one.
-	Deltas []string `yaml:"deltas,omitempty"`
+	Deltas []StreamDelta `yaml:"deltas,omitempty"`
 
 	// Terminal tunes the closing frames. Nil means the vendor-faithful
 	// default.
 	Terminal *StreamTerminal `yaml:"terminal,omitempty"`
+}
+
+// StreamDelta is one content fragment and the gap that precedes it.
+type StreamDelta struct {
+	Text string `yaml:"text"`
+
+	// Pace overrides StreamScript.Pace for this one chunk. Zero means no
+	// override — matching this package's existing "zero is default, not an
+	// explicit choice" convention for Duration fields — so a delta cannot
+	// currently ask for a literal zero gap when its script default is
+	// nonzero; nothing in this unit's scope needs that distinction.
+	Pace Duration `yaml:"pace,omitempty"`
+}
+
+// rawStreamDelta is the decode target for the mapping form of a StreamDelta.
+type rawStreamDelta struct {
+	Text string   `yaml:"text"`
+	Pace Duration `yaml:"pace,omitempty"`
+}
+
+// UnmarshalYAML accepts a bare scalar as the shorthand for {text: <scalar>},
+// so a script that never overrides pacing keeps writing a plain list of
+// strings, and only a delta that needs its own gap pays for the mapping form.
+func (d *StreamDelta) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil || value.Kind == 0 {
+		return nil
+	}
+	if value.Kind == yaml.ScalarNode {
+		var text string
+		if err := value.Decode(&text); err != nil {
+			return fmt.Errorf("line %d: expected delta text: %w", value.Line, err)
+		}
+		d.Text = text
+		return nil
+	}
+	var raw rawStreamDelta
+	if err := DecodeStrict(value, &raw); err != nil {
+		return err
+	}
+	d.Text, d.Pace = raw.Text, raw.Pace
+	return nil
 }
 
 // StreamTerminal scripts the closing frames. Every field exists to express a
@@ -65,6 +119,10 @@ type StreamTerminal struct {
 	// script, and it is NOT the same as a mid-stream disconnect, which
 	// produces an unexpected EOF instead of a clean close.
 	OmitDone bool `yaml:"omit_done,omitempty"`
+
+	// Pace overrides StreamScript.Pace for the terminal chunk specifically.
+	// Zero means no override, the same convention StreamDelta.Pace uses.
+	Pace Duration `yaml:"pace,omitempty"`
 }
 
 // rawStreamScript is the decode target for the mapping form of a StreamScript.
@@ -75,7 +133,8 @@ type StreamTerminal struct {
 // package following one pattern rather than two.
 type rawStreamScript struct {
 	Policy   StreamPolicy    `yaml:"when_requested,omitempty"`
-	Deltas   []string        `yaml:"deltas,omitempty"`
+	Pace     Duration        `yaml:"pace,omitempty"`
+	Deltas   []StreamDelta   `yaml:"deltas,omitempty"`
 	Terminal *StreamTerminal `yaml:"terminal,omitempty"`
 }
 
@@ -113,7 +172,7 @@ func (s *StreamScript) UnmarshalYAML(value *yaml.Node) error {
 	if err := DecodeStrict(value, &raw); err != nil {
 		return err
 	}
-	s.Policy, s.Deltas, s.Terminal = raw.Policy, raw.Deltas, raw.Terminal
+	s.Policy, s.Pace, s.Deltas, s.Terminal = raw.Policy, raw.Pace, raw.Deltas, raw.Terminal
 	return nil
 }
 
@@ -195,6 +254,21 @@ const (
 	// stream: true on one call and stream: false on the next). The claimed
 	// attempt is reported, never silently absorbed into an ordinary 200.
 	CodeStreamAbortUnreachable = "scenario.stream.abort_unreachable"
+
+	// CodeAfterChunkNotStreaming is raised when `after_chunk` is declared on
+	// a fault attempt whose kind is not one of the three stream_* kinds —
+	// after_chunk has no meaning for any other kind. Checked in
+	// [Scenario.Validate] itself (validateFaultAttempt), not here: it needs
+	// only the attempt in isolation, never the entry's streaming policy or
+	// its turns' chunk counts, unlike every other code in this block.
+	CodeAfterChunkNotStreaming = "scenario.fault.after_chunk.not_streaming"
+
+	// CodeStreamAfterChunkOutOfRange is raised when a stream_* attempt's
+	// after_chunk is not in [0, chunk_count), checked against the SMALLEST
+	// chunk_count across the entry's turns — [ValidateStreamFaultMismatch]
+	// explains why the minimum is the only bound correct for every turn the
+	// fault plan can reach.
+	CodeStreamAfterChunkOutOfRange = "scenario.fault.after_chunk.out_of_range"
 )
 
 // StreamTurn is one turn's streaming-relevant projection state, gathered by
@@ -284,7 +358,7 @@ func ValidateStreamScripts(turns []StreamTurn) []Finding {
 					"stream; the script is dead and would never be served",
 			})
 		case entryPolicy == StreamServe && hasDeltas && t.Answer != "":
-			if joined := strings.Join(t.Script.Deltas, ""); joined != t.Answer {
+			if joined := joinDeltaText(t.Script.Deltas); joined != t.Answer {
 				findings = append(findings, Finding{
 					Severity: SeverityWarning,
 					Code:     CodeStreamAnswerMismatch,
@@ -298,21 +372,72 @@ func ValidateStreamScripts(turns []StreamTurn) []Finding {
 	return findings
 }
 
-// ValidateStreamFaultMismatch checks that truncate_body — the one fault kind
-// that assumes a JSON body it can set a Content-Length over — is never
-// declared on an entry whose effective streaming policy is stream. entryPolicy
-// is a parameter, not derived here, because only a provider package can
-// compute it: it depends on decoding the opaque `respond:` body into that
-// provider's own projection type, which scenario cannot do without importing
-// it and closing an import cycle.
+// joinDeltaText concatenates a script's delta text, ignoring pace, for the
+// answer-reassembly comparison [ValidateStreamScripts] makes.
+func joinDeltaText(deltas []StreamDelta) string {
+	var b strings.Builder
+	for _, d := range deltas {
+		b.WriteString(d.Text)
+	}
+	return b.String()
+}
+
+// chunkCount is how many indexed chunks (deltas plus the one terminal chunk)
+// a turn's script will produce. A turn with no script, or one that declares
+// no deltas, counts as 1 — the terminal chunk alone — which is already
+// reported by CodeStreamDeltasEmpty; it is not treated as 0 here so a
+// mis-scripted turn cannot make the minimum bound below negative or zero in
+// a way that would reject every after_chunk outright.
+func chunkCount(t StreamTurn) int {
+	if t.Script == nil {
+		return 1
+	}
+	return len(t.Script.Deltas) + 1
+}
+
+// ValidateStreamFaultMismatch checks a fault plan's coherence against the
+// entry's effective streaming transport, across every turn together because
+// the plan is per ROUTE (TurnFault) while a turn's script is per TURN:
 //
-// It walks e.Turns directly rather than taking a []StreamTurn: unlike
-// ValidateStreamScripts, this check needs each turn's *Fault, which is
-// already a plain scenario-level field scenario itself can read.
-func ValidateStreamFaultMismatch(e *ProviderEntry, entryPolicy StreamPolicy) []Finding {
-	if e == nil || entryPolicy != StreamServe {
+//   - a stream_* kind cannot apply to an entry that will not stream (its
+//     transport is an ordinary JSON body, never chunked SSE);
+//   - truncate_body — the one fault kind that assumes a JSON body it can set
+//     a Content-Length over — cannot apply to an entry that WILL stream;
+//   - a stream_* attempt's after_chunk must be < the SMALLEST chunk_count any
+//     of the entry's turns will produce. The minimum is the only bound
+//     correct for every turn the plan can reach: TurnFault supplies one plan
+//     for the whole route, so a single after_chunk may fire on whichever turn
+//     answers that call, and validating against the declaring turn alone
+//     would pass a fixture that aborts past the end of a shorter sibling —
+//     a fault that silently does nothing, the worst outcome for a test
+//     written to prove reconnect logic.
+//
+// entryPolicy is a parameter, not derived here, because only a provider
+// package can compute it: it depends on decoding the opaque `respond:` body
+// into that provider's own projection type, which scenario cannot do without
+// importing it and closing an import cycle. turns supplies the same per-turn
+// script state ValidateStreamScripts uses, for the chunk-count bound; e
+// supplies each turn's *Fault, which ValidateStreamScripts does not see.
+// Both are required, but only turns is walked to compute minChunks — e.Turns
+// is walked separately, by its own index, to reach each turn's *Fault. turns
+// need not be the same length as e.Turns: a shorter or reordered turns slice
+// only weakens the minimum-chunk-count bound it can compute, it does not
+// panic or misindex. The caller should still build turns the same way
+// ValidateStreamScripts expects, one entry per turn in declaration order, or
+// the bound this function reports will not describe the entry it was asked
+// about.
+func ValidateStreamFaultMismatch(e *ProviderEntry, entryPolicy StreamPolicy, turns []StreamTurn) []Finding {
+	if e == nil || len(e.Turns) == 0 {
 		return nil
 	}
+
+	minChunks := -1
+	for _, t := range turns {
+		if n := chunkCount(t); minChunks < 0 || n < minChunks {
+			minChunks = n
+		}
+	}
+
 	var findings []Finding
 	for i := range e.Turns {
 		f := e.Turns[i].Fault
@@ -320,16 +445,37 @@ func ValidateStreamFaultMismatch(e *ProviderEntry, entryPolicy StreamPolicy) []F
 			continue
 		}
 		for j := range f.Attempts {
-			if f.Attempts[j].EffectiveKind() != FaultTruncateBody {
-				continue
+			a := &f.Attempts[j]
+			path := fmt.Sprintf("%s.fault.attempts[%d]", e.turnPath(i), j)
+			switch {
+			case a.EffectiveKind() == FaultTruncateBody && entryPolicy == StreamServe:
+				findings = append(findings, Finding{
+					Severity: SeverityError,
+					Code:     CodeStreamFaultMismatch,
+					Path:     path + ".kind",
+					Message: "kind truncate_body cannot apply to a streaming entry: it sets a Content-Length that " +
+						"is wrong for a chunked SSE body; the streaming-aware equivalent is stream_truncate_chunk",
+				})
+			case a.EffectiveKind().IsStream() && entryPolicy != StreamServe:
+				findings = append(findings, Finding{
+					Severity: SeverityError,
+					Code:     CodeStreamFaultMismatch,
+					Path:     path + ".kind",
+					Message: fmt.Sprintf("kind %q assumes a chunked SSE transport, but this entry's effective "+
+						"streaming policy is not stream", a.EffectiveKind()),
+				})
+			case a.EffectiveKind().IsStream() && entryPolicy == StreamServe:
+				if minChunks >= 0 && (a.AfterChunk < 0 || a.AfterChunk >= minChunks) {
+					findings = append(findings, Finding{
+						Severity: SeverityError,
+						Code:     CodeStreamAfterChunkOutOfRange,
+						Path:     path + ".after_chunk",
+						Message: fmt.Sprintf("after_chunk %d is not in [0, %d): the smallest chunk_count "+
+							"any of this entry's turns can produce is %d, and a fault plan is shared by every "+
+							"turn the route may answer with", a.AfterChunk, minChunks, minChunks),
+					})
+				}
 			}
-			findings = append(findings, Finding{
-				Severity: SeverityError,
-				Code:     CodeStreamFaultMismatch,
-				Path:     fmt.Sprintf("%s.fault.attempts[%d].kind", e.turnPath(i), j),
-				Message: "kind truncate_body cannot apply to a streaming entry: it sets a Content-Length that " +
-					"is wrong for a chunked SSE body; a stream-aware truncation fault kind lands in a later release",
-			})
 		}
 	}
 	return findings

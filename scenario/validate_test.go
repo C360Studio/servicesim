@@ -129,6 +129,17 @@ func TestValidate_FailsClosed(t *testing.T) {
 			wantPath: "providers.exa.fault.attempts[0].status",
 		},
 		{
+			name:     "after_chunk on a non-streaming kind",
+			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{status: 500, after_chunk: 2}]}\n",
+			wantCode: "scenario.fault.after_chunk.not_streaming",
+			wantPath: "providers.exa.fault.attempts[0].after_chunk",
+		},
+		{
+			name:     "after_chunk on stream_disconnect is not flagged",
+			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{kind: stream_disconnect, after_chunk: 2}]}\n",
+			wantCode: "", // the happy case; see the guard below
+		},
+		{
 			name:     "negative repeat",
 			src:      "version: 1\nname: n\nproviders:\n  exa:\n    fault: {attempts: [{status: 500, repeat: -2}]}\n",
 			wantCode: "scenario.fault.repeat.negative",

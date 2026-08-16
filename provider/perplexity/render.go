@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -424,15 +425,29 @@ func renderSonarStream(x *provider.Exchange, p *PerplexityProjection, requestMod
 	deltas := p.Stream.Deltas
 	searchResults := renderSonarResults(p.SearchResults)
 
+	// pace resolves one chunk's gap: its own override when it set one
+	// (nonzero — see scenario.StreamDelta.Pace's doc comment for why zero
+	// means "no override" rather than "an explicit zero gap"), falling back
+	// to the script's own default otherwise. It covers every chunk this
+	// stream writes: each delta, the terminal chunk, and (via
+	// Stream.DonePace below) the [DONE] sentinel, per
+	// docs/design/streaming.md §4.3.
+	pace := func(override scenario.Duration) time.Duration {
+		if override != 0 {
+			return override.Duration()
+		}
+		return p.Stream.Pace.Duration()
+	}
+
 	events := make([]provider.SSEEvent, 0, len(deltas)+1)
 	var aggregate strings.Builder
 	for _, d := range deltas {
-		aggregate.WriteString(d)
+		aggregate.WriteString(d.Text)
 		chunk := ChatCompletionChunkResponse{
 			ID: id, Object: ObjectChatCompletionChunk, Model: model, Created: created,
 			Choices: []ChatCompletionChunkChoice{{
 				Index:        0,
-				Delta:        Message{Role: RoleAssistant, Content: d},
+				Delta:        Message{Role: RoleAssistant, Content: d.Text},
 				Message:      Message{Role: RoleAssistant, Content: aggregate.String()},
 				FinishReason: nil,
 			}},
@@ -442,7 +457,7 @@ func renderSonarStream(x *provider.Exchange, p *PerplexityProjection, requestMod
 		if err != nil {
 			return nil, err
 		}
-		events = append(events, provider.SSEEvent{Data: data})
+		events = append(events, provider.SSEEvent{Data: data, Pace: pace(d.Pace)})
 	}
 
 	terminal := p.Stream.Terminal
@@ -477,11 +492,16 @@ func renderSonarStream(x *provider.Exchange, p *PerplexityProjection, requestMod
 	if err != nil {
 		return nil, err
 	}
-	events = append(events, provider.SSEEvent{Data: termData, Terminal: true})
+	var terminalPaceOverride scenario.Duration
+	if terminal != nil {
+		terminalPaceOverride = terminal.Pace
+	}
+	events = append(events, provider.SSEEvent{Data: termData, Terminal: true, Pace: pace(terminalPaceOverride)})
 
 	stream := &provider.Stream{
-		Grammar: provider.GrammarDelta,
-		Chunks:  provider.EncodeSSE(events),
+		Grammar:  provider.GrammarDelta,
+		Chunks:   provider.EncodeSSE(events),
+		DonePace: p.Stream.Pace.Duration(),
 	}
 	if terminal != nil {
 		stream.OmitDone = terminal.OmitDone

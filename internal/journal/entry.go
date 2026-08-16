@@ -444,16 +444,37 @@ func cloneEntry(e Entry) Entry {
 	}
 	if e.Outcome.Stream != nil {
 		// Without this, every Snapshot entry aliases the ring's stored
-		// *StreamOutcome (and its json.RawMessage Usage backing array).
-		// Ring.CloseStream and closeWith both replace the pointer rather
-		// than mutate through it, which makes the alias harmless today by
-		// discipline alone — but Snapshot's own contract is a deep copy,
-		// and a caller that ever wrote through a snapshotted
-		// *StreamOutcome would otherwise race CloseStream with no lock
-		// held on either side.
-		s := *e.Outcome.Stream
+		// *StreamOutcome — its json.RawMessage Usage and []int64 PaceMS
+		// backing arrays, and every *float64/*int/*int64 field, all of which
+		// a shallow struct copy (`s := *e.Outcome.Stream`) still shares with
+		// the stored value. Ring.CloseStream and closeWith both replace the
+		// pointer rather than mutate through it, which makes the alias
+		// harmless today by discipline alone — but Snapshot's own contract is
+		// a deep copy, and a caller that ever wrote through a snapshotted
+		// *StreamOutcome would otherwise race CloseStream with no lock held
+		// on either side.
+		orig := e.Outcome.Stream
+		s := *orig
 		s.Usage = append(json.RawMessage(nil), s.Usage...)
+		if orig.PaceMS != nil {
+			s.PaceMS = append([]int64(nil), orig.PaceMS...)
+		}
+		s.CostTotal = clonePtr(orig.CostTotal)
+		s.AbortAfterChunk = clonePtr(orig.AbortAfterChunk)
+		s.TruncatedAtByte = clonePtr(orig.TruncatedAtByte)
+		s.StallBeforeMS = clonePtr(orig.StallBeforeMS)
 		e.Outcome.Stream = &s
 	}
 	return e
+}
+
+// clonePtr returns a pointer to a fresh copy of *p, or nil when p is nil. It
+// is what keeps cloneEntry's StreamOutcome copy from sharing any of its
+// pointer fields' backing memory with the ring's stored value.
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }

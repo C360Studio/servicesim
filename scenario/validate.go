@@ -310,10 +310,20 @@ func validateFault(r *Report, path string, f *Fault) {
 func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 	switch a.Kind {
 	case FaultNone, FaultStatus, FaultCloseBeforeHeaders, FaultTruncateBody,
-		FaultInvalidJSON, FaultWrongContentType, FaultEmptyBody, FaultExtraFields:
+		FaultInvalidJSON, FaultWrongContentType, FaultEmptyBody, FaultExtraFields,
+		FaultStreamDisconnect, FaultStreamTruncateChunk, FaultStreamStall:
 	default:
 		r.add(SeverityError, "scenario.fault.kind.unknown", path+".kind",
 			"unknown fault kind %q", a.Kind)
+	}
+	if a.AfterChunk != 0 {
+		switch a.EffectiveKind() {
+		case FaultStreamDisconnect, FaultStreamTruncateChunk, FaultStreamStall:
+		default:
+			r.add(SeverityError, CodeAfterChunkNotStreaming, path+".after_chunk",
+				"after_chunk is meaningful only for stream_disconnect, stream_truncate_chunk or stream_stall, not %q",
+				a.EffectiveKind())
+		}
 	}
 	if a.Status != 0 && (a.Status < 100 || a.Status > 599) {
 		r.add(SeverityError, "scenario.fault.status.invalid", path+".status",

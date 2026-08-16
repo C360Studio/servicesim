@@ -417,8 +417,10 @@ func (SonarValidator) Routes() []provider.Route { return SonarRoutes() }
 // The streaming grammar's own coherence — the policy enum, that only turn 0's
 // policy is read, that a streaming entry's every turn has a non-empty script
 // and a non-streaming entry's turns have none, that a scripted turn's deltas
-// reassemble its answer, and that no turn declares truncate_body on a
-// streaming entry — is checked once here, across every turn together
+// reassemble its answer, that a fault kind never targets a transport its
+// entry does not use (truncate_body on a streaming entry, or a stream_* kind
+// on one that is not), and that a stream_* attempt's after_chunk stays inside
+// every turn's chunk count — is checked once here, across every turn together
 // (scenario.ValidateStreamScripts, scenario.ValidateStreamFaultMismatch),
 // rather than turn by turn inside validateSonarProjection: several of those
 // checks are properties of the ENTRY, not of one turn in isolation.
@@ -439,10 +441,11 @@ func (SonarValidator) ValidateProjections(s *scenario.Scenario, e *scenario.Prov
 	})
 
 	findings = append(findings, scenario.ValidateStreamScripts(streamTurns)...)
-	if len(streamTurns) > 0 && streamTurns[0].Script != nil {
-		entryPolicy := streamTurns[0].Script.EffectivePolicy()
-		findings = append(findings, scenario.ValidateStreamFaultMismatch(e, entryPolicy)...)
+	var entryPolicy scenario.StreamPolicy
+	if len(streamTurns) > 0 {
+		entryPolicy = streamTurns[0].Script.EffectivePolicy() // nil-safe: StreamWarn when turn 0 has none
 	}
+	findings = append(findings, scenario.ValidateStreamFaultMismatch(e, entryPolicy, streamTurns)...)
 	return findings
 }
 

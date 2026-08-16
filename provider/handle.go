@@ -200,17 +200,17 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 			record()
 			if resp.Stream != nil {
 				// BytesWritten and ChunksSent are left at their zero value
-				// here deliberately: this fallback is reachable today only
-				// when executeStream never ran at all (the pre-dispatch
-				// delay was cancelled before dispatch — see execute's
-				// comment on that branch), where zero is correct because
-				// nothing was written. If a later unit adds a mid-stream
-				// abort path that can panic out of executeStream itself,
-				// that path must call closer with the real counts BEFORE
-				// panicking (exactly as the design's plan/abort sketch in
-				// §4.3 already does with closeWith), so this fallback stays
-				// a true fallback and never clobbers real byte counts with
-				// zero.
+				// here deliberately: this fallback is reachable only when
+				// executeStream never ran at all (the pre-dispatch delay was
+				// cancelled before dispatch — see execute's comment on that
+				// branch), where zero is correct because nothing was
+				// written. executeStream's own abort branches — stream_disconnect
+				// and stream_truncate_chunk — call closer with the real
+				// counts BEFORE panicking (closeWith, stream.go), exactly as
+				// the design's §4.3 requires, so this fallback stays a true
+				// fallback and never clobbers real byte counts with zero: the
+				// closed guard above makes it a no-op whenever executeStream
+				// already reported.
 				closer(journal.StreamClose{State: journal.StreamClientGone})
 			}
 			if rec != nil {
@@ -284,6 +284,21 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 			x.Fail(scenario.CodeStreamAbortUnreachable, "",
 				"fault attempt %q cannot apply to this exchange, which will stream; "+
 					"truncate_body assumes an ordinary JSON body", attempt.EffectiveKind())
+			scriptedUnreachableKind = string(attempt.EffectiveKind())
+			attempt = nil
+		case attempt != nil && resp.Stream == nil && attempt.EffectiveKind().IsStream():
+			// The OTHER mirror case: a stream_* kind was claimed at turn
+			// selection, but THIS request will not stream. An entry's policy
+			// answers "does this surface serve a stream when asked", never
+			// "does this call ask" — the preamble is explicit that a
+			// consumer may send stream: true on one call and stream: false
+			// on the next in the same lane, so a stream_* attempt claimed by
+			// a call that did not ask to stream is reachable even under a
+			// fully valid, load-time-clean stream-policy entry. Reported,
+			// never silently served as a plain 200.
+			x.Fail(scenario.CodeStreamAbortUnreachable, "",
+				"fault attempt %q cannot apply to this exchange, which will not stream; "+
+					"it assumes a chunked SSE body", attempt.EffectiveKind())
 			scriptedUnreachableKind = string(attempt.EffectiveKind())
 			attempt = nil
 		}

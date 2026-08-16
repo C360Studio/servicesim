@@ -1,0 +1,4 @@
+data: {"id":"stream-golden-completion","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":"Report A "},"message":{"role":"assistant","content":"Report A "},"finish_reason":null}],"search_results":[{"title":"Report A","url":"https://example.test/report-a","snippet":"","date":null,"last_updated":null,"source":"web"}]}
+
+data: {"id":"stream-golden-completion","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":"finds "},"message":{"role":"assistant","content":"Report A finds "},"finish_reason":null}],"search_results":[{"title":"Report A","url":"https://example.test/report-a","snippet":"","date":null,"last_updated":null,"source":"web"}]}
+

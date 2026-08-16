@@ -51,7 +51,7 @@ func faultOutcome(dec FaultDecision, resp Response) journal.Outcome {
 		AttemptIndex: dec.Index,
 	}
 	if resp.Stream != nil {
-		out.Stream = plannedStreamOutcome(resp.Stream)
+		out.Stream = plannedStreamOutcome(dec.Attempt, resp.Stream)
 	}
 	if !resp.FaultEligible {
 		// Routing, authentication or validation rejected the request, so this is
@@ -63,9 +63,18 @@ func faultOutcome(dec FaultDecision, resp Response) journal.Outcome {
 	if a == nil {
 		return out
 	}
-	out.DelayMS = a.Delay.Duration().Milliseconds()
 
 	kind := a.EffectiveKind()
+	// DelayMS means time-to-first-byte for every kind that has one — but
+	// stream_stall's Delay is the mid-stream pause planStream folds into
+	// PaceMS at AfterChunk instead (docs/design/streaming.md §3.1), so it is
+	// deliberately excluded here and reported only through
+	// Outcome.Stream.StallBeforeMS below. Reporting it as DelayMS too would
+	// double-count one duration under two different journal fields.
+	if kind != scenario.FaultStreamStall {
+		out.DelayMS = a.Delay.Duration().Milliseconds()
+	}
+
 	if kind == scenario.FaultNone {
 		// A trailing "status: 200" attempt renders the scenario response. A
 		// delay-only attempt still faulted it.
@@ -93,6 +102,14 @@ func faultOutcome(dec FaultDecision, resp Response) journal.Outcome {
 		out.BytesWritten = truncationLen(a, resp)
 	case scenario.FaultEmptyBody:
 		out.BytesWritten = 0
+	case scenario.FaultStreamDisconnect, scenario.FaultStreamTruncateChunk:
+		// Outcome.Aborted reflects the SCRIPT, set here at append — before
+		// the first byte — exactly as it already is for close_before_headers
+		// and truncate_body above: a streamed fault's Aborted and FaultKind
+		// must read the way the non-streaming aborting faults' do. The
+		// observed byte/chunk counts are filled in later by closeWith/closer
+		// once the exchange actually closes; nothing here can know them yet.
+		out.Aborted = true
 	}
 	return out
 }
@@ -115,22 +132,28 @@ func faultOutcome(dec FaultDecision, resp Response) journal.Outcome {
 func execute(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttempt,
 	resp Response, mode DelayMode, out journal.Outcome, closer func(journal.StreamClose),
 ) journal.Outcome {
-	if a != nil && a.Delay > 0 {
+	// stream_stall's Delay is the mid-stream pause planStream resolves
+	// instead (folded into PaceOf at AfterChunk), never a time-to-first-byte
+	// sleep — docs/design/streaming.md §3.1. Running this block for it too
+	// would sleep Delay TWICE: once here, before the status line, and again
+	// inside executeStream before chunk AfterChunk.
+	if a != nil && a.Delay > 0 && a.EffectiveKind() != scenario.FaultStreamStall {
 		if err := sleep(ctx, a.Delay.Duration(), mode); err != nil {
 			// The client's own deadline or cancellation ended the request while the
 			// delay was still running. Writing now would be shouting into a closed
 			// socket; the journal records that nothing was delivered.
 			//
-			// For a STREAMING exchange this out.Aborted=true is set on the
-			// returned value only. record() already ran (Handle's widened
-			// journal-early condition) before execute was ever called, so the
-			// retained entry's Outcome.Aborted stays false — Handle's deferred
-			// fallback closer amends State to client_gone (via closer, below),
-			// never Aborted, because StreamClose carries no such field. State
-			// is therefore the authoritative signal for a streamed exchange;
-			// Aborted's meaning here is scoped to the non-streaming path, where
-			// this returned Outcome IS what gets retained.
-			out.Aborted = true
+			// out.Aborted is set here only for a NON-streaming exchange, where this
+			// returned Outcome is what gets retained. For a STREAMING exchange,
+			// record() already ran (Handle's widened journal-early condition)
+			// before execute was ever called, with Aborted reflecting the SCRIPT —
+			// nothing about the script aborted this, the client's own
+			// cancellation did — so Aborted must stay false there too; State
+			// (amended to client_gone via closer, below) is the authoritative
+			// signal for a streamed exchange instead.
+			if resp.Stream == nil {
+				out.Aborted = true
+			}
 			out.BytesWritten = 0
 			return out
 		}
@@ -243,14 +266,26 @@ func suppressStream(resp Response) Response {
 }
 
 // plannedStreamOutcome builds the PLANNED half of a streamed exchange's
-// journal outcome from a fully rendered Stream — everything that is known
-// before the first byte is written. The observed half (ChunksSent, State) is
-// left at its zero value; closeWith fills it in once the exchange closes.
-func plannedStreamOutcome(s *Stream) *journal.StreamOutcome {
+// journal outcome from a fully rendered Stream and the (possibly nil,
+// possibly non-stream_*) attempt claiming this exchange — everything that is
+// known before the first byte is written. The observed half (ChunksSent,
+// State) is left at its zero value; closeWith fills it in once the exchange
+// closes.
+//
+// a is resolved the same way execute's is: Handle has already nilled it out
+// for a claimed-but-unreachable mismatch, so a stream_* kind only ever
+// reaches here when it truly applies to this exchange. planStream is the
+// single source of truth for what a claimed attempt does to the plan;
+// re-deriving abort/stall indices here with a second switch would be exactly
+// the "two derivations of one decision" this design's suppression rule
+// already warns against for a different case.
+func plannedStreamOutcome(a *scenario.FaultAttempt, s *Stream) *journal.StreamOutcome {
+	plan := planStream(a, s)
 	out := &journal.StreamOutcome{
 		Grammar:       string(s.Grammar),
 		ChunkCount:    len(s.Chunks),
 		BytesPlanned:  s.Bytes(),
+		PaceMS:        plan.paceMS(),
 		TerminalIndex: -1,
 		Usage:         s.Usage,
 		CostTotal:     s.CostTotal,
@@ -262,8 +297,23 @@ func plannedStreamOutcome(s *Stream) *journal.StreamOutcome {
 			break
 		}
 	}
+	switch {
+	case plan.disconnectAt >= 0:
+		out.AbortAfterChunk = ptrTo(plan.disconnectAt)
+	case plan.truncateAt >= 0:
+		out.AbortAfterChunk = ptrTo(plan.truncateAt)
+		out.TruncatedAtByte = ptrTo(plan.truncateBytes)
+	}
+	if plan.stallAt >= 0 {
+		ms := plan.stallExtra.Milliseconds()
+		out.StallBeforeMS = &ms
+	}
 	return out
 }
+
+// ptrTo returns a pointer to a copy of v, for populating an optional
+// journal.StreamOutcome field from a plain int.
+func ptrTo(v int) *int { return &v }
 
 // faultHeader merges the attempt's headers over the handler's, and applies the
 // Retry-After and Content-Type shorthands. The result is a fresh Header: the
@@ -345,11 +395,26 @@ func truncateBody(w http.ResponseWriter, a *scenario.FaultAttempt, resp Response
 		// A RST after the partial write makes the client report "connection reset
 		// by peer" instead of an unexpected EOF, which is a different error class
 		// for a consumer's retry policy to branch on.
-		if hj, ok := w.(http.Hijacker); ok {
-			if conn, _, err := hj.Hijack(); err == nil {
-				resetAndClose(conn)
-			}
-		}
+		hijackReset(w)
+	}
+}
+
+// hijackReset hijacks w's connection and destroys it with a RST rather than a
+// clean FIN, through resetAndClose — the one mechanism truncateBody above and
+// executeStream's stream_disconnect/stream_truncate_chunk abort path both
+// reuse, per docs/design/streaming.md §4.3's instruction to find and reuse
+// the existing flush-then-abort/SetLinger(0) machinery rather than duplicate
+// it. Unlike closeBeforeHeaders, a failed Hijack here is not fatal on its
+// own: bytes have already reached the client, so the caller's own
+// panic(http.ErrAbortHandler) still aborts the connection either way, just
+// without the RST.
+func hijackReset(w http.ResponseWriter) {
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		return // HTTP/2 has no Hijacker; unreachable in this HTTP/1.1-only container.
+	}
+	if conn, _, err := hj.Hijack(); err == nil {
+		resetAndClose(conn)
 	}
 }
 

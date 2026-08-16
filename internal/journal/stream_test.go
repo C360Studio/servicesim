@@ -106,17 +106,26 @@ func TestRingCloseStreamIsANoopForAnUnknownSequence(t *testing.T) {
 func TestRingSnapshotDeepCopiesStreamOutcome(t *testing.T) {
 	t.Parallel()
 
+	cost := 0.5
+	abortAt, truncAt, stallMS := 2, 12, int64(65000)
 	r := journal.NewRing(4, 4096)
 	r.Append(journal.Entry{
 		Seq: r.Next(), Provider: "perplexity",
 		Outcome: journal.Outcome{Stream: &journal.StreamOutcome{
 			ChunkCount: 2, State: journal.StreamOpen, Usage: []byte(`{"a":1}`),
+			PaceMS: []int64{0, 40}, CostTotal: &cost,
+			AbortAfterChunk: &abortAt, TruncatedAtByte: &truncAt, StallBeforeMS: &stallMS,
 		}},
 	})
 
 	snap := r.Snapshot()[0]
 	snap.Outcome.Stream.State = journal.StreamAborted
 	snap.Outcome.Stream.Usage[2] = 'X' // corrupt the byte at "a" if it aliases
+	snap.Outcome.Stream.PaceMS[1] = 999
+	*snap.Outcome.Stream.CostTotal = 999
+	*snap.Outcome.Stream.AbortAfterChunk = 999
+	*snap.Outcome.Stream.TruncatedAtByte = 999
+	*snap.Outcome.Stream.StallBeforeMS = 999
 
 	fresh := r.Snapshot()[0]
 	if fresh.Outcome.Stream.State != journal.StreamOpen {
@@ -126,6 +135,26 @@ func TestRingSnapshotDeepCopiesStreamOutcome(t *testing.T) {
 	if string(fresh.Outcome.Stream.Usage) != `{"a":1}` {
 		t.Errorf("Outcome.Stream.Usage = %q after mutating a snapshot's backing array, want unchanged: "+
 			"Snapshot must not alias the ring's Usage bytes", fresh.Outcome.Stream.Usage)
+	}
+	if fresh.Outcome.Stream.PaceMS[1] != 40 {
+		t.Errorf("PaceMS[1] = %d after mutating a snapshot's backing array, want unchanged (40)",
+			fresh.Outcome.Stream.PaceMS[1])
+	}
+	if *fresh.Outcome.Stream.CostTotal != 0.5 {
+		t.Errorf("CostTotal = %v after writing through a snapshot's pointer, want unchanged (0.5)",
+			*fresh.Outcome.Stream.CostTotal)
+	}
+	if *fresh.Outcome.Stream.AbortAfterChunk != 2 {
+		t.Errorf("AbortAfterChunk = %v after writing through a snapshot's pointer, want unchanged (2)",
+			*fresh.Outcome.Stream.AbortAfterChunk)
+	}
+	if *fresh.Outcome.Stream.TruncatedAtByte != 12 {
+		t.Errorf("TruncatedAtByte = %v after writing through a snapshot's pointer, want unchanged (12)",
+			*fresh.Outcome.Stream.TruncatedAtByte)
+	}
+	if *fresh.Outcome.Stream.StallBeforeMS != 65000 {
+		t.Errorf("StallBeforeMS = %v after writing through a snapshot's pointer, want unchanged (65000)",
+			*fresh.Outcome.Stream.StallBeforeMS)
 	}
 }
 

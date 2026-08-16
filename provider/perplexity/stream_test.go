@@ -2,7 +2,9 @@ package perplexity
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,14 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/contracts"
+	"github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
 
 // streamGoldenScenario is the corpus contracts/perplexity/perplexity-sonar-stream.sse
-// is rendered from: the three-delta example docs/design/streaming.md §2 scripts,
-// minus the pace: keys unit 1 does not decode (see §3.1's scope note).
+// is rendered from: the three-delta example docs/design/streaming.md §2 scripts.
+// It omits pace: keys because the golden transcript is pace-independent (bytes
+// are identical whether the stream is paced or not, §6.3) — pace: decodes fine
+// as of unit 2, this fixture just has nothing that needs it.
 const streamGoldenScenario = `
 version: 1
 name: deep-research-stream
@@ -246,6 +251,104 @@ func TestSonarStreamJournalOutcome(t *testing.T) {
 	require.InDelta(t, 0.0128, *so.CostTotal, 1e-12)
 	require.Equal(t, 4, so.ChunksSent, "the exchange completed by the time the journal was read")
 	require.Equal(t, journal.StreamCompleted, so.State)
+}
+
+// newSimDelaySkip is newSim with DelayMode: DelaySkip — for a pacing
+// assertion that must read the PLANNED schedule without paying real
+// wall-clock cost. This is a faster read of the same fact newSim would give:
+// PaceMS is the plan (streamPlan.paceMS()), never a wall-clock measurement,
+// so it is identical under DelayReal and DelaySkip alike (§6.3).
+func newSimDelaySkip(t *testing.T, s *scenario.Scenario) *sim {
+	t.Helper()
+	ring := journal.NewRing(64, 1<<16)
+	srv := httptest.NewServer(New(provider.Deps{
+		Scenario:  s,
+		Journal:   ring,
+		Faults:    faults.New(s, Routes()),
+		DelayMode: provider.DelaySkip,
+	}))
+	t.Cleanup(srv.Close)
+	return &sim{server: srv, journal: ring}
+}
+
+// TestSonarStreamPaceWiring proves the three-level pace resolution rule
+// (docs/design/streaming.md §4.3: per-delta override > script default;
+// StreamTerminal.Pace overrides the terminal chunk) reaches
+// Outcome.Stream.PaceMS through the real YAML decode, SonarValidator and
+// renderSonarStream — not only through provider-level tests that build
+// SSEEvent.Pace by hand (TestPlanStream, TestHandleStreamStallFoldsIntoPaceMS
+// in package provider).
+func TestSonarStreamPaceWiring(t *testing.T) {
+	t.Parallel()
+
+	s := newSimDelaySkip(t, mustScenario(t, `
+version: 1
+name: stream-pace-wiring
+providers:
+  perplexity:
+    answer: "a b"
+    stream:
+      when_requested: stream
+      pace: 40ms
+      deltas:
+        - "a "
+        - text: "b"
+          pace: 250ms
+      terminal:
+        pace: 10ms
+`))
+	resp, body := s.do(t, http.MethodPost, "/v1/sonar",
+		`{"model":"sonar-deep-research","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+
+	entries := s.journal.Snapshot()
+	require.Len(t, entries, 1)
+	so := entries[0].Outcome.Stream
+	require.NotNil(t, so)
+	require.Equal(t, []int64{40, 250, 10}, so.PaceMS,
+		"chunk 0: the script default (40ms, no override); chunk 1: its own per-delta override (250ms); "+
+			"the terminal chunk: StreamTerminal.Pace (10ms)")
+}
+
+// TestSonarStreamStallPaceWiring is stream_stall's own YAML-level pacing
+// proof, the sibling TestSonarStreamPaceWiring above does not cover: a
+// scenario's own script pace, folded with a fault-declared stall Delay,
+// reaching PaceMS and StallBeforeMS through the real validator and handler —
+// not only through a hand-built scenario.FaultAttempt (as
+// TestHandleStreamStallFoldsIntoPaceMS in package provider does).
+func TestSonarStreamStallPaceWiring(t *testing.T) {
+	t.Parallel()
+
+	s := newSimDelaySkip(t, mustScenario(t, `
+version: 1
+name: stream-pace-stall-wiring
+providers:
+  perplexity:
+    answer: "a b"
+    stream:
+      when_requested: stream
+      pace: 5ms
+      deltas: ["a ", "b"]
+    fault:
+      attempts:
+        - kind: stream_stall
+          after_chunk: 1
+          delay: 65s
+`))
+	resp, body := s.do(t, http.MethodPost, "/v1/sonar",
+		`{"model":"sonar-deep-research","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+
+	entries := s.journal.Snapshot()
+	require.Len(t, entries, 1)
+	so := entries[0].Outcome.Stream
+	require.NotNil(t, so)
+	require.Equal(t, []int64{5, 65_000 + 5, 5}, so.PaceMS,
+		"PaceMS[after_chunk] already folds the stall's 65s into that chunk's own 5ms script pace")
+	require.NotNil(t, so.StallBeforeMS)
+	require.Equal(t, int64(65_000), *so.StallBeforeMS)
+	require.Equal(t, journal.StreamCompleted, so.State, "a stall never aborts")
+	require.Equal(t, 3, so.ChunksSent)
 }
 
 // TestSonarStreamRegressionSchemaFixture pins §8's "additive to version 1"
@@ -634,4 +737,350 @@ providers:
 
 	findings := s.findings(t)
 	require.True(t, hasCode(findings, scenario.CodeStreamAbortUnreachable), "findings: %+v", findings)
+}
+
+// -----------------------------------------------------------------------------
+// Phase 5 unit 2: stream_disconnect, stream_truncate_chunk, stream_stall
+// -----------------------------------------------------------------------------
+
+// doStreamRaw posts to path and returns the response plus whatever body bytes
+// arrived before a transport error, along with that error. Unlike sim.do it
+// does not fail the test on a read error, because a disconnect or truncation
+// test EXPECTS one: io.ReadAll returns the bytes it already read alongside
+// the error, which is exactly the client-observed transcript these tests pin.
+func (s *sim) doStreamRaw(t *testing.T, path, body string) (*http.Response, []byte, error) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, s.server.URL+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testKey)
+	resp, err := s.server.Client().Do(req)
+	require.NoError(t, err, "headers must still arrive")
+	defer func() { _ = resp.Body.Close() }()
+	read, readErr := io.ReadAll(resp.Body)
+	return resp, read, readErr
+}
+
+// TestSonarStreamDisconnectGolden pins the byte-for-byte transcript up to and
+// including the last flushed chunk: docs/design/streaming.md §9's "aborting
+// on the final indexed chunk" edge case, applied one chunk earlier so the
+// golden also proves a MID-sequence disconnect (chunk 2, the third delta,
+// never arrives) rather than only the boundary case. Deterministic, per the
+// spec's requirement that this golden be pinned even though pacing/aborts
+// exist now — nothing here reads a clock.
+func TestSonarStreamDisconnectGolden(t *testing.T) {
+	t.Parallel()
+
+	want := sseGoldenBytes(t, "perplexity-sonar-stream-disconnect.sse")
+	src := streamGoldenScenario + "\n    fault:\n      attempts:\n        - kind: stream_disconnect\n" +
+		"          after_chunk: 2\n          reset: true\n"
+
+	s := newSim(t, mustScenario(t, src))
+	resp, body, readErr := s.doStreamRaw(t, "/v1/sonar", streamGoldenRequest)
+	require.Error(t, readErr, "the connection must die before chunk 2 (the third delta) ever reaches the client")
+	require.Equal(t, string(want), string(body))
+	require.Empty(t, resp.Header.Get("Content-Length"), "no Content-Length anywhere on the stream path")
+
+	entries := s.journal.Snapshot()
+	require.Len(t, entries, 1)
+	require.True(t, entries[0].Outcome.Aborted)
+	so := entries[0].Outcome.Stream
+	require.NotNil(t, so)
+	require.Equal(t, journal.StreamAborted, so.State)
+	require.Equal(t, 2, so.ChunksSent, "chunks 0 and 1 (the first two deltas) were fully delivered")
+	require.NotNil(t, so.AbortAfterChunk)
+	require.Equal(t, 2, *so.AbortAfterChunk)
+	require.Nil(t, so.TruncatedAtByte)
+}
+
+// TestSonarStreamTruncateChunkGolden is the malformed-frame sibling: unlike
+// the disconnect golden above, the connection dies mid-frame rather than at
+// a boundary, which is the entire reason this fault kind exists (a
+// byte-offset cut tests a consumer's SSE reconnect logic, not its JSON
+// parser — docs/design/streaming.md §2.1's SSE-aware truncation note).
+func TestSonarStreamTruncateChunkGolden(t *testing.T) {
+	t.Parallel()
+
+	want := sseGoldenBytes(t, "perplexity-sonar-stream-truncate.sse")
+	src := streamGoldenScenario + "\n    fault:\n      attempts:\n        - kind: stream_truncate_chunk\n" +
+		"          after_chunk: 1\n          truncate_after_bytes: 40\n"
+
+	s := newSim(t, mustScenario(t, src))
+	resp, body, readErr := s.doStreamRaw(t, "/v1/sonar", streamGoldenRequest)
+	require.Error(t, readErr, "the connection must die mid-frame")
+	require.Equal(t, string(want), string(body))
+	require.Empty(t, resp.Header.Get("Content-Length"), "no Content-Length anywhere on the stream path")
+	require.False(t, strings.HasSuffix(string(body), "\n\n"),
+		"chunk 0's own frame legitimately ends in a blank line; the truncated chunk 1 fragment after it must not")
+
+	entries := s.journal.Snapshot()
+	require.Len(t, entries, 1)
+	require.True(t, entries[0].Outcome.Aborted)
+	so := entries[0].Outcome.Stream
+	require.NotNil(t, so)
+	require.Equal(t, journal.StreamAborted, so.State)
+	require.Equal(t, 1, so.ChunksSent, "chunk 0 was fully delivered; chunk 1 was truncated, not sent")
+	require.NotNil(t, so.AbortAfterChunk)
+	require.Equal(t, 1, *so.AbortAfterChunk)
+	require.NotNil(t, so.TruncatedAtByte)
+	require.Equal(t, 40, *so.TruncatedAtByte)
+}
+
+// TestSonarStreamBlipThenRetry pins REQ-AGENT-DR-INTERNAL-RETRY-001
+// (docs/design/streaming.md §2.1, example 3): transient-blip-then-retry is
+// NOT a new fault kind, it is the existing attempt list — a disconnect on
+// attempt 0, nothing scripted on attempt 1 — and the retry, sent as a
+// second, ordinary request against the SAME lane, streams to completion.
+func TestSonarStreamBlipThenRetry(t *testing.T) {
+	t.Parallel()
+
+	s := newSim(t, mustScenario(t, streamGoldenScenario+`
+    fault:
+      attempts:
+        - kind: stream_disconnect
+          after_chunk: 1
+        - {}
+`))
+
+	// Call 0 draws the disconnect attempt. after_chunk: 1 aborts before chunk
+	// 1 (the terminal chunk) is written, so chunk 0's own complete frame —
+	// the golden's first frame, since it is the same scenario — is exactly
+	// what call 0 delivers.
+	want := sseGoldenBytes(t, "perplexity-sonar-stream.sse")
+	blankLine := strings.Index(string(want), "\n\n")
+	require.GreaterOrEqual(t, blankLine, 0, "golden must contain at least one frame")
+	firstFrameEnd := blankLine + len("\n\n")
+
+	_, body0, readErr := s.doStreamRaw(t, "/v1/sonar", streamGoldenRequest)
+	require.Error(t, readErr, "call 0 draws the scripted disconnect")
+	require.Equal(t, string(want[:firstFrameEnd]), string(body0),
+		"call 0 must deliver exactly chunk 0's frame — the disconnect fires before chunk 1")
+
+	// Call 1, the retry, is a plain "kind: none" attempt: the stream
+	// completes in full.
+	resp1, body1 := s.do(t, http.MethodPost, "/v1/sonar", streamGoldenRequest)
+	require.Equal(t, http.StatusOK, resp1.StatusCode)
+	require.Contains(t, string(body1), "data: [DONE]", "the retry streams to completion")
+
+	entries := s.journal.Snapshot()
+	require.Len(t, entries, 2)
+	require.Equal(t, journal.StreamAborted, entries[0].Outcome.Stream.State)
+	require.Equal(t, 1, entries[0].Outcome.Stream.ChunksSent, "chunk 0 was fully delivered; chunk 1 (after_chunk) never was")
+	require.NotNil(t, entries[0].Outcome.Stream.AbortAfterChunk)
+	require.Equal(t, 1, *entries[0].Outcome.Stream.AbortAfterChunk)
+	require.Equal(t, journal.StreamCompleted, entries[1].Outcome.Stream.State)
+	require.Equal(t, 4, entries[1].Outcome.Stream.ChunksSent, "the retry's stream is not itself truncated")
+}
+
+// TestSonarStreamAfterChunkOutOfRangeAtLoad pins
+// scenario.CodeStreamAfterChunkOutOfRange reachable through the real Sonar
+// validator: the entry's single turn scripts 2 deltas (chunk_count 3, valid
+// range 0..2) and the fault targets chunk 3.
+func TestSonarStreamAfterChunkOutOfRangeAtLoad(t *testing.T) {
+	t.Parallel()
+
+	sc := mustScenario(t, `
+version: 1
+name: stream-after-chunk-oor
+providers:
+  perplexity:
+    answer: "ab"
+    stream:
+      when_requested: stream
+      deltas: ["a", "b"]
+    fault:
+      attempts:
+        - kind: stream_disconnect
+          after_chunk: 3
+`)
+	findings := provider.ValidateScenario(sc, map[string]provider.Validator{NameSonar: SonarValidator{}})
+	var found *scenario.Finding
+	for i := range findings {
+		if findings[i].Code == scenario.CodeStreamAfterChunkOutOfRange {
+			found = &findings[i]
+		}
+	}
+	require.NotNil(t, found, "findings: %+v", findings)
+	require.Equal(t, scenario.SeverityError, found.Severity)
+	require.Equal(t, "providers.perplexity.fault.attempts[0].after_chunk", found.Path)
+}
+
+// TestSonarStreamAfterChunkAtTheLastValidIndexLoadsClean is the boundary
+// companion: after_chunk == chunk_count-1 (the terminal chunk itself) is a
+// legitimate script, not an off-by-one error — §9's explicit carve-out.
+func TestSonarStreamAfterChunkAtTheLastValidIndexLoadsClean(t *testing.T) {
+	t.Parallel()
+
+	sc := mustScenario(t, `
+version: 1
+name: stream-after-chunk-boundary
+providers:
+  perplexity:
+    answer: "ab"
+    stream:
+      when_requested: stream
+      deltas: ["a", "b"]
+    fault:
+      attempts:
+        - kind: stream_disconnect
+          after_chunk: 2
+`)
+	findings := provider.ValidateScenario(sc, map[string]provider.Validator{NameSonar: SonarValidator{}})
+	require.Empty(t, findings, "after_chunk 2 targets the terminal chunk (chunk_count-1), a valid target")
+}
+
+// TestSonarStreamMismatchStreamKindOnNonStreamingEntry is the mirror
+// direction docs/design/streaming.md §9 requires alongside the existing
+// truncate_body-on-a-streaming-entry case
+// (TestSonarStreamFaultMismatchThroughValidator): a stream_* kind cannot
+// apply to an entry whose effective policy is not stream.
+func TestSonarStreamMismatchStreamKindOnNonStreamingEntry(t *testing.T) {
+	t.Parallel()
+
+	for _, kind := range []scenario.FaultKind{
+		scenario.FaultStreamDisconnect, scenario.FaultStreamTruncateChunk, scenario.FaultStreamStall,
+	} {
+		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
+
+			sc := mustScenario(t, `
+version: 1
+name: stream-mismatch-mirror
+providers:
+  perplexity:
+    answer: hi
+    fault:
+      attempts:
+        - kind: `+string(kind)+`
+          after_chunk: 0
+`)
+			findings := provider.ValidateScenario(sc, map[string]provider.Validator{NameSonar: SonarValidator{}})
+			var found *scenario.Finding
+			for i := range findings {
+				if findings[i].Code == scenario.CodeStreamFaultMismatch {
+					found = &findings[i]
+				}
+			}
+			require.NotNil(t, found, "findings: %+v", findings)
+			require.Equal(t, scenario.SeverityError, found.Severity)
+		})
+	}
+}
+
+// TestStreamFaultFindingsTable pins every §9 fault-related finding this unit
+// adds, in one place: the code, its severity, and whether it fires at load
+// time (through the real validator) or at request time (through the real
+// handler and a real Faults engine). A single table test is what the P5U2
+// spec asks for explicitly, so a reviewer can see the whole catalogue at a
+// glance rather than needing to find each case scattered across this file.
+func TestStreamFaultFindingsTable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("scenario.fault.after_chunk.not_streaming — load time, non-stream_* kind", func(t *testing.T) {
+		t.Parallel()
+		_, report, err := scenario.Parse([]byte(`
+version: 1
+name: t
+providers:
+  perplexity:
+    answer: hi
+    fault:
+      attempts:
+        - status: 500
+          after_chunk: 2
+`))
+		require.Error(t, err)
+		require.True(t, hasScenarioCode(report.Findings, scenario.CodeAfterChunkNotStreaming))
+	})
+
+	t.Run("scenario.fault.stream_mismatch — load time, truncate_body on a streaming entry", func(t *testing.T) {
+		t.Parallel()
+		sc := mustScenario(t, `
+version: 1
+name: t
+providers:
+  perplexity:
+    answer: hi
+    stream: {when_requested: stream, deltas: ["hi"]}
+    fault: {attempts: [{kind: truncate_body, truncate_after_bytes: 1}]}
+`)
+		findings := provider.ValidateScenario(sc, map[string]provider.Validator{NameSonar: SonarValidator{}})
+		require.True(t, hasScenarioCode(findings, scenario.CodeStreamFaultMismatch))
+	})
+
+	t.Run("scenario.fault.stream_mismatch — load time, stream_disconnect on a non-streaming entry", func(t *testing.T) {
+		t.Parallel()
+		sc := mustScenario(t, `
+version: 1
+name: t
+providers:
+  perplexity:
+    answer: hi
+    fault: {attempts: [{kind: stream_disconnect, after_chunk: 0}]}
+`)
+		findings := provider.ValidateScenario(sc, map[string]provider.Validator{NameSonar: SonarValidator{}})
+		require.True(t, hasScenarioCode(findings, scenario.CodeStreamFaultMismatch))
+	})
+
+	t.Run("scenario.fault.after_chunk.out_of_range — load time", func(t *testing.T) {
+		t.Parallel()
+		sc := mustScenario(t, `
+version: 1
+name: t
+providers:
+  perplexity:
+    answer: hi
+    stream: {when_requested: stream, deltas: ["a", "b"]}
+    fault: {attempts: [{kind: stream_stall, after_chunk: 3, delay: 1s}]}
+`)
+		findings := provider.ValidateScenario(sc, map[string]provider.Validator{NameSonar: SonarValidator{}})
+		require.True(t, hasScenarioCode(findings, scenario.CodeStreamAfterChunkOutOfRange))
+	})
+
+	t.Run("scenario.stream.abort_unreachable — request time, truncate_body claimed on a streaming request", func(t *testing.T) {
+		t.Parallel()
+		s := newSim(t, mustScenario(t, `
+version: 1
+name: t
+providers:
+  perplexity:
+    answer: hi
+    stream: {when_requested: stream, deltas: ["hi"]}
+    fault: {attempts: [{kind: truncate_body, truncate_after_bytes: 1}]}
+`))
+		_, _ = s.do(t, http.MethodPost, "/v1/sonar", streamGoldenRequest)
+		require.True(t, hasCode(s.findings(t), scenario.CodeStreamAbortUnreachable))
+	})
+
+	t.Run("scenario.stream.abort_unreachable — request time, stream_disconnect claimed on a non-streaming request", func(t *testing.T) {
+		t.Parallel()
+		s := newSim(t, mustScenario(t, `
+version: 1
+name: t
+providers:
+  perplexity:
+    answer: hi
+    stream: {when_requested: stream, deltas: ["hi"]}
+    fault: {attempts: [{kind: stream_disconnect, after_chunk: 0}]}
+`))
+		// stream: false means this call does not stream, even against a
+		// stream-policy entry — the claimed attempt cannot apply.
+		resp, body := s.do(t, http.MethodPost, "/v1/sonar",
+			`{"model":"sonar-deep-research","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+		require.True(t, hasCode(s.findings(t), scenario.CodeStreamAbortUnreachable))
+	})
+}
+
+// hasScenarioCode is hasCode's counterpart for scenario.Finding (a load-time
+// authoring problem addressed by YAML path) rather than journal.Finding (a
+// per-request observation) — the two types this package's tests check
+// findings against, kept distinct rather than unified behind one signature.
+func hasScenarioCode(findings []scenario.Finding, code string) bool {
+	for _, f := range findings {
+		if f.Code == code {
+			return true
+		}
+	}
+	return false
 }

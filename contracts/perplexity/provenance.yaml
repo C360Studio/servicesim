@@ -251,3 +251,40 @@ goldens:
       openapi.json document states either header for this surface (the
       OpenAPI document declares no text/event-stream content type at all for
       /v1/sonar, per this file's own "Streaming (SSE)" section above).
+
+  - golden: perplexity-sonar-stream-disconnect.sse
+    endpoint: POST /v1/sonar (aliases POST /chat/completions, POST /v1/chat/completions), stream_disconnect fault
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/docs/sonar/pro-search/stream-mode.md
+    verified: 2026-08-15
+    note: >-
+      Phase 5 unit 2 (docs/design/streaming.md §9). The same three-delta turn
+      as perplexity-sonar-stream.sse, scripted with `fault: {attempts:
+      [{kind: stream_disconnect, after_chunk: 2, reset: true}]}`. The
+      transcript is exactly chunk 0 and chunk 1's frames, byte-identical to
+      the first two frames of perplexity-sonar-stream.sse — stream_disconnect
+      aborts BEFORE writing the chunk at AfterChunk, so chunk 2 (the third
+      delta) and the terminal chunk never reach the wire at all, not even
+      partially: the RST lands at a clean frame boundary, which is the
+      distinction from the truncate-chunk golden below. Entirely
+      simulator-chosen: no vendor page documents a disconnect transcript.
+
+  - golden: perplexity-sonar-stream-truncate.sse
+    endpoint: POST /v1/sonar (aliases POST /chat/completions, POST /v1/chat/completions), stream_truncate_chunk fault
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/docs/sonar/pro-search/stream-mode.md
+    verified: 2026-08-15
+    note: >-
+      Phase 5 unit 2 (docs/design/streaming.md §9). The same three-delta turn
+      as perplexity-sonar-stream.sse, scripted with `fault: {attempts:
+      [{kind: stream_truncate_chunk, after_chunk: 1, truncate_after_bytes:
+      40}]}`. The transcript is chunk 0's frame in full, byte-identical to
+      perplexity-sonar-stream.sse's first frame, followed by exactly the
+      first 40 bytes of chunk 1's frame — a malformed, mid-object "data:"
+      line with no terminating blank line — then the connection dies.
+      Deliberately NOT a clean frame boundary, unlike the disconnect golden
+      above: that distinction is the entire reason this fault kind exists
+      rather than reusing stream_disconnect. Entirely simulator-chosen: no
+      vendor page documents a truncated-frame transcript.

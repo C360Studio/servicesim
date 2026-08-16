@@ -14,7 +14,47 @@ const (
 	FaultWrongContentType   FaultKind = "wrong_content_type"
 	FaultEmptyBody          FaultKind = "empty_body"
 	FaultExtraFields        FaultKind = "extra_fields"
+
+	// FaultStreamDisconnect writes chunks [0, AfterChunk) in full and then
+	// destroys the connection before chunk AfterChunk is written at all: the
+	// previous chunk is the last complete frame, so the client sees a clean
+	// frame boundary followed by a dead connection. See
+	// docs/design/streaming.md §9's after_chunk-at-the-terminal-chunk example,
+	// which pins this reading against an earlier draft's "writes AfterChunk in
+	// full, then aborts" (that draft matched the design's own illustrative
+	// execute loop but contradicted §9's prose; prose wins, see this package's
+	// doc comment and the streaming design's banner).
+	FaultStreamDisconnect FaultKind = "stream_disconnect"
+
+	// FaultStreamTruncateChunk writes chunks [0, AfterChunk) in full, then
+	// TruncateAfterBytes bytes of chunk AfterChunk, then destroys the
+	// connection. The distinction from FaultStreamDisconnect is not cosmetic:
+	// this delivers a MALFORMED FRAME — a partial "data:" line — which is a
+	// different branch of a consumer's SSE parser than a stream that ended at
+	// a frame boundary.
+	FaultStreamTruncateChunk FaultKind = "stream_truncate_chunk"
+
+	// FaultStreamStall inserts Delay before chunk AfterChunk and then
+	// continues normally. Nothing is aborted; the client's own deadline
+	// decides what happens, which is the point for a Temporal activity
+	// timeout or a missed heartbeat.
+	FaultStreamStall FaultKind = "stream_stall"
 )
+
+// IsStream reports whether k is one of the three fault kinds that assume a
+// chunked SSE transport and cannot apply to an ordinary JSON exchange. It is
+// exported so provider (whose own execution-time switch needs the same
+// grammar) shares this one predicate rather than carrying a second copy: a
+// fourth stream_* kind added in one and not the other would validate at load
+// but be mis-handled at request time, or vice versa.
+func (k FaultKind) IsStream() bool {
+	switch k {
+	case FaultStreamDisconnect, FaultStreamTruncateChunk, FaultStreamStall:
+		return true
+	default:
+		return false
+	}
+}
 
 // FaultAfter selects what happens once the attempt list is exhausted.
 type FaultAfter string
@@ -64,9 +104,27 @@ type FaultAttempt struct {
 	// connection dies, for FaultTruncateBody. Zero means half the body.
 	TruncateAfterBytes int `yaml:"truncate_after_bytes,omitempty"`
 
-	// Reset sends a TCP RST instead of a clean FIN for FaultTruncateBody, so a
-	// client sees "connection reset by peer" rather than "unexpected EOF".
+	// Reset sends a TCP RST instead of a clean FIN for FaultTruncateBody, or
+	// for either aborting stream_* kind, so a client sees "connection reset by
+	// peer" rather than "unexpected EOF" — one spelling of "RST not FIN"
+	// across the streaming and non-streaming catalogue.
 	Reset bool `yaml:"reset,omitempty"`
+
+	// AfterChunk is the zero-based index of the first chunk a stream_* kind
+	// affects. Chunks before it are always delivered whole. It is meaningful
+	// only for the three stream_* kinds; a nonzero value on any other kind is
+	// scenario.fault.after_chunk.not_streaming. Zero is a legitimate index
+	// (the very first chunk), so — matching this file's existing convention
+	// for TruncateAfterBytes and every other "zero means default/absent"
+	// field — an unset AfterChunk is indistinguishable from an explicit zero;
+	// the not_streaming check therefore only fires for a nonzero value, which
+	// is a deliberate, documented limitation rather than an oversight.
+	//
+	// For FaultStreamStall, Delay is the mid-stream pause inserted before this
+	// chunk rather than the time-to-first-byte delay every other kind gives
+	// it. A stall that also wants a slow first byte declares two attempts, or
+	// a scripted first-chunk pace.
+	AfterChunk int `yaml:"after_chunk,omitempty"`
 
 	ExtraFields ExtraFields `yaml:"extra_fields,omitempty"`
 

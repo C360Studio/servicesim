@@ -104,6 +104,17 @@ type Stream struct {
 	// design's own instruction that shipped code, once it disagrees with an
 	// illustrative block, wins and the design should say so.
 	OmitDone bool
+
+	// DonePace is the gap before the [DONE] sentinel on GrammarDelta. [DONE]
+	// is never an indexed chunk (see Chunks' doc comment), so it has no
+	// per-frame StreamChunk.Pace of its own to carry one; the renderer sets
+	// this from the script's own default pace (scenario.StreamScript.Pace),
+	// which is the rule docs/design/streaming.md §4.3 states explicitly.
+	// Shipped as (Phase 5 unit 2): §3.2's illustrative Stream struct predates
+	// per-chunk pacing entirely and has no field for this; it is added here
+	// for the same reason OmitDone was — nowhere else in this grammar- and
+	// provider-blind package could carry a Perplexity-scripted value.
+	DonePace time.Duration
 }
 
 // Bytes returns the total the plan will write, which is known before the
@@ -189,29 +200,138 @@ func StreamHeader() http.Header {
 	}
 }
 
+// streamPlan is the resolved, pure description of how executeStream will
+// write a Stream: which chunk (if any) a stream_disconnect aborts before,
+// which chunk (if any) a stream_truncate_chunk writes a partial frame for
+// before aborting, each chunk's actual pace (folding in a stream_stall's
+// extra Delay at its own index), and the [DONE] sentinel's own gap. It is
+// computed once, before the first byte, from the stream's own baked-in
+// per-chunk paces and the claimed attempt, so executeStream's loop never has
+// to re-derive a fault decision itself — the same reason faultOutcome
+// computes the journal's planned half up front rather than letting execute
+// discover it mid-write.
+//
+// disconnectAt and truncateAt are never both >= 0: a claimed attempt is
+// exactly one kind, so at most one of the two aborting behaviours below is
+// active for a given plan.
+type streamPlan struct {
+	chunks   []StreamChunk
+	donePace time.Duration
+
+	// stallAt is the chunk index stream_stall's extra Delay is folded into;
+	// -1 means no stall is scripted.
+	stallAt    int
+	stallExtra time.Duration
+
+	// disconnectAt is the chunk index stream_disconnect aborts BEFORE
+	// writing: chunks at every earlier index are written whole, and the
+	// chunk AT this index is never written at all — the previous chunk (or
+	// the flushed headers, if this is 0) is the last thing the client
+	// observes before the connection dies, which is what makes this the
+	// frame-boundary-clean sibling of truncateAt below. -1 means no
+	// disconnect is scripted.
+	disconnectAt int
+
+	// truncateAt is the chunk index stream_truncate_chunk writes
+	// truncateBytes of before aborting — a malformed partial frame, not a
+	// clean boundary. -1 means no truncation is scripted.
+	truncateAt    int
+	truncateBytes int
+
+	// reset selects RST over a clean FIN for whichever of disconnectAt or
+	// truncateAt is active. Shared because only one is ever active per plan.
+	reset bool
+}
+
+// planStream resolves a's effect on s into a streamPlan. a may be nil (no
+// fault claimed this attempt) or any non-stream_* kind (a trailing "kind:
+// none" attempt that only carries headers:, for instance) — planStream
+// leaves every abort/stall field at its "nothing scripted" zero value in
+// both cases, since only the three stream_* kinds ever populate them.
+func planStream(a *scenario.FaultAttempt, s *Stream) streamPlan {
+	p := streamPlan{chunks: s.Chunks, donePace: s.DonePace, stallAt: -1, disconnectAt: -1, truncateAt: -1}
+	if a == nil {
+		return p
+	}
+	switch a.EffectiveKind() {
+	case scenario.FaultStreamStall:
+		p.stallAt = a.AfterChunk
+		p.stallExtra = a.Delay.Duration()
+	case scenario.FaultStreamDisconnect:
+		p.disconnectAt = a.AfterChunk
+		p.reset = a.Reset
+	case scenario.FaultStreamTruncateChunk:
+		p.truncateAt = a.AfterChunk
+		p.reset = a.Reset
+		if a.AfterChunk >= 0 && a.AfterChunk < len(s.Chunks) {
+			p.truncateBytes = truncationLenForChunk(a, len(s.Chunks[a.AfterChunk].Bytes))
+		}
+	}
+	return p
+}
+
+// paceOf returns the planned gap before writing chunk i, the script's own
+// pace plus a stream_stall's extra Delay when i is the stalled index.
+func (p streamPlan) paceOf(i int) time.Duration {
+	d := p.chunks[i].Pace
+	if i == p.stallAt {
+		d += p.stallExtra
+	}
+	return d
+}
+
+// paceMS renders every indexed chunk's planned gap in milliseconds, in chunk
+// order, for journal.StreamOutcome.PaceMS. It is the PLANNED schedule —
+// nothing here reads a clock — so it is identical under DelayReal and
+// DelaySkip alike; see docs/design/streaming.md §6.3 and §5.3's
+// AssertStreamPacing, which reads this same plan rather than a wall-clock
+// measurement.
+func (p streamPlan) paceMS() []int64 {
+	out := make([]int64, len(p.chunks))
+	for i := range p.chunks {
+		out[i] = p.paceOf(i).Milliseconds()
+	}
+	return out
+}
+
+// truncationLenForChunk is stream_truncate_chunk's per-chunk analogue of
+// fault_exec.go's truncationLen: TruncateAfterBytes unset (zero) means half
+// of THIS chunk's bytes, clamped to the chunk's own length — the rule
+// reused, not the number, since the whole body and one chunk are different
+// lengths. Reusing the field name without reusing this rule would make the
+// same YAML key mean two different halves depending on which fault kind it
+// appeared on.
+func truncationLenForChunk(a *scenario.FaultAttempt, chunkBytes int) int {
+	n := a.TruncateAfterBytes
+	if n <= 0 {
+		n = chunkBytes / 2
+	}
+	return min(n, chunkBytes)
+}
+
 // executeStream writes resp.Stream to w: headers and one flush, then each
-// chunk with its pace and a flush per frame, then — on GrammarDelta, unless
-// the script asked to omit it — the [DONE] sentinel. out already carries the
-// PLANNED half of the journal outcome (built by Handle before the first
-// byte); this returns it with the OBSERVED half filled in, and amends the
-// already-appended journal entry through closer along the way.
+// chunk in turn, then — on GrammarDelta, unless the script asked to omit it —
+// the [DONE] sentinel. out already carries the PLANNED half of the journal
+// outcome (built by Handle before the first byte); this returns it with the
+// OBSERVED half filled in, and amends the already-appended journal entry
+// through closer along the way.
 //
 // It never decides whether an attempt applies: suppression is decided once,
-// in Handle, before this is ever reached (see suppressStream), and no fault
-// kind that could abort a stream mid-write exists in this build yet — the
-// three stream_* fault kinds and their chunk-boundary abort logic are a
-// later unit. This is deliberately the happy path only: the one thing
-// besides a scripted fault that can end a stream early — the client hanging
-// up — is handled, because it needs no fault at all to happen.
+// in Handle, before this is ever reached (see suppressStream). What IS
+// decided here, through planStream, is how a stream_* attempt that DOES
+// apply affects the write loop — a stall's extra pace, a disconnect's abort
+// point, a truncation's partial frame — since that decision has nowhere else
+// to live: it depends on the stream's own chunk boundaries, which only this
+// function is about to walk.
 //
 // a is the same (post-mismatch, possibly nil) attempt execute already holds.
-// A non-suppressing attempt still reaches here — e.g. a trailing "kind:
-// none" entry that carries only headers:/retry_after, or (once a later unit
-// adds them) a stream_* kind — and its declared headers, Retry-After and
-// status override must reach the wire exactly as they would on the
-// non-streaming path, not vanish because this path forgot to look at a.
-// docs/design/streaming.md §4.3 is explicit that the real call is
-// applyHeader(w, faultHeader(a, resp)), never resp.Header alone.
+// A non-suppressing, non-stream_* attempt still reaches here — e.g. a
+// trailing "kind: none" entry that carries only headers:/retry_after — and
+// its declared headers, Retry-After and status override must reach the wire
+// exactly as they would on the non-streaming path, not vanish because this
+// path forgot to look at a. docs/design/streaming.md §4.3 is explicit that
+// the real call is applyHeader(w, faultHeader(a, resp)), never resp.Header
+// alone.
 func executeStream(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttempt, resp Response,
 	mode DelayMode, out journal.Outcome, closer func(journal.StreamClose),
 ) journal.Outcome {
@@ -236,15 +356,40 @@ func executeStream(ctx context.Context, w http.ResponseWriter, a *scenario.Fault
 	_ = rc.Flush() // the status line and headers reach the client now
 
 	stream := resp.Stream
+	plan := planStream(a, stream)
 	written, sent := 0, 0
-	for _, c := range stream.Chunks {
-		if err := sleep(ctx, c.Pace, mode); err != nil {
+	for i, c := range plan.chunks {
+		if plan.disconnectAt == i {
+			// The connection dies here, before anything of chunk i reaches
+			// the wire: chunk i-1 (or the flushed headers, if i == 0) is the
+			// last thing the client observes, a clean frame boundary rather
+			// than a malformed one — see streamPlan.disconnectAt's doc
+			// comment for why that distinction is the point of this kind.
+			out = closeWith(out, closer, written, sent, journal.StreamAborted)
+			if plan.reset {
+				hijackReset(w)
+			}
+			// A plain return would let net/http send the terminating
+			// zero-length chunk and the client would see a clean EOF — a
+			// complete stream, not a disconnect. The panic is what produces
+			// io.ErrUnexpectedEOF or, with reset above, a connection-reset
+			// error (verified against Go 1.26.4; docs/design/streaming.md §1).
+			panic(http.ErrAbortHandler)
+		}
+
+		if err := sleep(ctx, plan.paceOf(i), mode); err != nil {
 			// The client's own deadline or cancellation ended the request
 			// mid-stream. Nothing more is written; the journal says how far
 			// we got.
 			return closeWith(out, closer, written, sent, journal.StreamClientGone)
 		}
-		n, err := w.Write(c.Bytes)
+
+		b := c.Bytes
+		truncating := plan.truncateAt == i
+		if truncating {
+			b = b[:plan.truncateBytes]
+		}
+		n, err := w.Write(b)
 		written += n
 		// Without a flush per frame the bytes sit in net/http's buffer, and a
 		// client watching for each chunk would see nothing until the buffer
@@ -253,19 +398,29 @@ func executeStream(ctx context.Context, w http.ResponseWriter, a *scenario.Fault
 		if err != nil {
 			return closeWith(out, closer, written, sent, journal.StreamClientGone)
 		}
+		if truncating {
+			// The partial write above IS the malformed frame stream_truncate_chunk
+			// scripts; nothing else about chunk i reaches the client, and it is
+			// never counted as sent — ChunksSent counts complete indexed chunks
+			// the client received, and this one was not.
+			out = closeWith(out, closer, written, sent, journal.StreamAborted)
+			if plan.reset {
+				hijackReset(w)
+			}
+			panic(http.ErrAbortHandler)
+		}
 		sent++
 	}
 
 	if stream.Grammar == GrammarDelta && !stream.OmitDone {
+		if err := sleep(ctx, plan.donePace, mode); err != nil {
+			return closeWith(out, closer, written, sent, journal.StreamClientGone)
+		}
 		done := doneChunk()
-		if err := sleep(ctx, done.Pace, mode); err == nil {
-			n, err := w.Write(done.Bytes)
-			written += n
-			_ = rc.Flush()
-			if err != nil {
-				return closeWith(out, closer, written, sent, journal.StreamClientGone)
-			}
-		} else {
+		n, err := w.Write(done.Bytes)
+		written += n
+		_ = rc.Flush()
+		if err != nil {
 			return closeWith(out, closer, written, sent, journal.StreamClientGone)
 		}
 	}

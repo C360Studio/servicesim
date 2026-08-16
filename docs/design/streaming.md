@@ -1,5 +1,45 @@
 # SSE streaming
 
+> ## SHIPPED (unit 2) — 2026-08-15
+>
+> **Phase 5 unit 2 has landed**: the three `stream_*` fault kinds (`stream_disconnect`, `stream_truncate_chunk`,
+> `stream_stall`) and `FaultAttempt.AfterChunk`; per-delta/per-script/per-terminal `pace:` (`scenario.StreamDelta`
+> replaces the unit-1 `[]string` Deltas, accepting the same scalar-or-mapping shorthand pattern); `provider.streamPlan`/
+> `planStream` (the pure abort/stall/truncate resolver `executeStream`'s loop now consults) and `provider.Stream`'s new
+> `DonePace` field; the load-time checks `scenario.fault.after_chunk.not_streaming`, `scenario.fault.stream_mismatch`'s
+> second direction (a `stream_*` kind on a non-streaming entry — the first direction, `truncate_body` on a streaming
+> entry, was unit 1), and `scenario.fault.after_chunk.out_of_range`; the request-time mirror
+> `scenario.stream.abort_unreachable`'s second direction (a `stream_*` kind claimed by a request that will not
+> stream — the first direction, `truncate_body` claimed by one that will, was unit 1); and
+> `journal.StreamOutcome`'s four remaining fields, `PaceMS`/`AbortAfterChunk`/`TruncatedAtByte`/`StallBeforeMS`,
+> exactly as unit 1 deferred them. Goldens: `contracts/perplexity/perplexity-sonar-stream-disconnect.sse` and
+> `perplexity-sonar-stream-truncate.sse`. Every "Shipped as (Phase 5 unit 2):" note inline below records where the
+> shipped shape narrows, extends or corrects an illustrative block or resolves a genuine prose ambiguity this unit
+> was the first to need an answer for. Out of unit 2, still: `GrammarTyped`/the Agent API surface (unit 3),
+> `testkit.AssertGoldenSSE`/`AwaitStreamClosed`/`AssertStreamPacing`, built-in scenarios, and Exa/Tavily streaming
+> (unit 4 / never).
+>
+> **One genuine ambiguity this unit had to settle, between two passages of this same document that read
+> oppositely once a real implementation had to pick one.** `FaultStreamDisconnect`'s own field comment ("writes
+> chunks `[0, AfterChunk)` in full ... chunk `AfterChunk` never reaches the client") and §9's own worked example
+> ("aborting on the final indexed chunk ... every scripted delta arrived, but the response that confirms
+> completion ... never does") both, read together, pin one answer: **`stream_disconnect` aborts BEFORE writing the
+> chunk at `AfterChunk`** — chunks at every earlier index are written whole, and the client's last observation is
+> the previous chunk (or the flushed headers, if `AfterChunk == 0`), never a partial one. `ChunksSent` after such an
+> abort therefore equals `AfterChunk`, not `AfterChunk + 1`. This is the shipped behaviour
+> (`provider.streamPlan.disconnectAt`, `provider/stream_test.go`'s `TestHandleStreamDisconnect`). The P5U2 task
+> brief handed to the implementing unit described the client-observed frame count as "`after_chunk+1`", which
+> reads as the opposite convention; that brief is not part of this design document and is not authoritative over
+> it, and the two PROSE passages above agree with each other independently of it, so this document's own words
+> are what the code follows. Those two prose passages are not corrected by this resolution — both already said
+> the same thing. §4.3's own illustrative Go sketch (`if plan.AbortAt == i` checked AFTER the write) and §9's
+> earlier reference to it DID read the other way, matching the brief rather than the two passages above; that is
+> the thing this resolution corrects, via §4.3's own "Shipped as (Phase 5 unit 2)" note just below the sketch. A
+> corollary worth stating once, here rather than only in code comments: because the abort precedes chunk
+> `AfterChunk`'s own pace sleep, `PaceMS[AfterChunk]` is a planned gap that is never actually slept — the client
+> sees the disconnect immediately after the previous chunk, with no observable delay contributed by the
+> chunk that never arrives.
+>
 > ## SHIPPED (unit 1) — 2026-08-15
 >
 > **Phase 5 unit 1 has landed**: `scenario.StreamServe`/`StreamScript`, `provider.SSEEvent`/`EncodeSSE`/
@@ -592,6 +632,16 @@ at. `StreamScript.UnmarshalYAML` also does not itself reject an unrecognised `wh
 generic `perplexity.projection.invalid`-class finding addressed at the whole projection body, not at
 `.stream.when_requested`.
 
+**Shipped as (Phase 5 unit 2):** `Deltas` is now exactly `[]StreamDelta` as illustrated above, and both
+`StreamScript` and `StreamTerminal` carry the `Pace` field the unit-1 note deferred — landed together with
+`stream_stall`, as that note anticipated. `StreamDelta.UnmarshalYAML` follows the same scalar-or-mapping
+pattern as `StreamScript` itself: a bare string decodes as `{text: <string>}`, so a script that never overrides
+pacing keeps writing a plain list of strings. One deliberate, documented narrowing versus the field comment
+above: `StreamDelta.Pace` and `StreamTerminal.Pace` treat a zero value as "no override, use the script's
+default" rather than "an explicit zero-length gap" — the same "zero means absent" convention this package
+already uses for `TruncateAfterBytes` and several `FaultAttempt` fields — so a script cannot currently ask one
+chunk for a literal zero gap while its script default is nonzero; nothing shipped needs that distinction.
+
 One exported type this section's sketch does not name: `scenario.StreamTurn` (`Path`, `Script *StreamScript`,
 `Answer string`), the neutral carrier `ValidateStreamScripts` takes a `[]StreamTurn` of — a calling provider
 package gathers one per turn, since only it knows what its own projection's answer field is called or how its
@@ -757,6 +807,13 @@ is in `provider`, not `provider/perplexity`), so it cannot reach into a Perplexi
 `StreamTerminal` to decide whether to write `[DONE]`. `renderSonarStream` copies
 `p.Stream.Terminal.OmitDone` onto `Stream.OmitDone` when building the plan, and `executeStream` reads it
 directly. `Stream.Bytes()` and `EncodeSSE` are otherwise exactly as illustrated here.
+
+**Shipped as (Phase 5 unit 2): `Stream` gains a sixth field, `DonePace time.Duration`.** The same gap this
+illustrative struct has nowhere to carry: `[DONE]` is never an indexed chunk (see the `Chunks` note just below),
+so it has no `StreamChunk.Pace` of its own, and `executeStream` is still grammar- and provider-blind. The
+renderer sets it from the script's own default `Pace`, exactly as §4.3's pacing note below already specifies —
+`renderSonarStream` copies `p.Stream.Pace.Duration()` onto it directly, with no per-frame override to consult
+since `[DONE]` carries none.
 
 **`Stream.Chunks` holds exactly the indexed sequence — the N delta chunks and the one terminal chunk,
 `chunk_count = N + 1` elements — and never the `[DONE]` sentinel.** This is what makes `ChunkCount`,
@@ -1078,6 +1135,22 @@ plan/abort machinery above is the real design for the unit that adds `stream_dis
 `stream_truncate_chunk` and `stream_stall`; nothing here contradicts it, it is simply not reachable code
 yet.
 
+**Shipped as (Phase 5 unit 2):** `planStream`/`streamPlan` exist, but not with the field names sketched
+above. `streamPlan` carries `stallAt`/`stallExtra` (folded into `paceOf(i)`), `disconnectAt` (the index
+`stream_disconnect` aborts **before writing** — see this section's own banner note above for why "before",
+not "after", is the reading this document's prose settles on) and `truncateAt`/`truncateBytes` (the index
+`stream_truncate_chunk` writes a partial frame for, then aborts), rather than one shared `AbortAt`/`TruncateAt`
+pair: `stream_disconnect` and `stream_truncate_chunk` abort at two DIFFERENT points relative to the write —
+before it and after a partial one, respectively — so a single `AbortAt` checked after the write, as sketched
+above, cannot express `stream_disconnect`'s frame-boundary-clean semantics at all. `streamPlan.paceMS()`
+renders the whole planned schedule for `journal.StreamOutcome.PaceMS` in one pass. `hijackReset` is exported
+from `provider/fault_exec.go` (unexported, package-internal) and is now genuinely shared: `truncateBody`'s own
+`Reset` branch calls it too, rather than repeating the same three-line Hijack dance a second time. The
+pre-dispatch delay block gains exactly the one-kind carve-out this section already described:
+`a.EffectiveKind() != scenario.FaultStreamStall`. `plannedStreamOutcome` (fault_exec.go) takes the attempt as
+well as the `*Stream` now, calling `planStream` itself to fill in `PaceMS`/`AbortAfterChunk`/`TruncatedAtByte`/
+`StallBeforeMS` — see §5.1's shipped-as note.
+
 Note the ordering inside the abort branch: `closeWith` runs **before** `hijackReset` and before the panic. That is the
 same discipline `Handle` applies to `record()`, for the same reason — after the RST the client can already observe the
 abort, so anything a test might read has to be durable by then.
@@ -1100,7 +1173,12 @@ because each is observable on the wire and two implementers guessing independent
   stream. `planStream` resolves it with the same rule `truncationLen` already applies to `truncate_body` — zero
   means half, clamped to the chunk's length — applied to `plan.Chunks[AfterChunk].Bytes` rather than to the whole
   body. Reusing the field name without reusing this rule would make the same YAML key mean two different halves
-  depending on which fault kind it appeared on.
+  depending on which fault kind it appeared on. One consequence of reusing the rule exactly: a `truncate_after_bytes`
+  at or beyond the target chunk's own length clamps to the WHOLE chunk, same as `truncate_body`'s equivalent clamp
+  does for the whole response body — the "truncation" writes a complete, well-formed frame and the client then
+  observes a disconnect indistinguishable from `stream_disconnect` at the next index. That degrades the kind's
+  malformed-frame promise for this one deliberately-out-of-range input; it is not treated as an error, on the same
+  reasoning `truncate_body` already applies.
 - **`pace:` gates every chunk `executeStream` writes, including chunk 0, the terminal chunk, and (on
   `GrammarDelta`, when not omitted) `[DONE]`** — not only the scripted deltas after chunk 0. `plan.PaceOf(i)` is
   defined over every index in `plan.Chunks`, which `EncodeSSE` builds from the N delta chunks and the one
@@ -1225,6 +1303,22 @@ type StreamOutcome struct {
 fault- and pacing-scoped (the three `stream_*` fault kinds, `after_chunk`, and any nonzero pace) and
 therefore have nothing to record in a unit that ships none of those. Adding them is additive — the next
 unit's job, not a correction to this one.
+
+**Shipped as (Phase 5 unit 2):** `PaceMS`, `AbortAfterChunk`, `TruncatedAtByte` and `StallBeforeMS` now land,
+exactly as this note anticipated and exactly as illustrated above — every one is a PLANNED field, computed once
+by `plannedStreamOutcome` before the first byte, never amended by `CloseStreamIn`. `EventNames` does not: it is
+scoped to `GrammarTyped` (unit 3), which carries named `event:` lines; `GrammarDelta`, the only grammar this
+build renders, has none, so there is nothing for the field to hold yet — the same "nothing to record" reasoning
+the unit-1 note above already gives, now narrowed to the one field still genuinely out of scope. `PaceMS` is the
+PLANNED schedule (`streamPlan.paceMS()`), not an observed wall-clock measurement — nothing on this path reads a
+clock — which is what makes it stable under both `DelayReal` and `DelaySkip` and safe to read before the
+exchange closes, exactly as this document's own `AssertStreamPacing` note (§5.3) and §6.3 already say.
+`Stream.DonePace` (§3.2) is deliberately absent from `PaceMS`: `[DONE]` is never an indexed chunk, `PaceMS` is
+indexed over `plan.Chunks` only, and there is no separate journal field for the sentinel's own gap either — a
+reader cannot recover it from the entry. That is acceptable because `[DONE]`'s pace is always the script's default
+(it has no per-frame override to carry one), so it is already the same number as `PaceMS[0]` whenever chunk 0 also
+used the default; it is exercised end to end by `provider.TestHandleStreamDonePaceIsHonouredUnderDelayReal`
+(`provider/stream_test.go`), which reads it from `Outcome.BytesWritten`/`State` rather than from `PaceMS`.
 
 **`Terminal`/`TerminalIndex` mark the closing frame, not the presence of usage.** Every stream this design
 produces has exactly one terminal chunk — `StreamTerminal` tunes what it carries, it does not make it optional
@@ -1743,6 +1837,31 @@ still fails with the pre-existing `scenario.fault.kind.unknown`, which is a corr
 in the meantime. `scenario.fault.after_chunk.not_streaming`, `scenario.fault.after_chunk.out_of_range` and
 `perplexity.stream.done_ignored` do not exist yet: all three are scoped to `after_chunk`/`GrammarTyped`,
 neither of which unit 1 adds.
+
+**Shipped as (Phase 5 unit 2):** `scenario.fault.after_chunk.not_streaming` and
+`scenario.fault.after_chunk.out_of_range` are both live now that the three `stream_*` kinds and `AfterChunk`
+exist. `not_streaming` is checked in `scenario.Validate` itself (`validateFaultAttempt`), not in
+`ValidateStreamFaultMismatch`: it needs only the attempt in isolation — never the entry's streaming policy or
+any turn's chunk count — so it lives with the rest of the envelope-level fault checks rather than the
+provider-decoded streaming ones. Like `AfterChunk` itself, it treats a zero value as "not declared" (this
+package's existing convention for several `FaultAttempt` fields), which is a documented, deliberate limitation:
+an author who writes `after_chunk: 0` by mistake on a non-streaming kind is not caught, since 0 is
+indistinguishable from absent. `scenario.fault.stream_mismatch`'s mirror direction (a `stream_*` kind on a
+non-streaming entry) is live too — `ValidateStreamFaultMismatch` gained a `turns []StreamTurn` parameter (the
+same slice `ValidateStreamScripts` already takes) so it can compute the minimum chunk-count bound
+`out_of_range` needs from one pass over the same per-turn state, rather than a second exported function
+re-walking the entry. `perplexity.stream.done_ignored` remains unshipped: it is `GrammarTyped`-scoped (unit 3),
+untouched by this unit.
+
+**`scenario.fault.stream_mismatch` and `scenario.fault.after_chunk.out_of_range` are load-time checks only where a
+provider's own `ValidateProjections` calls `ValidateStreamFaultMismatch` — today, only Perplexity's
+`SonarValidator` does.** Exa's and Tavily's own validators do not, because their `Stream` field is still
+`scenario.StreamPolicy`, never `scenario.StreamScript` (Exa/Tavily streaming is unit 4 / never, per the SHIPPED
+banner). A `stream_*` kind claimed against an Exa or Tavily entry therefore loads clean today; it is caught
+one level later, at request time, by `scenario.stream.abort_unreachable` (§4.2) the first time a request actually
+reaches that entry — every request does, since neither provider ever sets `resp.Stream`. This is the same
+"fail at readiness" property the load-time table above states, one exchange later than the table implies for a
+provider this design has not wired yet.
 
 ### `stream_mismatch` keys on the effective policy, not key presence
 

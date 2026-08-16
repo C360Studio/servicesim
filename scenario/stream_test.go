@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -61,7 +62,7 @@ stream:
 `)
 		require.NoError(t, err)
 		require.Equal(t, StreamServe, s.Policy)
-		require.Equal(t, []string{"Report A ", "finds ", "that X."}, s.Deltas)
+		require.Equal(t, []StreamDelta{{Text: "Report A "}, {Text: "finds "}, {Text: "that X."}}, s.Deltas)
 		require.NotNil(t, s.Terminal)
 		require.True(t, s.Terminal.OmitUsage)
 		require.True(t, s.Terminal.OmitDone)
@@ -78,14 +79,50 @@ stream:
 		require.Equal(t, StreamServe, s.EffectivePolicy())
 	})
 
+	t.Run("script pace and a per-delta override both decode", func(t *testing.T) {
+		t.Parallel()
+		s, err := decodeStream(t, `
+stream:
+  when_requested: stream
+  pace: 40ms
+  deltas:
+    - "Report A "
+    - "finds "
+    - text: "that X."
+      pace: 250ms
+  terminal:
+    pace: 10ms
+`)
+		require.NoError(t, err)
+		require.Equal(t, 40*time.Millisecond, s.Pace.Duration())
+		require.Equal(t, []StreamDelta{
+			{Text: "Report A "},
+			{Text: "finds "},
+			{Text: "that X.", Pace: Duration(250 * time.Millisecond)},
+		}, s.Deltas)
+		require.NotNil(t, s.Terminal)
+		require.Equal(t, 10*time.Millisecond, s.Terminal.Pace.Duration())
+	})
+
 	t.Run("an unknown mapping key is a strict-decode error", func(t *testing.T) {
 		t.Parallel()
 		_, err := decodeStream(t, `
 stream:
   when_requested: stream
-  pace: 40ms
+  bogus_key: true
 `)
-		require.Error(t, err, "pace is not decoded by this build; writing it must fail loudly, not silently no-op")
+		require.Error(t, err)
+	})
+
+	t.Run("an unknown key on a mapping-form delta is a strict-decode error", func(t *testing.T) {
+		t.Parallel()
+		_, err := decodeStream(t, `
+stream:
+  deltas:
+    - text: "hi"
+      bogus_key: true
+`)
+		require.Error(t, err)
 	})
 
 	t.Run("absent stream key leaves the zero value", func(t *testing.T) {
@@ -95,6 +132,16 @@ stream:
 		require.Equal(t, StreamScript{}, s)
 		require.Equal(t, StreamWarn, s.EffectivePolicy())
 	})
+}
+
+// deltas builds a []StreamDelta from plain text, for tests that do not care
+// about per-delta pacing.
+func deltas(texts ...string) []StreamDelta {
+	out := make([]StreamDelta, len(texts))
+	for i, s := range texts {
+		out[i] = StreamDelta{Text: s}
+	}
+	return out
 }
 
 func TestStreamScriptEffectivePolicy(t *testing.T) {
@@ -107,9 +154,9 @@ func TestStreamScriptEffectivePolicy(t *testing.T) {
 	}{
 		{"nil is warn", nil, StreamWarn},
 		{"zero value is warn", &StreamScript{}, StreamWarn},
-		{"deltas with no explicit policy imply stream", &StreamScript{Deltas: []string{"a"}}, StreamServe},
-		{"an explicit policy always wins", &StreamScript{Policy: StreamReject, Deltas: []string{"a"}}, StreamReject},
-		{"an explicit warn wins even with deltas present", &StreamScript{Policy: StreamWarn, Deltas: []string{"a"}}, StreamWarn},
+		{"deltas with no explicit policy imply stream", &StreamScript{Deltas: deltas("a")}, StreamServe},
+		{"an explicit policy always wins", &StreamScript{Policy: StreamReject, Deltas: deltas("a")}, StreamReject},
+		{"an explicit warn wins even with deltas present", &StreamScript{Policy: StreamWarn, Deltas: deltas("a")}, StreamWarn},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -131,7 +178,7 @@ func TestValidateStreamScripts(t *testing.T) {
 		t.Parallel()
 		findings := ValidateStreamScripts([]StreamTurn{
 			{Path: "providers.perplexity.turns[0].respond",
-				Script: &StreamScript{Policy: StreamServe, Deltas: []string{"a ", "b"}}, Answer: "a b"},
+				Script: &StreamScript{Policy: StreamServe, Deltas: deltas("a ", "b")}, Answer: "a b"},
 		})
 		require.Empty(t, findings)
 	})
@@ -185,7 +232,7 @@ func TestValidateStreamScripts(t *testing.T) {
 	t.Run("a streaming entry with a turn declaring no deltas is an error", func(t *testing.T) {
 		t.Parallel()
 		findings := ValidateStreamScripts([]StreamTurn{
-			{Path: "p0", Script: &StreamScript{Policy: StreamServe, Deltas: []string{"a"}}},
+			{Path: "p0", Script: &StreamScript{Policy: StreamServe, Deltas: deltas("a")}},
 			{Path: "p1", Script: nil}, // no stream: block at all on turn 1
 		})
 		require.Len(t, findings, 1)
@@ -197,7 +244,7 @@ func TestValidateStreamScripts(t *testing.T) {
 	t.Run("a non-streaming entry with a turn declaring deltas is an error, even on turn 0", func(t *testing.T) {
 		t.Parallel()
 		findings := ValidateStreamScripts([]StreamTurn{
-			{Path: "p0", Script: &StreamScript{Policy: StreamWarn, Deltas: []string{"dead"}}},
+			{Path: "p0", Script: &StreamScript{Policy: StreamWarn, Deltas: deltas("dead")}},
 		})
 		require.Len(t, findings, 1)
 		require.Equal(t, CodeStreamDeltasIgnored, findings[0].Code)
@@ -208,14 +255,14 @@ func TestValidateStreamScripts(t *testing.T) {
 	t.Run("mismatched deltas warn, matched deltas do not", func(t *testing.T) {
 		t.Parallel()
 		mismatch := ValidateStreamScripts([]StreamTurn{
-			{Path: "p0", Script: &StreamScript{Policy: StreamServe, Deltas: []string{"a", "b"}}, Answer: "totally different"},
+			{Path: "p0", Script: &StreamScript{Policy: StreamServe, Deltas: deltas("a", "b")}, Answer: "totally different"},
 		})
 		require.Len(t, mismatch, 1)
 		require.Equal(t, CodeStreamAnswerMismatch, mismatch[0].Code)
 		require.Equal(t, SeverityWarning, mismatch[0].Severity)
 
 		match := ValidateStreamScripts([]StreamTurn{
-			{Path: "p0", Script: &StreamScript{Policy: StreamServe, Deltas: []string{"a", "b"}}, Answer: "ab"},
+			{Path: "p0", Script: &StreamScript{Policy: StreamServe, Deltas: deltas("a", "b")}, Answer: "ab"},
 		})
 		require.Empty(t, match)
 	})
@@ -223,7 +270,7 @@ func TestValidateStreamScripts(t *testing.T) {
 	t.Run("an empty answer is not compared, so a turn with no non-streaming answer is not flagged", func(t *testing.T) {
 		t.Parallel()
 		findings := ValidateStreamScripts([]StreamTurn{
-			{Path: "p0", Script: &StreamScript{Policy: StreamServe, Deltas: []string{"a"}}, Answer: ""},
+			{Path: "p0", Script: &StreamScript{Policy: StreamServe, Deltas: deltas("a")}, Answer: ""},
 		})
 		require.Empty(t, findings)
 	})
@@ -232,9 +279,16 @@ func TestValidateStreamScripts(t *testing.T) {
 func TestValidateStreamFaultMismatch(t *testing.T) {
 	t.Parallel()
 
+	// threeDeltaTurns is the streaming projection state a single-turn entry
+	// scripting three deltas would gather: chunkCount == 4 (3 deltas + the
+	// terminal chunk), so a valid after_chunk is 0..3.
+	threeDeltaTurns := []StreamTurn{
+		{Path: "providers.perplexity", Script: &StreamScript{Policy: StreamServe, Deltas: deltas("a", "b", "c")}},
+	}
+
 	t.Run("nil entry produces no findings", func(t *testing.T) {
 		t.Parallel()
-		require.Empty(t, ValidateStreamFaultMismatch(nil, StreamServe))
+		require.Empty(t, ValidateStreamFaultMismatch(nil, StreamServe, nil))
 	})
 
 	t.Run("truncate_body under a non-streaming policy stays valid — the required regression fixture", func(t *testing.T) {
@@ -243,7 +297,7 @@ func TestValidateStreamFaultMismatch(t *testing.T) {
 			{Fault: &Fault{Attempts: []FaultAttempt{{Kind: FaultTruncateBody, TruncateAfterBytes: 40}}}},
 		}}
 		for _, policy := range []StreamPolicy{StreamWarn, StreamReject, ""} {
-			require.Emptyf(t, ValidateStreamFaultMismatch(e, policy), "policy %q", policy)
+			require.Emptyf(t, ValidateStreamFaultMismatch(e, policy, nil), "policy %q", policy)
 		}
 	})
 
@@ -252,18 +306,97 @@ func TestValidateStreamFaultMismatch(t *testing.T) {
 		e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
 			{Fault: &Fault{Attempts: []FaultAttempt{{Kind: FaultTruncateBody, TruncateAfterBytes: 40}}}},
 		}}
-		findings := ValidateStreamFaultMismatch(e, StreamServe)
+		findings := ValidateStreamFaultMismatch(e, StreamServe, threeDeltaTurns)
 		require.Len(t, findings, 1)
 		require.Equal(t, CodeStreamFaultMismatch, findings[0].Code)
 		require.Equal(t, SeverityError, findings[0].Severity)
 		require.Equal(t, "providers.perplexity.fault.attempts[0].kind", findings[0].Path)
 	})
 
-	t.Run("a non-truncate_body kind under a streaming policy is untouched", func(t *testing.T) {
+	t.Run("a non-truncate_body, non-stream_* kind under a streaming policy is untouched", func(t *testing.T) {
 		t.Parallel()
 		e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
 			{Fault: &Fault{Attempts: []FaultAttempt{{Status: 429}}}},
 		}}
-		require.Empty(t, ValidateStreamFaultMismatch(e, StreamServe))
+		require.Empty(t, ValidateStreamFaultMismatch(e, StreamServe, threeDeltaTurns))
+	})
+
+	t.Run("a stream_* kind under a non-streaming policy is an error — the mirror direction", func(t *testing.T) {
+		t.Parallel()
+		for _, kind := range []FaultKind{FaultStreamDisconnect, FaultStreamTruncateChunk, FaultStreamStall} {
+			e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
+				{Fault: &Fault{Attempts: []FaultAttempt{{Kind: kind, AfterChunk: 1}}}},
+			}}
+			for _, policy := range []StreamPolicy{StreamWarn, StreamReject, ""} {
+				findings := ValidateStreamFaultMismatch(e, policy, nil)
+				require.Lenf(t, findings, 1, "kind %q policy %q", kind, policy)
+				require.Equal(t, CodeStreamFaultMismatch, findings[0].Code)
+				require.Equal(t, SeverityError, findings[0].Severity)
+				require.Equal(t, "providers.perplexity.fault.attempts[0].kind", findings[0].Path)
+			}
+		}
+	})
+
+	t.Run("a stream_* kind under a streaming policy with after_chunk in range is untouched", func(t *testing.T) {
+		t.Parallel()
+		for _, after := range []int{0, 3} { // 3 is chunk_count-1: the terminal chunk itself is a valid target
+			e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
+				{Fault: &Fault{Attempts: []FaultAttempt{{Kind: FaultStreamDisconnect, AfterChunk: after}}}},
+			}}
+			require.Emptyf(t, ValidateStreamFaultMismatch(e, StreamServe, threeDeltaTurns), "after_chunk %d", after)
+		}
+	})
+
+	t.Run("after_chunk equal to chunk_count is out of range, not merely 'exceeds'", func(t *testing.T) {
+		t.Parallel()
+		e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
+			{Fault: &Fault{Attempts: []FaultAttempt{{Kind: FaultStreamDisconnect, AfterChunk: 4}}}},
+		}}
+		findings := ValidateStreamFaultMismatch(e, StreamServe, threeDeltaTurns)
+		require.Len(t, findings, 1)
+		require.Equal(t, CodeStreamAfterChunkOutOfRange, findings[0].Code)
+		require.Equal(t, SeverityError, findings[0].Severity)
+		require.Equal(t, "providers.perplexity.fault.attempts[0].after_chunk", findings[0].Path)
+	})
+
+	t.Run("the bound is the SMALLEST chunk_count across the entry's turns, not the declaring turn's own", func(t *testing.T) {
+		t.Parallel()
+		// Turn 0 has 3 deltas (chunk_count 4); turn 1 has only 1 (chunk_count
+		// 2). The fault plan is per route, so after_chunk: 2 must be bounded
+		// by the shorter sibling even though it is declared on turn 0.
+		turns := []StreamTurn{
+			{Path: "providers.perplexity", Script: &StreamScript{Policy: StreamServe, Deltas: deltas("a", "b", "c")}},
+			{Path: "providers.perplexity", Script: &StreamScript{Deltas: deltas("only")}},
+		}
+		e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
+			{Fault: &Fault{Attempts: []FaultAttempt{{Kind: FaultStreamDisconnect, AfterChunk: 2}}}},
+			{},
+		}}
+		findings := ValidateStreamFaultMismatch(e, StreamServe, turns)
+		require.Len(t, findings, 1, "after_chunk 2 is >= the shorter sibling's chunk_count (2)")
+		require.Equal(t, CodeStreamAfterChunkOutOfRange, findings[0].Code)
+	})
+
+	t.Run("a negative after_chunk is out of range too, not only one past the end", func(t *testing.T) {
+		t.Parallel()
+		e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
+			{Fault: &Fault{Attempts: []FaultAttempt{{Kind: FaultStreamDisconnect, AfterChunk: -1}}}},
+		}}
+		findings := ValidateStreamFaultMismatch(e, StreamServe, threeDeltaTurns)
+		require.Len(t, findings, 1)
+		require.Equal(t, CodeStreamAfterChunkOutOfRange, findings[0].Code)
+		require.Equal(t, SeverityError, findings[0].Severity)
+	})
+
+	t.Run("stream_truncate_chunk and stream_stall are bounded the same way as stream_disconnect", func(t *testing.T) {
+		t.Parallel()
+		for _, kind := range []FaultKind{FaultStreamTruncateChunk, FaultStreamStall} {
+			e := &ProviderEntry{Name: "perplexity", Turns: []Turn{
+				{Fault: &Fault{Attempts: []FaultAttempt{{Kind: kind, AfterChunk: 4}}}},
+			}}
+			findings := ValidateStreamFaultMismatch(e, StreamServe, threeDeltaTurns)
+			require.Lenf(t, findings, 1, "kind %q", kind)
+			require.Equal(t, CodeStreamAfterChunkOutOfRange, findings[0].Code)
+		}
 	})
 }
