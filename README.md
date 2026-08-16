@@ -359,7 +359,7 @@ entirely and much later:
 
 ## Built-in protocol scenarios
 
-Fourteen scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
+Fifteen scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
 `testkit.WithBuiltin("<name>")`. They cover *protocol* behaviour, which is the same for every consumer;
 product-specific corpora belong in your own repository.
 
@@ -374,6 +374,7 @@ product-specific corpora belong in your own repository.
 | `server-error` | A 500 is surfaced as an upstream failure rather than mistaken for an empty result set. |
 | `malformed-json` | A body that is not valid JSON fails cleanly instead of panicking or returning zero values. |
 | `extra-fields` | Unknown additive response fields do not break the decoder — vendors evolve additively. |
+| `malicious-content` | A generic hostile-content pack — prompt injection (`IGNORE ALL PREVIOUS INSTRUCTIONS`, `<\|im_start\|>system`), credential-shaped bait (`sk-live-FAKE`, `AKIAFAKE`, `xoxb-FAKE`, `-----BEGIN RSA PRIVATE KEY-----`), unescaped `<script>` markup and an exfiltration instruction to `exfil.example`, plus one benign source — projected through every provider block, so your guardrail or fail-closed ingress gate is exercised on every dispatch path from one scenario. Ask for the whole pack: `numResults:20` on Exa and `max_results:20` on Tavily (the vendor defaults truncate it), `text:true` on Exa `/answer`, `include_raw_content` on Tavily; the file's header comment records the rest, including which surfaces carry only the injection marker. |
 | `fusion-overlap` | One canonical source rendered through all three providers, with a claim repeated across sources: deduplication by URL and corroboration counting are exercised deliberately, not by accident. |
 | `conversation` | A scripted agentic loop: successive calls to one route get successive turns, matched by call index and by body substring, with an unconditional fallback last. |
 | `namespaced` | One route serving two concurrent callers, kept in separate turn lanes by `turn_key`, so neither draws the turn scripted for the other. |

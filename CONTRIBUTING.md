@@ -95,8 +95,10 @@ Three places, all mechanical:
   the contracts test — that is deliberate, because an unattributed fixture is unreviewable.
 - **Compare raw JSON bytes, not round-tripped structs.** A wrong JSON type round-trips cleanly through a permissive
   decoder, so a struct-level assertion lets exactly the bugs that matter survive.
-- Add the provider to the built-in scenarios under `scenarios/protocol/` so the existing protocol coverage —
-  happy, empty, unauthorized, rate-limited, server-error, malformed, extra-fields — applies to it too.
+- Add the provider to every built-in under `scenarios/protocol/` — the guard in `scenarios/scenarios_test.go`
+  requires each one to declare every implemented provider — so the existing protocol coverage applies to it too.
+  `malicious-content` in particular needs every hostile source projected and a marker-bearing synthesised-answer
+  field on the new surface.
 - Extend `scripts/image-smoke.sh` with its route.
 
 ## Changing an existing wire shape

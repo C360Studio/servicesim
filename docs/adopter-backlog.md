@@ -16,7 +16,7 @@ Recorded 2026-08-16 (midday), against **v0.3.0**, tagged from `main` at `ae4c8e6
 | 3 — the async job machine | **shipped** in v0.2.0 (A1–A7) |
 | 4 — the remaining synchronous routes | **shipped** in v0.3.0 |
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
-| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: unit 1 (`CompletedAt`) done; Phase 7's provenance-date item is already done |
+| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`) and 2 (`malicious-content`) done; Phase 7's provenance-date item is already done |
 
 **v0.3.0** is the last tag (2026-08-16): Phase 4's three routes, Phase 5's streaming end to end (four `.sse`
 goldens, the `streaming` built-in, four testkit assertions), honest provenance dates and goldens for the async
@@ -40,8 +40,8 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    pins moved in a follow-up commit — the CONTRIBUTING.md "Releasing" order.
 2. **Phase 6 — G-3 depth**, on branch `phase-6` (PR #2). Highest value per effort: most primitives exist. Unit 1
    (the journal `CompletedAt` defect: stamped before the delay on aborting faults, so `observed_ms` read 0 on a
-   hang) is done; next is the malicious-content built-in rendered through all three providers, `body_bytes:`
-   padding, the timeout/brownout/hang-then-abort/rotation built-ins with `AssertDifferentCredential`,
+   hang) is done; unit 2 (the generic `malicious-content` built-in) is done; next is `body_bytes:` padding, the
+   timeout/brownout/hang-then-abort/rotation built-ins with `AssertDifferentCredential`,
    delay-after-headers, the observed-pacing assertion per D5. Trickle bodies now have Phase 5's chunked-write path
    to sit on. Note the over-redaction defect listed there was fixed in v0.1.1 already — verify before re-fixing.
 3. Tell the adopter v0.3.0 exists; their questions in the two contract READMEs are still open.
@@ -557,8 +557,9 @@ trickle-body vector in Phase 6 can now build on the same chunked-write path this
 
 > Phase 6 — G-3 depth: hostile content, brownout, timeouts, rotation, and the pacing evidence fix
 >
-> **State on 2026-08-16:** unit 1 (`CompletedAt`) done on `phase-6`; otherwise not started, apart from three items
-> that other phases already covered — marked in the list below. Read the current `provider/handle.go` and
+> **State on 2026-08-16:** units 1 (`CompletedAt`) and 2 (the generic `malicious-content` built-in) done on
+> `phase-6`; otherwise not started, apart from three items that other phases already covered — marked in the list
+> below. Read the current `provider/handle.go` and
 > `provider/fault_exec.go` before trusting the line numbers quoted here; Phase 5 rewrote the execute path (a stream
 > branch, `hijackReset`, per-chunk `sleep`), and the journal-early record now also fires for streams (`if
 > out.Aborted || resp.Stream != nil { record() }`), a shape `phase-6` unit 1 has since split in two: streams still
@@ -581,10 +582,21 @@ registry disable. The pacing fix is what makes journal timestamps usable as the 
   before `record` for a non-streaming aborting fault, so `completed_at - arrived_at` observes the hang instead of
   reading ~0; a client cancellation during that hang still lands its own entry, stamped at the instant the server
   observed it. The streaming path (`resp.Stream != nil`) already recorded before the delay and is unchanged.
-- A malicious-content built-in scenario carrying the adopter's guardrail-classifier vectors, rendered through all
-  three providers so one corpus tests every dispatch path (the fusion-overlap pattern). This is corpus authoring, not
-  code: the mechanism is verified — source text is free-form and rendered verbatim, and redaction applies to the journal
-  only, so credential-shaped bait survives to the consumer, which is what the test needs.
+- ~~A malicious-content built-in scenario~~ **DONE on `phase-6` (unit 2), generic pack only.**
+  `scenarios/protocol/malicious-content.yaml`: one corpus (prompt injection, credential-shaped bait, active markup,
+  exfiltration instructions, long content, plus one benign source) rendered through all six provider blocks — exa,
+  tavily, perplexity, perplexity_agent, exa_agent_runs, tavily_research — so one scenario exercises a consumer's
+  guardrail / fail-closed ingress gate on every dispatch path (the fusion-overlap pattern). The backlog's own claim
+  was verified in code, not assumed: source text is free-form and rendered verbatim (`SetEscapeHTML(false)`), and
+  journal redaction touches only request-side fields, so the bait survives to the consumer and never reaches the
+  journal — a request that itself echoes a token matching the vendor prefix `sk`, `pplx` or `tvly` is still masked
+  there by `internal/redact`'s vendor-key pattern, which is the one corner the AKIA/xoxb/JWT/PEM shapes fall
+  outside of.
+  The adopter's own guardrail-classifier vectors were not available (owner's decision 2026-08-16) and are deferred:
+  they are an APPEND to this file — new sources and new projection entries — not a restructuring. Give each new
+  source one of the existing category prefixes (`inj-`/`cred-`/`markup-`/`exfil-`/`long-`), or add its new prefix to
+  `hostileSourcePrefixes` in `scenarios/scenarios_test.go` in the same change: that variable, not this paragraph, is
+  what the every-provider-projects-it guard actually enforces, and an unlisted prefix would silently escape it.
 - An oversized-body knob (body_bytes: padding) — cheap, and what actually exercises a size-limit ingress gate. Today
   oversized is expressible only by embedding megabytes of text in the YAML.
 - Trickle/slow-drip bodies — a genuinely new execution kind sharing its entire machinery with Phase 5's chunked

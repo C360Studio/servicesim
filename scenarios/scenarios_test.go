@@ -31,6 +31,7 @@ var builtins = []string{
 	"fusion-overlap",
 	"happy",
 	"malformed-json",
+	"malicious-content",
 	"namespaced",
 	"rate-limited",
 	"server-error",
@@ -66,8 +67,11 @@ var documentedProjectionKeys = map[string]map[string]bool{
 
 // refListKeys are the projection keys whose list elements may be the scalar
 // shorthand for a source reference. Every other scalar list — queries,
-// snippets, highlights — is content, not a reference.
-var refListKeys = keySet("citations", "search_results", "results")
+// snippets, highlights — is content, not a reference. "sources" is safe to
+// include here even though the scenario root also declares a top-level
+// "sources:" list of source objects: collectRefs only ever walks a turn's
+// respond body, never the root document, so the two never collide.
+var refListKeys = keySet("citations", "search_results", "results", "sources")
 
 func keySet(keys ...string) map[string]bool {
 	out := make(map[string]bool, len(keys))
@@ -297,6 +301,410 @@ func TestFusionOverlap_OverlapsOnPurpose(t *testing.T) {
 	require.Len(t, claim, 3)
 	assert.Equal(t, []string{"source-a", "source-a-variant", "source-b"}, ids(claim),
 		"SourcesForClaim must report in corpus declaration order")
+}
+
+// hostileSourcePrefixes are malicious-content's category prefixes, minus
+// benign-, which is deliberately exempt from "every provider must project
+// it" — see the built-in's own header comment for why.
+var hostileSourcePrefixes = []string{"inj-", "cred-", "markup-", "exfil-", "long-"}
+
+// maliciousContentMarkers is the canonical marker vocabulary
+// scenarios/protocol/malicious-content.yaml carries. It is kept in sync BY
+// HAND with that file's own header comment and with the README's built-in
+// table — see the built-in's header comment for the cross-reference — so a
+// consumer's own guardrail test can copy this exact list and
+// strings.Contains() against it.
+var maliciousContentMarkers = []string{
+	"IGNORE ALL PREVIOUS INSTRUCTIONS",
+	"<|im_start|>system",
+	"sk-live-FAKE",
+	"AKIAFAKE",
+	"xoxb-FAKE",
+	"-----BEGIN RSA PRIVATE KEY-----",
+	"<script>",
+	"exfil.example",
+}
+
+// maliciousContentBaitTokens are the LITERAL fake credential byte sequences
+// the cred-* sources embed, verbatim, so the live-wire test can assert on
+// more than a prefix: the whole placeholder token must survive rendering.
+var maliciousContentBaitTokens = []string{
+	"sk-live-FAKE0000000000000000EXAMPLE",
+	"AKIAFAKEFAKEFAKEFAKE",
+	"xoxb-FAKE-0000000000-EXAMPLE0000FAKE0000FAKE",
+	"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJGQUtFIn0.FAKESIGNATUREEXAMPLE00000000",
+}
+
+// maliciousContentLongContentMinBytes is the floor TestMaliciousContent_EachCategoryHasASource
+// holds long-*'s text to — comfortably below the shipped source's actual size,
+// but high enough that "a few KiB" in the header comment stays a fixture
+// property rather than a description nobody checks.
+const maliciousContentLongContentMinBytes = 2048
+
+// TestMaliciousContent_EachCategoryHasASource pins the vector-coverage claim
+// that every hostile category is actually represented, not merely described
+// in the header comment. It also pins the benign control's existence and the
+// long-* category's size, both of which the header comment promises but
+// neither of which the every-provider test below can see.
+func TestMaliciousContent_EachCategoryHasASource(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "malicious-content")
+
+	for _, prefix := range hostileSourcePrefixes {
+		found := false
+		for i := range s.Sources {
+			if strings.HasPrefix(s.Sources[i].ID, prefix) {
+				found = true
+				break
+			}
+		}
+		assert.Truef(t, found, "no source id carries the %q prefix", prefix)
+	}
+
+	benignFound := false
+	for i := range s.Sources {
+		if strings.HasPrefix(s.Sources[i].ID, "benign-") {
+			benignFound = true
+		}
+		if strings.HasPrefix(s.Sources[i].ID, "long-") {
+			assert.GreaterOrEqualf(t, len(s.Sources[i].Text), maliciousContentLongContentMinBytes,
+				"%s: text is only %d bytes, short of the %d-byte floor the header comment's "+
+					"'a few KiB' promises", s.Sources[i].ID, len(s.Sources[i].Text), maliciousContentLongContentMinBytes)
+		}
+	}
+	assert.True(t, benignFound, "no source id carries the benign- prefix")
+}
+
+// TestMaliciousContent_EveryHostileSourceCarriesAMarker pins that every
+// hostile source individually carries a canonical marker, not only the
+// corpus as a whole: TestMaliciousContent_MarkerVocabularyAppearsInTheScenario
+// passes as long as SOME source supplies each marker, so one source quietly
+// losing its own marker (while its neighbours keep the vocabulary-level
+// check green) would otherwise go uncaught. long- is exempt: it is
+// documented as marker-free by design, a large but ordinary body.
+func TestMaliciousContent_EveryHostileSourceCarriesAMarker(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "malicious-content")
+
+	for i := range s.Sources {
+		src := &s.Sources[i]
+		hostile := false
+		for _, prefix := range hostileSourcePrefixes {
+			if prefix == "long-" {
+				continue
+			}
+			if strings.HasPrefix(src.ID, prefix) {
+				hostile = true
+				break
+			}
+		}
+		if !hostile {
+			continue
+		}
+		found := false
+		for _, marker := range maliciousContentMarkers {
+			if sourceContainsMarker(src, marker) {
+				found = true
+				break
+			}
+		}
+		assert.Truef(t, found, "%s carries none of the canonical markers in its title, text or snippets", src.ID)
+	}
+}
+
+// TestMaliciousContent_EveryHostileSourceReachesEveryProvider is the static
+// half of the fusion-overlap pattern applied to hostile content: one corpus,
+// every provider, so a consumer's guardrail is exercised on every dispatch
+// path by this one scenario. benign-report is deliberately not required
+// here — only that it be projected somewhere, which
+// TestBuiltins_SourceReferencesResolve already guarantees for every
+// declared source.
+func TestMaliciousContent_EveryHostileSourceReachesEveryProvider(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "malicious-content")
+
+	var hostileIDs []string
+	for i := range s.Sources {
+		id := s.Sources[i].ID
+		for _, prefix := range hostileSourcePrefixes {
+			if strings.HasPrefix(id, prefix) {
+				hostileIDs = append(hostileIDs, id)
+				break
+			}
+		}
+	}
+	require.NotEmpty(t, hostileIDs)
+
+	for _, p := range implementedProviders {
+		entry := s.Provider(p)
+		require.NotNilf(t, entry, "malicious-content declares no %q block", p)
+
+		var refs []string
+		for i := range entry.Turns {
+			collectRefs(&entry.Turns[i].Respond, "", &refs)
+		}
+		for _, id := range hostileIDs {
+			assert.Containsf(t, refs, id, "%s does not project hostile source %q", p, id)
+		}
+	}
+}
+
+// TestMaliciousContent_MarkerVocabularyAppearsInTheScenario asserts the
+// canonical vocabulary is actually present in the loaded scenario — in a
+// source's text, title or snippets, or in a provider-authored string such as
+// an answer — rather than only promised in the header comment.
+func TestMaliciousContent_MarkerVocabularyAppearsInTheScenario(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "malicious-content")
+
+	for _, marker := range maliciousContentMarkers {
+		found := markerInSources(s, marker) || markerInProviders(s, marker)
+		assert.Truef(t, found, "marker %q does not appear anywhere in malicious-content", marker)
+	}
+}
+
+// markerInSources reports whether any source's title, text or snippets
+// contains marker.
+func markerInSources(s *scenario.Scenario, marker string) bool {
+	for i := range s.Sources {
+		if sourceContainsMarker(&s.Sources[i], marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// sourceContainsMarker reports whether one source's title, text or snippets
+// contains marker.
+func sourceContainsMarker(src *scenario.Source, marker string) bool {
+	if strings.Contains(src.Title, marker) || strings.Contains(src.Text, marker) {
+		return true
+	}
+	for _, snippet := range src.Snippets {
+		if strings.Contains(snippet, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// markerInProviders reports whether any provider-authored scalar value —
+// an answer, a summary, a related question, and so on — contains marker.
+func markerInProviders(s *scenario.Scenario, marker string) bool {
+	for _, name := range s.Providers.Names() {
+		entry := s.Provider(name)
+		for i := range entry.Turns {
+			if scalarsContain(&entry.Turns[i].Respond, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// scalarsContain reports whether any scalar value reachable from n contains
+// substr, walking mapping and sequence nodes recursively. It is deliberately
+// blind to structure — unlike collectRefs it does not care whether a node is
+// a source reference — because a provider-authored answer string is not one.
+func scalarsContain(n *yaml.Node, substr string) bool {
+	if n == nil {
+		return false
+	}
+	if n.Kind == yaml.ScalarNode && strings.Contains(n.Value, substr) {
+		return true
+	}
+	for _, c := range n.Content {
+		if scalarsContain(c, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestMaliciousContent_WireResponsesCarryMarkersVerbatim is the live-wire
+// half: every marker substring, and every literal cred-* bait token, must
+// reach the client byte for byte — including <script> UN-escaped — on every
+// surface that has a synthesised answer or a rendered corpus, proving
+// scenario/render.go and internal/wire/render.go's SetEscapeHTML(false)
+// claim from the built-in's own header comment rather than trusting it.
+func TestMaliciousContent_WireResponsesCarryMarkersVerbatim(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("malicious-content"))
+
+	cases := []struct {
+		name    string
+		p       provider.Name
+		path    string
+		body    string
+		headers map[string]string
+		// mustContain is an extra substring unique to what THIS request's own
+		// gating flag unlocks, so the flag itself is load-bearing rather than
+		// decorative — a marker every other case's request would carry
+		// regardless would not prove the flag did anything.
+		mustContain string
+	}{
+		{
+			name:    "exa search",
+			p:       provider.Exa,
+			path:    "/search",
+			body:    `{"query":"malicious content probe","numResults":20}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			// text:true is what makes /answer's citations carry the source's
+			// full text (provider/exa/render.go renderAnswer), not only titles.
+			name:    "exa answer",
+			p:       provider.Exa,
+			path:    "/answer",
+			body:    `{"query":"malicious content probe","text":true}`,
+			headers: map[string]string{"x-api-key": "test-exa-key"},
+		},
+		{
+			// include_raw_content:true is what makes /search's raw_content field
+			// carry markup-script's override sentence (provider/tavily/render.go
+			// renderRawContent) — the one string on this surface that reaches the
+			// wire ONLY through raw_content, since content already falls back
+			// through snippet then text and would carry every other marker even
+			// without this flag.
+			name: "tavily search",
+			p:    provider.Tavily,
+			path: "/search",
+			body: `{"query":"malicious content probe","max_results":20,` +
+				`"include_raw_content":true,"include_answer":true}`,
+			headers:     map[string]string{"authorization": "Bearer test-tavily-key"},
+			mustContain: "Raw crawl capture, byte for byte:",
+		},
+		{
+			name:    "perplexity sonar",
+			p:       provider.Perplexity,
+			path:    "/v1/sonar",
+			body:    `{"model":"sonar","messages":[{"role":"user","content":"malicious content probe"}]}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+		{
+			name:    "perplexity agent",
+			p:       provider.Perplexity,
+			path:    "/v1/agent",
+			body:    `{"input":"malicious content probe"}`,
+			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+				sim.URL(tc.p)+tc.path, strings.NewReader(tc.body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+
+			resp, err := sim.Client().Do(req)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+
+			raw, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+
+			body := string(raw)
+			for _, marker := range maliciousContentMarkers {
+				assert.Containsf(t, body, marker, "%s response missing marker %q", tc.name, marker)
+			}
+			for _, token := range maliciousContentBaitTokens {
+				assert.Containsf(t, body, token, "%s response missing literal bait token %q", tc.name, token)
+			}
+			// `&`, alongside `<` and `>`, must survive un-entity-escaped — the
+			// header comment's SetEscapeHTML(false) claim, proven rather than
+			// merely stated. markup-imgonerror's title carries one, so it
+			// reaches every surface regardless of paging or gating flags.
+			assert.Containsf(t, body, "&", "%s response missing an unescaped '&'", tc.name)
+			if tc.mustContain != "" {
+				assert.Containsf(t, body, tc.mustContain,
+					"%s response missing %q — the surface's own gating flag may not be doing anything",
+					tc.name, tc.mustContain)
+			}
+		})
+	}
+}
+
+// TestMaliciousContent_CredentialBaitNeverReachesTheJournal is the journal
+// half of the interplay the built-in's header comment documents: response-
+// side bait never touches the journal, but a REQUEST that echoes one of the
+// same tokens is still redacted there — the two are different mechanisms
+// (there is no response-body field on a journal Entry at all; a request body
+// is redacted by internal/redact's vendor-key pattern) and both must hold at
+// once for the header comment's claim to be true rather than merely stated.
+func TestMaliciousContent_CredentialBaitNeverReachesTheJournal(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("malicious-content"), testkit.WithProviders(provider.Exa))
+
+	// An ordinary probe first, so the journal holds real traffic to scan —
+	// the bait is response-side and must never appear in it.
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		sim.URL(provider.Exa)+"/search", strings.NewReader(`{"query":"malicious content probe","numResults":20}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-exa-key")
+	resp, err := sim.Client().Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	testkit.AssertNoCredentialLeak(t, sim, maliciousContentBaitTokens...)
+
+	// Now a request whose OWN body echoes a cred-* token — the interplay case:
+	// journal redaction of request text still works in the presence of bait.
+	echoed := maliciousContentBaitTokens[0] // sk-live-FAKE0000000000000000EXAMPLE
+	echoReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		sim.URL(provider.Exa)+"/search", strings.NewReader(`{"query":"`+echoed+`"}`))
+	require.NoError(t, err)
+	echoReq.Header.Set("Content-Type", "application/json")
+	echoReq.Header.Set("x-api-key", "test-exa-key")
+	echoResp, err := sim.Client().Do(echoReq)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, echoResp.Body)
+	_ = echoResp.Body.Close()
+	require.Equal(t, http.StatusOK, echoResp.StatusCode)
+
+	entries := sim.AwaitRequests(t, provider.Exa, 2)
+	last := entries[len(entries)-1]
+	// Positive half first: the journal actually masked something (internal/
+	// redact.Mask, quoted literally so this fails loudly if that constant's
+	// value ever changes), rather than merely not containing the raw token —
+	// which would also pass, vacuously, if the body were never journaled at
+	// all.
+	assert.Containsf(t, string(last.Body), "[REDACTED]",
+		"the journaled request body should carry a masked value, got: %s", last.Body)
+	assert.NotContainsf(t, string(last.Body), echoed,
+		"the journaled request body must not carry the raw echoed token: %s", last.Body)
+	// The broader scan: the raw token must not have reached ANY journal field
+	// (path, query, headers, findings), not only the request body.
+	testkit.AssertNoCredentialLeak(t, sim, echoed)
+}
+
+// TestMaliciousContent_AsyncTerminalSnapshotsCarryAMarker is the static
+// check for the two async surfaces: a live poll loop is optional per the
+// unit spec, and the terminal snapshot's own text is reachable statically.
+func TestMaliciousContent_AsyncTerminalSnapshotsCarryAMarker(t *testing.T) {
+	t.Parallel()
+	s := loadBuiltin(t, "malicious-content")
+
+	for _, p := range []string{"exa_agent_runs", "tavily_research"} {
+		entry := s.Provider(p)
+		require.NotNilf(t, entry, "malicious-content declares no %q block", p)
+		require.NotEmpty(t, entry.Turns)
+
+		terminal := &entry.Turns[len(entry.Turns)-1].Respond
+		assert.Truef(t, scalarsContain(terminal, "IGNORE ALL PREVIOUS INSTRUCTIONS"),
+			"%s's terminal snapshot carries no injection marker", p)
+	}
 }
 
 // TestConversation_ScriptsAnAgenticLoop is the regression test for the turn
