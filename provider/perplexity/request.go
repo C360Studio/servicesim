@@ -74,11 +74,23 @@ const (
 	// simulate was requested.
 	CodeStreamMode = "perplexity.stream_mode.invalid"
 
-	// CodeStreamUnimplemented is raised, as a warning, for stream: true. Streaming
-	// is a plan non-goal; the request still receives the ordinary non-streaming
-	// body. It warns rather than staying silent because a consumer must not be
-	// able to believe it exercised a path it never touched.
+	// CodeStreamUnimplemented is raised, as a warning, for stream: true under
+	// a warn-policy entry. The request still receives the ordinary
+	// non-streaming body. It warns rather than staying silent because a
+	// consumer must not be able to believe it exercised a path it never
+	// touched. It does NOT fire under a stream-policy entry — a request that
+	// will actually receive a scripted SSE sequence must not also carry a
+	// warning promising it will not.
 	CodeStreamUnimplemented = "perplexity.stream.unimplemented"
+
+	// CodeStreamModeConciseUnscripted is raised, as a warning, when a
+	// request carries stream_mode: concise AND will actually stream (a
+	// stream-policy entry answering stream: true). Unit 1 renders only the
+	// stream_mode: full sequence, so the full-mode transcript is served
+	// anyway rather than rejected — the request is valid per the vendor's
+	// own enum, and rejecting it would invent a vendor error for a request
+	// the vendor accepts.
+	CodeStreamModeConciseUnscripted = "perplexity.stream_mode.concise.unscripted"
 )
 
 // Codes raised while serving a request rather than while validating one.
@@ -128,6 +140,14 @@ var (
 	// StreamModes is the stream_mode enum.
 	StreamModes = []string{"full", "concise"}
 )
+
+// streamModeConcise is the stream_mode value unit 1 does not render.
+// [CodeStreamModeConciseUnscripted] is what a request naming it draws when
+// this build streams anyway, in stream_mode: full. Unexported: it is one
+// element of the already-exported StreamModes and has exactly one caller in
+// this package, so exporting a second name for it would only be a
+// compatibility obligation with nothing behind it.
+const streamModeConcise = "concise"
 
 // MaxTokensLimit is the upper bound accepted for max_tokens.
 const MaxTokensLimit = 128000
@@ -244,7 +264,16 @@ func checkUnknownFields(x *provider.Exchange, known []string) {
 // validateSonarRequest applies §6.3's Sonar checks and returns the model the
 // response should echo, which is the request's own model when it names a valid
 // one.
-func validateSonarRequest(x *provider.Exchange) string {
+//
+// policy is the entry's effective streaming policy (streamPolicy(entry)),
+// the same call rejectStream already makes before turn selection. Threading
+// it through — rather than re-deriving it here — is what lets the stream:
+// true check below be conditional on it: reject is unreachable at this point
+// (rejectStream already returned), warn fires exactly as it always has, and
+// stream does NOT fire it, because a request that will actually receive a
+// scripted SSE sequence must not also carry a warning promising the
+// opposite.
+func validateSonarRequest(x *provider.Exchange, policy scenario.StreamPolicy) string {
 	if bodyUnusable(x) {
 		return ""
 	}
@@ -260,7 +289,7 @@ func validateSonarRequest(x *provider.Exchange) string {
 	validateNullableEnum(x, "search_recency_filter", CodeRecencyFilter, RecencyFilters)
 	validateEnum(x, "stream_mode", CodeStreamMode, StreamModes)
 
-	if stream, ok := x.Bool("stream"); ok && stream {
+	if stream, ok := x.Bool("stream"); ok && stream && policy != scenario.StreamServe {
 		x.Warn(CodeStreamUnimplemented, "body.stream",
 			"streaming is not simulated; this request receives the ordinary non-streaming body")
 	}

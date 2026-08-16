@@ -12,7 +12,19 @@ type Response struct {
 	Header http.Header
 
 	// Body is the fully rendered response bytes, extras already merged.
+	//
+	// Body must STILL be populated when Stream is set. It is what a
+	// non-streaming caller of the same turn receives, and what a
+	// stream-suppressing fault writes (see suppressStream in
+	// fault_exec.go). The two are rendered from one projection, so a
+	// scenario cannot quote one cost when it streams and another when it
+	// does not.
 	Body []byte
+
+	// Stream, when non-nil, is written instead of Body as a Server-Sent
+	// Events sequence. Nil for every non-streaming response, which is every
+	// response this repository served before streaming existed.
+	Stream *Stream
 
 	// Label names the selection for the journal and logs, for example
 	// "exa.search.ok" or "exa.error.INVALID_REQUEST_BODY".

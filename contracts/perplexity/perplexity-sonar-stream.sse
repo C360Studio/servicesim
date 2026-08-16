@@ -1,0 +1,10 @@
+data: {"id":"stream-golden-completion","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":"Report A "},"message":{"role":"assistant","content":"Report A "},"finish_reason":null}],"search_results":[{"title":"Report A","url":"https://example.test/report-a","snippet":"","date":null,"last_updated":null,"source":"web"}]}
+
+data: {"id":"stream-golden-completion","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":"finds "},"message":{"role":"assistant","content":"Report A finds "},"finish_reason":null}],"search_results":[{"title":"Report A","url":"https://example.test/report-a","snippet":"","date":null,"last_updated":null,"source":"web"}]}
+
+data: {"id":"stream-golden-completion","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":"that X."},"message":{"role":"assistant","content":"Report A finds that X."},"finish_reason":null}],"search_results":[{"title":"Report A","url":"https://example.test/report-a","snippet":"","date":null,"last_updated":null,"source":"web"}]}
+
+data: {"id":"stream-golden-completion","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"message":{"role":"assistant","content":"Report A finds that X."},"finish_reason":"stop"}],"usage":{"prompt_tokens":19,"completion_tokens":240,"total_tokens":259,"reasoning_tokens":5120,"cost":{"input_tokens_cost":0.0002,"output_tokens_cost":0.0024,"reasoning_tokens_cost":0.0102,"total_cost":0.0128}},"search_results":[{"title":"Report A","url":"https://example.test/report-a","snippet":"","date":null,"last_updated":null,"source":"web"}]}
+
+data: [DONE]
+

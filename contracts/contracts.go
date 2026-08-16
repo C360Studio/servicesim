@@ -12,7 +12,7 @@ import (
 
 //go:embed exa/*.json exa/provenance.yaml
 //go:embed tavily/*.json tavily/provenance.yaml
-//go:embed perplexity/*.json perplexity/provenance.yaml
+//go:embed perplexity/*.json perplexity/*.sse perplexity/provenance.yaml
 var files embed.FS
 
 // VerifiedOn is the OLDEST per-entry `verified:` date across every provider's
@@ -138,9 +138,14 @@ func FS() fs.FS {
 	return files
 }
 
-// Goldens returns every golden fixture for p, sorted by file name. Sorting is
-// not cosmetic: a caller that ranges over the result and writes a report would
-// otherwise depend on the embed package's ordering.
+// Goldens returns every JSON golden fixture for p, sorted by file name.
+// Sorting is not cosmetic: a caller that ranges over the result and writes a
+// report would otherwise depend on the embed package's ordering.
+//
+// SSE transcript fixtures (*.sse, docs/design/streaming.md §5.4) are NOT
+// enumerated here: every caller of this function — TestGoldensAreValidJSON
+// chief among them — assumes a JSON object, which an SSE transcript is not.
+// Read an SSE fixture directly by name through [Read] instead.
 func Goldens(p Provider) ([]Golden, error) {
 	if err := validate(p); err != nil {
 		return nil, err

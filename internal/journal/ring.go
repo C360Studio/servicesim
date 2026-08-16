@@ -127,6 +127,10 @@ type stored struct {
 // a caller's, where the cause is one import further away.
 var _ Namespaced = (*Ring)(nil)
 
+// Ring is also this package's only [StreamCloser] implementation, asserted
+// here for the same reason as the Namespaced assertion above.
+var _ StreamCloser = (*Ring)(nil)
+
 // NewRing returns a Ring retaining at most capacity entries per namespace and at
 // most maxBodyBytes of body per entry, admitting at most [DefaultMaxNamespaces]
 // namespaces. It is [NewRingWithLimits] with the default namespace bound; a
@@ -315,6 +319,53 @@ func (r *Ring) SnapshotIn(namespace string) []Entry {
 		out = append(out, s.entry)
 	}
 	return out
+}
+
+// CloseStream implements [StreamCloser]. It finds the stored entry by
+// namespace and Seq and amends the OBSERVED half of a streamed exchange:
+// Outcome.BytesWritten, Outcome.CompletedAt, and Outcome.Stream's
+// ChunksSent/State. It is a no-op for a namespace or sequence the Ring does
+// not hold — a namespace it never admitted, or an entry its own capacity
+// already evicted — which is the honest degradation [CloseStreamIn]
+// documents: nothing is written and, if the entry still exists elsewhere,
+// it keeps its planned fields and "open" state forever.
+//
+// The stored Outcome.Stream pointer is replaced, never mutated through: a
+// [Ring.Snapshot] taken before this call already holds a *copy* of the Entry
+// (see [cloneEntry]) whose Outcome.Stream still points at the pre-close
+// value, so replacing the pointer here cannot retroactively change bytes a
+// caller already read. Both this method and Snapshot take the lane's own
+// lock, so the replacement itself is race-free.
+func (r *Ring) CloseStream(namespace string, seq uint64, c StreamClose) {
+	r.mu.RLock()
+	l := r.lanes[laneKey(namespace)]
+	r.mu.RUnlock()
+	if l == nil {
+		return
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := range l.entries {
+		e := &l.entries[i].entry
+		if e.Seq != seq {
+			continue
+		}
+		if e.Outcome.Stream == nil {
+			// StreamCloser's doc comment promises it "can only write the
+			// observed fields of a stream" — matched here rather than
+			// amending CompletedAt/BytesWritten on an entry that was never
+			// a stream in the first place.
+			return
+		}
+		e.CompletedAt = c.CompletedAt
+		e.Outcome.BytesWritten = c.BytesWritten
+		amended := *e.Outcome.Stream
+		amended.ChunksSent = c.ChunksSent
+		amended.State = c.State
+		e.Outcome.Stream = &amended
+		return
+	}
 }
 
 // Namespaces returns the live namespace names, sorted. Sorted because map

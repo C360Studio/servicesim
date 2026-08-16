@@ -403,14 +403,17 @@ type ValidationPolicy struct {
 	Demote []string `yaml:"demote,omitempty"`
 }
 
-// StreamPolicy selects the behaviour for a streaming request while streaming is
-// out of scope (plan non-goal 7).
+// StreamPolicy selects what a provider does with a request that asks to
+// stream.
 type StreamPolicy string
 
-// Supported streaming policies.
+// Supported streaming policies. Warn is unchanged and remains the default, so
+// a scenario that declares no stream script behaves exactly as it did before
+// StreamServe existed.
 const (
 	StreamWarn   StreamPolicy = "warn"   // default: journal warning, ordinary JSON body
 	StreamReject StreamPolicy = "reject" // provider-shaped 4xx
+	StreamServe  StreamPolicy = "stream" // serve the scripted SSE sequence
 )
 
 // SourceRef is a reference from a provider projection to a canonical Source.

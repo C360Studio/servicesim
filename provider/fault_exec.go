@@ -37,6 +37,11 @@ const defaultContentType = "application/json"
 // aborting fault before the client can observe the abort. For aborting kinds the
 // byte count is known in advance: zero for close_before_headers, the truncation
 // length for truncate_body.
+//
+// When resp.Stream is non-nil — which, by the time Handle calls this, means
+// "this exchange WILL stream" (suppression already ran) — out.Stream is the
+// PLANNED half of the streaming outcome, final before the first byte; see
+// plannedStreamOutcome.
 func faultOutcome(dec FaultDecision, resp Response) journal.Outcome {
 	out := journal.Outcome{
 		Kind:         journal.OutcomeScenario,
@@ -44,6 +49,9 @@ func faultOutcome(dec FaultDecision, resp Response) journal.Outcome {
 		Status:       resp.Status,
 		FaultKey:     dec.Key,
 		AttemptIndex: dec.Index,
+	}
+	if resp.Stream != nil {
+		out.Stream = plannedStreamOutcome(resp.Stream)
 	}
 	if !resp.FaultEligible {
 		// Routing, authentication or validation rejected the request, so this is
@@ -94,18 +102,42 @@ func faultOutcome(dec FaultDecision, resp Response) journal.Outcome {
 // aborting kinds it does not return: it panics with http.ErrAbortHandler, and
 // Handle's deferred record — already run for those kinds — is a no-op before the
 // re-panic.
+//
+// One branch, not a switch, decides whether this exchange streams:
+// resp.Stream != nil dispatches to executeStream and nothing else in this
+// function inspects it. execute does not decide suppression and cannot tell
+// that it happened — Handle applied it before this was called (see
+// suppressStream), so a suppressed stream arrives with Stream already nil and
+// takes the ordinary path below exactly as any non-streaming response does.
+// Adding a suppressesStream call here would be the single most likely thing
+// for a change to reintroduce: it would be a second derivation of a decision
+// Handle already made, invisible to everything that read the first one.
 func execute(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttempt,
-	resp Response, mode DelayMode, out journal.Outcome,
+	resp Response, mode DelayMode, out journal.Outcome, closer func(journal.StreamClose),
 ) journal.Outcome {
 	if a != nil && a.Delay > 0 {
 		if err := sleep(ctx, a.Delay.Duration(), mode); err != nil {
 			// The client's own deadline or cancellation ended the request while the
 			// delay was still running. Writing now would be shouting into a closed
 			// socket; the journal records that nothing was delivered.
+			//
+			// For a STREAMING exchange this out.Aborted=true is set on the
+			// returned value only. record() already ran (Handle's widened
+			// journal-early condition) before execute was ever called, so the
+			// retained entry's Outcome.Aborted stays false — Handle's deferred
+			// fallback closer amends State to client_gone (via closer, below),
+			// never Aborted, because StreamClose carries no such field. State
+			// is therefore the authoritative signal for a streamed exchange;
+			// Aborted's meaning here is scoped to the non-streaming path, where
+			// this returned Outcome IS what gets retained.
 			out.Aborted = true
 			out.BytesWritten = 0
 			return out
 		}
+	}
+
+	if resp.Stream != nil {
+		return executeStream(ctx, w, a, resp, mode, out, closer)
 	}
 
 	if a == nil {
@@ -177,6 +209,60 @@ func faultBody(a *scenario.FaultAttempt, resp Response) []byte {
 		}
 	}
 	return body
+}
+
+// suppressesStream reports whether kind is a fault a real vendor answers
+// before a stream would ever start — an ordinary JSON error, not SSE wrapping
+// one. truncate_body is deliberately absent: it is the one non-streaming kind
+// whose interaction with a streaming exchange is reported rather than
+// silently reinterpreted, because a byte-offset cut is wrong for a chunked
+// body in a way none of these six kinds are (see Handle's mirror-case
+// handling and scenario.CodeStreamFaultMismatch).
+func suppressesStream(kind scenario.FaultKind) bool {
+	switch kind {
+	case scenario.FaultStatus, scenario.FaultInvalidJSON, scenario.FaultWrongContentType,
+		scenario.FaultEmptyBody, scenario.FaultExtraFields, scenario.FaultCloseBeforeHeaders:
+		return true
+	default:
+		return false
+	}
+}
+
+// suppressStream drops resp.Stream and resp.Header, so the ordinary
+// non-streaming path below renders resp.Body under the fault's own headers
+// instead. Header is reset rather than filtered because a streaming
+// Response's Header only ever holds streamHeader()'s two entries: without
+// this, faultHeader would find "Content-Type: text/event-stream" already
+// present and never fall back to its JSON default, leaking the streaming
+// content type onto a JSON error body — a fidelity bug that would teach a
+// consumer to parse the wrong thing.
+func suppressStream(resp Response) Response {
+	resp.Stream = nil
+	resp.Header = nil
+	return resp
+}
+
+// plannedStreamOutcome builds the PLANNED half of a streamed exchange's
+// journal outcome from a fully rendered Stream — everything that is known
+// before the first byte is written. The observed half (ChunksSent, State) is
+// left at its zero value; closeWith fills it in once the exchange closes.
+func plannedStreamOutcome(s *Stream) *journal.StreamOutcome {
+	out := &journal.StreamOutcome{
+		Grammar:       string(s.Grammar),
+		ChunkCount:    len(s.Chunks),
+		BytesPlanned:  s.Bytes(),
+		TerminalIndex: -1,
+		Usage:         s.Usage,
+		CostTotal:     s.CostTotal,
+		State:         journal.StreamOpen,
+	}
+	for i, c := range s.Chunks {
+		if c.Terminal {
+			out.TerminalIndex = i
+			break
+		}
+	}
+	return out
 }
 
 // faultHeader merges the attempt's headers over the handler's, and applies the

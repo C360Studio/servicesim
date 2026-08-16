@@ -1,7 +1,9 @@
 package perplexity
 
 import (
+	"encoding/json"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -41,21 +43,26 @@ type PerplexityProjection struct { //revive:disable-line:exported // the scenari
 	// FinishReason is stop or length. Empty means stop.
 	FinishReason string `yaml:"finish_reason,omitempty"`
 
-	// Stream selects the behaviour for a request carrying "stream": true.
-	// Defaults to StreamWarn: a journal warning plus the ordinary non-streaming
-	// JSON body, which is all this build can produce. StreamReject turns that
-	// into a 422 naming body.stream.
+	// Stream selects the behaviour for a request carrying "stream": true, and —
+	// when the policy is StreamServe — scripts the deltas the SSE sequence
+	// serves. Defaults to StreamWarn: a journal warning plus the ordinary
+	// non-streaming JSON body. StreamReject turns that into a 422 naming
+	// body.stream. StreamServe serves the scripted GrammarDelta full-mode
+	// sequence (renderSonarStream) instead of the JSON body, though the JSON
+	// body is still rendered — see Response.Stream's doc comment for why.
 	//
-	// It is a property of the provider block rather than of a turn — see
-	// streamPolicy — because rejection has to happen before turn selection claims
-	// a fault attempt. Only the first turn's value is read.
+	// The POLICY is a property of the provider block rather than of a turn —
+	// see streamPolicy — because rejection has to happen before turn selection
+	// claims a fault attempt. Only the first turn's policy is read. The
+	// DELTAS, in contrast, are genuinely per turn: they are the answer, and
+	// each turn has its own.
 	//
 	// The field exists because a consumer whose primary path always streams
 	// otherwise records fixtures against a complete non-streaming 200 that the
 	// real API would never have sent, and their suite passes green against
 	// behaviour that is about to change under them. Being able to make that fail
 	// loudly is the point.
-	Stream scenario.StreamPolicy `yaml:"stream,omitempty"`
+	Stream scenario.StreamScript `yaml:"stream,omitempty"`
 
 	Citations        []scenario.SourceRef `yaml:"citations,omitempty"`
 	SearchResults    []PerplexityResult   `yaml:"search_results,omitempty"`
@@ -207,28 +214,40 @@ func idParts(x *provider.Exchange, callIndex int, extra ...string) []string {
 	return append(parts, extra...)
 }
 
+// renderSonarIdentity computes the id, model and finish_reason shared by the
+// JSON body and the SSE stream for one turn, so the two transports render
+// identical values everywhere docs/design/streaming.md §6.1 says they must
+// agree. created is deliberately NOT here: the JSON body's created follows
+// p.Created-or-BaseTime (below), while the stream pins it CONSTANT at
+// BaseTime regardless of p.Created (renderSonarStream) — the one field this
+// design deliberately makes the two transports disagree on.
+//
+// The attempt index is claimed whether or not the scenario pins the
+// completion id, so the journal's attempt number never depends on whether a
+// fixture happened to declare one.
+func renderSonarIdentity(x *provider.Exchange, p *PerplexityProjection, requestModel string, callIndex int) (id, model, finish string) {
+	id = p.CompletionID
+	if id == "" {
+		id = ids.UUIDv5(idParts(x, callIndex)...)
+	}
+	model = firstNonEmpty(p.Model, requestModel, Models[0])
+	finish = p.FinishReason
+	if finish == "" {
+		finish = FinishReasons[0]
+	}
+	return id, model, finish
+}
+
 // renderSonar projects p into the Sonar wire envelope and returns the response
 // bytes, extras already merged.
 func renderSonar(x *provider.Exchange, p *PerplexityProjection, requestModel string) ([]byte, error) {
 	s := x.Deps.Scenario
 
-	// The attempt index is claimed whether or not the scenario pins the
-	// completion id, so the journal's attempt number never depends on whether a
-	// fixture happened to declare one.
 	callIndex := x.CallIndex()
-
-	id := p.CompletionID
-	if id == "" {
-		id = ids.UUIDv5(idParts(x, callIndex)...)
-	}
+	id, model, finish := renderSonarIdentity(x, p, requestModel, callIndex)
 	created := p.Created
 	if created == 0 {
 		created = s.BaseTime().Unix()
-	}
-	model := firstNonEmpty(p.Model, requestModel, Models[0])
-	finish := p.FinishReason
-	if finish == "" {
-		finish = FinishReasons[0]
 	}
 
 	resp := CompletionResponse{
@@ -376,6 +395,107 @@ func deref(v *float64) float64 {
 		return 0
 	}
 	return *v
+}
+
+// renderSonarStream projects p into the GrammarDelta full-mode SSE sequence
+// (docs/design/streaming.md §7, "Resolved 2026-08-15" A3): one chunk per
+// scripted delta carrying that delta's role+content and the running
+// aggregate message, then one terminal chunk carrying finish_reason, the
+// full aggregated message, usage+cost (unless the script omits usage) and
+// search_results together — a frame-level choice this build makes because
+// the vendor pins that placement only for stream_mode: concise
+// (contracts/perplexity/README.md "Streaming (SSE)") — plus images,
+// related_questions and extra_fields, mirroring where usage lands rather
+// than being scripted onto every chunk.
+//
+// created is held CONSTANT at Scenario.BaseTime().Unix() across every chunk,
+// regardless of p.Created: a byte-stable golden needs a constant, and the
+// design deliberately departs here from what the vendor's own concise-mode
+// example shows (created moving while id stays fixed) — see §6.1. id, model
+// and finish_reason otherwise follow the exact rules the non-streaming body
+// uses (renderSonarIdentity), so a scenario that pins them renders a stream
+// and a JSON body that agree on every field except created.
+func renderSonarStream(x *provider.Exchange, p *PerplexityProjection, requestModel string) (*provider.Stream, error) {
+	s := x.Deps.Scenario
+	callIndex := x.CallIndex()
+	id, model, finish := renderSonarIdentity(x, p, requestModel, callIndex)
+	created := s.BaseTime().Unix()
+
+	deltas := p.Stream.Deltas
+	searchResults := renderSonarResults(p.SearchResults)
+
+	events := make([]provider.SSEEvent, 0, len(deltas)+1)
+	var aggregate strings.Builder
+	for _, d := range deltas {
+		aggregate.WriteString(d)
+		chunk := ChatCompletionChunkResponse{
+			ID: id, Object: ObjectChatCompletionChunk, Model: model, Created: created,
+			Choices: []ChatCompletionChunkChoice{{
+				Index:        0,
+				Delta:        Message{Role: RoleAssistant, Content: d},
+				Message:      Message{Role: RoleAssistant, Content: aggregate.String()},
+				FinishReason: nil,
+			}},
+			SearchResults: searchResults,
+		}
+		data, err := wire.Render(chunk, nil)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, provider.SSEEvent{Data: data})
+	}
+
+	terminal := p.Stream.Terminal
+	omitUsage := terminal != nil && terminal.OmitUsage
+	usage := renderSonarUsage(p.Usage)
+	var usagePtr *Usage
+	if !omitUsage {
+		usagePtr = &usage
+	}
+	finishValue := finish
+	termChunk := ChatCompletionChunkResponse{
+		ID: id, Object: ObjectChatCompletionChunk, Model: model, Created: created,
+		Choices: []ChatCompletionChunkChoice{{
+			Index:        0,
+			Delta:        Message{Role: RoleAssistant, Content: ""},
+			Message:      Message{Role: RoleAssistant, Content: aggregate.String()},
+			FinishReason: &finishValue,
+		}},
+		Usage:            usagePtr,
+		SearchResults:    searchResults,
+		Images:           renderImages(p.Images),
+		RelatedQuestions: p.RelatedQuestions,
+	}
+	// When p.ExtraFields is non-empty, the terminal frame's keys come out
+	// alphabetised rather than in struct order — wire.MergeJSON's own doc
+	// comment explains why (a map round-trip) — so an extra-fields turn
+	// renders its N delta frames in struct order and its one terminal frame
+	// alphabetised. Deterministic either way, and the same divergence the
+	// non-streaming body already has; noted here only so a captured
+	// transcript's mixed ordering does not read as a bug later.
+	termData, err := wire.Render(termChunk, p.ExtraFields)
+	if err != nil {
+		return nil, err
+	}
+	events = append(events, provider.SSEEvent{Data: termData, Terminal: true})
+
+	stream := &provider.Stream{
+		Grammar: provider.GrammarDelta,
+		Chunks:  provider.EncodeSSE(events),
+	}
+	if terminal != nil {
+		stream.OmitDone = terminal.OmitDone
+	}
+	if !omitUsage {
+		usageBytes, err := json.Marshal(usage)
+		if err != nil {
+			return nil, err
+		}
+		stream.Usage = json.RawMessage(usageBytes)
+		costTotal := usage.Cost.TotalCost
+		stream.CostTotal = &costTotal
+	}
+	return stream, nil
 }
 
 func firstNonEmpty(values ...string) string {

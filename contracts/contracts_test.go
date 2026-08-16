@@ -44,6 +44,13 @@ func TestGoldensAreValidJSON(t *testing.T) {
 // TestEveryGoldenHasProvenance is the reason this package exists. A fixture with
 // no provenance entry cannot be reviewed: when it changes, nobody can say
 // whether the vendor moved or Servicesim did.
+//
+// JSON goldens are enumerated through goldens(t, ...) / [contracts.Goldens].
+// SSE transcript goldens (*.sse, docs/design/streaming.md §5.4) are walked
+// separately, directly off [contracts.FS], because Goldens deliberately
+// enumerates JSON fixtures only (see its doc comment) — without this second
+// pass, a future *.sse fixture with no provenance entry would pass this test
+// silently, which is exactly the drift this test exists to catch.
 func TestEveryGoldenHasProvenance(t *testing.T) {
 	t.Parallel()
 
@@ -55,23 +62,31 @@ func TestEveryGoldenHasProvenance(t *testing.T) {
 				t.Errorf("%s has no entry in %s/%s", golden.Path, provider, contracts.ProvenanceFile)
 			}
 		}
+
+		for _, name := range sseGoldenNames(t, provider) {
+			if _, ok := records[name]; !ok {
+				t.Errorf("%s/%s has no entry in %s/%s", provider, name, provider, contracts.ProvenanceFile)
+			}
+		}
 	}
 }
 
 // TestEveryProvenanceEntryHasGolden catches the opposite drift: a record left
 // behind by a deleted or renamed fixture, which would make the provenance file
 // describe a shape nothing serves.
+//
+// Existence is checked through [contracts.Read] rather than goldens(t, ...):
+// the latter wraps [contracts.Goldens], which deliberately enumerates JSON
+// fixtures only (see its doc comment) and would report every SSE transcript
+// golden — *.sse, docs/design/streaming.md §5.4 — as missing even though it
+// is embedded and real. Read has no such restriction: it serves any embedded
+// fixture by name, whatever its extension.
 func TestEveryProvenanceEntryHasGolden(t *testing.T) {
 	t.Parallel()
 
 	for _, provider := range contracts.Providers() {
-		present := make(map[string]bool)
-		for _, golden := range goldens(t, provider) {
-			present[golden.Name] = true
-		}
-
 		for name := range provenance(t, provider) {
-			if !present[name] {
+			if _, err := contracts.Read(provider, name); err != nil {
 				t.Errorf("%s/%s names %s, which does not exist", provider, contracts.ProvenanceFile, name)
 			}
 		}
@@ -434,7 +449,10 @@ func TestReadRejectsUnknownProviderAndPaths(t *testing.T) {
 // TestFSHoldsOnlyGoldensAndProvenance keeps stray files out of the embedded
 // set: anything else here would ship to consumers as contract data. The
 // README.md files are deliberately not embedded — they are the human record,
-// not wire data.
+// not wire data. .sse is the SSE transcript golden extension
+// docs/design/streaming.md §5.4 names; contracts.Goldens does not enumerate
+// them (see its doc comment), but they are still legitimate embedded contract
+// data, not stray files.
 func TestFSHoldsOnlyGoldensAndProvenance(t *testing.T) {
 	t.Parallel()
 
@@ -446,7 +464,7 @@ func TestFSHoldsOnlyGoldensAndProvenance(t *testing.T) {
 			return nil
 		}
 		switch {
-		case strings.HasSuffix(name, ".json"), path.Base(name) == contracts.ProvenanceFile:
+		case strings.HasSuffix(name, ".json"), strings.HasSuffix(name, ".sse"), path.Base(name) == contracts.ProvenanceFile:
 		default:
 			t.Errorf("%s is embedded but is neither a golden nor a provenance record", name)
 		}
@@ -483,6 +501,23 @@ func goldens(t *testing.T, p contracts.Provider) []contracts.Golden {
 		t.Fatalf("%s has no goldens", p)
 	}
 	return list
+}
+
+// sseGoldenNames returns the bare file names of every *.sse fixture embedded
+// for p, walked directly off [contracts.FS] since [contracts.Goldens]
+// deliberately does not enumerate them (its doc comment explains why).
+func sseGoldenNames(t *testing.T, p contracts.Provider) []string {
+	t.Helper()
+
+	names, err := fs.Glob(contracts.FS(), path.Join(string(p), "*.sse"))
+	if err != nil {
+		t.Fatalf("listing %s .sse goldens: %v", p, err)
+	}
+	out := make([]string, len(names))
+	for i, name := range names {
+		out[i] = path.Base(name)
+	}
+	return out
 }
 
 func provenance(t *testing.T, p contracts.Provider) map[string]contracts.Record {

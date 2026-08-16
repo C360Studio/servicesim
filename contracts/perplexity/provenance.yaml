@@ -27,7 +27,7 @@
 # both surfaces are simulated.
 
 provider: perplexity
-verified: 2026-08-14
+verified: 2026-08-15
 
 goldens:
   - golden: perplexity-sonar-happy.json
@@ -217,3 +217,37 @@ goldens:
     documentation_url: https://docs.perplexity.ai/openapi.json
     verified: 2026-08-14
     note: ErrorInfo envelope; code and type values are Servicesim's.
+
+  - golden: perplexity-sonar-stream.sse
+    endpoint: POST /v1/sonar (aliases POST /chat/completions, POST /v1/chat/completions), stream_mode full
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/docs/sonar/pro-search/stream-mode.md
+    verified: 2026-08-15
+    note: >-
+      Full-mode GrammarDelta transcript for a three-delta turn (Phase 5 unit 1,
+      docs/design/streaming.md §7 "Resolved 2026-08-15" A3). Vendor-pinned:
+      unnamed data: frames, object: chat.completion.chunk, choices[0].index,
+      finish_reason present (null on every non-terminal chunk, the scripted
+      value on the terminal one), that every chunk carries both delta and the
+      server-side-aggregated message, usage.cost's field names, and — via
+      declared OpenAI compatibility only, not a direct Sonar statement — the
+      data: [DONE] sentinel. Simulator-chosen, correctable from a captured
+      live response per docs/design/streaming.md §10 step 3: that usage rides
+      on the SAME chunk as finish_reason and search_results (the vendor
+      confirms this placement only for stream_mode: concise, on
+      chat.reasoning.done/chat.completion.done); that id stays constant while
+      created is pinned constant at time.base rather than moving the way the
+      vendor's own concise-mode example shows it (a deliberate departure, not
+      an extension, so this golden stays byte-stable); that search_results
+      repeats on every chunk rather than only the terminal one (the vendor
+      states "multiple times during stream" without saying which); and that
+      finish_reason: null specifically for full mode (inferred from the
+      concise-mode example, unstated for full mode by any fetched page). No
+      citations: none appear in any fetched vendor streaming frame. The two
+      response headers this golden's request would receive on the real wire
+      — Content-Type: text/event-stream and Cache-Control: no-cache — are
+      also simulator-chosen, not vendor-pinned: no fetched page or the
+      openapi.json document states either header for this surface (the
+      OpenAPI document declares no text/event-stream content type at all for
+      /v1/sonar, per this file's own "Streaming (SSE)" section above).

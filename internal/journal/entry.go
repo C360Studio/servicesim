@@ -111,6 +111,15 @@ type Outcome struct {
 
 	BytesWritten int  `json:"bytes_written"`
 	Aborted      bool `json:"aborted,omitempty"`
+
+	// Stream is non-nil only for a streamed exchange. It is planned in full
+	// before the first byte is written — see [StreamOutcome] and
+	// provider.Handle's widened journal-early condition — and its observed
+	// fields are amended by [CloseStreamIn] once the exchange closes.
+	// omitempty keeps every existing non-streaming golden byte-identical:
+	// Stream is nil for every response this repository served before
+	// streaming existed.
+	Stream *StreamOutcome `json:"stream,omitempty"`
 }
 
 // Entry is one recorded request.
@@ -432,6 +441,19 @@ func cloneEntry(e Entry) Entry {
 	}
 	if e.Auth.Placements != nil {
 		e.Auth.Placements = append([]AuthPlacement(nil), e.Auth.Placements...)
+	}
+	if e.Outcome.Stream != nil {
+		// Without this, every Snapshot entry aliases the ring's stored
+		// *StreamOutcome (and its json.RawMessage Usage backing array).
+		// Ring.CloseStream and closeWith both replace the pointer rather
+		// than mutate through it, which makes the alias harmless today by
+		// discipline alone — but Snapshot's own contract is a deep copy,
+		// and a caller that ever wrote through a snapshotted
+		// *StreamOutcome would otherwise race CloseStream with no lock
+		// held on either side.
+		s := *e.Outcome.Stream
+		s.Usage = append(json.RawMessage(nil), s.Usage...)
+		e.Outcome.Stream = &s
 	}
 	return e
 }

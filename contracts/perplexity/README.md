@@ -349,10 +349,13 @@ Enum: `response.created`, `response.in_progress`, `response.completed`, `respons
 ## Streaming (SSE)
 
 Verified **2026-08-15** against the pages listed under "Documentation sources" above. This section pins the
-wire shape a `stream: true` request receives. It exists ahead of an implementation, per
-[`docs/design/streaming.md`](../../docs/design/streaming.md) §10's contract-fidelity prerequisite, and per "What
-Servicesim simulates" below, streaming is not yet implemented — a `stream: true` request today still receives a
-non-streaming body plus a warning, or a `422` if the scenario asks for `stream: reject`.
+wire shape a `stream: true` request receives. It was written ahead of an implementation, per
+[`docs/design/streaming.md`](../../docs/design/streaming.md) §10's contract-fidelity prerequisite, and — per "What
+Servicesim simulates" below — since **Phase 5 unit 1 (2026-08-15)** the Sonar surface (`POST /v1/sonar` and its
+two aliases) serves this shape for a `stream: true` request against an entry whose policy is `stream`. An entry
+whose policy is `warn` (the default) still receives a complete non-streaming body plus a warning, and `reject`
+still answers `422`. The Agent API's typed SSE grammar remains unimplemented and still answers every
+`stream: true` request with a warning; see "What Servicesim simulates" for the exact split.
 
 ### Chat completions (`POST /v1/sonar`, `/chat/completions`, `/v1/chat/completions`)
 
@@ -618,18 +621,25 @@ subset a C360 research adapter parses:
   validation, `choices`, `citations`, `search_results`, `usage` with required `cost`.
 - `POST /v1/agent` and its `/v1/responses` and `/responses` aliases — non-streaming, with `message` and
   `search_results` output items, `usage`/`cost`, and the `ErrorInfo` envelope.
+- Sonar streaming, `stream_mode: full` only. `providers.perplexity.stream:` (a Sonar entry's
+  `when_requested`) selects between three behaviours. The default, `warn`, journals
+  `perplexity.stream.unimplemented` and answers a `stream: true` request with a complete non-streaming
+  body. `reject` turns that into a `422` naming `body.stream` — what a consumer whose primary path always
+  streams should set, so its fixtures are not recorded against a body the real API would never have sent.
+  Since **Phase 5 unit 1 (2026-08-15)**, `stream` serves the scripted `stream_mode: full` GrammarDelta SSE
+  sequence (`data:` frames closed by `data: [DONE]`) instead. A `stream_mode: concise` request against a
+  streaming entry is served that same full-mode transcript with a
+  `perplexity.stream_mode.concise.unscripted` warning, not rejected and not the concise-mode sequence — see
+  below.
 
 Deliberately **not** simulated in the initial release, because no consumer parses them yet:
 
-- Streaming (the 14 `EventType` members above). A `stream: true` request is answered with a complete
-  non-streaming body plus a `perplexity.stream.unimplemented` warning. Since **2026-08-15** a scenario can
-  set `providers.perplexity.stream: reject` to turn that warning into a `422` naming `body.stream`
-  instead — which is what a consumer whose primary path always streams should do, so its fixtures are not
-  recorded against a body the real API would never have sent. `docs/design/streaming.md` (Phase 5, not yet
-  shipped) plans unit 1 to render only `stream_mode: full`; once it ships, a `stream_mode: concise` request
-  against a scenario that streams will be served the full-mode transcript and a
-  `perplexity.stream_mode.concise.unscripted` warning, not rejected and not the concise-mode sequence —
-  concise mode itself remains unsimulated until a later unit.
+- **`stream_mode: concise`'s own four-object-type grammar** (`chat.reasoning`, `chat.reasoning.done`,
+  `chat.completion.chunk`, `chat.completion.done`). A request naming it is served the full-mode transcript
+  instead, with the warning noted above, not the concise-mode sequence.
+- **The Agent API's typed SSE grammar** (the 14 `EventType` members above). Unaffected by Phase 5 unit 1;
+  every `stream: true` request against `/v1/agent` (and its aliases) still answers with
+  `perplexity.agent.stream.unsupported`, exactly as before.
 - The `sandbox_results`, `mcp_list_tools`, `mcp_call`, `function_call`, `finance_results`,
   `people_search_results`, `fetch_url_results` and `tool_search_output` output-item types.
 - Background mode and the `GET /v1/agent/{id}` polling lifecycle, the files endpoints, and

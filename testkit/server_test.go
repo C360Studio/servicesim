@@ -14,6 +14,7 @@ import (
 
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/provider/exa"
+	"github.com/c360studio/servicesim/provider/perplexity"
 	"github.com/c360studio/servicesim/scenario"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
@@ -639,6 +640,82 @@ func TestJournalAliasIsImplementable(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, testkit.OutcomeFault, entries[0].Outcome.Kind)
 	assert.Equal(t, 1, own.Stats().Stored)
+}
+
+// countingStreamJournal extends countingJournal with the CloseStream method
+// journal.StreamCloser declares. It proves two things docs/design/streaming.md
+// §5.2 promises together: that testkit.StreamClose is nameable in a
+// consumer's own method signature (the compile-time half the var _ assertion
+// below pins), and that a real streamed request through this repository's
+// own Handle recognises the type as implementing the capability and drives
+// it (the runtime half, proven by TestStreamAliasesSurviveAsAliasesAndAreDriven).
+type countingStreamJournal struct {
+	countingJournal
+	mu     sync.Mutex
+	closed []testkit.StreamClose
+}
+
+func (j *countingStreamJournal) CloseStream(_ string, _ uint64, c testkit.StreamClose) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.closed = append(j.closed, c)
+}
+
+func (j *countingStreamJournal) closes() []testkit.StreamClose {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return append([]testkit.StreamClose(nil), j.closed...)
+}
+
+var _ interface {
+	testkit.Journal
+	CloseStream(namespace string, seq uint64, c testkit.StreamClose)
+} = (*countingStreamJournal)(nil)
+
+// TestStreamAliasesSurviveAsAliasesAndAreDriven is the streaming half of the
+// alias-set closure: testkit.StreamOutcome, testkit.StreamState and
+// testkit.StreamClose must be nameable outside this module AND a consumer's
+// own Journal built from only those names must be recognised by the real
+// production Handle, not merely satisfy an interface no code ever checks.
+func TestStreamAliasesSurviveAsAliasesAndAreDriven(t *testing.T) {
+	t.Parallel()
+
+	s, _, err := scenario.Parse([]byte(`
+version: 1
+name: stream-alias-check
+providers:
+  perplexity:
+    answer: hi
+    stream:
+      when_requested: stream
+      deltas: ["hi"]
+`))
+	require.NoError(t, err)
+
+	own := &countingStreamJournal{}
+	srv := httptest.NewServer(perplexity.New(provider.Deps{Scenario: s, Journal: own, Faults: testkit.NewFaults(s)}))
+	t.Cleanup(srv.Close)
+
+	req := newRequest(context.Background(), t, srv.URL+"/v1/sonar", provider.Perplexity,
+		`{"model":"sonar","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, resp.Body.Close())
+
+	entries := own.Snapshot()
+	require.Len(t, entries, 1)
+	var so *testkit.StreamOutcome = entries[0].Outcome.Stream
+	require.NotNil(t, so, "testkit.StreamOutcome must be reachable off a real Entry")
+	var state testkit.StreamState = so.State
+	assert.Equal(t, testkit.StreamOpen, state,
+		"planned at append; this journal never amends the stored entry itself, only records the close below")
+
+	closed := own.closes()
+	require.Len(t, closed, 1,
+		"Handle must have recognised countingStreamJournal as a journal.StreamCloser (via testkit's aliased "+
+			"CloseStream signature) and driven it — false here means the alias set silently stopped closing the loop")
+	assert.Equal(t, testkit.StreamCompleted, closed[0].State)
 }
 
 // ownJobs proves the Jobs alias is implementable from outside this module:

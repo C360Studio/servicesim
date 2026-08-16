@@ -156,6 +156,61 @@ type Cost struct {
 	TotalCost           float64  `json:"total_cost"`
 }
 
+// ObjectChatCompletionChunk is the constant ChatCompletionChunkResponse.object
+// carries.
+const ObjectChatCompletionChunk = "chat.completion.chunk"
+
+// ChatCompletionChunkResponse is one GrammarDelta full-mode SSE frame's
+// payload for POST /v1/sonar's stream: true response
+// (docs/design/streaming.md §7; contracts/perplexity/README.md "Streaming
+// (SSE)"). It has no schema in the vendor's OpenAPI document — no
+// ChatCompletionChunk/chat.completion.chunk schema exists there, confirmed
+// by full-text search — so this shape is reconstructed from
+// sonar/pro-search/stream-mode.md's concise-mode examples and recorded as
+// simulator-chosen in contracts/perplexity/provenance.yaml.
+//
+// It is a distinct type from CompletionResponse, not a reuse of it, because
+// the two disagree on one field FastAPI-schema fidelity cannot paper over:
+// Choice.FinishReason is a required non-null string on the non-streaming
+// body (every choice always finishes stop or length), while a non-terminal
+// stream chunk's finish_reason is a present, literal JSON null — a shape
+// only a *string field can carry. No citations: they appear in no fetched
+// vendor streaming frame, at any scope.
+type ChatCompletionChunkResponse struct {
+	ID      string                      `json:"id"`
+	Object  string                      `json:"object"`
+	Model   string                      `json:"model"`
+	Created int64                       `json:"created"`
+	Choices []ChatCompletionChunkChoice `json:"choices"`
+
+	// Usage, Images and RelatedQuestions are terminal-only: they are
+	// properties of the completed turn, not of an individual delta.
+	// Non-terminal chunks leave them nil, which omits the keys.
+	Usage            *Usage         `json:"usage,omitempty"`
+	SearchResults    []SearchResult `json:"search_results,omitempty"`
+	Images           []Image        `json:"images,omitempty"`
+	RelatedQuestions []string       `json:"related_questions,omitempty"`
+}
+
+// ChatCompletionChunkChoice is one chunk's single choice.
+type ChatCompletionChunkChoice struct {
+	Index int     `json:"index"`
+	Delta Message `json:"delta"`
+
+	// Message carries the AGGREGATE content through this chunk — the vendor
+	// states full mode aggregates server-side and includes choices.message;
+	// the exact field shape is taken from the concise-mode
+	// chat.completion.chunk example (contracts/perplexity/README.md), marked
+	// there as an inference for full mode.
+	Message Message `json:"message"`
+
+	// FinishReason is a pointer because a non-terminal chunk carries a
+	// present, literal JSON null (inferred from the same concise-mode
+	// example; unstated for full mode by any fetched page) and the terminal
+	// chunk carries "stop", or p.FinishReason when the turn scripts one.
+	FinishReason *string `json:"finish_reason"`
+}
+
 // Image is one entry of the Sonar images array.
 type Image struct {
 	ImageURL  string `json:"image_url"`

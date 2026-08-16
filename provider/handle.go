@@ -9,6 +9,7 @@ import (
 
 	"github.com/c360studio/servicesim/internal/httpx"
 	"github.com/c360studio/servicesim/internal/journal"
+	"github.com/c360studio/servicesim/scenario"
 )
 
 // Finding codes the shared lifecycle raises. Provider packages map them onto
@@ -161,9 +162,57 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 			logRequest(d.Logger, entry)
 		}
 
+		// resp and closer are declared here, above the deferred recover/record
+		// block, and assigned (never re-declared with :=) below. The deferred
+		// closure captures them by reference at the point the defer statement
+		// runs, which is before either is set to anything meaningful — a
+		// variable declared after the defer statement is simply not visible to
+		// it. Easy to miss because the code reads correctly in isolation and
+		// fails to compile only once assembled.
+		var resp Response
+		var closer func(journal.StreamClose)
+
+		// closeStream applies the OBSERVED half of a streamed exchange to the
+		// entry that record() already appended. It is idempotent for the same
+		// reason record is: executeStream calls it before returning, and the
+		// deferred fallback below calls it again for a request that never got
+		// there (a panic mid-stream, once a fault kind that can produce one
+		// exists) or that fell through without executeStream ever running.
+		closed := false
+		closer = func(c journal.StreamClose) {
+			if closed {
+				return
+			}
+			closed = true
+			c.CompletedAt = d.Clock.Now()
+			if !journal.CloseStreamIn(d.Journal, x.lane.Namespace, x.Seq, c) {
+				// Plain Warn, not a warn-once helper: no such helper exists in this
+				// repository, and the closed guard above already bounds this to at
+				// most one line per request. A consumer whose Journal does not
+				// implement StreamCloser wants the line every time, because every
+				// entry it affects is one that will stay "open" forever.
+				d.Logger.Warn("journal.stream_not_amendable", slog.Uint64("seq", x.Seq))
+			}
+		}
+
 		defer func() {
 			rec := recover()
 			record()
+			if resp.Stream != nil {
+				// BytesWritten and ChunksSent are left at their zero value
+				// here deliberately: this fallback is reachable today only
+				// when executeStream never ran at all (the pre-dispatch
+				// delay was cancelled before dispatch — see execute's
+				// comment on that branch), where zero is correct because
+				// nothing was written. If a later unit adds a mid-stream
+				// abort path that can panic out of executeStream itself,
+				// that path must call closer with the real counts BEFORE
+				// panicking (exactly as the design's plan/abort sketch in
+				// §4.3 already does with closeWith), so this fallback stays
+				// a true fallback and never clobbers real byte counts with
+				// zero.
+				closer(journal.StreamClose{State: journal.StreamClientGone})
+			}
 			if rec != nil {
 				panic(rec)
 			}
@@ -196,7 +245,7 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 			}
 		}
 
-		resp := h(x)
+		resp = h(x)
 		if x.Failed() {
 			// A handler that left FaultEligible set on a rejected request would
 			// otherwise consume a retry budget and journal the rejection as though
@@ -211,15 +260,57 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 		}
 		dec := x.decision
 
-		out := faultOutcome(dec, resp)
+		// Suppression is decided HERE — before faultOutcome, before the journal
+		// condition, before anything else reads resp.Stream — so resp.Stream !=
+		// nil means "this exchange WILL stream" everywhere downstream. Deciding
+		// it inside execute instead would leave every one of those readers
+		// looking at the outer resp, which a local reassignment inside execute
+		// would never touch: see docs/design/streaming.md §4.4.
+		attempt := dec.Attempt
+		var scriptedUnreachableKind string
+		switch {
+		case attempt != nil && resp.Stream != nil && suppressesStream(attempt.EffectiveKind()):
+			// A real vendor does not answer stream: true with a 429 wrapped in
+			// SSE: the error happens before the stream starts, so the response
+			// becomes an ordinary JSON error and the fault executes exactly as
+			// it always has.
+			resp = suppressStream(resp)
+		case attempt != nil && resp.Stream != nil && attempt.EffectiveKind() == scenario.FaultTruncateBody:
+			// The mirror case: this exchange WILL stream, but the claimed attempt
+			// cannot apply to it — truncate_body sets a Content-Length that is
+			// wrong for a chunked SSE body. Reported, never silently absorbed
+			// into a plain 200: see scenario.CodeStreamFaultMismatch, the
+			// load-time guard this catches when validation was skipped.
+			x.Fail(scenario.CodeStreamAbortUnreachable, "",
+				"fault attempt %q cannot apply to this exchange, which will stream; "+
+					"truncate_body assumes an ordinary JSON body", attempt.EffectiveKind())
+			scriptedUnreachableKind = string(attempt.EffectiveKind())
+			attempt = nil
+		}
+
+		effectiveDec := dec
+		effectiveDec.Attempt = attempt
+		out := faultOutcome(effectiveDec, resp)
+		if scriptedUnreachableKind != "" {
+			// faultOutcome, given a nil attempt, reports FaultNone: Aborted stays
+			// false and no DelayMS is applied, because the attempt's Delay, if
+			// any, is scoped to the stream that never happens. FaultKind alone is
+			// restored so a reader can see what was asked for.
+			out.FaultKind = scriptedUnreachableKind
+		}
 		if x.HasFinding(CodeUnmatched) || x.HasFinding(CodeMethodNotAllowed) {
 			out.Kind = journal.OutcomeUnmatched
 		}
-		if out.Aborted {
+		// The journal-visibility rule generalises: today's rule is "an aborting
+		// fault is journaled before the socket is touched"; a stream makes that
+		// true of every response, because the client consumes chunk 0 seconds
+		// before the handler returns. The aborting case was always the special
+		// case; streaming is the general one.
+		if out.Aborted || resp.Stream != nil {
 			entry.Outcome = out
-			record() // journal BEFORE the client can observe the abort
+			record() // journal BEFORE the client can observe ANYTHING
 		}
-		entry.Outcome = execute(r.Context(), w, dec.Attempt, resp, d.DelayMode, out)
+		entry.Outcome = execute(r.Context(), w, attempt, resp, d.DelayMode, out, closer)
 	}
 }
 

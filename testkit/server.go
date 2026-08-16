@@ -58,6 +58,31 @@ type AuthObservation = journal.AuthObservation
 // Severity classifies a validation finding.
 type Severity = journal.Severity
 
+// StreamOutcome is what a streamed exchange planned and then delivered,
+// reachable as Entry.Outcome.Stream. It aliases the internal journal type so
+// a consumer can name it in assertions and in helper signatures.
+type StreamOutcome = journal.StreamOutcome
+
+// StreamState is how far a streamed exchange got.
+type StreamState = journal.StreamState
+
+// StreamClose is the observed reality of a streamed exchange, the argument a
+// consumer's own Journal implementation of journal.StreamCloser receives.
+type StreamClose = journal.StreamClose
+
+// Stream states, re-exported as constants of the aliased type for the same
+// reason the outcome kinds and severities above are.
+const (
+	// StreamOpen means the entry was appended and has not closed yet.
+	StreamOpen = journal.StreamOpen
+	// StreamCompleted means every scripted chunk was delivered.
+	StreamCompleted = journal.StreamCompleted
+	// StreamAborted means the scenario's scripted abort fired.
+	StreamAborted = journal.StreamAborted
+	// StreamClientGone means the client hung up or timed out first.
+	StreamClientGone = journal.StreamClientGone
+)
+
 // Outcome kinds, re-exported as constants of the aliased type so a consumer's
 // table-driven test keeps its compile-time check instead of falling back to
 // string literals.

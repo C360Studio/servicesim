@@ -1,5 +1,23 @@
 # SSE streaming
 
+> ## SHIPPED (unit 1) — 2026-08-15
+>
+> **Phase 5 unit 1 has landed**: `scenario.StreamServe`/`StreamScript`, `provider.SSEEvent`/`EncodeSSE`/
+> `Stream`/`Response.Stream`/`executeStream`, `Handle`'s widened journal-early condition and mismatch
+> branch, `journal.StreamOutcome`/`StreamCloser`/`Ring.CloseStream`, and the Sonar `GrammarDelta` full-mode
+> renderer, on the three Sonar route spellings — golden:
+> `contracts/perplexity/perplexity-sonar-stream.sse`. Every "Shipped as (Phase 5 unit 1):" note inline below
+> records where the shipped shape narrows or corrects an illustrative block; the round-3 PASS banner this
+> replaces is preserved in full underneath, since its conceptual decisions are what unit 1 was reviewed
+> against and remain the authority for units 2–4. Out of unit 1: `stream_stall`/`stream_disconnect`/
+> `stream_truncate_chunk` and `after_chunk` (unit 2), `GrammarTyped`/the Agent API surface (unit 3),
+> `testkit.AssertGoldenSSE`/`AwaitStreamClosed`/`AssertStreamPacing`, built-in scenarios, and Exa/Tavily
+> streaming (unit 4 / never). Exa is untouched — see §9's shipped-as note on the retirement paragraph.
+> Also out of unit 1, not scoped to any later unit by name yet: §6.2's own read-boundary-non-determinism
+> and goldens-are-taken-over-parsed-frames rule is still not recorded in
+> `contracts/perplexity/README.md`'s "Streaming (SSE)" section, which §6.2 itself already flags as a Phase 5
+> obligation this design creates. Land it whenever that section is next touched, so it is not lost.
+>
 > ## REVISED (round 3) — re-reviewed 2026-08-15: PASS
 >
 > **Phase 5 may start with unit 1:** `Response.Stream` + the `execute` branch + the widened `Handle` journal
@@ -560,6 +578,35 @@ type StreamTerminal struct {
 }
 ```
 
+**Shipped as (Phase 5 unit 1):** `Deltas` is `[]string`, not `[]StreamDelta`, and neither `StreamScript` nor
+`StreamTerminal` carries a `Pace` field — the P5U1 unit scope narrowed §1's scenario grammar to exactly
+`when_requested`, `deltas:` (plain strings) and `terminal: {omit_usage, omit_done}`, deferring per-chunk
+pacing (a `pace:` key at either level, and the `StreamDelta` wrapper type it would need) to the unit that
+lands `stream_stall` and the other `stream_*` fault kinds, which are the only things that ever produce a
+nonzero gap. The transport-level pace SEAM described in §3.2 and §4.3 below is still real and wired
+end-to-end (`SSEEvent.Pace` → `StreamChunk.Pace` → `sleep()` in `executeStream`) — nothing in the scenario
+grammar can drive it to a nonzero value yet, which is the "zero delay" the P5U1 spec asked unit 1 to stop
+at. `StreamScript.UnmarshalYAML` also does not itself reject an unrecognised `when_requested` value (see
+§9's revised mechanism note) — it stores it and lets `scenario.ValidateStreamScripts` raise
+`scenario.stream.policy.unknown` at the specific path, because a decode-time rejection can only produce a
+generic `perplexity.projection.invalid`-class finding addressed at the whole projection body, not at
+`.stream.when_requested`.
+
+One exported type this section's sketch does not name: `scenario.StreamTurn` (`Path`, `Script *StreamScript`,
+`Answer string`), the neutral carrier `ValidateStreamScripts` takes a `[]StreamTurn` of — a calling provider
+package gathers one per turn, since only it knows what its own projection's answer field is called or how its
+`Stream` field is reached (`scenario` cannot know that without importing the provider package and closing an
+import cycle). It exists because `ValidateStreamScripts` is exported specifically so every provider that
+streams shares one implementation rather than duplicating the coherence check per package (the same reasoning
+this section already gives for the check itself) — today Perplexity's `SonarValidator` is its only caller,
+since Exa is untouched this unit, but the type has to be exported the moment the function that takes it is.
+
+Similarly, `provider.StreamHeader()` (§3.2 below) is exported where earlier prose in this document and §4.3's
+sketch call it the unexported `streamHeader()`. It lives in `provider`, not `provider/perplexity` — a
+Perplexity-only home would not help Exa or Tavily when their turn comes (unit 4) — and a provider package's own
+handler is what decides to stream and sets `Response.Header`, so the constructor has to be reachable from
+outside `provider` itself.
+
 Three additive fault kinds and one additive attempt field:
 
 ```go
@@ -703,6 +750,13 @@ func (s *Stream) Bytes() int
 // one blank line. Nothing here reads a clock or a map.
 func EncodeSSE(events []SSEEvent) []StreamChunk
 ```
+
+**Shipped as (Phase 5 unit 1): `Stream` gains a fifth field, `OmitDone bool`.** This illustrative struct
+has nowhere for a scripted `terminal.omit_done` to live: `executeStream` is grammar- and provider-blind (it
+is in `provider`, not `provider/perplexity`), so it cannot reach into a Perplexity-specific
+`StreamTerminal` to decide whether to write `[DONE]`. `renderSonarStream` copies
+`p.Stream.Terminal.OmitDone` onto `Stream.OmitDone` when building the plan, and `executeStream` reads it
+directly. `Stream.Bytes()` and `EncodeSSE` are otherwise exactly as illustrated here.
 
 **`Stream.Chunks` holds exactly the indexed sequence — the N delta chunks and the one terminal chunk,
 `chunk_count = N + 1` elements — and never the `[DONE]` sentinel.** This is what makes `ChunkCount`,
@@ -1003,6 +1057,27 @@ func executeStream(ctx context.Context, w http.ResponseWriter, a *scenario.Fault
 }
 ```
 
+**Shipped as (Phase 5 unit 1):** `executeStream` does take `a *scenario.FaultAttempt` — an early cut of unit
+1 dropped it and called `applyHeader(w, resp.Header)` directly, which silently discarded a non-suppressing
+attempt's `headers:`/`retry_after`/`status` override on the stream path while the non-streaming default
+branch kept applying them; that was a defect against this section's own prose, not an intentional
+narrowing, and is fixed rather than noted as a deviation. `executeStream(ctx, w, a, resp, mode, out,
+closer)` now applies `faultHeader(a, resp)` and `a.Status` (when `a != nil`) exactly as illustrated above,
+before writing `resp.Stream.Chunks` straight through. There is still no
+`planStream`/`plan.PaceOf`/`plan.TruncateAt`/`plan.AbortAt`/`hijackReset` — the abort branch in the middle
+of this block does not exist yet. Unit 1's scope is the three `stream_*` fault kinds' happy-path absence:
+`execute`'s existing pre-dispatch delay block (unmodified — the `stream_stall`-skip carve-out described
+below is also a later unit, since that kind does not exist yet) already runs before dispatch, and
+`executeStream` sleeps each chunk's own `Pace` (always zero this unit — see §3.1's shipped-as note) and
+stops only on a write error or a cancelled context (`journal.StreamClientGone`) or successful completion of
+the loop (`journal.StreamCompleted`). The mismatch case — a `truncate_body` attempt claimed on an exchange
+that will stream — is handled one level up, in `Handle`: the attempt is treated as `nil` for both
+`faultOutcome` and `execute`/`executeStream`'s purposes (so it can never reach a switch that does not exist
+yet either), with `Outcome.FaultKind` restored afterward so the journal still names what was scripted. The
+plan/abort machinery above is the real design for the unit that adds `stream_disconnect`,
+`stream_truncate_chunk` and `stream_stall`; nothing here contradicts it, it is simply not reachable code
+yet.
+
 Note the ordering inside the abort branch: `closeWith` runs **before** `hijackReset` and before the panic. That is the
 same discipline `Handle` applies to `record()`, for the same reason — after the RST the client can already observe the
 abort, so anything a test might read has to be durable by then.
@@ -1143,6 +1218,13 @@ type StreamOutcome struct {
 	ChunksSent int         `json:"chunks_sent"`
 }
 ```
+
+**Shipped as (Phase 5 unit 1):** `journal.StreamOutcome` carries `Grammar`, `ChunkCount`, `BytesPlanned`,
+`TerminalIndex`, `Usage`, `CostTotal`, `State` and `ChunksSent` — every field above is present except
+`PaceMS`, `EventNames`, `AbortAfterChunk`, `TruncatedAtByte` and `StallBeforeMS`, all five of which are
+fault- and pacing-scoped (the three `stream_*` fault kinds, `after_chunk`, and any nonzero pace) and
+therefore have nothing to record in a unit that ships none of those. Adding them is additive — the next
+unit's job, not a correction to this one.
 
 **`Terminal`/`TerminalIndex` mark the closing frame, not the presence of usage.** Every stream this design
 produces has exactly one terminal chunk — `StreamTerminal` tunes what it carries, it does not make it optional
@@ -1432,6 +1514,12 @@ not plausibly vary by `stream_mode`, unlike `finish_reason`, whose *value* depen
 exactly the kind of field a mode split could plausibly change. Not a contradiction either way, only a lower
 confidence than the other vendor-pinned fields in this list, worth naming rather than leaving implicit.
 
+**Shipped as (Phase 5 unit 1):** this section names no Go type for the chunk payload; the shipped one is
+`provider/perplexity/response.go`'s `ChatCompletionChunkResponse` (plus `ChatCompletionChunkChoice` and the
+`ObjectChatCompletionChunk` constant), following this package's existing convention of exporting every wire
+type it renders (`CompletionResponse` and friends). They are a compatibility obligation from this point on,
+same as any other exported type in this package (CLAUDE.md house rule 7).
+
 Field values otherwise follow the same rules `renderSonar` already applies to the non-streaming body, not a
 separate set invented for the stream: `id` is `p.CompletionID` when the turn sets one, else the same
 `ids.UUIDv5` derivation (§6.1); `model` is `firstNonEmpty(p.Model, requestModel, Models[0])`; the terminal
@@ -1456,14 +1544,18 @@ the unknown key — repeating it on N further frames buys nothing and only makes
 `contracts/perplexity/README.md`, resting for `full` mode only on the declared OpenAI compatibility, and
 recorded as such rather than as a direct Sonar statement.
 
+JSON key order below matches `ChatCompletionChunkResponse`'s field order (id, object, model, created, ...),
+which is what `contracts/perplexity/perplexity-sonar-stream.sse` actually pins — key order is not a wire
+contract (§5.4), but there is no reason for an illustrative example to disagree with the golden it illustrates.
+
 ```text
-data: {"id":"...","object":"chat.completion.chunk","created":1767225600,"model":"sonar-deep-research","choices":[{"index":0,"delta":{"role":"assistant","content":"Report A "},"message":{"role":"assistant","content":"Report A "},"finish_reason":null}],"search_results":[...]}
+data: {"id":"...","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":"Report A "},"message":{"role":"assistant","content":"Report A "},"finish_reason":null}],"search_results":[...]}
 
-data: {"id":"...","object":"chat.completion.chunk","created":1767225600,"model":"sonar-deep-research","choices":[{"index":0,"delta":{"role":"assistant","content":"finds "},"message":{"role":"assistant","content":"Report A finds "},"finish_reason":null}],"search_results":[...]}
+data: {"id":"...","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":"finds "},"message":{"role":"assistant","content":"Report A finds "},"finish_reason":null}],"search_results":[...]}
 
-data: {"id":"...","object":"chat.completion.chunk","created":1767225600,"model":"sonar-deep-research","choices":[{"index":0,"delta":{"role":"assistant","content":"that X."},"message":{"role":"assistant","content":"Report A finds that X."},"finish_reason":null}],"search_results":[...]}
+data: {"id":"...","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":"that X."},"message":{"role":"assistant","content":"Report A finds that X."},"finish_reason":null}],"search_results":[...]}
 
-data: {"id":"...","object":"chat.completion.chunk","created":1767225600,"model":"sonar-deep-research","choices":[{"index":0,"delta":{"role":"assistant","content":""},"message":{"role":"assistant","content":"Report A finds that X."},"finish_reason":"stop"}],"usage":{"prompt_tokens":19,"completion_tokens":240,"total_tokens":259,"reasoning_tokens":5120,"cost":{"input_tokens_cost":0.0002,"output_tokens_cost":0.0024,"reasoning_tokens_cost":0.0102,"total_cost":0.0128}},"search_results":[...]}
+data: {"id":"...","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"message":{"role":"assistant","content":"Report A finds that X."},"finish_reason":"stop"}],"usage":{"prompt_tokens":19,"completion_tokens":240,"total_tokens":259,"reasoning_tokens":5120,"cost":{"input_tokens_cost":0.0002,"output_tokens_cost":0.0024,"reasoning_tokens_cost":0.0102,"total_cost":0.0128}},"search_results":[...]}
 
 data: [DONE]
 
@@ -1635,6 +1727,23 @@ All are load-time unless marked, so a bad streaming fixture fails at readiness r
 | `perplexity.stream_mode.concise.unscripted` | warning (per request) | a request carries `stream_mode: concise` AND will actually stream (`resp.Stream != nil` — i.e. `stream: true`, on an entry whose policy is `stream`); unit 1 renders only the full-mode sequence, so the full-mode transcript is served anyway. A `stream_mode: concise` request that does not itself set `stream: true` never reaches this — nothing streams for it to diverge from (§7, A2) |
 | `perplexity.stream.done_ignored` | warning | `terminal.omit_done` declared on the typed grammar, which has no sentinel |
 
+**Shipped as (Phase 5 unit 1):** the first five rows and `scenario.stream.abort_unreachable` are live —
+`scenario.stream.policy.unknown`/`.ignored`/`.deltas_empty`/`.deltas_ignored`/`.answer_mismatch` from
+`scenario.ValidateStreamScripts`, `scenario.stream.abort_unreachable` from `Handle`'s mismatch branch — and
+so is `perplexity.stream_mode.concise.unscripted`. `scenario.stream.abort_unreachable` is reachable in
+only the **mirror** direction this section names explicitly (`truncate_body` claimed against an exchange
+that WILL stream): the other direction (a `stream_*` kind claimed against an exchange that will not) needs
+a `stream_*` fault kind to exist at all, and none does yet — see the `scenario.fault.stream_mismatch` note
+right below. `scenario.fault.stream_mismatch` is live in only the
+direction unit 1 can reach: `truncate_body` on a streaming entry
+(`scenario.ValidateStreamFaultMismatch`); the mirror direction (a `stream_*` kind on a non-streaming entry)
+cannot be authored yet, because `FaultStreamDisconnect`/`FaultStreamTruncateChunk`/`FaultStreamStall` are
+not declared in `scenario.FaultKind` until the unit that adds them — writing one of those kind names today
+still fails with the pre-existing `scenario.fault.kind.unknown`, which is a correct (if generic) rejection
+in the meantime. `scenario.fault.after_chunk.not_streaming`, `scenario.fault.after_chunk.out_of_range` and
+`perplexity.stream.done_ignored` do not exist yet: all three are scoped to `after_chunk`/`GrammarTyped`,
+neither of which unit 1 adds.
+
 ### `stream_mismatch` keys on the effective policy, not key presence
 
 This is the correction that matters most for compatibility, and an earlier draft got it wrong in a way that would
@@ -1652,8 +1761,13 @@ providers:
     fault:
       attempts:
         - kind: truncate_body    # perfectly valid: the body IS ordinary JSON
-          bytes: 40
+          truncate_after_bytes: 40
 ```
+
+*Shipped as (Phase 5 unit 1, verified against `scenario.FaultAttempt`): the YAML key is
+`truncate_after_bytes`, not `bytes` — this block's earlier draft named a key the schema does not have. The
+shipped regression test is `provider/exa/stream_regression_test.go`'s
+`TestStreamWarnWithTruncateBodyStillLoads`, run through Exa's own unmodified `provider.Validator`.*
 
 Nothing about that scenario streams. `warn` and `reject` both produce an ordinary JSON body — that is their entire
 definition — so truncating its bytes is exactly as meaningful as it was before this design existed. Rejecting it
@@ -1690,6 +1804,31 @@ is new behaviour rather than a rename: today's `exa/render.go` validates only un
 value declared there at all, so a scenario that previously loaded silent now gets a warning it did not get before —
 worth calling out because it is the one place in this design where an existing valid fixture starts producing a
 finding it did not produce before, even though nothing about its *response* changes.
+
+**Shipped as (Phase 5 unit 1): the Exa half of this paragraph has not landed. Exa is untouched.** The P5U1
+unit scope is `scenario`, `provider`, `internal/journal` and `provider/perplexity` only —
+`provider/exa` is explicitly out of scope ("Exa/Tavily streaming: unit 4 / never"). Concretely: Exa's own
+`codeStreamPolicy` (`exa.stream.policy.unknown`, `provider/exa/render.go`) is **not** retired yet and keeps
+firing exactly as it does today; Exa's `Stream` field stays `scenario.StreamPolicy`, never becomes
+`scenario.StreamScript`, and therefore cannot decode the mapping form at all — `stream: {when_requested:
+...}` under `providers.exa` is a decode error on Exa, not a `scenario.stream.policy.*` finding; and Exa
+raises no new `ignored` warning for a policy declared on a later turn, because its validator was not
+touched. `scenario.StreamPolicy` gaining the `StreamServe` value is what keeps this compatible rather than
+broken: Exa's own unmodified switch over `p.Stream` (`case "", StreamWarn, StreamReject: ...; default:
+codeStreamPolicy`) treats `stream: stream` as the same "unknown" case it always has, which is correct
+today — Exa cannot serve one. The **only** part of this paragraph that shipped in unit 1 is Perplexity's
+half: `CodeStreamPolicyUnknown`/`CodeStreamPolicyIgnored` (`perplexity.stream.policy.*`) are retired, in
+favour of `scenario.CodeStreamPolicyUnknown`/`scenario.CodeStreamPolicyIgnored`
+(`scenario.stream.policy.*`), exactly as this section says — see `scenario/stream.go`'s
+`ValidateStreamScripts` and its caller, `SonarValidator.ValidateProjections`
+(`provider/perplexity/handler.go`). The mechanism differs from this section's own claim in one respect:
+validation does not happen inside `StreamScript.UnmarshalYAML` (a decode-time rejection there could only
+surface as a generic `perplexity.projection.invalid` addressed at the whole projection body, not at
+`.stream.when_requested` specifically) — `UnmarshalYAML` decodes permissively and
+`scenario.ValidateStreamScripts` is what raises the specific codes, called once per entry from each
+provider's own `ValidateProjections`. `provider/exa/stream_regression_test.go`'s
+`TestStreamWarnWithTruncateBodyStillLoads` proves the compatibility half of this claim end-to-end, through
+Exa's real, unmodified validator.
 
 **One provider code is misnamed and should be corrected in the same pass.** Every Perplexity stream finding is
 `perplexity.stream.*` except one:

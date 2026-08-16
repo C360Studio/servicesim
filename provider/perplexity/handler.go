@@ -213,7 +213,8 @@ func handleSonar(x *provider.Exchange) provider.Response {
 	if rejectStream(x, entry) {
 		return validationResponse(SurfaceSonar, x.Findings(), sonarFields)
 	}
-	model := validateSonarRequest(x)
+	policy := streamPolicy(entry)
+	model := validateSonarRequest(x, policy)
 	if x.Failed() {
 		return validationResponse(SurfaceSonar, x.Findings(), sonarFields)
 	}
@@ -236,18 +237,51 @@ func handleSonar(x *provider.Exchange) provider.Response {
 		x.Fault()
 	}
 
+	// Body is rendered unconditionally: it is what a non-streaming caller of
+	// this same turn receives, and what a stream-suppressing fault writes
+	// (provider.suppressStream). The two transports are rendered from one
+	// projection, so a scenario cannot quote one cost when it streams and
+	// another when it does not.
 	body, err := renderSonar(x, &p, model)
 	if err != nil {
 		x.Fail(CodeRenderFailed, "", "response body could not be rendered: %s", err)
 		return errorResponse(SurfaceSonar, http.StatusInternalServerError, "")
 	}
-	return provider.Response{
+	resp := provider.Response{
 		Status:        http.StatusOK,
 		Body:          body,
 		Label:         "perplexity.sonar.ok",
 		FaultEligible: true,
 		FaultBody:     faultBody(SurfaceSonar),
 	}
+
+	if wantsStream(x) && policy == scenario.StreamServe {
+		stream, err := renderSonarStream(x, &p, model)
+		if err != nil {
+			x.Fail(CodeRenderFailed, "", "response stream could not be rendered: %s", err)
+			return errorResponse(SurfaceSonar, http.StatusInternalServerError, "")
+		}
+		resp.Stream = stream
+		resp.Label = "perplexity.sonar.stream"
+		resp.Header = provider.StreamHeader()
+
+		if mode, ok := x.String("stream_mode"); ok && mode == streamModeConcise {
+			x.Warn(CodeStreamModeConciseUnscripted, "body.stream_mode",
+				"stream_mode: concise is not simulated yet; this stream is served in stream_mode: full")
+		}
+	}
+	return resp
+}
+
+// wantsStream reports whether this specific request asked to stream. It is a
+// property of the REQUEST, not of the entry's policy: a consumer may
+// legitimately send stream: true on one call and stream: false on the next
+// in the same lane (docs/design/streaming.md preamble), so the entry's
+// policy answers "does this surface serve a stream when asked" and this
+// answers "did this call ask".
+func wantsStream(x *provider.Exchange) bool {
+	stream, ok := x.Bool("stream")
+	return ok && stream
 }
 
 // handleAgent serves POST /v1/agent and its /v1/responses alias.
@@ -290,28 +324,17 @@ func handleAgent(x *provider.Exchange) provider.Response {
 	}
 }
 
-// CodeStreamPolicyUnknown is raised at startup for a Sonar `stream:` value that
-// is neither warn nor reject. It is an error rather than a warning because the
-// silent fallback would be warn — the very behaviour the author was trying to
-// turn off — and a typo that quietly re-enables a permissive default is exactly
-// the failure a reject policy exists to prevent.
-const CodeStreamPolicyUnknown = "perplexity.stream.policy.unknown"
-
-// CodeStreamPolicyIgnored is raised at startup for a `stream:` declared on any
-// turn but the first, where it cannot be honoured. It is a warning, not an
-// error: the scenario is servable, but the author needs to know the knob they
-// set is doing nothing.
-const CodeStreamPolicyIgnored = "perplexity.stream.policy.ignored"
-
-// streamPolicy returns the Sonar provider block's streaming policy.
+// streamPolicy returns the Sonar provider entry's EFFECTIVE streaming
+// policy — [scenario.StreamScript.EffectivePolicy] on turn 0's decoded
+// Stream field.
 //
 // It reads the first turn rather than the selected one because the policy decides
 // whether a request is *rejected*, and rejection has to happen before turn
 // selection claims an attempt — a request refused for streaming must not eat a
 // retry budget. A policy that varied per turn could therefore never be honoured,
-// so it is treated as a property of the provider block; validateSonarProjection
-// warns about a later turn that declares one anyway rather than ignoring it in
-// silence.
+// so it is treated as a property of the provider block; scenario.ValidateStreamScripts
+// (called from SonarValidator.ValidateProjections) warns about a later turn
+// that declares one anyway rather than ignoring it in silence.
 func streamPolicy(e *scenario.ProviderEntry) scenario.StreamPolicy {
 	if e == nil || len(e.Turns) == 0 {
 		return scenario.StreamWarn
@@ -323,10 +346,7 @@ func streamPolicy(e *scenario.ProviderEntry) scenario.StreamPolicy {
 		// the decode failure is reported on its own further down the pipeline.
 		return scenario.StreamWarn
 	}
-	if p.Stream == "" {
-		return scenario.StreamWarn
-	}
-	return p.Stream
+	return p.Stream.EffectivePolicy()
 }
 
 // rejectStream applies a `stream: reject` policy to a streaming request and
@@ -338,15 +358,15 @@ func streamPolicy(e *scenario.ProviderEntry) scenario.StreamPolicy {
 // the default warn policy and a lie under this one. Journalling both would leave
 // a consumer reading two findings that contradict each other.
 //
-// Streaming is not simulated at all yet, so the default stays warn: a scenario
-// has to opt in. Opting in is what lets a consumer whose primary path always
+// The default stays warn: a scenario has to opt in to either reject or stream.
+// Opting into reject is what lets a consumer whose primary path always
 // streams stop recording fixtures against a complete non-streaming 200 that the
 // real API would never have sent.
 func rejectStream(x *provider.Exchange, e *scenario.ProviderEntry) bool {
 	if streamPolicy(e) != scenario.StreamReject {
 		return false
 	}
-	if stream, ok := x.Bool("stream"); !ok || !stream {
+	if !wantsStream(x) {
 		return false
 	}
 	x.Fail(CodeStreamUnimplemented, "body.stream",
@@ -393,15 +413,37 @@ func (SonarValidator) Routes() []provider.Route { return SonarRoutes() }
 
 // ValidateProjections decodes every turn's Sonar projection body and reports
 // what it finds, addressed by the turn's YAML path.
+//
+// The streaming grammar's own coherence — the policy enum, that only turn 0's
+// policy is read, that a streaming entry's every turn has a non-empty script
+// and a non-streaming entry's turns have none, that a scripted turn's deltas
+// reassemble its answer, and that no turn declares truncate_body on a
+// streaming entry — is checked once here, across every turn together
+// (scenario.ValidateStreamScripts, scenario.ValidateStreamFaultMismatch),
+// rather than turn by turn inside validateSonarProjection: several of those
+// checks are properties of the ENTRY, not of one turn in isolation.
 func (SonarValidator) ValidateProjections(s *scenario.Scenario, e *scenario.ProviderEntry) []scenario.Finding {
-	return validateTurns(s, e, func(path string, turn *scenario.Turn, index int) []scenario.Finding {
+	if s == nil || e == nil {
+		return nil
+	}
+	streamTurns := make([]scenario.StreamTurn, len(e.Turns))
+	findings := validateTurns(s, e, func(path string, turn *scenario.Turn, index int) []scenario.Finding {
 		var p PerplexityProjection
 		if err := turn.DecodeProjection(e.Name, index, &p); err != nil {
+			streamTurns[index] = scenario.StreamTurn{Path: path}
 			return []scenario.Finding{decodeFinding(path, err)}
 		}
-		findings := s.ResolveRefs(path, &p)
-		return append(findings, validateSonarProjection(path, &p, index)...)
+		streamTurns[index] = scenario.StreamTurn{Path: path, Script: &p.Stream, Answer: p.Answer}
+		out := s.ResolveRefs(path, &p)
+		return append(out, validateSonarProjection(path, &p)...)
 	})
+
+	findings = append(findings, scenario.ValidateStreamScripts(streamTurns)...)
+	if len(streamTurns) > 0 && streamTurns[0].Script != nil {
+		entryPolicy := streamTurns[0].Script.EffectivePolicy()
+		findings = append(findings, scenario.ValidateStreamFaultMismatch(e, entryPolicy)...)
+	}
+	return findings
 }
 
 // AgentValidator decodes and checks the Agent API projections in a scenario.
@@ -455,30 +497,17 @@ func decodeFinding(path string, err error) scenario.Finding {
 	}
 }
 
-// validateSonarProjection checks one decoded Sonar projection at startup. index
-// is the turn's position, which only the streaming policy cares about.
-func validateSonarProjection(path string, p *PerplexityProjection, index int) []scenario.Finding {
+// validateSonarProjection checks one decoded Sonar projection at startup,
+// everything EXCEPT the streaming grammar's own coherence — that is
+// scenario.ValidateStreamScripts and scenario.ValidateStreamFaultMismatch,
+// called once per entry by SonarValidator.ValidateProjections, because both
+// need to see every turn together rather than one at a time.
+func validateSonarProjection(path string, p *PerplexityProjection) []scenario.Finding {
 	var findings []scenario.Finding
 	add := func(code, at, message string) {
 		findings = append(findings, scenario.Finding{
 			Severity: scenario.SeverityError, Code: code, Path: at, Message: message,
 		})
-	}
-
-	switch p.Stream {
-	case "", scenario.StreamWarn, scenario.StreamReject:
-		if p.Stream != "" && index > 0 {
-			findings = append(findings, scenario.Finding{
-				Severity: scenario.SeverityWarning,
-				Code:     CodeStreamPolicyIgnored,
-				Path:     path + ".stream",
-				Message: "the streaming policy is a property of the provider block and is read from the first " +
-					"turn only; this value is ignored",
-			})
-		}
-	default:
-		add(CodeStreamPolicyUnknown, path+".stream",
-			"stream policy "+strconv.Quote(string(p.Stream))+" is not warn or reject")
 	}
 
 	if fr := p.FinishReason; fr != "" && !slices.Contains(FinishReasons, fr) {

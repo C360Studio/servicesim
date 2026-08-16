@@ -521,7 +521,7 @@ providers:
     stream: rejct
     answer: hello
 `,
-			wantCode: CodeStreamPolicyUnknown, wantSev: scenario.SeverityError,
+			wantCode: scenario.CodeStreamPolicyUnknown, wantSev: scenario.SeverityError,
 		},
 		{
 			name: "a later turn's policy is reported as ignored",
@@ -539,7 +539,7 @@ providers:
           stream: reject
           answer: second
 `,
-			wantCode: CodeStreamPolicyIgnored, wantSev: scenario.SeverityWarning,
+			wantCode: scenario.CodeStreamPolicyIgnored, wantSev: scenario.SeverityWarning,
 		},
 	}
 
