@@ -178,6 +178,55 @@ check "POST :8083/v1/responses (perplexity, agent SDK alias)" \
   "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${PERPLEXITY_PORT}/v1/responses" \
       -H 'content-type: application/json' -H 'authorization: Bearer smoke-test-key' -d "${agent_body}")" "200"
 
+echo "==> SSE streaming: a second container on the built-in streaming scenario"
+# The default image scenario (happy) declares no `stream:` policy for
+# Perplexity, so `stream: true` against it only warns and serves ordinary
+# JSON — proving nothing about the SSE path. A second container, started
+# with `--scenario builtin:streaming`, is what actually answers with
+# text/event-stream; this is what proves the embedded built-in works from
+# inside the real image, not just in `go test`.
+STREAM_NAME="servicesim-smoke-stream-$$"
+STREAM_ADMIN_PORT=$(( ADMIN_PORT + 100 ))
+STREAM_PERPLEXITY_PORT=$(( STREAM_ADMIN_PORT + 3 ))
+
+docker run -d --name "${STREAM_NAME}" \
+  -p "${STREAM_ADMIN_PORT}:8080" \
+  -p "${STREAM_PERPLEXITY_PORT}:8083" \
+  "${IMAGE}" --scenario "builtin:streaming" >/dev/null
+
+stream_ready=0
+for _ in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:${STREAM_ADMIN_PORT}/readyz" >/dev/null 2>&1; then
+    stream_ready=1
+    break
+  fi
+  sleep 0.5
+done
+
+if [ "${stream_ready}" -ne 1 ]; then
+  fail "streaming container never became ready"
+  docker logs "${STREAM_NAME}" 2>&1 | tail -50 || true
+else
+  stream_headers=$(mktemp)
+  stream_body=$(mktemp)
+  curl -s -D "${stream_headers}" -o "${stream_body}" -X POST \
+    "http://127.0.0.1:${STREAM_PERPLEXITY_PORT}/chat/completions" \
+    -H 'content-type: application/json' -H 'authorization: Bearer smoke-test-key' \
+    -d '{"model":"sonar-deep-research","messages":[{"role":"user","content":"smoke"}],"stream":true}'
+
+  content_type=$(grep -i '^content-type:' "${stream_headers}" | tr -d '\r' | awk '{print $2}')
+  check "POST :8083/chat/completions (perplexity, stream:true) is text/event-stream" "${content_type}" "text/event-stream"
+
+  if grep -q '^data: \[DONE\]$' "${stream_body}"; then
+    pass "stream response ends with a [DONE] line"
+  else
+    fail "stream response is missing the [DONE] line"
+  fi
+  rm -f "${stream_headers}" "${stream_body}"
+fi
+
+docker rm -f "${STREAM_NAME}" >/dev/null 2>&1 || true
+
 echo "==> criterion 6: authentication is validated, not merely accepted"
 check "missing credential is 401" \
   "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${TAVILY_PORT}/search" \

@@ -474,8 +474,9 @@ A deterministic failure plan. Attempt *N* of a route receives `attempts[N]` afte
 | `tag` | string | Exa only: the `tag` field of its error envelope. |
 | `raw_body` | string | Overrides the response bytes entirely. This is how `invalid_json` is expressed. |
 | `content_type` | string | Overrides the `Content-Type` header, for `wrong_content_type`. |
-| `truncate_after_bytes` | integer | How many body bytes reach the client before the connection dies. Zero means half the body. |
+| `truncate_after_bytes` | integer | How many body bytes reach the client before the connection dies, for `truncate_body`. Zero means half the body. For `stream_truncate_chunk` the same key instead bounds one chunk: zero means half *that chunk's* own bytes, not half the body — see [Streaming fault kinds](#streaming-fault-kinds). |
 | `reset` | boolean | Sends a TCP RST instead of a clean FIN, so the client sees "connection reset by peer" rather than "unexpected EOF". |
+| `after_chunk` | integer | `stream_disconnect` \| `stream_truncate_chunk` \| `stream_stall` only: the zero-based index of the first chunk this attempt affects. See [Streaming fault kinds](#streaming-fault-kinds). |
 | `extra_fields` | map | Additive properties merged into this attempt's body. |
 | `repeat` | integer | Applies this attempt to N consecutive attempts. "Fail the first three, then succeed" is one attempt with `repeat: 3` and the default `after`. |
 
@@ -495,6 +496,9 @@ or above means `status`; everything else means no fault.
 | `wrong_content_type` | A valid body under the wrong `Content-Type`. |
 | `empty_body` | A successful response with a zero-length body. |
 | `extra_fields` | A successful response carrying additional unknown properties. |
+| `stream_disconnect` | Streaming only (see [Streaming](#streaming-stream)) — a clean mid-stream disconnect after a scripted chunk. |
+| `stream_truncate_chunk` | Streaming only — a malformed partial chunk, then disconnect. |
+| `stream_stall` | Streaming only — a mid-stream pause, then the stream continues. |
 
 Delays are real by default, in-process and in the container alike, so a scenario behaves identically either way.
 A Go test can opt out with `testkit.WithSkippedDelays()` — but not for a timeout or cancellation test, which is
@@ -555,6 +559,7 @@ journaled with `"attempt_index": -1`, which is how you tell the two apart:
 | `exa_agent_runs` / `tavily_research`: `HEAD` on either route | **no** — it answers existence only and never reaches turn selection |
 | `exa_agent_runs` / `tavily_research`: a poll of an identifier this process never minted | **no** — `provider.ResolveJob` claims nothing before rendering the vendor's 404 |
 | `exa_agent_runs` / `tavily_research`: a poll whose identifier fails `provider.ValidJobID` | **no** — treated identically to an unknown identifier above; a malformed identifier is never this process's own |
+| A `stream_*` fault attempt, claimed by a request that did not itself ask to stream | yes — claimed at turn selection, before the handler has looked at `stream` on the wire; see [Streaming](#streaming-stream) |
 
 This is deliberate, and it is the reason a scenario stays readable. If a rejection consumed an index, then adding
 one malformed request to a test — or fixing an adapter so it stops sending one — would silently renumber every
@@ -742,6 +747,7 @@ The Sonar surface, served on `POST /v1/sonar` and `POST /chat/completions`.
 | `usage` | PerplexityUsage | `usage`. |
 | `images` | list of `{image_url, origin_url, height, width}` | `images[]`. |
 | `related_questions` | list of string | `related_questions[]`. |
+| `stream` | `{when_requested, deltas, terminal, pace}` | Scripts a Server-Sent Events response instead of the ordinary JSON body. See [Streaming](#streaming-stream). |
 | `extra_fields` | map | Merged into the top-level response object. |
 
 PerplexityResult:
@@ -781,7 +787,177 @@ is fixed — `search_results` first, then `message` — and a scenario cannot re
 | `annotations` | list of `{source, start_index, end_index}` | `url_citation` spans over the answer text. Indices are byte offsets into `answer`; an out-of-range span is a load error. An empty list emits `[]` rather than omitting the key. |
 | `error` | `{message, code, type}` | `error`. `message` is required by the specification. |
 | `usage` | `{input_tokens, output_tokens, total_tokens, cost}` | `usage`. Note the field names differ from Sonar's. `total_tokens` is derived when zero; `cost` is `{currency, input_cost, output_cost, total_cost, cache_creation_cost, cache_read_cost, tool_calls_cost}`, with `currency` defaulting to `USD` and `total_cost` derived when zero. |
+| `stream` | `{when_requested, deltas, terminal, pace}` | Scripts the `responses` SSE grammar instead of the ordinary JSON body. See [Streaming](#streaming-stream). |
 | `extra_fields` | map | Merged into the top-level response object. |
+
+### Streaming (`stream:`)
+
+`perplexity` (Sonar — `POST /v1/sonar` and its aliases) and `perplexity_agent` (the Agent API) can each serve a
+scripted Server-Sent Events sequence instead of the ordinary JSON body. Sonar renders the OpenAI-compatible
+`chat_completions` dialect: unnamed `data:` frames closed by `data: [DONE]`. The Agent API renders the `responses`
+dialect: every frame carries an `event: <type>` line and no `[DONE]` sentinel. Exa and Tavily do not stream —
+`exa`'s own `stream` key (above) stays the plain `warn` \| `reject` policy it always was.
+
+`stream:` lives inside `respond:`, alongside the rest of the projection — `scenario` never decodes it, the
+provider package does, through the same `Turn.DecodeProjection` every other key uses. A bare scalar still parses,
+as the shorthand for `{when_requested: <scalar>}` (`stream: warn`, `stream: reject`); the mapping form adds the
+script:
+
+| Key | Type | Effect |
+|---|---|---|
+| `when_requested` | `warn` \| `reject` \| `stream` | What the surface does when a request sets `"stream": true`. Read from the entry's **first turn only** — see below. Empty means `stream` when the turn declares `deltas`, `warn` otherwise. |
+| `pace` | duration string | The default gap before every chunk this turn writes: each delta, the terminal chunk (unless `terminal.pace` overrides it) and, on Sonar, the `[DONE]` sentinel. Zero (the default) writes the sequence as fast as the socket accepts it. |
+| `deltas` | list of string, or `{text, pace}` | The incremental content fragments, in order. A bare string is shorthand for `{text: <string>}`. Concatenated, they should equal the turn's own `answer`. |
+| `terminal` | `{omit_usage, omit_done, pace}` | Tunes the closing frame. `omit_usage` drops `usage` from it. `omit_done` drops the `[DONE]` sentinel on Sonar while the connection still closes cleanly; it is meaningless on the Agent surface, which never writes one, and raises `perplexity.stream.done_ignored` there instead of being silently accepted. `pace` overrides the default gap for this one frame. |
+
+`usage` and the rest of the ordinary non-streaming projection are reused verbatim on the terminal chunk — one
+declaration serves both transports, so a scenario cannot quote one spend figure when it streams and another when
+it does not.
+
+**The policy is per ENTRY; the deltas are per TURN.** `when_requested` is read once, from turn 0, because
+rejecting a request has to happen before turn selection claims a fault attempt — a policy that varied per turn
+could never be honoured. `when_requested` written on any turn after the first is `scenario.stream.policy.ignored`
+(warning), not silently dropped. `deltas` are the opposite: each turn is a different answer, so each scripts its
+own.
+
+| Entry's effective `when_requested` | Turn declares `deltas` | Outcome |
+|---|---|---|
+| `stream` | yes | Serves the scripted sequence. |
+| `stream` | no | `scenario.stream.deltas_empty` (error) — that turn would serve an empty stream. |
+| not `stream` | yes | `scenario.stream.deltas_ignored` (error) — the script is dead and would be served as JSON with no hint it was ever read. |
+| not `stream` | no | Serves JSON, exactly as before this key existed. |
+
+#### Streaming fault kinds
+
+Three fault `kind` values apply only under an entry whose effective policy is `stream` — see [Fault
+kinds](#fault-kinds) for where they sit alongside the rest of the catalogue. Each is keyed on `after_chunk`, the
+zero-based index of the first chunk it affects:
+
+| `kind` | What the client observes |
+|---|---|
+| `stream_disconnect` | Chunks `[0, after_chunk)` arrive whole; the connection dies before chunk `after_chunk` is written at all. The previous chunk (or the flushed headers, if `after_chunk: 0`) is the last thing observed — a clean frame boundary, not a malformed one. |
+| `stream_truncate_chunk` | Chunks `[0, after_chunk)` arrive whole, then `truncate_after_bytes` bytes of chunk `after_chunk` (half that chunk's own bytes, if unset), then the connection dies mid-frame. |
+| `stream_stall` | A `delay` pause is inserted before chunk `after_chunk`, then the stream continues normally. Nothing aborts; the client's own deadline decides what happens — the point for a Temporal activity timeout or a missed heartbeat. |
+
+`reset: true` sends a TCP RST instead of a clean FIN for either aborting kind, the same knob `truncate_body`
+already uses. `after_chunk` is meaningful only for these three kinds — a **nonzero** value on any other kind is
+`scenario.fault.after_chunk.not_streaming` (zero is indistinguishable from "unset", the same convention this
+schema already uses for `truncate_after_bytes`). Its valid range is `[0, chunk_count)`, checked against the
+**smallest** chunk count across the entry's turns, because one fault plan is shared by every turn the route may
+answer with (`scenario.fault.after_chunk.out_of_range`). `chunk_count` is the scripted `deltas` plus the one
+terminal chunk on Sonar (`N + 1`); on the Agent surface it also counts the five envelope events around the
+deltas — `response.created`, `response.output_item.added`, `response.output_text.done`,
+`response.output_item.done` and `response.completed` (`N + 5`) — or 2 for a turn whose `status` is `failed` or
+`cancelled`, which renders no message item for a fault plan to abort mid-way through. The upper end of that range
+is a legitimate script, not a special case: an
+`after_chunk` naming the terminal chunk itself means every delta arrived but the frame confirming completion
+never did.
+
+`truncate_body` is the one existing kind that **cannot** apply to a streaming entry
+(`scenario.fault.stream_mismatch`): it sets a `Content-Length` before writing a prefix, which is correct for
+JSON and wrong for chunked SSE, and a byte-offset cut lands mid-frame. The streaming-aware equivalent is
+`stream_truncate_chunk`, which counts frames rather than bytes. The mirror direction holds too — a `stream_*`
+kind cannot apply to an entry whose effective policy is not `stream`.
+
+The four ways an adopter scripts a stream (docs/design/streaming.md §2.1; the built-in
+[`streaming`](../scenarios/protocol/streaming.yaml) scenario scripts all four, keyed by `call_index` on one
+Sonar entry, plus a happy Agent-surface stream):
+
+```yaml
+# 1. Mid-stream disconnect, RST rather than FIN.
+fault:
+  attempts:
+    - kind: stream_disconnect
+      after_chunk: 3
+      reset: true
+
+# 2. Truncated chunk: chunks 0-1 complete, then 12 bytes of chunk 2, then the socket dies.
+fault:
+  attempts:
+    - kind: stream_truncate_chunk
+      after_chunk: 2
+      truncate_after_bytes: 12
+
+# 3. Transient blip then retry. Not a new mechanism — the existing attempt list expresses it.
+fault:
+  after: success
+  attempts:
+    - kind: stream_disconnect
+      after_chunk: 2
+
+# 4a. Slow chunk pacing is not a fault at all — it is the script.
+respond:
+  stream:
+    pace: 12s          # every gap exceeds a Temporal heartbeat interval
+
+# 4b. A stall that exceeds an activity timeout, mid-stream, without aborting.
+fault:
+  attempts:
+    - kind: stream_stall
+      after_chunk: 3
+      delay: 65s
+```
+
+A retry (example 3) must land in the same fault lane: if `turn_key` varies by call, a retry that resolves to a
+different lane draws attempt 0 again and is disconnected forever. `stream_stall` under
+`testkit.WithSkippedDelays()` does not stall — a test asserting a real timeout needs the default, real delay
+mode; the planned gap stays readable from the journal either way (below).
+
+**A `stream_*` attempt still claims a call index on a request that never asked to stream.** The entry's policy
+answers "does this surface serve a stream when asked", not "does this call stream" — a consumer legitimately
+sends `stream: true` on one call and `stream: false` on the next, in the same lane, and the fault attempt is
+claimed at turn selection, before the handler has looked at `stream` on the wire. When that happens, the claimed
+attempt is reported through `scenario.stream.abort_unreachable` (a per-request finding, not load-time), never
+silently served as a plain 200.
+
+#### Validation
+
+| Code | Severity | Condition |
+|---|---|---|
+| `scenario.stream.policy.unknown` | error | `when_requested` is not `warn`, `reject` or `stream`. |
+| `scenario.stream.policy.ignored` | warning | `when_requested` declared on a turn after the first. |
+| `scenario.stream.deltas_empty` | error | The entry streams and some turn declares no `deltas`. |
+| `scenario.stream.deltas_ignored` | error | A turn declares `deltas` while the entry's effective policy is not `stream`. |
+| `scenario.stream.answer_mismatch` | warning | Concatenated `deltas` do not equal the turn's own `answer`. |
+| `scenario.fault.after_chunk.not_streaming` | error | `after_chunk` is nonzero on a kind that is not one of the three `stream_*` kinds. |
+| `scenario.fault.stream_mismatch` | error | `truncate_body` on a streaming entry, or a `stream_*` kind on one that is not. |
+| `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` is not in `[0, chunk_count)` for the smallest chunk count across the entry's turns. |
+| `scenario.stream.abort_unreachable` | error, per request | A claimed `stream_*` attempt cannot apply to this specific exchange's actual transport. |
+| `perplexity.stream.unimplemented` | warning | Sonar: `stream: true` under an entry whose effective policy is not `stream`. The request still receives the ordinary body. |
+| `perplexity.stream.agent_unsupported` | warning under `warn`, error (422) under `reject` | The Agent surface's analogue of the code above — renamed from `perplexity.agent.stream.unsupported` so it sorts under the `perplexity.stream.` prefix like every other streaming code. |
+| `perplexity.stream_mode.concise.unscripted` | warning | A request sets `stream_mode: concise` **and** will actually stream. Only `stream_mode: full` is rendered; the full-mode transcript is served instead of being rejected. |
+| `perplexity.stream.done_ignored` | warning | `terminal.omit_done` declared on a `perplexity_agent` turn — the typed grammar never writes a `[DONE]` sentinel, so there is nothing to omit. |
+
+`scenario.stream.policy.unknown` and `scenario.stream.policy.ignored` are checked once, in `scenario`, for both
+surfaces that decode a `StreamScript` — the one implementation every provider that streams shares, rather than a
+copy per provider. Exa's own `exa.stream.policy.unknown` is untouched: Exa does not stream, so its `stream` field
+stays the older, scalar-only policy type.
+
+#### The journal
+
+`outcome.stream` is present, and non-null, only on a streamed exchange:
+
+| Field | Meaning |
+|---|---|
+| `grammar` | `chat_completions` (Sonar) or `responses` (Agent). |
+| `chunk_count` | How many indexed chunks the plan produced. `[DONE]`, when written, is never one of them. |
+| `bytes_planned` | Total bytes the plan will write, `[DONE]` included. |
+| `pace_ms` | The **planned** gap before each indexed chunk, in order — a schedule, not a measurement, so it reads identically under real and skipped delays and is final before the client sees a byte. A `stream_stall`'s extra delay is already folded into the index it stalls; `stall_before_ms` (below) is the same duration lifted back out on its own. |
+| `event_names` | Each frame's `event:` value, in order. `nil` for Sonar, whose frames carry none — the way a reader tells the two grammars apart without parsing a byte. |
+| `terminal_index` | The chunk carrying `usage` and cost. |
+| `usage`, `cost_total` | The terminal chunk's usage object, and the same number lifted to a provider-neutral field — final before the client has seen anything. |
+| `abort_after_chunk`, `truncated_at_byte`, `stall_before_ms` | The **scripted** fault, not what happened; `nil` when nothing was scripted, or when a claimed attempt could not apply to this exchange (`abort_unreachable`). |
+| `state` | `open` until the exchange closes, then `completed`, `aborted` or `client_gone`. |
+| `chunks_sent` | How many complete indexed chunks the client actually received. |
+
+Every field through `stall_before_ms` above is written when the entry is appended, before the first byte reaches
+the client, and is safe to read immediately — none of them reads a wall clock, `pace_ms` included, which is what
+lets `testkit.AssertStreamPacing` compare against it under both real and skipped delay modes. `state` and
+`chunks_sent` are filled in only once the exchange closes; `Sim.AwaitStreamClosed`/`Namespace.AwaitStreamClosed`
+is the wait, mirroring `AwaitRequests`'s own `Sim`/`Namespace` pair. Chunk **bytes** are never journaled — the
+client already holds every one, and golden-file regression over a transcript is taken client-side with
+`testkit.AssertGoldenSSE`, which diffs parsed `(event, data)` frames rather than raw bytes so one changed delta
+reports as a one-frame diff, not a whole-file one.
 
 ### The async surfaces: `exa_agent_runs` and `tavily_research`
 

@@ -1,0 +1,8 @@
+data: {"id":"a46233c7-b355-5df4-91b5-ce209ed33d02","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":"Report A "},"message":{"role":"assistant","content":"Report A "},"finish_reason":null}]}
+
+data: {"id":"a46233c7-b355-5df4-91b5-ce209ed33d02","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":"finds that X."},"message":{"role":"assistant","content":"Report A finds that X."},"finish_reason":null}]}
+
+data: {"id":"a46233c7-b355-5df4-91b5-ce209ed33d02","object":"chat.completion.chunk","model":"sonar-deep-research","created":1767225600,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"message":{"role":"assistant","content":"Report A finds that X."},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"cost":{"input_tokens_cost":0,"output_tokens_cost":0,"total_cost":0}}}
+
+data: [DONE]
+

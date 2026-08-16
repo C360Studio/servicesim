@@ -15,7 +15,7 @@ import (
 // wantExampleFiles is the number of .go files this directory is expected to
 // hold, as a floor. It guards against the guard itself passing vacuously: a
 // scan that silently found nothing to check would report success forever.
-const wantExampleFiles = 7
+const wantExampleFiles = 8
 
 // TestExamplesUseOnlyTheirModulesPublicSurface is the guard that recovers the
 // realism these files would otherwise lose by living inside the main module.

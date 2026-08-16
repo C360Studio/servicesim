@@ -1,0 +1,176 @@
+# Server-Sent Events on the Perplexity Sonar and Agent surfaces.
+#
+# Scripts docs/design/streaming.md §2.1's four adopter cases, on the Sonar
+# entry's fault plan, keyed by call index (the plan is per ROUTE, so one
+# attempt list expresses all of them without a second scenario per case):
+#
+#   call 0  a complete stream, no fault at all
+#   call 1  a mid-stream disconnect (RST, frame-boundary-clean)
+#   call 2  a truncated chunk (a malformed partial frame, not a clean boundary)
+#   call 3  a transient blip (REQ-AGENT-DR-INTERNAL-RETRY-001) ...
+#   call 4  ... followed by the retry succeeding, same lane
+#   call 5  slow chunk pacing — not a fault, just the script's own `pace:`
+#   call 6+ the unconditional fallback keeps streaming normally
+#
+# Exa and Tavily do not stream (docs/design/streaming.md's banner: "unit 4 /
+# never"), so their entries below, and the two async surfaces, stay in the
+# same well-formed single-shot form every other built-in uses.
+version: 1
+name: streaming
+description: >-
+  The Perplexity Sonar and Agent surfaces serve scripted SSE, exercising a
+  happy stream, a mid-stream disconnect, a truncated chunk, a transient
+  blip-then-retry, and slow chunk pacing.
+
+time:
+  base: 2026-01-01T00:00:00Z
+
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+    text: Full source text of Report A.
+    snippets:
+      - A relevant excerpt from Report A.
+
+providers:
+
+  exa:
+    results:
+      - source: source-a
+    cost_dollars:
+      total: 0.005
+    answer:
+      answer: Report A confirms the finding.
+      citations:
+        - source-a
+      cost_dollars:
+        total: 0.01
+
+  tavily:
+    answer: A short synthesis of Report A.
+    response_time: 1.15
+    results:
+      - source: source-a
+        score: 0.98
+    usage:
+      credits: 1
+
+  # Every turn below shares one three-delta shape (chunk_count 4) so a single
+  # after_chunk range, 0..3, is valid no matter which turn a fault attempt
+  # lands on — ValidateStreamFaultMismatch bounds after_chunk by the SMALLEST
+  # chunk_count across every turn in the entry, not only the turn a given
+  # attempt happens to be declared under.
+  perplexity:
+    turns:
+      - when: {call_index: 0}
+        respond:
+          answer: Report A confirms the finding without interruption.
+          citations:
+            - source-a
+          search_results:
+            - source: source-a
+          stream:
+            when_requested: stream    # read once, from turn 0 only (preamble, §2)
+            deltas:
+              - "Report A confirms "
+              - "the finding without "
+              - "interruption."
+        fault:
+          attempts:
+            - {}                                    # call 0: happy path, no fault
+            - kind: stream_disconnect                # call 1: mid-stream disconnect
+              after_chunk: 2
+              reset: true
+            - kind: stream_truncate_chunk             # call 2: truncated chunk
+              after_chunk: 1
+              truncate_after_bytes: 40
+            - kind: stream_disconnect                 # call 3: transient blip
+              after_chunk: 2
+            - {}                                      # call 4: the retry succeeds
+            - {}                                       # call 5: paced by the turn, not a fault
+      - when: {call_index: 1}
+        respond:
+          answer: This call is scripted to disconnect before its final chunk.
+          stream:
+            deltas:
+              - "This call is scripted "
+              - "to disconnect before "
+              - "its final chunk."
+      - when: {call_index: 2}
+        respond:
+          answer: This call is scripted to truncate mid frame.
+          stream:
+            deltas:
+              - "This call is scripted "
+              - "to truncate mid "
+              - "frame."
+      - when: {call_index: 3}
+        respond:
+          answer: This call is a transient blip that the client should retry.
+          stream:
+            deltas:
+              - "This call is a transient "
+              - "blip that the client "
+              - "should retry."
+      - when: {call_index: 4}
+        respond:
+          answer: This call is the retry, and it streams to completion.
+          stream:
+            deltas:
+              - "This call is the retry, "
+              - "and it streams to "
+              - "completion."
+      - when: {call_index: 5}
+        respond:
+          answer: This call paces every chunk slowly on purpose.
+          stream:
+            pace: 2s
+            deltas:
+              - "This call paces "
+              - "every chunk slowly "
+              - "on purpose."
+      - respond:
+          answer: Additional calls beyond the scripted five keep streaming normally.
+          stream:
+            deltas:
+              - "Additional calls beyond "
+              - "the scripted five "
+              - "keep streaming normally."
+
+  # A happy stream on the Agent API's own GrammarTyped grammar (§7), the one
+  # sequence unit 3 renders: response.created, response.output_item.added, N
+  # deltas, response.output_text.done, response.output_item.done and the
+  # terminal response.completed — byte-identical to the non-streaming body.
+  perplexity_agent:
+    model: openai/gpt-5
+    answer: Report A confirms the finding through the Agent streaming surface.
+    queries:
+      - report a
+    search_results:
+      - source-a
+    usage:
+      input_tokens: 24
+      output_tokens: 96
+      cost:
+        input_cost: 0.0001
+        output_cost: 0.0004
+    stream:
+      when_requested: stream
+      deltas:
+        - "Report A confirms "
+        - "the finding through "
+        - "the Agent streaming surface."
+
+  exa_agent_runs:
+    status: completed
+    output:
+      text: Report A confirms the finding.
+    cost_dollars:
+      total: 0.01
+
+  tavily_research:
+    status: completed
+    content: Report A confirms the finding.
+    sources:
+      - source-a

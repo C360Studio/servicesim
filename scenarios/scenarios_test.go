@@ -34,6 +34,7 @@ var builtins = []string{
 	"namespaced",
 	"rate-limited",
 	"server-error",
+	"streaming",
 	"unauthorized",
 	"unknown-provider",
 }
@@ -56,9 +57,9 @@ var documentedProjectionKeys = map[string]map[string]bool{
 	"tavily": keySet("request_id", "answer", "images", "results", "response_time",
 		"auto_parameters", "usage", "extract", "extra_fields"),
 	"perplexity": keySet("completion_id", "created", "model", "answer", "finish_reason",
-		"citations", "search_results", "usage", "images", "related_questions", "extra_fields"),
+		"citations", "search_results", "usage", "images", "related_questions", "stream", "extra_fields"),
 	"perplexity_agent": keySet("response_id", "message_id", "model", "status", "answer", "queries",
-		"search_results", "annotations", "error", "usage", "extra_fields"),
+		"search_results", "annotations", "error", "usage", "stream", "extra_fields"),
 	"exa_agent_runs":  keySet("status", "stop_reason", "output", "error", "cost_dollars", "usage", "extra_fields"),
 	"tavily_research": keySet("status", "content", "sources", "response_time", "extra_fields"),
 }

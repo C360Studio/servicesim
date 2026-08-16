@@ -335,6 +335,58 @@ Exa has two of its own: a declared `output:` is emitted only when the request su
 This is not the simulator being unhelpful — a consumer that expects an answer it never requested has a bug that
 production would show it too.
 
+## My `stream: true` test gets a JSON body
+
+The default streaming policy is `warn`: a Perplexity entry (`perplexity` or `perplexity_agent`) that declares no
+`stream:` key, or one whose `when_requested` is `warn`, always serves the ordinary non-streaming body — even
+when the request sets `"stream": true`. The journal names it:
+
+```json
+{"severity":"warning","code":"perplexity.stream.unimplemented",
+ "message":"streaming is not simulated; this request receives the ordinary non-streaming body"}
+```
+
+(`perplexity.stream.agent_unsupported` on the Agent surface.) To get a real `text/event-stream` response, script
+one: add `stream: {when_requested: stream, deltas: [...]}` inside the turn's `respond:` block — or just declare
+`deltas:` with no `when_requested` at all, since a script implies `stream` on its own. `when_requested` is read
+from the entry's **first turn only**, because rejecting a request has to happen before turn selection claims a
+fault attempt, so writing it on a later turn does nothing but a `scenario.stream.policy.ignored` warning. See
+[`docs/scenario-schema.md`](scenario-schema.md#streaming-stream) for the full grammar and the built-in
+`streaming` scenario for a worked example.
+
+If the intent is the opposite — proving an adapter's primary path always streams and must not fall back to a
+non-streaming body — set `stream: reject` instead. That turns a `stream: true` request into a 4xx
+(`perplexity.stream.unimplemented`/`perplexity.stream.agent_unsupported` promoted to an error) rather than a
+silently-served JSON body a fixture could pass against by accident.
+
+## My SSE golden diff is unreadable
+
+`testkit.AssertGoldenJSON` decodes both sides as JSON and diffs the decoded values; pointed at an SSE transcript
+it either fails to parse the whole body as one JSON value or, at best, reports the entire multi-frame byte string
+as a single differing string — a one-character change in one delta looks identical to a completely different
+stream. Use `testkit.AssertGoldenSSE(tb, path, transcript, opts...)` instead: it parses both sides into
+`(event, data)` frames — the same shape `provider.EncodeSSE` produces — and diffs frame by frame, so the report
+names the one frame that changed. Each frame's `data` line is decoded as JSON and compared semantically, exactly
+as `AssertGoldenJSON` compares a body; the bare `[DONE]` token is compared as the literal string it is.
+
+Derived identifiers are pruned from every frame by default, the same convention `AssertGoldenJSON` uses and for
+the same reason: an id advances with call index by design, so a golden bound to one call position would fail on
+every other one. For the Sonar grammar that is the top-level `requestId`/`request_id`/`id`, exactly as
+`AssertGoldenJSON` prunes a non-streaming body; for the Agent grammar, whose frames wrap a typed event payload,
+it is also `response.id`, `item.id`, `item_id`, and every element of `response.completed`'s `response.output`
+array. `testkit.GoldenExactIDs()` opts back into comparing all of the above — worth it for a test that always
+asserts at the same call position, where the identifiers stay the same run to run, but not otherwise: ids
+advance with call index on every call, whether or not the route has a declared fault plan.
+`SERVICESIM_UPDATE_GOLDEN=1` rewrites the golden from the observed transcript, verbatim — unlike
+`AssertGoldenJSON`, the bytes are not re-encoded, because SSE framing is itself part of the wire contract being
+pinned.
+
+A `stream_truncate_chunk` fault's golden is the one case the id-pruning above cannot fully save: the transcript
+ends mid-frame, and when the truncated bytes fall inside that frame's own derived id (rather than after it), the
+partial frame compares as a raw string, not JSON, so no `GoldenIgnore` path can reach into it. Golden a truncated
+transcript at the one call index it was recorded at, or pass a fixed identifier for that turn
+(`response_id`/`message_id`/`completion_id` in `docs/scenario-schema.md`) so the fragment never varies.
+
 ## A fault fired on the wrong call
 
 Fault plans are registered **per route**, not per turn. In a multi-turn script, the first turn declaring a

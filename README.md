@@ -87,6 +87,13 @@ preserving each vendor's real path requires a separate port per provider.
 handler, same shapes, and the journal records which path was actually used. Sonar is supported by Perplexity until
 2026-09-27; `/v1/agent` is its successor and both are simulated.
 
+Both Perplexity surfaces can also serve `text/event-stream`: a scenario turn scripts `stream: {when_requested:
+stream, deltas: [...]}` and a request that sets `"stream": true` gets the real SSE dialect back — unnamed
+`data:` chunks closed by `data: [DONE]` on Sonar, named `event:` frames on the Agent API — instead of the
+default `warn` (an ordinary JSON body plus a journal finding) or an opt-in `reject` (a provider-shaped 4xx). Exa
+and Tavily do not stream. See [`docs/scenario-schema.md`](docs/scenario-schema.md#streaming-stream) for the
+scripting grammar and the built-in `streaming` scenario for a worked example.
+
 Every port is configurable (`-exa-port`, `-tavily-port`, `-perplexity-port`, `-admin-port`), and `-providers`
 limits which listeners bind. Run `servicesim -h` for the full flag list.
 
@@ -158,12 +165,20 @@ asserts, from the journal alone, that a job's polls arrived in order from its ow
 `testkit.NewJobs()` mirrors `testkit.NewFaults`: it is what a consumer wiring `provider.Deps` by hand passes as
 `Deps.Jobs`, and without it a create still answers but no poll can ever resolve.
 
+For a scripted SSE response, `testkit.AssertGoldenSSE(t, path, transcript)` regression-tests the reassembled
+stream frame by frame — an SSE transcript is not JSON, and a byte-for-byte comparison would flake on TCP read
+boundaries that are never deterministic, so a one-delta change reports as a one-frame diff rather than an
+unreadable whole-file one. `sim.AwaitStreamClosed(t, entry.Seq)` is the wait for the fields that are only final
+once the exchange closes (`bytes_written`, `chunks_sent`, `state`); everything else on `entry.Outcome.Stream` —
+`testkit.AssertStreamPacing` included — is final before the client sees a byte and needs no wait at all.
+
 | Example file | What it shows |
 |---|---|
 | [`examples/adapter_test.go`](examples/adapter_test.go) | The canonical first test: prove the request was correct. |
 | [`examples/fusion_test.go`](examples/fusion_test.go) | Three providers at once, deduplication, and a 429 classified as retryable. |
 | [`examples/namespace_test.go`](examples/namespace_test.go) | Parallel subtests sharing one simulator, each in its own state lane. |
 | [`examples/async_test.go`](examples/async_test.go) | Create-then-poll through `testkit`, and the same flow wired by hand through `provider.Deps`. |
+| [`examples/stream_test.go`](examples/stream_test.go) | A scripted Perplexity SSE response: `testkit.AssertGoldenSSE` against a golden transcript, `testkit.AssertStreamPacing` before the first byte, `sim.AwaitStreamClosed` after the exchange closes. |
 
 ## As a container
 
@@ -344,7 +359,7 @@ entirely and much later:
 
 ## Built-in protocol scenarios
 
-Thirteen scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
+Fourteen scenarios ship inside the binary. Select one with `--scenario builtin:<name>` or
 `testkit.WithBuiltin("<name>")`. They cover *protocol* behaviour, which is the same for every consumer;
 product-specific corpora belong in your own repository.
 
@@ -362,6 +377,7 @@ product-specific corpora belong in your own repository.
 | `fusion-overlap` | One canonical source rendered through all three providers, with a claim repeated across sources: deduplication by URL and corroboration counting are exercised deliberately, not by accident. |
 | `conversation` | A scripted agentic loop: successive calls to one route get successive turns, matched by call index and by body substring, with an unconditional fallback last. |
 | `namespaced` | One route serving two concurrent callers, kept in separate turn lanes by `turn_key`, so neither draws the turn scripted for the other. |
+| `streaming` | The Perplexity Sonar and Agent surfaces serve scripted SSE: a complete stream, a mid-stream disconnect, a truncated chunk, a transient blip your client should retry, and slow chunk pacing. |
 | `unknown-provider` | A provider this build has no handler for warns and is ignored, so a scenario file shared across repositories does not break the moment one consumer pins an older Servicesim. |
 
 ## Mounting your own scenario

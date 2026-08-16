@@ -579,11 +579,20 @@ type PerplexityProjection struct {
 	Images           []PerplexityImage    `yaml:"images,omitempty"`
 	RelatedQuestions []string             `yaml:"related_questions,omitempty"`
 
-	// Stream selects the behaviour for a request carrying "stream": true, the
-	// same knob ExaProjection carries. Defaults to StreamWarn: a journal warning
-	// plus the ordinary non-streaming body. StreamReject makes it an error, which
-	// this surface renders as its FastAPI 422 rather than as Exa's 400.
-	Stream StreamPolicy `yaml:"stream,omitempty"`
+	// Stream selects the behaviour for a request carrying "stream": true.
+	// Superseded: docs/design/streaming.md is the design of record for
+	// streaming and is newest where the two disagree (its own banner says
+	// so). Shipped, this field's type is scenario.StreamScript, not
+	// StreamPolicy below — one exported field retyped rather than only
+	// added to, because the mapping form that also carries deltas: and
+	// pace: cannot share a YAML key with a plain string field
+	// (streaming.md §3). The old two values still decode as the scalar
+	// shorthand (StreamScript.UnmarshalYAML); a third, StreamServe, serves
+	// the scripted SSE sequence. ExaProjection.Stream above is unaffected
+	// and keeps the plain StreamPolicy type below: Exa does not stream. See
+	// docs/scenario-schema.md's "Streaming (stream:)" section for the full
+	// grammar.
+	Stream StreamPolicy `yaml:"stream,omitempty"` // shipped: scenario.StreamScript
 
 	ExtraFields ExtraFields `yaml:"extra_fields,omitempty"`
 }
@@ -712,8 +721,14 @@ type ValidationPolicy struct {
 	Demote []string `yaml:"demote,omitempty"`
 }
 
-// StreamPolicy selects the behaviour for a streaming request while streaming is
-// out of scope (plan non-goal 7).
+// StreamPolicy selects the behaviour for a streaming request. Streaming was a
+// plan non-goal (7) when this type was written; docs/design/streaming.md is
+// now the design of record for it and Sonar/Agent streaming has shipped
+// (Phase 5). This two-value type still stands as written below, but only for
+// Exa's own Stream field: Perplexity's two projections retyped their own
+// Stream field to scenario.StreamScript, whose third value, StreamServe, adds
+// the scripted SSE sequence — see PerplexityProjection.Stream above and
+// docs/scenario-schema.md's "Streaming (stream:)" section.
 type StreamPolicy string
 
 // Supported streaming policies.
@@ -3236,7 +3251,7 @@ the only error body Perplexity formally schematises:
 | `perplexity.search_mode.invalid` | error | `web`, `academic`, `sec`. |
 | `perplexity.reasoning_effort.invalid` | error | `minimal`, `low`, `medium`, `high`. |
 | `perplexity.search_recency_filter.invalid` | error | `hour`, `day`, `week`, `month`, `year`. |
-| `perplexity.stream.unimplemented` | warning | Streaming was a plan non-goal when this row was written; `docs/design/streaming.md` is now the design of record for it and Sonar streaming has shipped (Phase 5). Default: warn and return the ordinary non-streaming body. `providers.perplexity.stream: reject` promotes it to an error. The *policy knob* is the same as Exa's, but the rejection is not the same response: a Perplexity error finding renders through this surface's FastAPI validation path, so it is a 422 `{"detail":[{"loc":["body","stream"],…}]}`, not Exa's 400. The Agent surface's own separate code was `perplexity.agent.stream.unsupported`; renamed to `perplexity.stream.agent_unsupported` when Agent streaming shipped (Phase 5 unit 3) — see `docs/design/streaming.md` §9. |
+| `perplexity.stream.unimplemented` | warning | Streaming was a plan non-goal when this row was written; `docs/design/streaming.md` is now the design of record for it, and both Sonar and Agent streaming have shipped (Phase 5). `stream:` (`when_requested`) is now a THREE-value enum, not two: `warn` (default, journal this warning and return the ordinary non-streaming body), `reject` (promote it to an error — a 422 `{"detail":[{"loc":["body","stream"],…}]}` on this surface, not Exa's 400), and `stream`, which serves the scripted `text/event-stream` sequence instead of either — see `docs/scenario-schema.md`'s "Streaming (`stream:`)" section for the scripting grammar. Unlike Exa, whose `stream:` field stays this document's original two-value `StreamPolicy` (Exa does not stream), Perplexity's own `Stream` field is retyped to `scenario.StreamScript` to carry the third value and its script (`docs/design/streaming.md` §3) — the enums no longer match. The Agent surface's own separate code was `perplexity.agent.stream.unsupported`; renamed to `perplexity.stream.agent_unsupported` when Agent streaming shipped (Phase 5 unit 3) — see `docs/design/streaming.md` §9. |
 
 The Sonar sunset (2026-09-27) is logged once at startup and surfaced on `/__admin/scenario`. It is deliberately **not**
 a per-request finding: it is a property of the simulated API, not of any request, and per-request noise would drown the

@@ -1522,6 +1522,15 @@ func AssertStreamUsage(tb testing.TB, e Entry, want any)
 func AssertStreamPacing(tb testing.TB, e Entry, want ...time.Duration)
 ```
 
+**Shipped as (Phase 5 unit 4):** both assertions landed with these exact signatures (`testkit/stream.go`).
+`AssertStreamUsage` decodes `want` and `e.Outcome.Stream.Usage` and diffs them with `go-cmp`, the same semantic
+comparison `AssertGoldenJSON` gives a response body, after round-tripping `want` through JSON so a caller's struct
+or map literal compares against the decoded field on equal terms; a `terminal.omit_usage` scenario's nil `Usage`
+is asserted by passing `nil` for `want`, exactly as this section's own sentence above anticipated. Units 1–3's own
+"Shipped as" notes on this document did not mention it because the unit-4 spec's own symbol list for `testkit`
+omitted it by name (a scope call the spec left to the unit, not a design change) — it is recorded here rather than
+silently missing so a reader of this section does not go looking for it in vain.
+
 Chunk **bytes** are deliberately not journaled. A stream is unbounded where a request body is not, `MaxJournalBodyBytes`
 bounds only the request, and the consumer already holds every byte — it is the client. Golden-file regression over an
 SSE exchange is taken client-side, over the reassembled stream.
@@ -1550,6 +1559,18 @@ transcript and a JSON body differ in framing, not in what "golden" means:
 - **A one-delta change diffs as one frame**, not a whole-file diff, because the comparison is per-frame: this is the
   entire reason `AssertGoldenJSON` is not simply pointed at the reassembled bytes, and the reason the backlog names
   this as its own unit rather than a call site of the existing one.
+
+**Shipped as (Phase 5 unit 4):** the derived-identifier default above is `derivedIDPaths` applied per frame, exactly
+as sketched, for `GrammarDelta` (Sonar) — its frames carry the same top-level `id` `AssertGoldenJSON` already
+prunes. `GrammarTyped` (Agent) frames wrap a typed event payload rather than a bare response body, so their
+call-index-derived ids sit at `response.id`, `item.id`, `item_id`, and — inside `response.completed` — every
+element of `response.output[]`. The first three are additional dotted paths (`streamDerivedIDPaths`,
+`testkit/golden.go`), pruned by the same mechanism. The array element case cannot be: `GoldenIgnore`'s path syntax
+does not address array elements by design (a golden that ignores one element of an array is pinning the wrong
+element), and this needs *every* element's `id` gone, not one chosen by index — so it is pruned unconditionally by
+a small dedicated step (`pruneResponseOutputIDs`) rather than extended path syntax. Without this, an Agent stream
+golden failed on every frame at any call index but the one it was recorded at; `TestAssertGoldenSSE`'s
+"Agent (GrammarTyped) derived ids..." subtest (`testkit/golden_test.go`) pins it.
 
 ---
 

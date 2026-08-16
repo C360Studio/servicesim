@@ -102,7 +102,7 @@ These are settled. Re-open one only with new evidence, and record why.
 |  D5 | Enforced per-lane RPS limiting, which makes response status a function of wall-clock time and contradicts the repo's stated determinism doctrine (s... | **Assertion over journal timestamps first**; build enforced RPS only if that proves insufficient.  |
 |  D6 | MCP and ODR are two new provider profiles for G-3. Build them in-tree, or make out-of-tree providers a supported path? | **Build MCP and ODR in-tree** (owner overrode the recommendation to export the seam instead).  |
 |  D7 | Exa /contents, /findSimilar and Tavily /extract have no verified contract in this repository — contracts/exa/README.md:23 explicitly declines to as... | **Re-verify against vendor docs first** for `/contents`, `/findSimilar`, `/extract` — ADR-0002 holds as written.  |
-|  D8 | What should the adopter do about stream:true fixtures in the window before SSE ships (Phase 5)? | Tell the adopter **not to record `stream:true` fixtures** yet, and ship a `stream: reject` policy so their path fails loudly.  |
+|  D8 | What should the adopter do about stream:true fixtures in the window before SSE ships (Phase 5)? | Tell the adopter **not to record `stream:true` fixtures** yet, and ship a `stream: reject` policy so their path fails loudly. **Reversed 2026-08-15: Phase 5 has shipped.** `stream: {when_requested: stream, deltas: [...]}` now serves a real, golden-tested SSE sequence on both Perplexity surfaces — the adopter can record `stream:true` fixtures today, against `testkit.AssertGoldenSSE`. `stream: reject` remains available for a suite that wants a hard failure instead. |
 
 Two of these reversed a recommendation, and the reasoning is worth keeping. On D6 the owner chose in-tree because the
 adopter's G-3 should not wait on their own team's out-of-tree build. On D7 the owner held ADR-0002 — vendor
@@ -166,7 +166,10 @@ contracts/ as a trustworthy fidelity record before the adopter reads it to plan 
   that is the same failure mode as the /agent/runs claim, just silent instead of wrong.
 - Publish a short adopter advisory covering what NOT to record fixtures against yet: stream:true responses (both the
   JSON body and the perplexity.stream.unimplemented finding vanish when Phase 5 lands), anything asserting on
-  aborting-fault journal timestamps (broken, fixed in Phase 6), and the multi-replica hazard.
+  aborting-fault journal timestamps (broken, fixed in Phase 6), and the multi-replica hazard. **The `stream:true`
+  clause is reversed as of Phase 5 shipping (decision 8): that response and finding no longer vanish, they become
+  a real SSE transcript, so fixtures recorded against `stream: stream` are stable ground now, not a landmine. The
+  other two clauses stand.**
 
 ### Phase 1 — Schema-envelope changes, before anyone writes a scenario file — SHIPPED
 
@@ -461,43 +464,73 @@ three routes against the shipped `happy` scenario. `contracts/README.md`'s index
 in both directions (`scripts/check-docs.sh` proves it), and their "NOT YET SIMULATED" rows are gone from the
 not-simulated table; the two provider contract files' own status lines read "simulated".
 
-### Phase 5 — SSE streaming for the Perplexity deep-research path
+### Phase 5 — SSE streaming for the Perplexity deep-research path — DONE
 
-The adopter called this a MUST-HAVE, not optional: their primary deep-research path always streams. It is late in the
-order only because Phase 2 must first fix the design's compatibility blocker and Phase 1 must land the schema moves —
-not because it is low value. The good news the audit found is that the three hard parts of mid-stream disconnect
-already exist and are reasoned about in comments: flush-then-abort, RST-versus-FIN via SetLinger(0), and
-journal-append-before-the-socket-is-touched. Streaming faults are a reuse job at the transport layer, not new
-research. The genuinely missing pieces are a Response that can express a stream at all, an SSE writer, and — first — a
-contract-grade spec of the wire format, which the audit says cannot be built from this repository's documents today.
+> **Delivered**, across four units (`docs/design/streaming.md`'s banner carries each one's own "Shipped as" note
+> against every place the design's illustrative sketches diverged from what shipped):
+>
+> - **Unit 1** — `scenario.StreamScript`/`StreamServe`, `provider.SSEEvent`/`EncodeSSE`/`Stream`/`Response.Stream`/
+>   `executeStream`, `Handle`'s widened journal-early condition, `journal.StreamOutcome`/`StreamCloser`/
+>   `Ring.CloseStream`, and the Sonar `GrammarDelta` full-mode renderer on all three Sonar route spellings.
+>   Golden: `contracts/perplexity/perplexity-sonar-stream.sse`.
+> - **Unit 2** — the three `stream_*` fault kinds (`stream_disconnect`, `stream_truncate_chunk`, `stream_stall`),
+>   `FaultAttempt.AfterChunk`, per-delta/per-script/per-terminal `pace:`, and `journal.StreamOutcome`'s remaining
+>   fields (`PaceMS`, `AbortAfterChunk`, `TruncatedAtByte`, `StallBeforeMS`). Goldens:
+>   `contracts/perplexity/perplexity-sonar-stream-disconnect.sse`,
+>   `contracts/perplexity/perplexity-sonar-stream-truncate.sse`.
+> - **Unit 3** — the Agent API's `GrammarTyped` grammar on `perplexity_agent`: `agentStreamPolicy`/
+>   `rejectAgentStream` mirroring Sonar's pair, the renamed finding `perplexity.stream.agent_unsupported` (from
+>   `perplexity.agent.stream.unsupported`), and `renderAgentStream` emitting six of the fourteen `EventType`
+>   members plus the shared `agentResponse` helper that makes the terminal `response.completed` byte-identical to
+>   the non-streaming body. Golden: `contracts/perplexity/perplexity-agent-stream.sse`.
+> - **Unit 4** — the consumer surface: `testkit.AssertGoldenSSE`, `AwaitStreamClosed` (`Sim` and `Namespace`
+>   forms), `AssertStreamPacing`; the built-in `streaming` scenario, scripting the adopter's four cases plus a
+>   happy Agent-surface stream (`scenarios/protocol/streaming.yaml`); `examples/stream_test.go`; and this pass's
+>   documentation — `docs/scenario-schema.md`'s "Streaming (`stream:`)" section, README's SSE paragraph and
+>   testkit sentence, the two troubleshooting entries, and decision 8's reversal (above).
+>
+> Every wire fact this section used to describe as a plan is now what those four units actually built — see
+> `docs/design/streaming.md` for the full record, and `contracts/perplexity/README.md`'s "What Servicesim
+> simulates" section for the exact frame sequences.
 
-**Unblocks:** The adopter's primary deep-research path in Tier-1, and their Tier-3 golden-file regression for it. Also
-unblocks Phase 8's MCP streamable HTTP transport and the trickle-body vector in Phase 6, both of which need the same
-chunked-write path.
+The adopter called this a MUST-HAVE, not optional: their primary deep-research path always streams. It was late in
+the order only because Phase 2 had to first fix the design's compatibility blocker and Phase 1 had to land the
+schema moves — not because it was low value. The audit's prediction held: the three hard parts of mid-stream
+disconnect already existed and needed no new transport mechanism — flush-then-abort, RST-versus-FIN via
+`SetLinger(0)`, and journal-append-before-the-socket-is-touched all reused unchanged. Streaming faults turned out
+to be exactly the reuse job at the transport layer the audit expected, not new research.
 
-- Contract first: regenerate the Perplexity SSE section from the vendor's openapi.json, read the adopter's
-  src/pkg/agent/perplexity.go as evidence of the real wire shape, and record every frame-level choice not pinned by the
-  OpenAPI document as simulator-chosen in provenance. contracts/perplexity/README.md:274-287 today lists 14 event NAMES
-  and nothing else — no framing, no body shapes, no statement of which event carries usage — and its non-goal is written
-  as if it covered both surfaces when the tables prove they differ.
-- Provider core: a Response variant that can express a stream, the execute branch, and the widened Handle
-  journal-early condition. This lands once in the shared core, so Exa's documented SSE surface gets it for free later.
-  It rewrites servicesim internals, not consumer fixtures.
-- The SSE writer: event framing, chunk sequences, and usage plus cost in the TERMINAL chunk. The projection already
-  carries every field a terminal chunk needs, so this is a rendering decision, not a schema change — but how the answer
-  splits into deltas becomes a golden-file shape and should be decided deliberately.
-- Streaming faults, all four the adopter named: mid-stream disconnect, truncated chunk, transient-blip-then-retry, and
-  slow chunk pacing for Temporal heartbeats. Note the SSE-aware variant of truncation must suppress Content-Length and
-  count events rather than bytes — provider/fault_exec.go:246 sets the full body length before writing the prefix, which
-  is correct for JSON and invalid for SSE, and a byte-offset cut produces a half-written data: line that tests the
-  adopter's parser rather than their reconnect logic.
-- Journal a stream outcome — chunk count and per-chunk timing — as an omitempty array that appears only on streamed
-  responses, leaving every existing non-streaming golden byte-identical. This is what makes intra-response pacing
-  assertable; the existing arrived_at/completed_at pair is per request only.
-- testkit AssertGoldenSSE: an SSE transcript is not JSON, so AssertGoldenJSON cannot be pointed at it, and without
-  event-by-event diffing a one-character change in one delta produces an unreadable whole-file diff.
-- Add the Perplexity stream policy field per decision 8, so reject becomes expressible and the package-design.md:3199
-  documentation becomes true rather than merely corrected.
+**Unblocked:** The adopter's primary deep-research path in Tier-1, and their Tier-3 golden-file regression for
+it, now buildable against `testkit.AssertGoldenSSE`. Phase 8's MCP streamable HTTP transport and the
+trickle-body vector in Phase 6 can now build on the same chunked-write path this phase landed.
+
+- Contract first — **DONE.** `contracts/perplexity/README.md`'s "Streaming (SSE)" section was regenerated from
+  the vendor's `openapi.json`, and every frame-level choice the vendor does not pin is recorded as
+  simulator-chosen in `contracts/perplexity/provenance.yaml`, correctable from a captured live response. Reading
+  the adopter's client code as evidence was considered and struck: `docs/design/streaming.md` §10 records why —
+  vendor documentation decides a wire contract, never a consumer's client, under the same authority rule ADR-0002
+  already states.
+- Provider core — **DONE.** `Response.Stream`, the `executeStream` branch, and `Handle`'s widened journal-early
+  condition landed once in the shared core (`provider/stream.go`, `provider/handle.go`), grammar- and
+  provider-blind by construction, so a future Exa/Tavily streaming surface would reuse them unchanged.
+- The SSE writer — **DONE.** `EncodeSSE`'s frame envelope, the Sonar `GrammarDelta` full-mode sequence and the
+  Agent `GrammarTyped` sequence, with `usage`/cost on the terminal chunk (`response.completed` on the Agent
+  surface) exactly as the non-streaming projection already declares them — one declaration renders both
+  transports.
+- Streaming faults, all four the adopter named — **DONE**, plus `stream_stall`: `stream_disconnect`,
+  `stream_truncate_chunk`, `stream_stall` (Temporal heartbeat/activity-timeout pacing) and
+  transient-blip-then-retry, which needed no new mechanism — the existing attempt list already expresses it. The
+  SSE-aware truncation variant counts frames via `after_chunk`, not bytes, exactly as this bullet anticipated.
+- Journal a stream outcome — **DONE.** `outcome.stream` (`journal.StreamOutcome`), `omitempty` and nil on every
+  non-streaming response, so no existing golden's shape changed. Chunk count, planned per-chunk pacing, usage/cost
+  and the observed close state are all there — see `docs/scenario-schema.md`'s Streaming section for the field
+  table.
+- `testkit.AssertGoldenSSE` — **DONE**, exactly for the reason this bullet named: it diffs parsed `(event, data)`
+  frames rather than raw bytes, so a one-delta change reports as a one-frame diff.
+- The Perplexity stream policy field per decision 8 — **DONE.** `when_requested` is now a three-value enum
+  (`warn`/`reject`/`stream`) on both Perplexity surfaces, `reject` is expressible and tested, and
+  `docs/design/package-design.md`'s stream-policy lines are corrected in place rather than merely flagged as
+  stale. Decision 8 itself is reversed above: the adopter can record `stream:true` fixtures now.
 
 ### Phase 6 — G-3 depth
 
