@@ -24,7 +24,7 @@ Servicesim validates credential **placement**, not value. Any fake value works; 
 | Provider | Accepted placement |
 |---|---|
 | Exa | `x-api-key`, or `Authorization: Bearer` |
-| Tavily | `Authorization: Bearer` only |
+| Tavily | `Authorization: Bearer`, or a body `api_key` property (warns `tavily.api_key.in_body`) |
 | Perplexity | `Authorization: Bearer` only |
 
 Sending Tavily an `x-api-key` header is a 401 on purpose: Tavily's REST contract is Bearer, and an adapter that

@@ -300,8 +300,23 @@ func warnUnknownFields(x *provider.Exchange) {
 }
 
 // warnRemovedAndCredentialFields flags the two properties that are recognised
-// only in order to be reported.
+// only in order to be reported. days is a /search-only field — see
+// warnAPIKeyInBody for the credential half, which /research shares.
 func warnRemovedAndCredentialFields(x *provider.Exchange) {
+	warnAPIKeyInBody(x)
+	if x.Has("days") {
+		x.Warn(CodeDaysRemoved, "days",
+			"days was removed from the search API; recency is time_range, start_date and end_date")
+	}
+}
+
+// warnAPIKeyInBody flags a body-placed api_key with the warning-severity
+// CodeAPIKeyInBody finding. Shared by /search's warnRemovedAndCredentialFields
+// and /research's validateResearchCreate: contracts/tavily/README.md documents
+// the identical placement and finding on both routes ("Same as POST /search"
+// in the research route table), so the message text must not fork between
+// them.
+func warnAPIKeyInBody(x *provider.Exchange) {
 	if x.Has("api_key") {
 		// A warning, not an error: the request authenticates on it. The finding
 		// is what a consumer asserts on to prove which placement its adapter
@@ -312,10 +327,6 @@ func warnRemovedAndCredentialFields(x *provider.Exchange) {
 		// and the process log.
 		x.Warn(CodeAPIKeyInBody, "api_key",
 			"api_key was sent in the request body; the vendor documents Authorization: Bearer")
-	}
-	if x.Has("days") {
-		x.Warn(CodeDaysRemoved, "days",
-			"days was removed from the search API; recency is time_range, start_date and end_date")
 	}
 }
 

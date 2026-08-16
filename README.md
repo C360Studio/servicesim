@@ -126,9 +126,8 @@ fake value works. Servicesim never stores it; the journal keeps only a fingerpri
 | Perplexity | `Authorization: Bearer` |
 
 Tavily's `POST /search` and `POST /research` also authenticate a body `api_key` property — real client code sends
-it — but only on `POST /search` does that currently draw a warning-severity finding rather than an error; on
-`POST /research` the placement is visible today only in the journal's `auth` observation (`body:api_key`), not as
-a finding. `Authorization: Bearer` is the placement to send.
+it — and on both routes that draws the same warning-severity finding, `tavily.api_key.in_body`, rather than an
+error. `Authorization: Bearer` is the placement to send.
 
 ## In a Go test, with no container at all
 
