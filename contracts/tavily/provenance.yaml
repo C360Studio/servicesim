@@ -15,14 +15,41 @@
 # kind:
 #   vendor-documented  the shape AND the values come from the vendor's own
 #                      documentation, quoted or directly derived from it.
-#   simulator-chosen   Servicesim picked this shape or these values. The live
-#                      contract canary may correct it from a real response.
+#   simulator-chosen   Servicesim picked this shape or these values. A dated
+#                      re-verification (contracts/README.md "Keeping them
+#                      honest") may correct it from a real response — there is
+#                      no live contract canary.
 #
 # The field names in every golden are governed by README.md in this directory,
 # which is the authority and must not be edited by fixture work.
+#
+# spec: records the machine-readable specification Tavily publishes,
+# https://docs.tavily.com/documentation/api-reference/openapi.json, covering
+# every route this provider simulates (/search, /extract, /research,
+# /research/{request_id}) — fetched and hashed 2026-08-16. Its sha256 is the
+# DRIFT SIGNAL for this provider: an unchanged hash on a fresh fetch means
+# nothing below needs re-reading; a changed one means re-read the consumed
+# fields against both the per-entry documentation_url pages below and the
+# spec itself (contracts/README.md "Keeping them honest"), then update
+# whatever changed.
+#
+# A changed spec.sha256 is not itself a diff of what this file consumes:
+# every entry's documentation_url below is a rendered prose page, not the
+# spec, and the spec's own bytes can move for reasons this provider's
+# contract never touches (/crawl, /map, /logs, /org-usage, /usage — none of
+# them simulated). The hash says "go re-read the pages", not "here is what
+# changed" — the per-entry documentation_url and verified date remain the
+# record of what was actually verified and against what. No entry below was
+# read from the spec directly, so none carries api_version.
 
 provider: tavily
 verified: 2026-08-15
+
+spec:
+  url: https://docs.tavily.com/documentation/api-reference/openapi.json
+  version: "1.0.0"
+  sha256: f13ba20f158a40ca5776fff3d665ded0010c8f71bce15795defa72b863ef26f8
+  retrieved: 2026-08-16
 
 goldens:
   - golden: tavily-search-happy.json
@@ -164,7 +191,8 @@ goldens:
       arbitrary but plausible value rather than a read one; created_at is
       rendered as millisecond-precision ISO-8601 with a Z suffix, and the
       README records created_at's type as `string` with no format specified.
-      A canary correcting any of these should treat them as open, not settled.
+      A re-verification correcting any of these should treat them as open,
+      not settled.
 
   - golden: tavily-research-pending.json
     endpoint: GET /research/{request_id}

@@ -104,7 +104,7 @@ Three places, all mechanical:
 ## Changing an existing wire shape
 
 Only in response to a real vendor change, and the contract file and its **Verified** date change in the same
-commit. If a live contract canary found the drift, say so in the commit message. Provider handler and contract
+commit. If a re-verification found the drift, say so in the commit message. Provider handler and contract
 changes are release-worthy; product-specific scenario changes in consuming repositories are not.
 
 ## Releasing: publish the image, then update the docs

@@ -21,8 +21,8 @@ var files embed.FS
 // are dated individually (see [Record.Verified]), because a single golden
 // refresh must be able to move one date without forcing every other entry to
 // claim a verification that did not happen. VerifiedOn is the number a refresh
-// cadence or a live contract canary actually needs — "how stale is the oldest
-// thing here".
+// cadence actually needs — "how stale is the oldest thing here" (there is no
+// live contract canary; see contracts/README.md "Keeping them honest").
 //
 // It is declared rather than computed at init so importing this package does
 // no work and has no panic path, and TestVerifiedOnIsTheOldestEntry pins it to
@@ -50,8 +50,10 @@ const (
 
 // Kind records where a golden's shape came from. It is the difference between
 // "the vendor publishes this" and "Servicesim had to choose", and it is what
-// tells a live canary which fixtures it is allowed to correct from a real
-// response.
+// tells a dated re-verification (contracts/README.md "Keeping them honest")
+// which fixtures it may correct from the vendor's documentation or a real
+// response captured by a person. There is no live contract canary; drift
+// detection is manual and dated, by design (D10, docs/adopter-backlog.md).
 type Kind string
 
 const (
@@ -93,6 +95,55 @@ type Record struct {
 
 	// Note records what is load-bearing or inferred about this fixture.
 	Note string `yaml:"note"`
+
+	// APIVersion is the vendor's own version string for the document THIS
+	// entry's DocumentationURL was read from, when that document is
+	// versioned — for example an OpenAPI document's info.version. It is
+	// empty for an entry read from an undated prose page: a page has no
+	// version to record, only the day someone read it (Verified).
+	APIVersion string `yaml:"api_version,omitempty"`
+}
+
+// Spec records the machine-readable specification a provider's contract was
+// generated from. It exists so a refresh can answer "did the spec change?"
+// mechanically — fetch URL, compare SHA256 — as the first, cheap step before
+// a person re-reads the consumed fields against the vendor's documentation.
+//
+// Every provider Providers returns carries one: Exa, Tavily and Perplexity
+// each publish a machine-readable OpenAPI document covering every route
+// Servicesim simulates for that vendor, and each provenance.yaml records its
+// URL, version and SHA256. A changed hash is a DRIFT SIGNAL, not a diff of
+// what changed: most entries in any given provider are still verified
+// against rendered prose pages (their own documentation_url), and the spec's
+// bytes can move for reasons a given consumed contract never touches — so a
+// changed hash means "re-read the consumed fields against the per-entry
+// pages and the spec", never "here is exactly what moved". Only an entry
+// whose own documentation_url IS the spec's URL was read from a versioned
+// document and carries APIVersion; every other entry was read from an
+// undated prose page and carries none.
+// contracts/README.md "Keeping them honest" explains the procedure in full.
+type Spec struct {
+	// URL is the machine-readable specification the contract was generated
+	// from.
+	URL string `yaml:"url"`
+
+	// Version is the vendor's own version string carried by the
+	// specification — for an OpenAPI document, its info.version.
+	Version string `yaml:"version"`
+
+	// SHA256 is the hex-encoded SHA-256 of the specification's bytes exactly
+	// as fetched, lowercase.
+	SHA256 string `yaml:"sha256"`
+
+	// Retrieved is the date the bytes behind SHA256 were fetched, in
+	// YYYY-MM-DD form. It names when THIS hash was taken, not when the
+	// contract's fields were last verified: it is never earlier than the
+	// provider-level verified date on provenanceFile, because the hash is
+	// taken from (or after) the document the contract was verified against
+	// — see contracts/README.md "Keeping them honest" and
+	// TestSpecRetrievedIsAtLeastProviderVerified for the procedure that
+	// keeps the two in that order.
+	Retrieved string `yaml:"retrieved"`
 }
 
 // Golden is one embedded wire fixture.
@@ -121,6 +172,7 @@ type Golden struct {
 type provenanceFile struct {
 	Provider string   `yaml:"provider"`
 	Verified string   `yaml:"verified"`
+	Spec     *Spec    `yaml:"spec,omitempty"`
 	Goldens  []Record `yaml:"goldens"`
 }
 
@@ -225,6 +277,28 @@ func Provenance(p Provider) (map[string]Record, error) {
 		records[record.Golden] = record
 	}
 	return records, nil
+}
+
+// ProviderSpec returns p's [Spec] — the machine-readable specification its
+// contract was generated from — and reports whether the provenance file
+// records one at all. Every provider Providers returns does today; ok is
+// false only for a provider whose provenance.yaml carries no spec: block,
+// which contracts_test.go's TestEveryProviderHasSpecRecorded treats as a
+// failure. See [Spec]'s doc comment for why every provider carries one.
+//
+// This is named ProviderSpec rather than Provenance, which already names the
+// per-golden accessor above with an incompatible signature (Go has no
+// overloading); a consumer wanting a provider's spec provenance reaches for
+// this the same way it reaches for [Provenance] to reach a golden's.
+func ProviderSpec(p Provider) (Spec, bool, error) {
+	parsed, err := loadProvenanceFile(p)
+	if err != nil {
+		return Spec{}, false, err
+	}
+	if parsed.Spec == nil {
+		return Spec{}, false, nil
+	}
+	return *parsed.Spec, true, nil
 }
 
 // loadProvenanceFile reads and parses p's provenance.yaml. [Provenance] and

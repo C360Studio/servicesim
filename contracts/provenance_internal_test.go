@@ -65,6 +65,55 @@ func TestProviderVerifiedMatchesReadmeIndexTable(t *testing.T) {
 	}
 }
 
+// TestSpecRetrievedIsAtLeastProviderVerified checks the one cross-field
+// constraint a spec: block makes: spec.retrieved must be no EARLIER than the
+// provider-level verified date, never the reverse.
+//
+// This is the direction the sanctioned refresh procedure produces
+// (contracts/README.md "Keeping them honest" step 3), not an arbitrary pick:
+// spec.retrieved is either bumped on a clean check (retrieved >= verified,
+// nothing else moved) or re-fetched and re-hashed on the day a drift
+// verification re-dates verified (retrieved == verified, both done together
+// in one pass) — so a refresh that follows the procedure never records
+// retrieved older than verified, even though the two can be produced days
+// apart. For every provider's original data here, `verified` records the day
+// a person checked the contract's FIELDS against the vendor's documentation,
+// during the 2026-08-14/15 pass; spec.retrieved records the day THIS unit
+// later fetched the specification's bytes to hash them for the first time —
+// a later, dated re-fetch, done to pin a hash the original pass never
+// recorded.
+//
+// This lives here rather than in contracts_test.go for the same reason
+// TestProviderVerifiedIsAtLeastEveryEntry does: it needs
+// provenanceFile.Verified directly, and that field is unexported on purpose.
+func TestSpecRetrievedIsAtLeastProviderVerified(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range Providers() {
+		parsed, err := loadProvenanceFile(provider)
+		if err != nil {
+			t.Fatalf("%s: %v", provider, err)
+		}
+		if parsed.Spec == nil {
+			continue
+		}
+
+		retrieved, err := time.Parse(time.DateOnly, parsed.Spec.Retrieved)
+		if err != nil {
+			t.Fatalf("%s: spec.retrieved %q is not a YYYY-MM-DD date", provider, parsed.Spec.Retrieved)
+		}
+		verified, err := time.Parse(time.DateOnly, parsed.Verified)
+		if err != nil {
+			t.Fatalf("%s: provider-level verified %q is not a YYYY-MM-DD date", provider, parsed.Verified)
+		}
+		if retrieved.Before(verified) {
+			t.Errorf("%s: spec.retrieved %q is older than the provider-level verified %q — "+
+				"a refresh must re-fetch and re-hash the spec on or after the day it re-dates verified",
+				provider, parsed.Spec.Retrieved, parsed.Verified)
+		}
+	}
+}
+
 // readmeVerifiedDates parses the "Verified" column of contracts/README.md's
 // index table, keyed by provider. It reads the file from disk rather than
 // through the embedded FS: README.md files are deliberately not embedded (see
