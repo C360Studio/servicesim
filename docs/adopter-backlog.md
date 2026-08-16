@@ -42,8 +42,10 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    (the journal `CompletedAt` defect: stamped before the delay on aborting faults, so `observed_ms` read 0 on a
    hang) is done; unit 2 (the generic `malicious-content` built-in) is done; next is `body_bytes:` padding, the
    timeout/brownout/hang-then-abort/rotation built-ins with `AssertDifferentCredential`,
-   delay-after-headers, the observed-pacing assertion per D5. Trickle bodies now have Phase 5's chunked-write path
-   to sit on. Note the over-redaction defect listed there was fixed in v0.1.1 already — verify before re-fixing.
+   delay-after-headers, the observed-pacing assertion per D5, and a closing docs sweep for onboarding and
+   correctness (owner, 2026-08-16) that also carries the D9 framing question. Trickle bodies now have Phase 5's
+   chunked-write path to sit on. Note the over-redaction defect listed there was fixed in v0.1.1 already — verify
+   before re-fixing.
 3. Tell the adopter v0.3.0 exists; their questions in the two contract READMEs are still open.
 
 ### How the work has been run, for whoever picks it up
@@ -124,6 +126,7 @@ These are settled. Re-open one only with new evidence, and record why.
 |  D6 | MCP and ODR are two new provider profiles for G-3. Build them in-tree, or make out-of-tree providers a supported path? | **Build MCP and ODR in-tree** (owner overrode the recommendation to export the seam instead).  |
 |  D7 | Exa /contents, /findSimilar and Tavily /extract have no verified contract in this repository — contracts/exa/README.md:23 explicitly declines to as... | **Re-verify against vendor docs first** for `/contents`, `/findSimilar`, `/extract` — ADR-0002 holds as written.  |
 |  D8 | What should the adopter do about stream:true fixtures in the window before SSE ships (Phase 5)? | Tell the adopter **not to record `stream:true` fixtures** yet, and ship a `stream: reject` policy so their path fails loudly. **Reversed 2026-08-15: Phase 5 has shipped.** `stream: {when_requested: stream, deltas: [...]}` now serves a real, golden-tested SSE sequence on both Perplexity surfaces — the adopter can record `stream:true` fixtures today, against `testkit.AssertGoldenSSE`. `stream: reject` remains available for a suite that wants a hard failure instead. |
+|  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Open.** To be proposed concretely in the docs sweep that closes Phase 6 and decided by the owner there; nothing changes until then. |
 
 Two of these reversed a recommendation, and the reasoning is worth keeping. On D6 the owner chose in-tree because the
 adopter's G-3 should not wait on their own team's out-of-tree build. On D7 the owner held ADR-0002 — vendor
@@ -616,6 +619,13 @@ registry disable. The pacing fix is what makes journal timestamps usable as the 
   shipped `testkit.AssertStreamPacing` over a streamed entry's `outcome.stream.pace_ms`; the request-level helper
   over `arrived_at`/`completed_at` across entries (the RPS evidence D5 asks for) is still open; the `CompletedAt` fix
   it depended on is now in (`phase-6`, unit 1).
+
+- **Closing unit — a docs sweep for onboarding and correctness (owner, 2026-08-16).** Run it as a unit with an
+  outside-reader lens: can a new consumer go from README to `testkit.WithBuiltin` to a passing test without
+  asking anyone; is every statement in README, CONTRIBUTING, `docs/*.md` and CLAUDE.md true against the code as
+  shipped (the design documents are records of what shipped; their Go blocks are illustrative). It also carries
+  the D9 proposal — whether the repository should describe itself as a service-simulator framework shipping
+  three research-API profiles — for the owner to decide, not for the sweep to apply on its own.
 
 ### Phase 7 — Packaging, deployment and the contract-fidelity process
 
