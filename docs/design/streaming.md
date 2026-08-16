@@ -5,6 +5,8 @@
 > **Phase 5 may start with unit 1:** `Response.Stream` + the `execute` branch + the widened `Handle` journal
 > condition + the SSE writer. **OPEN — owner decision: none.**
 >
+> Contract step (§10 step 1) done 2026-08-15; open design deltas listed at §7 — resolve before unit 1.
+>
 > A third, independent reviewer re-read this document end to end against both B1 lenses and the round-3 change list
 > below, and re-verified every round-3 blocker/major disposition against the current tree. Verdict: **PASS**. Every
 > round-3 major is answered, not restated, everywhere the document touches the topic; no conceptual arbitration was
@@ -1269,6 +1271,47 @@ Pacing is deterministic in the only sense that is achievable and the only sense 
 
 ## 7. The two SSE grammars
 
+### Open design deltas from the verified contract (added 2026-08-15)
+
+`contracts/perplexity/README.md`'s "Streaming (SSE)" section — §10 step 1, done 2026-08-15 — forces the
+following changes on §2/§3/§9 before Phase 5's unit 1. This is a list of what must change, each with the
+vendor line that forces it; it is not itself the change. That is a small design amendment with its own
+adversarial review, which the next unit is.
+
+- **`stream_mode` must select between two frame sequences, not one.** Today's §2/§3 assume a single sequence
+  per turn (role chunk, deltas, one terminal chunk, `[DONE]`). The vendor line: "Full Mode: Single type
+  (`chat.completion.chunk`)" versus "Concise Mode: Multiple types for different stages"
+  (`sonar/pro-search/stream-mode.md`). A scenario's existing `stream_mode` request field (already in the Sonar
+  request table) has to steer which sequence `renderSonarStream` builds; nothing in `StreamScript` names it
+  today.
+- **Concise mode's reasoning frames have no representation in `StreamScript`/`StreamDelta`.** The vendor line:
+  "`chat.reasoning`: Streamed during the reasoning stage, containing real-time reasoning steps and search
+  operations" (`sonar/pro-search/stream-mode.md`). `StreamDelta` today is text-only; a `chat.reasoning` /
+  `chat.reasoning.done` pair is not a content delta and needs its own scenario vocabulary or an explicit
+  decision to leave concise mode unscripted in the initial release. `chat.reasoning.done` also carries `usage`,
+  `search_results` and `images` (verified against the page's raw frame example, reproduced in
+  `contracts/perplexity/README.md`), not only `chat.completion.done` — a renderer that only ever emits those
+  fields on the terminal frame will not match the vendor's concise sequence.
+- **`usage` placement is confirmed for concise mode, not for full mode, and §10's "one terminal chunk" choice
+  cannot yet claim vendor backing for the mode §2's example scenario actually renders.** The vendor line: "Cost
+  information is only available in the `chat.completion.done` chunk" (`sonar/pro-search/stream-mode.md`) — for
+  `concise`. No fetched page states where `usage` lands in `full` mode, which is the mode §2's example and §9's
+  frame-count formula assume. §10's "simulator-chosen" placement must be pinned explicitly to `full` mode
+  rather than presented as settled for the surface as a whole.
+- **`[DONE]` is unstated for the Responses/Agent surface, not contradicted.** A prior pass of the contract cited
+  "A successful stream ends with `data: [DONE]`" from `gateway-responses-post.md` as describing the
+  Responses/Agent surface; that page in fact documents `POST /router/v1/responses`, Perplexity's separate,
+  unsimulated Router API. Corrected 2026-08-15: no Agent-API page and no occurrence in `openapi.json` (0 hits)
+  states a `[DONE]` sentinel for `/v1/agent`. The bullet below stating "`[DONE]` sentinel is a chat-completions
+  concept only" therefore remains simulator-chosen, exactly as this document already said, with the vendor
+  question now recorded as unstated rather than open-and-contradicted. `StreamTerminal.OmitDone`'s
+  no-effect-on-`GrammarTyped` rule can stay as written on that basis.
+- **Whether `GrammarTyped` frames carry a named `event:` line at all is unpinned.** One fetch of the OpenAPI
+  document reported no mention of `event:` line formatting for the Responses/Agent streaming schema; the vendor
+  pages describe discrimination by a `type` field inside the JSON payload instead. `EncodeSSE`'s
+  `SSEEvent.Name` mechanism for `GrammarTyped` is simulator-chosen, not contract-verified, until this is
+  settled — possibly by a captured live response, per §10 step 3.
+
 They are genuinely different and both are in scope, because the adopter's client uses the first and their migration
 target uses the second.
 
@@ -1288,6 +1331,18 @@ data: [DONE]
 
 ```
 
+**Vendor-verified 2026-08-15** (`contracts/perplexity/README.md`'s "Streaming (SSE)" section): the vendor pins
+unnamed `data:` frames terminated by `data: [DONE]` (confirmed concise-mode-specific by example; full mode's
+support is only the OpenAI-compatibility declaration), and — for `stream_mode: concise` only — the four `object`
+types and that `usage`/`search_results`/`images` ride on **both** `chat.reasoning.done` and
+`chat.completion.done`, while `cost` rides on `chat.completion.done` only. It does **not** pin `usage` sharing a
+chunk with `finish_reason` in `full` mode, the exact `id`/`created` behaviour per chunk in `full` mode (the
+vendor's own `concise`-mode example shows `created` changing per chunk while `id` stays constant — a
+counterexample to the OpenAI-compatibility "repeat unchanged" pattern, not a confirmation of it), or
+chunk-to-token granularity; those remain simulator-chosen. The frame example above assumes `full`-mode-shaped
+single-type chunks, which is not the mode the vendor's usage-placement statement above was verified for — the
+first open design delta above exists to resolve that.
+
 **Responses / Agent (`GrammarTyped`)** — `POST /v1/agent`, `POST /v1/responses`, `POST /responses`
 (`NameAgent`'s `AgentRoutes()`, all three spellings). Every frame carries an `event:` line
 naming one of the fourteen published `EventType` members
@@ -1306,6 +1361,20 @@ event: response.completed
 data: {"type":"response.completed","response":{"id":"resp_...","status":"completed","output":[...],"usage":{"input_tokens":19,"output_tokens":240,"cost":{"total_cost":0.0128,"currency":"USD"}}}}
 
 ```
+
+**Vendor-verified 2026-08-15**: the `ResponseStreamEvent` schema is retrievable from `openapi.json` (an earlier
+edition of this document and of the contract said it could not be — a fetch-tooling artefact, not a vendor gap)
+and is exactly the 14 members matching the `EventType` enum, discriminated by `type`, with a monotonically
+increasing `sequence_number` required on every event. It pins the `response.completed` payload's `response`
+field as "the full or partial response object" — not, as an earlier edition said, "the full response object
+including usage." It does **not** pin a literal `event: <type>` SSE line — `openapi.json` has 0 occurrences of
+`event:` line formatting for this schema — so `SSEEvent.Name`/`EncodeSSE`'s named-frame behaviour for this
+grammar is simulator-chosen, not contract-verified. `[DONE]` is **unstated**, not contradicted, for this
+grammar: no Agent-API page and no occurrence in `openapi.json` (0 hits) states a `[DONE]` sentinel for
+`/v1/agent`; the "ends with `data: [DONE]`" line previously attributed to `gateway-responses-post.md` describes
+`POST /router/v1/responses`, Perplexity's separate, unsimulated Router API, and that attribution is withdrawn.
+The "`[DONE]` sentinel is a chat-completions concept only" bullet below remains simulator-chosen on that
+corrected basis (see the fourth open design delta above), not vendor-pinned either way.
 
 **One mechanism serves both, and landing `GrammarTyped` is what gives the Agent entry a `stream:` key at all.**
 `PerplexityAgentProjection` carries no `Stream` field today — the Agent surface warns `CodeAgentStreamUnsupported`
@@ -1559,24 +1628,47 @@ all assume `finish_reason` and `usage` ride on the same terminal chunk on `Gramm
 as the simulator's choice below. Everything downstream of that choice — the frame count, `after_chunk`'s valid
 range, every SSE golden — is only as verified as this section makes it.
 
-1. **Regenerate the Perplexity SSE section from `https://docs.perplexity.ai/openapi.json`.** The `EventType` enum
-   already is generated from it, recorded in `contracts/perplexity/README.md`; the frame envelope, the chunk
-   sequence and which frame carries `usage` are not, and must go through the same generation-and-recording step
-   before this design's fixtures are treated as verified.
-2. **Read the adopter's `src/pkg/agent/perplexity.go` as evidence of the real wire shape.** It is the one authority
-   already in hand for what a live response actually contains, and it should be read before, not after, the
-   fixtures below are frozen — a fixture written first and checked against the client second inverts the order this
-   repository's own contract-fidelity process requires.
+1. ~~**Regenerate the Perplexity SSE section from `https://docs.perplexity.ai/openapi.json`.**~~ **DONE
+   2026-08-15, corrected the same day.** Recorded in `contracts/perplexity/README.md`'s "Streaming (SSE)"
+   section: the frame envelope, the `stream_mode` grammars, which frame carries `usage`/`cost`/`search_results`,
+   and an explicit "What is NOT stated by the vendor" table. Two pages fetched for that section
+   (`gateway-chat-completions-post.md`, `gateway-responses-post.md`) turned out to document Perplexity's
+   separate, unsimulated Router API rather than the Sonar/Agent SDK aliases they were assumed to be, and every
+   claim sourced from them has been withdrawn or re-attributed. The `ResponseStreamEvent` schema, initially
+   recorded as unretrievable, was confirmed present in `openapi.json` and is now recorded directly from it. §7
+   below carries the open deltas that section's findings force.
+2. ~~Read the adopter's `src/pkg/agent/perplexity.go` as evidence of the real wire shape.~~ **STRUCK 2026-08-15
+   — VOID under the authority rule:** vendor documentation decides every wire contract; the adopter's client
+   code is not evidence, however convenient an authority it is "already in hand." Reading it here would let a
+   consumer's guess about a vendor's behaviour outrank the vendor's own (even incomplete) documentation, which
+   is the inversion this design's own contract-fidelity process exists to prevent.
 3. **Record every frame-level choice the OpenAPI document does not pin as `simulator-chosen` in
    `contracts/perplexity/provenance.yaml`**, exactly as the Sonar non-422 error bodies already are, and correct each
    one from a captured live response before it is called verified. That is the same discipline ADR-0002 applies, and
    the adopter's own backlog asks for it under contract-fidelity process.
 
-The two grammars in §7 are reconstructed from the vendor's OpenAPI document and from the OpenAI-compatible dialect it
-mirrors. The `EventType` enum is verified. **The frame-level shapes are not**, and step 1 above is what changes that.
-The OpenAPI document declares the event *names* and the response *schemas*; it does not pin the chunk envelope or
-whether Perplexity emits `[DONE]`, and — until step 1 runs — this document's own choice that `usage` rides on the
-same chunk as `finish_reason`, rather than a separate one, is itself simulator-chosen and provisional, not verified.
+The two grammars in §7 were reconstructed from the vendor's OpenAPI document and from the OpenAI-compatible dialect
+it mirrors. Step 1 above has now run, and — corrected 2026-08-15 — against `openapi.json` directly for the
+Responses/Agent surface's `ResponseStreamEvent` schema: recorded as unretrievable in an earlier edition of both
+this document and the contract, that was a fetch-tooling artefact, and the schema is now recorded in full (14
+members, matching the `EventType` enum). The chat-completions surface still has no schema in `openapi.json`
+(confirmed absent by full-text search), so that half remains prose-only, and the result overall is **partial, not
+complete, verification**. Newly verified: the chat-completions surface's `stream_mode` split into `full`/`concise`;
+that `usage`/`search_results`/`images` ride on **both** `chat.reasoning.done` and `chat.completion.done` in
+**`concise`** mode, while `cost` rides on `chat.completion.done` only; that `[DONE]` is pinned for `concise` mode by
+a raw code sample, with `full` mode resting only on the OpenAI-compatibility declaration; and the
+`ResponseStreamEvent` schema's full `oneOf` and per-event fields. **Corrected**, not newly contradicted: claims this
+document and the contract both sourced from `gateway-chat-completions-post.md` and `gateway-responses-post.md` —
+including "`[DONE]` being a chat-completions concept only" being contradicted — turned out to cite Perplexity's
+separate, unsimulated Router API, not the Sonar/Agent aliases those pages were assumed to be. With that
+misattribution corrected, `[DONE]` on the Responses/Agent surface is **unstated** (0 occurrences in
+`openapi.json`), not contradicted. Still **not** verified by any fetched page: `usage`'s placement in `full` mode
+specifically, so this document's own choice that `usage` rides on the same chunk as `finish_reason` remains
+simulator-chosen and provisional for that mode; and whether `GrammarTyped` frames carry a literal `event: <type>`
+SSE line at all, as opposed to an anonymous `data:`-only frame whose payload names its own type — `openapi.json`
+has 0 occurrences of `event:` line formatting for `ResponseStreamEvent`. See `contracts/perplexity/README.md`'s
+"What is NOT stated by the vendor" table for the complete list, and §7 below for what each of these forces on this
+design before unit 1.
 
 Golden fixtures to add under `contracts/perplexity/`: `perplexity-sonar-stream.sse`,
 `perplexity-sonar-stream-disconnect.sse`, `perplexity-agent-stream.sse`, each with a provenance entry naming the

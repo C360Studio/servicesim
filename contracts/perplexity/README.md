@@ -1,6 +1,12 @@
 # Perplexity consumed contract
 
-Verified against the vendor's own machine-readable specification on **2026-08-14**.
+Verified against the vendor's own machine-readable specification on **2026-08-14**, extended **2026-08-15**
+with a "Streaming (SSE)" section verified against the prose pages listed under "Documentation sources" below
+(and, where noted in that section, against the same OpenAPI document), and corrected the same day after two
+`gateway-*-post.md` pages fetched for that section turned out to document Perplexity's **Router API**
+(`/router/v1/*`) rather than the Sonar/Agent SDK aliases they were assumed to be, and after the
+`ResponseStreamEvent` schema — previously recorded as unretrievable — was confirmed present in the OpenAPI
+document.
 
 Source of truth: <https://docs.perplexity.ai/openapi.json> (OpenAPI 3.1.0, 176,777 bytes, `servers: [https://api.perplexity.ai]`). Every table below is generated from that document, not from prose documentation pages and not from memory.
 
@@ -8,6 +14,49 @@ Source of truth: <https://docs.perplexity.ai/openapi.json> (OpenAPI 3.1.0, 176,7
 > produced fields borrowed from OpenAI's Responses API by analogy, plus one quotation that does not exist in
 > any Perplexity source. Two independent challenge agents caught it. Prose docs describe; the OpenAPI
 > document decides. Regenerate this file from the spec rather than editing it by hand.
+>
+> The "Streaming (SSE)" section below still departs from "generated from the OpenAPI document" for the
+> chat-completions surface: no `ChatCompletionChunk`/`chat.completion.chunk` schema exists anywhere in
+> `openapi.json` (confirmed by full-text search), so that half of the section is built from prose pages, with
+> every claim attributed to the page it came from and every gap the OpenAPI document would normally settle
+> recorded as unresolved rather than guessed. The Responses/Agent surface's `ResponseStreamEvent` schema, by
+> contrast, **is** in the OpenAPI document and is recorded directly from it as of 2026-08-15 — an earlier
+> edition of this file said that schema "could not be retrieved," which was a fetch-tooling limitation, not a
+> vendor gap.
+
+## Documentation sources
+
+Fetched and confirmed reachable **2026-08-15**, in addition to `https://docs.perplexity.ai/openapi.json` above:
+
+- <https://docs.perplexity.ai/docs/sonar/pro-search/stream-mode.md> — the chat-completions streaming grammar
+- <https://docs.perplexity.ai/api-reference/chat-completions-post.md> — `/v1/sonar` field reference
+- <https://docs.perplexity.ai/docs/sonar/openai-compatibility.md> — the Sonar OpenAI-compatibility declaration
+- <https://docs.perplexity.ai/docs/agent-api/openai-compatibility.md> — the Agent API OpenAI-compatibility
+  declaration
+- <https://docs.perplexity.ai/docs/agent-api/output-control.md> — Agent/Responses streaming events
+- <https://docs.perplexity.ai/api-reference/agent-post.md> — `/v1/agent` field reference
+- <https://docs.perplexity.ai/docs/cookbook/articles/streaming-citations/README.md> — cookbook, illustrative
+  only, not authoritative
+- <https://docs.perplexity.ai/docs/sonar/features.md> — illustrative only, not authoritative
+- <https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events> —
+  cited only as a **secondary** source, only where Perplexity itself declares OpenAI compatibility, never as a
+  Perplexity statement in its own right
+
+**Fetched, then withdrawn as evidence for this contract.** Two pages were fetched on the assumption that they
+were the `/chat/completions` and `/v1/responses` SDK-alias reference pages for Sonar and the Agent API. Re-fetch
+on 2026-08-15 shows they document a different, unrelated, **unsimulated** surface, so nothing on either page is
+cited as evidence anywhere below:
+
+- <https://docs.perplexity.ai/api-reference/gateway-chat-completions-post.md> — declares
+  `post /router/v1/chat/completions`, `info.title: "Perplexity Router API (OpenAI-compatible)"`. Not the
+  `/chat/completions` alias of `/v1/sonar` — that alias is declared only on the `sonar/openai-compatibility.md`
+  page above, which names `/chat/completions` and `/v1/chat/completions`, not a Router path.
+- <https://docs.perplexity.ai/api-reference/gateway-responses-post.md> — declares `post /router/v1/responses`,
+  `info.title: "Perplexity Router API (OpenAI Responses-compatible)"`, whose schema is "derived from the
+  Apache-2.0-licensed OpenResponses specification." Not the `/v1/responses` alias of `/v1/agent`.
+
+The Router API (`/router/v1/*`) is a distinct surface Servicesim does not simulate; it is out of scope for this
+contract beyond this note.
 
 ## Endpoints in the specification
 
@@ -296,6 +345,269 @@ Enum: `completed`, `failed`, `incomplete`, `in_progress`, `queued`, `cancelled`
 ### `EventType` (streaming)
 
 Enum: `response.created`, `response.in_progress`, `response.completed`, `response.failed`, `response.output_item.added`, `response.output_item.done`, `response.output_text.delta`, `response.output_text.done`, `response.reasoning.started`, `response.reasoning.search_queries`, `response.reasoning.search_results`, `response.reasoning.fetch_url_queries`, `response.reasoning.fetch_url_results`, `response.reasoning.stopped`
+
+## Streaming (SSE)
+
+Verified **2026-08-15** against the pages listed under "Documentation sources" above. This section pins the
+wire shape a `stream: true` request receives. It exists ahead of an implementation, per
+[`docs/design/streaming.md`](../../docs/design/streaming.md) §10's contract-fidelity prerequisite, and per "What
+Servicesim simulates" below, streaming is not yet implemented — a `stream: true` request today still receives a
+non-streaming body plus a warning, or a `422` if the scenario asks for `stream: reject`.
+
+### Chat completions (`POST /v1/sonar`, `/chat/completions`, `/v1/chat/completions`)
+
+**Frame envelope.** Unnamed `data:` lines; no `event:` line is documented anywhere for this surface.
+`chat-completions-post.md`'s `stream` field description says only "If true, returns streaming SSE response,"
+without naming a chunk schema or a termination sentinel. The OpenAPI document's `/v1/sonar` operation declares
+**only** an `application/json` response referencing `CompletionResponse`: no `text/event-stream` content type,
+and no `ChatCompletionChunk`/`chat.completion.chunk` schema exists anywhere in the specification (confirmed by a
+full-text search of the fetched document on 2026-08-15). **This surface's chunk envelope is therefore prose-only
+— `sonar/pro-search/stream-mode.md` — and is not pinned by the machine-readable specification the rest of this
+file is generated from.**
+
+`stream_mode` (request field, already in the Sonar request table above) selects between two grammars, quoted
+from <https://docs.perplexity.ai/docs/sonar/pro-search/stream-mode.md>:
+
+- **`full` (default).** "Traditional streaming format with complete message objects in each chunk." One object
+  type only, `chat.completion.chunk`. Aggregation is "Server-side (includes `choices.message`)."
+  *Inference, not a page statement:* the page does not say in so many words that every chunk's
+  `choices[].message` carries the aggregated-so-far message alongside `choices[].delta`; that reading follows
+  from "Server-side" aggregation plus "complete message objects in each chunk," but is recorded here as an
+  inference, not a quotation. Search results arrive "Multiple times during stream," not held back for a final
+  chunk — in tension with `sonar/features.md` (illustrative only, not authoritative), which separately says
+  "Search results and metadata are delivered in the **final chunk(s)** of a streaming response, not
+  progressively during the stream." That tension is unresolved; this file follows `stream-mode.md` as the
+  authoritative page for the two-mode grammar.
+- **`concise`.** "Optimized streaming format with reduced redundancy and enhanced reasoning visibility."
+  Aggregation is "Client-side (delta only)." Four object types, each `object` value quoted verbatim with the
+  page's own one-line description:
+
+  | `object` value | Page's description |
+  |---|---|
+  | `chat.reasoning` | "Streamed during the reasoning stage, containing real-time reasoning steps and search operations." |
+  | `chat.reasoning.done` | "Marks the end of the reasoning stage and includes all search results (web, images, videos) and reasoning steps." |
+  | `chat.completion.chunk` | "Streamed during the response generation stage, containing the actual content being generated." |
+  | `chat.completion.done` | "Final chunk indicating the stream is complete, including final search results, usage statistics, and cost information." |
+
+  The page states directly: "Search results and usage information only appear in `chat.reasoning.done` and
+  `chat.completion.done` chunks," and "Cost information is only available in the `chat.completion.done` chunk" —
+  so `usage` and `search_results` (and `images`, per the examples below) ride on **both** done-frames; only
+  `cost` is `chat.completion.done`-only.
+
+**Raw frame examples, reproduced verbatim from `stream-mode.md`'s four "Structure" examples** (`[...]` marks the
+page's own elisions, not a cut made here):
+
+```json
+{
+  "id": "cfa38f9d-fdbc-4ac6-a5d2-a3010b6a33a6",
+  "model": "sonar-pro",
+  "created": 1759441590,
+  "object": "chat.reasoning",
+  "choices": [{
+    "index": 0,
+    "finish_reason": null,
+    "message": { "role": "assistant", "content": "" },
+    "delta": {
+      "role": "assistant",
+      "content": "",
+      "reasoning_steps": [{
+        "thought": "Searching the web for Seattle's current weather...",
+        "type": "web_search",
+        "web_search": {
+          "search_results": [...],
+          "search_keywords": ["Seattle current weather"]
+        }
+      }]
+    }
+  }],
+  "type": "message"
+}
+```
+
+```json
+{
+  "id": "3dd9d463-0fef-47e3-af70-92f9fcc4db1f",
+  "model": "sonar-pro",
+  "created": 1759459505,
+  "object": "chat.reasoning.done",
+  "usage": {
+    "prompt_tokens": 6, "completion_tokens": 0, "total_tokens": 6, "search_context_size": "low"
+  },
+  "search_results": [...],
+  "images": [...],
+  "choices": [{
+    "index": 0,
+    "finish_reason": null,
+    "message": { "role": "assistant", "content": "", "reasoning_steps": [...] },
+    "delta": { "role": "assistant", "content": "" }
+  }]
+}
+```
+
+```json
+{
+  "id": "cfa38f9d-fdbc-4ac6-a5d2-a3010b6a33a6",
+  "model": "sonar-pro",
+  "created": 1759441592,
+  "object": "chat.completion.chunk",
+  "choices": [{
+    "index": 0,
+    "finish_reason": null,
+    "message": { "role": "assistant", "content": "" },
+    "delta": { "role": "assistant", "content": " tonight" }
+  }]
+}
+```
+
+```json
+{
+  "id": "cfa38f9d-fdbc-4ac6-a5d2-a3010b6a33a6",
+  "model": "sonar-pro",
+  "created": 1759441595,
+  "object": "chat.completion.done",
+  "usage": {
+    "prompt_tokens": 6, "completion_tokens": 238, "total_tokens": 244, "search_context_size": "low",
+    "cost": {
+      "input_tokens_cost": 0.0, "output_tokens_cost": 0.004, "request_cost": 0.006, "total_cost": 0.01
+    }
+  },
+  "search_results": [...],
+  "images": [...],
+  "choices": [{
+    "index": 0,
+    "finish_reason": "stop",
+    "message": { "role": "assistant", "content": "## Seattle Weather Forecast\n\n...", "reasoning_steps": [...] },
+    "delta": { "role": "assistant", "content": "" }
+  }]
+}
+```
+
+Facts these examples pin that the prose above does not: every chunk in every object type carries **both**
+`choices[0].message` and `choices[0].delta`, with `index` and `finish_reason` present on all four; the three
+chunks sharing `id: "cfa38f9d-..."` show `created` **changing** per chunk (`1759441590`, `1759441592`,
+`1759441595`) while `id` stays constant — this is Perplexity's own illustration of `id`/`created` behaviour and
+it is a direct counterexample to the "repeat unchanged" pattern the OpenAI secondary source states for OpenAI's
+own API (see "OpenAI compatibility" below); `images` appears on both done-frames alongside `search_results`;
+`citations` appears on no streaming page fetched, at any scope.
+
+`[DONE]`: `stream-mode.md`'s own Raw-HTTP code sample, sent with `"stream_mode": "concise"` explicitly, checks
+`if data_str == '[DONE]': break` — concise-mode-specific evidence. `chat-completions-post.md`'s `stream` field
+description does not mention `[DONE]` at all, and no other Sonar-surface page fetched pins `[DONE]` for `full`
+mode; its only support there is the OpenAI-compatibility declaration below ("Streaming works exactly like
+OpenAI's API"), recorded as a secondary source, not a direct Sonar statement.
+
+**Not stated by any fetched page:** `finish_reason`'s placement is pinned for **`concise`** mode by the
+`chat.completion.done` example above (`"finish_reason": "stop"`, `null` on the other three object types) but
+unstated for **`full`** mode, where no example or prose page shows a chunk's `finish_reason`; `usage`/`cost`
+placement specifically in **`full`** mode (as opposed to `concise`'s confirmed `chat.reasoning.done`/
+`chat.completion.done` split); whether `id`/`created` repeat unchanged across a completion's chunks in **`full`**
+mode — Perplexity's own **`concise`**-mode example above shows `created` changing while `id` stays constant,
+which is at least one counterexample to the OpenAI-compatibility pattern, and no Perplexity page states the
+`full`-mode behaviour either way; and chunk-to-token granularity.
+
+### Responses / Agent (`POST /v1/agent`, `/v1/responses`, `/responses`)
+
+`stream: true` (request field, already in the Agent request table above) switches the response's content type.
+The OpenAPI document's `/v1/agent` operation declares a `200` response with a `text/event-stream` entry whose
+schema is `$ref: '#/components/schemas/ResponseStreamEvent'` — unlike Sonar, this surface's SSE response **is**
+declared in the machine-readable specification.
+
+**The `ResponseStreamEvent` schema is retrievable.** A direct fetch of `openapi.json` (176,997 bytes) and its
+inline reproduction in `agent-post.md` both surface it; an earlier edition of this file's claim that it "could
+not be retrieved this session" was a fetch-tooling artefact, not a vendor gap. It is `oneOf` **exactly the 14
+members** matching the `EventType` enum recorded above, discriminated by `type`
+(`discriminator.propertyName: type`): `ResponseCreatedEvent`, `ResponseInProgressEvent`,
+`ResponseCompletedEvent`, `ResponseFailedEvent`, `OutputItemAddedEvent`, `OutputItemDoneEvent`, `TextDeltaEvent`,
+`TextDoneEvent`, `ReasoningStartedEvent`, `SearchQueriesEvent`, `SearchResultsEvent`, `FetchUrlQueriesEvent`,
+`FetchUrlResultsEvent`, `ReasoningStoppedEvent`. Every event requires `type` and `sequence_number` (integer,
+"Monotonically increasing sequence number for event ordering"). Per-event fields beyond those two:
+
+| Event | Additional fields |
+|---|---|
+| `ResponseCreatedEvent`, `ResponseInProgressEvent` | optional `response` (`ResponsesResponse`) |
+| `ResponseCompletedEvent` | optional `response` (`ResponsesResponse`) — description "Response event. Contains the full or partial response object," **not** "the full response object including usage" |
+| `ResponseFailedEvent` | required `error` (`ErrorInfo`) |
+| `OutputItemAddedEvent`, `OutputItemDoneEvent` | required `item` (`OutputItem`) + `output_index` (integer) |
+| `TextDeltaEvent` | required `item_id`, `output_index`, `content_index`, `delta` (string) |
+| `TextDoneEvent` | required `item_id`, `output_index`, `content_index`, `text` (string) |
+| `ReasoningStartedEvent`, `ReasoningStoppedEvent` | optional `thought` |
+| `SearchQueriesEvent` | required `queries` (array[string]) + optional `thought` |
+| `SearchResultsEvent` | required `results` (array[`SearchResult`]) + optional `thought` + optional `usage` (`ResponsesUsage`) — this is where search results land on the typed grammar |
+| `FetchUrlQueriesEvent` | required `urls` |
+| `FetchUrlResultsEvent` | required `contents` (array[`UrlContent`]) |
+
+Full-text counts in `openapi.json` on 2026-08-15: `[DONE]` 0, `event:` 0, `ChatCompletionChunk` 0,
+`chat.completion.chunk` 0, `stream_options` 0, `sequence_number` 28.
+
+**Frame structure**, per `agent-post.md`: "SSE stream event. Discriminate by the `type` field," and every event
+schema carries "Monotonically increasing sequence number for event ordering" — confirmed by the schema table
+above. **`agent-post.md` does not state that a frame also carries a named `event: <type>` SSE line**, as opposed
+to an anonymous `data:`-only frame whose JSON payload carries `type`; a full-text search of `openapi.json` finds
+0 occurrences of `event:` line formatting for this schema. `docs/design/streaming.md` §7's claim that every
+frame carries an `event:` line is therefore simulator-chosen, not vendor-pinned — see that document's "Open
+design deltas" block.
+
+**`response.completed` payload:** `output-control.md` and `agent-post.md` agree it carries the response object
+inline as `event.response`, whose schema description is "Response event. Contains the full or partial response
+object" — not, as an earlier edition of this file said, "the full response object including usage."
+
+**`response.output_text.delta` payload:** `event.delta` is the incremental text fragment
+(`output-control.md`, `agent-post.md`; confirmed in the schema table above as `TextDeltaEvent.delta`).
+
+**`[DONE]`:** **unstated for this surface.** No Agent-API page (`output-control.md`, `agent-post.md`) and no
+occurrence in `openapi.json` (0 hits, counted above) states a `[DONE]` sentinel for `/v1/agent`. An earlier
+edition of this file's claim — "`gateway-responses-post.md` states a successful stream also ends with
+`data: [DONE]`" — cited the **Router API** (`POST /router/v1/responses`, a different, unsimulated surface; see
+"Documentation sources" above), not the Agent surface, and is withdrawn along with the "Contradicted" table row
+it produced: the correct status for this row is unstated, not contradicted.
+
+**Mid-stream error:** likewise unstated for this surface by any Agent-API page fetched. The "stream emits an
+`error` event followed by `response.failed` and closes without a `[DONE]` trailer" sentence in an earlier
+edition of this file was the Router page's wording, not the Agent surface's, and is withdrawn.
+
+### OpenAI compatibility (declared)
+
+Perplexity declares OpenAI-compatible framing for both surfaces. A declaration of compatibility is not itself a
+Perplexity statement of the framing's details, so it is recorded as its own paragraph rather than folded into
+the grammars above:
+
+- **Sonar** — <https://docs.perplexity.ai/docs/sonar/openai-compatibility.md>: "Perplexity's Sonar API is fully
+  compatible with OpenAI's Chat Completions format," and "Streaming works exactly like OpenAI's API."
+- **Agent** — <https://docs.perplexity.ai/docs/agent-api/openai-compatibility.md>: "Perplexity's Agent API is
+  fully compatible with OpenAI's Responses API interface," and "Streaming works with the Agent API," shown only
+  through the OpenAI SDK's own iteration pattern, not through a description of the frame envelope itself.
+
+Because the Sonar page declares compatibility, OpenAI's own chat-completions streaming reference is citable as a
+**secondary** source for the chat-completions envelope, via declared compatibility, never as a Perplexity
+statement in its own right:
+<https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events> — the
+`chat.completion.chunk` object's `id` and `created` are each stated to repeat unchanged across every chunk of
+one completion ("Each chunk has the same ID," "Each chunk has the same timestamp"); `delta.role`'s own field
+description is "The role of the author of this message" — the page does **not** state it appears "only in the
+first chunk" (a claim an earlier edition of this file attributed to it; the word "first" does not occur on the
+page at all, and this file withdraws that quotation); `usage` appears only when the request sets
+`stream_options: {"include_usage": true}`, landing on a final chunk whose `choices` array is empty. Perplexity's
+own `chat-completions-post.md` (the Sonar field reference) has no `stream_options` field, so this secondary
+source's `usage`-placement mechanism should not be assumed to carry over — see "What is NOT stated by the
+vendor" below. (The Router API's `gateway-chat-completions-post.md` does document `stream_options.include_usage`
+for `/router/v1/chat/completions`, but the Router is a separate, unsimulated surface — see "Documentation
+sources" above — so that is not evidence for Sonar.)
+
+The Agent-API declaration above is a capability claim ("streaming works with the OpenAI SDK's iteration
+pattern"), not a framing claim comparable to Sonar's "works exactly like," so OpenAI's Responses-API streaming
+events are **not** cited here as a secondary source for the typed grammar.
+
+### What is NOT stated by the vendor
+
+| §7 assumption | Vendor pins it? | What was found |
+|---|---|---|
+| `finish_reason` and `usage` ride on the same terminal chunk (`GrammarDelta`) | No | Pinned only for `stream_mode: concise`, by example (`chat.completion.done` carries both); `full` mode's placement is not shown by any fetched page or example |
+| Every `GrammarTyped` frame carries a named `event: <type>` SSE line | No | `agent-post.md` describes discrimination by a `type` field inside the JSON payload; `openapi.json` has 0 occurrences of `event:` line formatting for `ResponseStreamEvent` |
+| `[DONE]` is a chat-completions concept only, never on `GrammarTyped` | Unstated | No Agent-API page or `openapi.json` (0 hits) states a `[DONE]` sentinel for `/v1/agent`; an earlier "Contradicted" finding here cited the Router API, a different, unsimulated surface, and is withdrawn |
+| Exact `id`/`created` behaviour per chunk | Only via declared OpenAI compatibility (Sonar), and contradicted by Perplexity's own example | The secondary OpenAI source states `id`/`created` repeat unchanged per completion; Perplexity's own `concise`-mode `stream-mode.md` example shows `created` changing across three chunks sharing one `id` |
+| Chunk-to-token granularity (one token per chunk vs batched) | No | Not addressed by any fetched page |
+| `ResponseStreamEvent`'s own declared envelope fields | **Yes — resolved** | Retrieved directly from `openapi.json` and `agent-post.md`; recorded in full above |
+| Full catalogue of `GrammarTyped` event names beyond the 14 already recorded above | **No further members — resolved** | `openapi.json`'s `ResponseStreamEvent.oneOf` is exactly the 14-member list matching the `EventType` enum above; an earlier ~25-member catalogue attributed to this page in a prior edition was a fetch-tooling artefact, not vendor content |
 
 ## What Servicesim simulates
 
