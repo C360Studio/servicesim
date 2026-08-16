@@ -6,7 +6,7 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-16 (midday), against **v0.3.0**, tagged from `main` at `ae4c8e6` the same day.
+Recorded 2026-08-16 (evening), against **v0.4.0**, tagged from `main` at `b788f00` — the merge of Phase 6 — the same day.
 
 | Phase | State |
 |---|---|
@@ -16,15 +16,18 @@ Recorded 2026-08-16 (midday), against **v0.3.0**, tagged from `main` at `ae4c8e6
 | 3 — the async job machine | **shipped** in v0.2.0 (A1–A7) |
 | 4 — the remaining synchronous routes | **shipped** in v0.3.0 |
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
-| 6 onward | **Phase 6 (G-3 depth) code units 1–6 DONE, closing docs sweep DONE, on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`), 2 (`malicious-content`), 3 (`oversized_body`), 4 (timeout/brownout/hang-then-abort/credential-rotation built-ins, `AssertDifferentCredential`), 5 (`delay_after_headers`) and 6 (`AssertMaxRate`/`AssertMinGap`/`AssertObservedDuration`, the request-level pacing evidence) done; the docs sweep and its D9 write-up (`docs/proposals/d9-framework-framing.md`) are done — D9 itself is **open**, awaiting the owner; PR #2 is mergeable at the owner's call. Phase 7's provenance-date item is already done |
+| 6 — G-3 depth: hostile content, oversized bodies, hangs after headers, resilience built-ins, pacing evidence | **shipped** in v0.4.0 — units 1–6, the closing docs sweep, D9 tier 1; the adopter's own guardrail vectors are still an append to `malicious-content` when they arrive |
+| 7 onward | open — **Phase 7 (packaging) and Phase 8 (MCP/ODR) are next**; Phase 7's provenance-date item is already done; D9 tier 2 (the seam export) is decided after Phase 8 |
 
-**v0.3.0** is the last tag (2026-08-16): Phase 4's three routes, Phase 5's streaming end to end (four `.sse`
-goldens, the `streaming` built-in, four testkit assertions), honest provenance dates and goldens for the async
-routes, two wire corrections to routes released in v0.2.0 (Exa `output.structured` renders explicit `null`; a
-failed Tavily research poll carries only `request_id`/`status`/`response_time`), Perplexity's nullable enums
-accepting explicit `null`, and `/extract` Bearer-only per the vendor page. The annotated tag message is the release
-note; both spellings resolve to one digest (`sha256:6009f34c…`) and the README/Compose pins follow it. Phase 6 work
-lands on branch `phase-6` and reaches `main` through PR #2.
+**v0.4.0** is the last tag (2026-08-16, `b788f00`): Phase 6 end to end — `completed_at` observing every scripted
+hang, the `malicious-content`, `oversized-body`, `timeout`, `brownout`, `hang-then-abort` and `credential-rotation`
+built-ins, `oversized_body`/`body_bytes:` and `delay_after_headers:`, `AssertDifferentCredential`, `AssertMaxRate`,
+`AssertMinGap` and `AssertObservedDuration`, the docs sweep, and D9 tier 1 (Servicesim describes itself as a
+service-simulator framework shipping three research-API profiles). Two behaviour changes a consumer holding v0.3.0
+assertions could notice are in the tag note: Tavily's `faultBody` serves its error envelope for any kind paired with
+an error status, and `POST /research` warns `tavily.api_key.in_body` as `/search` does. The annotated tag message is
+the release note; every spelling resolves to one digest (`sha256:5a7d6d05…`) and the README/Compose pins follow it.
+`main` is where work lands now; `phase-6` is merged.
 
 **Authority rule, reaffirmed by the owner 2026-08-15 evening:** vendor documentation decides every wire contract; the
 adopter's client code and remarks are not evidence ("we have no idea if their client works — we use the vendor
@@ -38,7 +41,7 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
 1. ~~**Cut v0.3.0**~~ **DONE 2026-08-16.** Tagged from `ae4c8e6` with the annotated message as the release note (no
    CHANGELOG, no GitHub Release object — v0.1.1 and v0.2.0 set that convention), published, both spellings confirmed,
    pins moved in a follow-up commit — the CONTRIBUTING.md "Releasing" order.
-2. ~~**Phase 6 — G-3 depth**~~ **DONE — code units and the closing docs sweep, on branch `phase-6` (PR #2).**
+2. ~~**Phase 6 — G-3 depth**~~ **DONE — merged to `main` (`b788f00`) and shipped in v0.4.0.**
    Unit 1 (the journal `CompletedAt` defect: stamped before the delay on aborting faults, so `observed_ms` read 0
    on a hang) is done; unit 2 (the generic `malicious-content` built-in) is done; unit 3 (the `oversized_body`
    fault kind and the `oversized-body` built-in) is done; unit 4 (the `timeout`/`brownout`/`hang-then-abort`/
@@ -49,12 +52,13 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    2026-08-16) is done, and it wrote up the D9 framing question as a concrete proposal —
    [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md) — and the owner decided the same
    day: **tier 1 (framing) is applied, tier 2 (the seam, re-opening D6) waits for Phase 8, tier 3 stays open.**
-   Next: merge PR #2, then Phase 7's remaining packaging items (the digest-pinned Gitea mirror, the Kubernetes
-   manifest), the adopter's own vectors when they bring them, and Phase 8 (the MCP listener and the ODR profile),
-   after which the seam export is decided on what those two profiles actually needed. Trickle bodies now have
+   PR #2 is merged and v0.4.0 is cut. Next: Phase 7's remaining packaging items (the digest-pinned Gitea mirror,
+   the Kubernetes manifest, `api_version` on contract records), the adopter's own vectors when they bring them, and
+   Phase 8 (the MCP listener and the ODR profile), after which the seam export is decided on what those two
+   profiles actually needed. Trickle bodies now have
    Phase 5's chunked-write path, and unit 5's after-headers seam, to sit on. Note the over-redaction defect listed
    in the Phase 6 section below was fixed in v0.1.1 already — verify before re-fixing.
-3. Tell the adopter v0.3.0 exists; their questions in the two contract READMEs are still open.
+3. Tell the adopter v0.3.0 and v0.4.0 exist; their questions in the two contract READMEs are still open.
 
 ### How the work has been run, for whoever picks it up
 
