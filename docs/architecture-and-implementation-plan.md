@@ -1,5 +1,18 @@
 # Servicesim Architecture and Implementation Plan
 
+> ## Status: original requirements plan, snapshot from before `v0.1.0`
+>
+> This document set the initial product scope, architecture and priorities before implementation began — "Proposed
+> name" and "Initial providers" just below are exactly that, proposals, not the shipped state. It is **not** kept in
+> sync with the code. `contracts/<provider>/README.md` outranks it on every wire field
+> ([ADR 0002](adr/0002-verified-contract-precedence.md)); the design documents
+> ([`docs/design/package-design.md`](design/package-design.md),
+> [`docs/design/extended-surfaces.md`](design/extended-surfaces.md),
+> [`docs/design/async-jobs.md`](design/async-jobs.md), [`docs/design/streaming.md`](design/streaming.md)) are the
+> documents that record what actually shipped, phase by phase. Where this plan and the shipped code disagree, the
+> code wins — see [`docs/adopter-backlog.md`](adopter-backlog.md) for the current, phased delivery record. The body
+> below is left as originally written.
+
 ## Status
 
 - Proposed name: `servicesim`

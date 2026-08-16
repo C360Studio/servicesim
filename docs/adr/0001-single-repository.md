@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted — 2026-08-14.
+Accepted — 2026-08-14. Still in effect through Phase 6 (2026-08-16).
+[D9](../proposals/d9-framework-framing.md) does not disturb the one-repository, one-binary,
+one-listener-per-provider decision this ADR made: its Tier 1 (framing) and Tier 2 (exporting the provider seam)
+leave the decision untouched either way they resolve, and its Tier 3 raises a framework/profiles module split
+only as an open question, not a proposal to relitigate it.
 
 ## Context
 

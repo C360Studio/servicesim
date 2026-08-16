@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted — 2026-08-14.
+Accepted — 2026-08-14. Reaffirmed by the owner on 2026-08-15 (`docs/adopter-backlog.md`'s "Authority rule,
+reaffirmed by the owner" paragraph). The one recorded departure, D2's body-placed Tavily `api_key` on
+`/search`/`/research` (v0.1.1), stands as shipped and is explicitly not a precedent; every route verified since
+follows this ADR as written.
 
 ## Context
 

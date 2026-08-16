@@ -16,7 +16,7 @@ Recorded 2026-08-16 (midday), against **v0.3.0**, tagged from `main` at `ae4c8e6
 | 3 — the async job machine | **shipped** in v0.2.0 (A1–A7) |
 | 4 — the remaining synchronous routes | **shipped** in v0.3.0 |
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
-| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`), 2 (`malicious-content`), 3 (`oversized_body`), 4 (timeout/brownout/hang-then-abort/credential-rotation built-ins, `AssertDifferentCredential`), 5 (`delay_after_headers`) and 6 (`AssertMaxRate`/`AssertMinGap`/`AssertObservedDuration`, the request-level pacing evidence) done; Phase 7's provenance-date item is already done |
+| 6 onward | **Phase 6 (G-3 depth) code units 1–6 DONE, closing docs sweep DONE, on branch `phase-6` (PR #2)**: units 1 (`CompletedAt`), 2 (`malicious-content`), 3 (`oversized_body`), 4 (timeout/brownout/hang-then-abort/credential-rotation built-ins, `AssertDifferentCredential`), 5 (`delay_after_headers`) and 6 (`AssertMaxRate`/`AssertMinGap`/`AssertObservedDuration`, the request-level pacing evidence) done; the docs sweep and its D9 write-up (`docs/proposals/d9-framework-framing.md`) are done — D9 itself is **open**, awaiting the owner; PR #2 is mergeable at the owner's call. Phase 7's provenance-date item is already done |
 
 **v0.3.0** is the last tag (2026-08-16): Phase 4's three routes, Phase 5's streaming end to end (four `.sse`
 goldens, the `streaming` built-in, four testkit assertions), honest provenance dates and goldens for the async
@@ -38,17 +38,22 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
 1. ~~**Cut v0.3.0**~~ **DONE 2026-08-16.** Tagged from `ae4c8e6` with the annotated message as the release note (no
    CHANGELOG, no GitHub Release object — v0.1.1 and v0.2.0 set that convention), published, both spellings confirmed,
    pins moved in a follow-up commit — the CONTRIBUTING.md "Releasing" order.
-2. **Phase 6 — G-3 depth**, on branch `phase-6` (PR #2). Highest value per effort: most primitives exist. Unit 1
-   (the journal `CompletedAt` defect: stamped before the delay on aborting faults, so `observed_ms` read 0 on a
-   hang) is done; unit 2 (the generic `malicious-content` built-in) is done; unit 3 (the `oversized_body` fault
-   kind and the `oversized-body` built-in) is done; unit 4 (the `timeout`/`brownout`/`hang-then-abort`/
+2. ~~**Phase 6 — G-3 depth**~~ **DONE — code units and the closing docs sweep, on branch `phase-6` (PR #2).**
+   Unit 1 (the journal `CompletedAt` defect: stamped before the delay on aborting faults, so `observed_ms` read 0
+   on a hang) is done; unit 2 (the generic `malicious-content` built-in) is done; unit 3 (the `oversized_body`
+   fault kind and the `oversized-body` built-in) is done; unit 4 (the `timeout`/`brownout`/`hang-then-abort`/
    `credential-rotation` built-ins and `testkit.AssertDifferentCredential`) is done; unit 5 (`delay_after_headers`,
    the fault modifier and its `hang-then-abort` third attempt) is done; unit 6 (the request-level pacing
    assertions per D5 — `testkit.AssertMaxRate`, `testkit.AssertMinGap`, `testkit.AssertObservedDuration` —
-   plus a consumer-facing example) is done, so Phase 6's code units are now complete; next is a closing docs
-   sweep for onboarding and correctness (owner, 2026-08-16) that also carries the D9 framing question. Trickle
-   bodies now have Phase 5's chunked-write path, and unit 5's after-headers seam, to sit on. Note the
-   over-redaction defect listed there was fixed in v0.1.1 already — verify before re-fixing.
+   plus a consumer-facing example) is done. The closing docs sweep for onboarding and correctness (owner,
+   2026-08-16) is done, and it wrote up the D9 framing question as a concrete proposal —
+   [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md) — for the owner to decide; **D9
+   itself is still open**, nothing in the proposal is applied on its own. **PR #2 is mergeable at the owner's
+   call.** Next: Phase 7's remaining packaging items (the digest-pinned Gitea mirror, the Kubernetes manifest),
+   the adopter's own vectors when they bring them, and Phase 8 (the MCP listener and the ODR profile) — gated on
+   D9's outcome for the seam question first. Trickle bodies now have Phase 5's chunked-write path, and unit 5's
+   after-headers seam, to sit on. Note the over-redaction defect listed in the Phase 6 section below was fixed in
+   v0.1.1 already — verify before re-fixing.
 3. Tell the adopter v0.3.0 exists; their questions in the two contract READMEs are still open.
 
 ### How the work has been run, for whoever picks it up
@@ -129,7 +134,7 @@ These are settled. Re-open one only with new evidence, and record why.
 |  D6 | MCP and ODR are two new provider profiles for G-3. Build them in-tree, or make out-of-tree providers a supported path? | **Build MCP and ODR in-tree** (owner overrode the recommendation to export the seam instead).  |
 |  D7 | Exa /contents, /findSimilar and Tavily /extract have no verified contract in this repository — contracts/exa/README.md:23 explicitly declines to as... | **Re-verify against vendor docs first** for `/contents`, `/findSimilar`, `/extract` — ADR-0002 holds as written.  |
 |  D8 | What should the adopter do about stream:true fixtures in the window before SSE ships (Phase 5)? | Tell the adopter **not to record `stream:true` fixtures** yet, and ship a `stream: reject` policy so their path fails loudly. **Reversed 2026-08-15: Phase 5 has shipped.** `stream: {when_requested: stream, deltas: [...]}` now serves a real, golden-tested SSE sequence on both Perplexity surfaces — the adopter can record `stream:true` fixtures today, against `testkit.AssertGoldenSSE`. `stream: reject` remains available for a suite that wants a hard failure instead. |
-|  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Open.** To be proposed concretely in the docs sweep that closes Phase 6 and decided by the owner there; nothing changes until then. |
+|  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Open — proposed concretely in [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md).** Three independently choosable tiers (framing only; re-open D6's seam question; positioning) with rough `wc -l` proportions and a recommendation; nothing changes until the owner picks. |
 
 Two of these reversed a recommendation, and the reasoning is worth keeping. On D6 the owner chose in-tree because the
 adopter's G-3 should not wait on their own team's out-of-tree build. On D7 the owner held ADR-0002 — vendor
@@ -559,18 +564,20 @@ trickle-body vector in Phase 6 can now build on the same chunked-write path this
   `docs/design/package-design.md`'s stream-policy lines are corrected in place rather than merely flagged as
   stale. Decision 8 itself is reversed above: the adopter can record `stream:true` fixtures now.
 
-### Phase 6 — G-3 depth — NEXT
+### Phase 6 — G-3 depth — DONE
 
 > Phase 6 — G-3 depth: hostile content, brownout, timeouts, rotation, and the pacing evidence fix
 >
-> **State on 2026-08-16:** units 1 (`CompletedAt`), 2 (the generic `malicious-content` built-in), 3 (the
+> **DONE 2026-08-16.** Units 1 (`CompletedAt`), 2 (the generic `malicious-content` built-in), 3 (the
 > `oversized_body` fault kind and the `oversized-body` built-in), 4 (the `timeout`/`brownout`/`hang-then-abort`/
 > `credential-rotation` built-ins and `testkit.AssertDifferentCredential`), 5 (the `delay_after_headers` fault
 > modifier, its request-time streaming mirror, and `hang-then-abort`'s third attempt) and 6 (the request-level
 > pacing assertions per D5 — `testkit.AssertMaxRate`, `AssertMinGap`, `AssertObservedDuration` — plus a
-> consumer-facing example) done on `phase-6`; every code unit of this phase is now shipped, leaving only the
-> closing docs sweep. Read the current `provider/handle.go` and `provider/fault_exec.go` before trusting the
-> line numbers quoted here; Phase 5 rewrote the execute path (a stream branch, `hijackReset`, per-chunk
+> consumer-facing example) shipped on `phase-6`; every code unit of this phase shipped, and the closing docs sweep
+> for onboarding and correctness (owner, 2026-08-16) is done too — see the closing-unit bullet below, and
+> [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md) for the D9 write-up it carried. PR
+> #2 is mergeable at the owner's call. Read the current `provider/handle.go` and `provider/fault_exec.go` before
+> trusting the line numbers quoted here; Phase 5 rewrote the execute path (a stream branch, `hijackReset`, per-chunk
 > `sleep`), and the journal-early record now also fires for streams (`if out.Aborted || resp.Stream != nil {
 > record() }`), a shape `phase-6` unit 1 has since split in two: streams still record before the delay; a
 > non-streaming aborting fault now waits out its delay, then records, so `CompletedAt` observes the hang
@@ -674,12 +681,14 @@ registry disable. The pacing fix is what makes journal timestamps usable as the 
   repository refuses to add. `examples/pacing_test.go` is the consumer-facing pattern: a tiny client-side
   limiter proven against `AssertMaxRate`.
 
-- **Closing unit — a docs sweep for onboarding and correctness (owner, 2026-08-16).** Run it as a unit with an
-  outside-reader lens: can a new consumer go from README to `testkit.WithBuiltin` to a passing test without
-  asking anyone; is every statement in README, CONTRIBUTING, `docs/*.md` and CLAUDE.md true against the code as
-  shipped (the design documents are records of what shipped; their Go blocks are illustrative). It also carries
-  the D9 proposal — whether the repository should describe itself as a service-simulator framework shipping
-  three research-API profiles — for the owner to decide, not for the sweep to apply on its own.
+- ~~Closing unit — a docs sweep for onboarding and correctness (owner, 2026-08-16)~~ **DONE.** Run as a unit with
+  an outside-reader lens: whether a new consumer can go from README to `testkit.WithBuiltin` to a passing test
+  without asking anyone, and whether every statement in README, CONTRIBUTING, `docs/*.md` and CLAUDE.md is true
+  against the code as shipped (the design documents are records of what shipped; their Go blocks are
+  illustrative). It also carried the D9 proposal — whether the repository should describe itself as a
+  service-simulator framework shipping three research-API profiles —
+  [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md) writes it up concretely, in three
+  independently choosable tiers, for the owner to decide; **the sweep does not apply any part of it**.
 
 ### Phase 7 — Packaging, deployment and the contract-fidelity process
 

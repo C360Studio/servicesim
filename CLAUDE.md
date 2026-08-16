@@ -30,7 +30,8 @@ scenario YAML ──► canonical sources ──► per-provider projection ─�
                                              ├─► tavily   listener :8082  POST /search
                                              └─► perplexity listener :8083  POST /v1/sonar, /chat/completions
 
-                        admin listener :8080  /healthz  /readyz  /__admin/requests  /__admin/jobs  /__admin/reset
+     admin listener :8080  /healthz  /readyz  /__admin/requests  /__admin/namespaces  /__admin/scenario
+                            /__admin/jobs  /__admin/reset
 ```
 
 Separate listeners are not a stylistic choice — Exa and Tavily both serve `POST /search`, so preserving each
@@ -100,7 +101,7 @@ is a compatibility obligation. Keep the exported surface small; put everything e
 ```bash
 task check          # everything CI gates on: lint, race tests, build, image smoke test
 task test           # go test -race -count=1 ./...
-task lint           # vet, gofmt, revive, live-host guard
+task lint           # vet, gofmt, revive, live-host guard, docs guard, markdownlint
 task build          # bin/servicesim
 task image:smoke    # build the image, assert non-root + healthy + all listeners answer
 ```

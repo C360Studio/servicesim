@@ -1,5 +1,17 @@
 # Extended provider surfaces
 
+> ## Status: record of what shipped, amended in place
+>
+> This addendum describes surfaces that have since shipped: the Perplexity Agent API, Exa `/answer`, the open
+> provider registry and turn model, and per-request namespaces. **The code is authoritative** wherever this
+> document and the shipped `provider/perplexity`, `provider` or `scenario` packages disagree — read the source
+> first. **Every Go block here is illustrative**, not a contract to depend on; where a block and the shipped code
+> disagree, the code wins. `contracts/perplexity/README.md` outranks this document on any wire field
+> ([ADR 0002](../adr/0002-verified-contract-precedence.md)). Later phases extended the surface further — the
+> async job machine and SSE streaming are their own shipped-as records
+> ([`async-jobs.md`](async-jobs.md), [`streaming.md`](streaming.md)); `docs/adopter-backlog.md` has the current
+> phased state.
+
 An addendum to [`package-design.md`](package-design.md). That document was authored before two scope decisions
 were taken and before Perplexity's machine-readable specification was located. Everything here amends it; where the
 two disagree, this file is newer and wins.

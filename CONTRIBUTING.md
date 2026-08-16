@@ -34,8 +34,8 @@ closes the question.
 task check
 ```
 
-That is exactly what CI gates on: `gofmt`, `go vet`, revive, race tests, the live-host guard, the image build and
-the container smoke test. A green `task check` should mean a green CI.
+That is exactly what CI gates on: `gofmt`, `go vet`, revive, the live-host guard, the docs guard, markdownlint,
+race tests, the image build and the container smoke test. A green `task check` should mean a green CI.
 
 revive runs with `warningCode = 1`, so warnings fail. In practice: a doc comment on every exported symbol beginning
 with the symbol's name, a package comment in `doc.go` only, capitalised initialisms (`ID`, `URL`, `API`, `JSON`,

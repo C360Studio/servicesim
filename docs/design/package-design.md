@@ -1,5 +1,18 @@
 # Servicesim Go Package Design
 
+> ## Status: record of what shipped, amended in place
+>
+> This is the Go-level engineering design for the system as built through Phase 6 (`v0.3.0` plus the completed
+> units on branch `phase-6`). It was written ahead of the code and is corrected in place as phases land: most of
+> what follows describes code that exists today, and inline **"Shipped as (Phase N unit M)"** notes mark the
+> specific points where a later phase's shipped shape diverged from the original sketch below. **The code is
+> authoritative** wherever this document and `provider/*`, `internal/*`, `scenario/*` or `testkit/*` disagree —
+> read the source before trusting a signature here. **Every Go block in this document is illustrative**, a record
+> of intent and reasoning, not a compiled contract; where a block and the shipped code disagree, the code wins.
+> `contracts/<provider>/README.md` outranks this document on any wire field
+> ([ADR 0002](../adr/0002-verified-contract-precedence.md)). See `docs/architecture-and-implementation-plan.md`
+> for the product requirements this implements, and `docs/adopter-backlog.md` for the current phased state.
+
 ## Status and scope
 
 This document is the Go-level engineering design that sits *under*

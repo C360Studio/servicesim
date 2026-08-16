@@ -35,9 +35,9 @@ cannot tell whether it was considered and declined or never looked at — which 
 |---|---|---|---|
 | Exa | `/agent/runs` lifecycle beyond create and poll | NOT SIMULATED | Create and poll ARE simulated — see the table above. The rest of the lifecycle (listing all runs, `/agent/runs/{id}/events`, `/agent/runs/{id}/cancel`, and deleting a run) has no verified contract and is not simulated. Paths here are written without a method on purpose: the index guard reads a backticked method-plus-path as a claim that the route IS simulated. |
 
-"Scheduled for verification" means exactly that: the vendor documentation has not been fetched, dated and recorded
-under [the one rule](../CONTRIBUTING.md#the-one-rule-that-matters-most), so nothing here asserts a method, a request
-shape or a response shape for those paths. Verification comes first; simulation is a separate decision after it.
+A `NOT SIMULATED` row never asserts a method, a request shape or a response shape for the paths it names — that
+would be writing a wire field from memory, which [the one rule](../CONTRIBUTING.md#the-one-rule-that-matters-most)
+forbids regardless of a row's status. Verification comes first; simulation is a separate decision after it.
 
 ## Why these files exist
 
@@ -77,10 +77,10 @@ When the canary reports drift:
 
 These were observed during the 2026-08-14 verification and affect what new consumer code should emit or parse.
 
-- **Perplexity Sonar has an announced end date.** Every Sonar documentation page carries "Sonar Chat Completions is
-  now Agent API. Sonar will be supported until September 27, 2026", with `POST /v1/agent` as the successor
-  canonical endpoint and `/v1/responses` as its OpenAI-compatible alias. Simulating Sonar remains correct for
-  existing adapters, but new adapter work should be scoped against the Agent API.
+- **Perplexity Sonar has an announced end date.** [`perplexity/README.md`](perplexity/README.md) records it as
+  supported until 2026-09-27, per the banner on every Sonar documentation page, with `POST /v1/agent` as its
+  announced successor and `/v1/responses` as that route's OpenAI-compatible alias. Simulating Sonar remains
+  correct for existing adapters, but new adapter work should be scoped against the Agent API.
 - **Perplexity `citations` is deprecated** (changelog, May 2025) in favour of `search_results`, which carries
   titles, URLs and publication dates. Servicesim still emits `citations` so that existing consumers keep working,
   but adapter contract tests should assert on `search_results`.

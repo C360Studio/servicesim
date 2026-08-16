@@ -18,6 +18,7 @@
 //
 // Everything exported here is a compatibility obligation for consuming
 // repositories that pin a release, so the surface is deliberately small: options,
-// one Sim, a set of assertions, and the journal and job type aliases without
-// which a consumer outside this module could not name the types it is handed.
+// one Sim and its per-namespace Namespace lane, a set of assertions, and the
+// journal and job type aliases without which a consumer outside this module
+// could not name the types it is handed.
 package testkit
