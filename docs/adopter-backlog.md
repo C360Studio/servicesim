@@ -16,7 +16,7 @@ Recorded 2026-08-16 (midday), against **v0.3.0**, tagged from `main` at `ae4c8e6
 | 3 — the async job machine | **shipped** in v0.2.0 (A1–A7) |
 | 4 — the remaining synchronous routes | **shipped** in v0.3.0 |
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
-| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**; Phase 7's provenance-date item is already done |
+| 6 onward | open — **Phase 6 (G-3 depth) is under way on branch `phase-6` (PR #2)**: unit 1 (`CompletedAt`) done; Phase 7's provenance-date item is already done |
 
 **v0.3.0** is the last tag (2026-08-16): Phase 4's three routes, Phase 5's streaming end to end (four `.sse`
 goldens, the `streaming` built-in, four testkit assertions), honest provenance dates and goldens for the async
@@ -39,11 +39,11 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    CHANGELOG, no GitHub Release object — v0.1.1 and v0.2.0 set that convention), published, both spellings confirmed,
    pins moved in a follow-up commit — the CONTRIBUTING.md "Releasing" order.
 2. **Phase 6 — G-3 depth**, on branch `phase-6` (PR #2). Highest value per effort: most primitives exist. Unit 1
-   (the journal `CompletedAt` defect) is on the branch; then the malicious-content built-in rendered through all
-   three providers, `body_bytes:` padding, the timeout/brownout/hang-then-abort/rotation built-ins with
-   `AssertDifferentCredential`, delay-after-headers, the observed-pacing assertion per D5. Trickle bodies now have
-   Phase 5's chunked-write path to sit on. Note the over-redaction defect listed there was fixed in v0.1.1 already —
-   verify before re-fixing.
+   (the journal `CompletedAt` defect: stamped before the delay on aborting faults, so `observed_ms` read 0 on a
+   hang) is done; next is the malicious-content built-in rendered through all three providers, `body_bytes:`
+   padding, the timeout/brownout/hang-then-abort/rotation built-ins with `AssertDifferentCredential`,
+   delay-after-headers, the observed-pacing assertion per D5. Trickle bodies now have Phase 5's chunked-write path
+   to sit on. Note the over-redaction defect listed there was fixed in v0.1.1 already — verify before re-fixing.
 3. Tell the adopter v0.3.0 exists; their questions in the two contract READMEs are still open.
 
 ### How the work has been run, for whoever picks it up
@@ -557,27 +557,30 @@ trickle-body vector in Phase 6 can now build on the same chunked-write path this
 
 > Phase 6 — G-3 depth: hostile content, brownout, timeouts, rotation, and the pacing evidence fix
 >
-> **State on 2026-08-16:** not started, apart from three items that other phases already covered — marked in the
-> list below. Read the current `provider/handle.go` and `provider/fault_exec.go` before trusting the line numbers
-> quoted here; Phase 5 rewrote the execute path (a stream branch, `hijackReset`, per-chunk `sleep`), and the
-> journal-early record now also fires for streams (`if out.Aborted || resp.Stream != nil { record() }`). The
-> pacing-fix item is still real: the early record still stamps `CompletedAt` before an aborting fault's delay runs.
+> **State on 2026-08-16:** unit 1 (`CompletedAt`) done on `phase-6`; otherwise not started, apart from three items
+> that other phases already covered — marked in the list below. Read the current `provider/handle.go` and
+> `provider/fault_exec.go` before trusting the line numbers quoted here; Phase 5 rewrote the execute path (a stream
+> branch, `hijackReset`, per-chunk `sleep`), and the journal-early record now also fires for streams (`if
+> out.Aborted || resp.Stream != nil { record() }`), a shape `phase-6` unit 1 has since split in two: streams still
+> record before the delay; a non-streaming aborting fault now waits out its delay, then records, so `CompletedAt`
+> observes the hang instead of the instant the attempt was decided.
 
 The highest value-per-effort phase in the backlog, because the audit found most of these primitives already exist and
 are missing only packaging. Delays are unbounded and context-aware with no WriteTimeout to cut them off; the
 rising-latency ladder was verified end to end at 50/100/200ms; hang-then-abort works at the wire level; credential
-rotation via auth.expect_key was verified working with two different keys. What is missing is built-in scenarios, a
-corpus, and one real defect: journal CompletedAt is stamped BEFORE the delay for aborting faults, so observed_ms reads
-0 on a 700ms hang — wrong in exactly the class where a hang is the thing under test, and directly contradicting the
-maintainer's pre-verified claim that pacing assertions already work.
+rotation via auth.expect_key was verified working with two different keys. What is missing is built-in scenarios and
+a corpus; the one real defect the audit found — journal CompletedAt stamped BEFORE the delay for aborting faults, so
+observed_ms read 0 on a 700ms hang, wrong in exactly the class where a hang is the thing under test, and directly
+contradicting the maintainer's pre-verified claim that pacing assertions already worked — shipped on `phase-6`
+(unit 1).
 
 **Unblocks:** The adopter's Gate-2 fail-closed ingress gate, and G-3/G-4 depth for brownout, timeout and mid-flight
 registry disable. The pacing fix is what makes journal timestamps usable as the evidence half of decision 5.
 
-- Fix journal CompletedAt for aborting faults: provider/handle.go:214-217 calls record() before execute() when
-  out.Aborted, stamping CompletedAt before fault_exec.go sleeps. The early record is deliberate and correct — the client
-  observes the abort while the goroutine unwinds — so the fix is to stamp after the delay or carry it in a separate
-  field, not to move the record.
+- ~~Fix journal CompletedAt for aborting faults~~ **DONE on `phase-6` (unit 1).** The pre-dispatch delay now runs
+  before `record` for a non-streaming aborting fault, so `completed_at - arrived_at` observes the hang instead of
+  reading ~0; a client cancellation during that hang still lands its own entry, stamped at the instant the server
+  observed it. The streaming path (`resp.Stream != nil`) already recorded before the delay and is unchanged.
 - A malicious-content built-in scenario carrying the adopter's guardrail-classifier vectors, rendered through all
   three providers so one corpus tests every dispatch path (the fusion-overlap pattern). This is corpus authoring, not
   code: the mechanism is verified — source text is free-form and rendered verbatim, and redaction applies to the journal
@@ -591,15 +594,16 @@ registry disable. The pacing fix is what makes journal timestamps usable as the 
   AssertDifferentCredential to complete the rotation assertion. Document the two traps the audit hit: do not combine
   expect_key with a fault plan (auth rejection does not claim an attempt, so the plan misfires), and do not use
   WithSkippedDelays for timeout tests.
-- Delay-after-headers, so 'send headers, hang, then abort' is expressible. Today Delay is applied once at the top of
-  execute, so the shape a mid-flight cancellation actually has cannot be scripted at all.
+- Delay-after-headers, so 'send headers, hang, then abort' is expressible. Today Delay is applied once, pre-dispatch
+  (`preDispatchDelay`, called from `Handle` before anything is journaled or written), so the shape a mid-flight
+  cancellation actually has cannot be scripted at all.
 - ~~Fix the over-redaction defect that mangles finding text~~ **DONE in v0.1.1** ("Redaction no longer mangles
   finding text; real credential values in free text still mask" — the tag message). Verify with the journal before
   re-fixing; the item is kept so the audit list stays complete.
 - Ship the observed-pacing assertion helper over journal arrival timestamps, per decision 5. **Half exists**: Phase 5
   shipped `testkit.AssertStreamPacing` over a streamed entry's `outcome.stream.pace_ms`; the request-level helper
-  over `arrived_at`/`completed_at` across entries (the RPS evidence D5 asks for) is still open, and it depends on the
-  `CompletedAt` fix above being in first.
+  over `arrived_at`/`completed_at` across entries (the RPS evidence D5 asks for) is still open; the `CompletedAt` fix
+  it depended on is now in (`phase-6`, unit 1).
 
 ### Phase 7 — Packaging, deployment and the contract-fidelity process
 

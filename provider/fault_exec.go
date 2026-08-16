@@ -114,8 +114,37 @@ func faultOutcome(dec FaultDecision, resp Response) journal.Outcome {
 	return out
 }
 
-// execute applies a fault to the wire and returns the completed outcome (out with
-// BytesWritten filled in). Delay runs first for every kind, under mode. For
+// preDispatchDelay waits out attempt's Delay under mode before Handle journals
+// a non-streaming exchange or touches the socket, returning ctx.Err() when the
+// client's own deadline or cancellation ends the request first. A stream is
+// already journaled by the time this runs — its entry was appended before the
+// first byte, and its closer amends CompletedAt at close — so for a stream
+// this only paces the time to first byte, never the journal stamp. It lives in
+// Handle's call path, not execute's: for a non-streaming aborting fault the
+// hang has to finish BEFORE record() runs, so that CompletedAt (and
+// logRequest's duration_ms) measures the observed delay instead of the instant
+// the attempt was decided — execute itself is only ever reached once the
+// socket is about to be touched, which is too late to still be the
+// pre-dispatch wait.
+//
+// stream_stall is carved out because its Delay is not a time-to-first-byte
+// wait at all: planStream folds it into chunk AfterChunk's own pace instead
+// (docs/design/streaming.md §3.1). Running the generic sleep for it too would
+// sleep Delay TWICE — once here, before headers, and again inside
+// executeStream before chunk AfterChunk.
+func preDispatchDelay(ctx context.Context, a *scenario.FaultAttempt, mode DelayMode) error {
+	if a == nil || a.Delay <= 0 || a.EffectiveKind() == scenario.FaultStreamStall {
+		return nil
+	}
+	return sleep(ctx, a.Delay.Duration(), mode)
+}
+
+// execute applies a fault to the wire and returns the completed outcome (out
+// with BytesWritten filled in). By the time Handle calls this, the
+// pre-dispatch delay has already run (see preDispatchDelay) and, for a
+// non-streaming aborting fault, the entry is already journaled — execute's
+// only remaining job is to touch the socket. mode is still threaded through
+// to executeStream, which paces chunks with sleep after the first byte. For
 // aborting kinds it does not return: it panics with http.ErrAbortHandler, and
 // Handle's deferred record — already run for those kinds — is a no-op before the
 // re-panic.
@@ -132,33 +161,6 @@ func faultOutcome(dec FaultDecision, resp Response) journal.Outcome {
 func execute(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttempt,
 	resp Response, mode DelayMode, out journal.Outcome, closer func(journal.StreamClose),
 ) journal.Outcome {
-	// stream_stall's Delay is the mid-stream pause planStream resolves
-	// instead (folded into PaceOf at AfterChunk), never a time-to-first-byte
-	// sleep — docs/design/streaming.md §3.1. Running this block for it too
-	// would sleep Delay TWICE: once here, before the status line, and again
-	// inside executeStream before chunk AfterChunk.
-	if a != nil && a.Delay > 0 && a.EffectiveKind() != scenario.FaultStreamStall {
-		if err := sleep(ctx, a.Delay.Duration(), mode); err != nil {
-			// The client's own deadline or cancellation ended the request while the
-			// delay was still running. Writing now would be shouting into a closed
-			// socket; the journal records that nothing was delivered.
-			//
-			// out.Aborted is set here only for a NON-streaming exchange, where this
-			// returned Outcome is what gets retained. For a STREAMING exchange,
-			// record() already ran (Handle's widened journal-early condition)
-			// before execute was ever called, with Aborted reflecting the SCRIPT —
-			// nothing about the script aborted this, the client's own
-			// cancellation did — so Aborted must stay false there too; State
-			// (amended to client_gone via closer, below) is the authoritative
-			// signal for a streamed exchange instead.
-			if resp.Stream == nil {
-				out.Aborted = true
-			}
-			out.BytesWritten = 0
-			return out
-		}
-	}
-
 	if resp.Stream != nil {
 		return executeStream(ctx, w, a, resp, mode, out, closer)
 	}

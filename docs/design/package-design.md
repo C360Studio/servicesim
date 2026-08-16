@@ -1311,6 +1311,16 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
    zero entries — on a fast machine, sometimes. Recording before the abort closes that window for the fault the design
    itself creates; `testkit.Sim.AwaitRequests` closes it for the symmetrical case the *client* creates (its own
    cancellation or deadline), where the server necessarily finishes after the client returns.
+
+   **Shipped as (Phase 6 unit 1):** when the claimed attempt also carries a `delay:`, the hang is served FIRST and
+   `record` runs after it, not before — so `completed_at` is the instant the socket was touched, not the instant
+   the attempt was decided. The ordering relative to the abort itself does not change: the record still precedes
+   `close_before_headers`/`truncate_body` touching the connection. A client cancellation during that hang is the
+   symmetrical case named above: nothing is written, but the entry still lands, stamped at the instant the server
+   observed the cancellation. Consequently the entry for a client-cancelled DELAYED aborting fault now lands
+   *after* the client has returned — read it through `testkit.Sim.AwaitRequests`, not a synchronous
+   `Requests()`/`Snapshot()`; before this unit it was already present (with the wrong `completed_at` and, for
+   `truncate_body`, the wrong `bytes_written`) at that moment, because the early record ran before the delay.
 4. **The entry is redacted where it is built, not only where it is stored.** `Journal.Append` takes `Entry` by value, so
    redacting inside `Append` leaves the caller's copy — the one `logRequest` is about to serialise — holding the raw
    `Authorization` header and the raw body. That leak is silent, because `testkit.AssertNoCredentialLeak` scans the
@@ -1340,6 +1350,10 @@ func faultOutcome(dec FaultDecision, resp Response) journal.Outcome
 func execute(ctx context.Context, w http.ResponseWriter, a *scenario.FaultAttempt,
 	resp Response, mode DelayMode, out journal.Outcome) journal.Outcome
 ```
+
+**Shipped as (Phase 6 unit 1):** the pre-dispatch delay is no longer `execute`'s job — `preDispatchDelay(ctx, a,
+mode)` (same file) runs it from `Handle`, before the non-streaming aborting record described under rule 3 above;
+`execute` keeps `mode` only because `executeStream` still paces chunks through `sleep`.
 
 There is no second `Response` type. The engine deals in `FaultDecision` and `scenario.FaultAttempt`; execution deals in
 `provider.Response`; nothing converts between two near-identical structs.

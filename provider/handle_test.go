@@ -596,6 +596,181 @@ func TestHandleCloseBeforeHeadersIsJournaledBeforeTheAbort(t *testing.T) {
 	require.Equal(t, string(scenario.FaultCloseBeforeHeaders), entries[0].Outcome.FaultKind)
 }
 
+// TestHandleAbortingFaultDelayIsObservedInCompletedAt is the Phase 6 unit 1
+// regression test: for a non-streaming aborting attempt that also carries a
+// delay:, the journaled CompletedAt must reflect the observed hang
+// (completed_at - arrived_at >= delay), not the instant the attempt was
+// decided (arrived_at ~ 0). The pre-existing journaled-before-the-abort
+// property that TestHandleCloseBeforeHeadersIsJournaledBeforeTheAbort proves
+// must keep holding with a delay in play: the synchronous Snapshot() taken
+// immediately after the client's own transport error should still find
+// exactly one entry, because record() still runs on the server goroutine
+// strictly before the socket is touched — the hang now happens before that,
+// not after it.
+//
+// The Snapshot()-after-error check is deterministic under the shipped
+// ordering: record() runs on the server goroutine strictly before the socket
+// is touched, so the entry exists before the client can observe anything.
+// What is NOT deterministic is the check's power to catch a regression that
+// moved the record after the socket touch: for close_before_headers and
+// truncate_body-with-reset the RST would then race the deferred record and
+// the check would fail only sometimes; for plain truncate_body the connection
+// closes only after net/http unwinds through the deferred record, so the
+// check could not tell that row's ordering from an ordering bug at all. It
+// still exercises the DoD-1 property end to end on live sockets, which is
+// why it stays.
+func TestHandleAbortingFaultDelayIsObservedInCompletedAt(t *testing.T) {
+	t.Parallel()
+
+	const delay = 40 * time.Millisecond
+
+	tests := []struct {
+		name    string
+		attempt scenario.FaultAttempt
+	}{
+		{
+			name:    "close_before_headers",
+			attempt: scenario.FaultAttempt{Kind: scenario.FaultCloseBeforeHeaders, Delay: scenario.Duration(delay)},
+		},
+		{
+			name:    "truncate_body",
+			attempt: scenario.FaultAttempt{Kind: scenario.FaultTruncateBody, Delay: scenario.Duration(delay)},
+		},
+		{
+			name: "truncate_body with reset",
+			attempt: scenario.FaultAttempt{
+				Kind: scenario.FaultTruncateBody, Delay: scenario.Duration(delay), Reset: true,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			j := journal.NewRing(8, 4096)
+			engine := &scriptedFaults{attempts: []scenario.FaultAttempt{tc.attempt}}
+			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+			defer srv.Close()
+
+			start := time.Now()
+			resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+			if err == nil {
+				// truncate_body delivers headers and a prefix successfully; the
+				// failure surfaces on the body read, not on Post itself.
+				_, err = io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+			}
+			require.Error(t, err, "the connection must die before the body completes")
+			require.GreaterOrEqual(t, time.Since(start), delay, "the client itself must observe the hang")
+
+			// Read the journal at exactly the moment the client returned: the entry
+			// has to be there already, and it has to say the hang actually happened.
+			entries := j.Snapshot()
+			require.Len(t, entries, 1, "an aborting fault is journaled before the socket is touched")
+			require.True(t, entries[0].Outcome.Aborted)
+			observed := entries[0].CompletedAt.Sub(entries[0].ArrivedAt)
+			require.GreaterOrEqual(t, observed, delay,
+				"completed_at must reflect the observed hang, not the instant the attempt was decided")
+		})
+	}
+}
+
+// TestHandleAbortingFaultDelaySkipRecordsRequestedDelayWithoutWaiting proves
+// requirement 2: under DelaySkip no real time passes for an aborting fault's
+// delay:, and Outcome.DelayMS still records what was requested — unchanged by
+// the unit 1 reordering, which only moves WHEN record() runs, never what
+// faultOutcome computed.
+func TestHandleAbortingFaultDelaySkipRecordsRequestedDelayWithoutWaiting(t *testing.T) {
+	t.Parallel()
+
+	const declared = 30 * time.Second
+
+	j := journal.NewRing(8, 4096)
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{Kind: scenario.FaultCloseBeforeHeaders, Delay: scenario.Duration(declared)},
+	}}
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine, DelayMode: DelaySkip},
+		Exa, testRoute, okHandler(`{"ok":true}`)))
+	defer srv.Close()
+
+	start := time.Now()
+	_, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
+	require.Error(t, err, "the connection must die before any header reaches the client")
+	require.Less(t, time.Since(start), time.Second, "DelaySkip must not wait out a 30s aborting-fault delay")
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1)
+	require.True(t, entries[0].Outcome.Aborted)
+	require.Equal(t, declared.Milliseconds(), entries[0].Outcome.DelayMS,
+		"the journal still records the requested delay under DelaySkip")
+}
+
+// TestHandleAbortingFaultCancelledDuringDelayLandsAnAbortedEntry proves
+// requirement 3: when the CLIENT's own cancellation ends the request during
+// an aborting attempt's pre-dispatch hang, nothing reaches the wire, but the
+// entry still lands with Outcome.Aborted true and BytesWritten zero — this is
+// the symmetrical, client-created case package-design.md §2.2 rule 3 already
+// names, and the entry landing (even though the socket was never touched)
+// matters as much here as journaling before the scripted abort does.
+// Deterministic and instant: the request context is already cancelled before
+// Handle ever runs, exactly as TestHandleDelayFault/"a cancelled client
+// releases the goroutine" does, so sleep()'s select observes ctx.Done()
+// immediately rather than waiting out the scripted one-hour delay.
+//
+// truncate_body is the row that actually discriminates the cancel branch:
+// faultOutcome pre-sets Aborted=true and BytesWritten=0 for close_before_headers
+// regardless of the delay, so that row alone would pass unchanged even if
+// Handle's cancel branch (handle.go's preDispatchDelay error path) were
+// deleted outright. faultOutcome pre-sets BytesWritten to the non-zero
+// truncation length for truncate_body, so only that row's BytesWritten==0
+// assertion depends on the branch actually zeroing it. CompletedAt is not
+// asserted here: with a pre-cancelled context it lands at essentially
+// ArrivedAt by construction, so it proves nothing beyond what Len/Aborted/
+// BytesWritten already do; the observed-hang property is covered separately
+// by TestHandleAbortingFaultDelayIsObservedInCompletedAt.
+func TestHandleAbortingFaultCancelledDuringDelayLandsAnAbortedEntry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		attempt scenario.FaultAttempt
+	}{
+		{
+			name:    "close_before_headers",
+			attempt: scenario.FaultAttempt{Kind: scenario.FaultCloseBeforeHeaders, Delay: scenario.Duration(time.Hour)},
+		},
+		{
+			name:    "truncate_body",
+			attempt: scenario.FaultAttempt{Kind: scenario.FaultTruncateBody, Delay: scenario.Duration(time.Hour)},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			j := journal.NewRing(8, 4096)
+			engine := &scriptedFaults{attempts: []scenario.FaultAttempt{tc.attempt}}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			r := postJSON(`{}`).WithContext(ctx)
+
+			start := time.Now()
+			require.NotPanics(t, func() {
+				serve(Deps{Journal: j, Faults: engine}, okHandler(`{"ok":true}`), r)
+			})
+			require.Less(t, time.Since(start), time.Second, "the client's own cancellation must release the goroutine")
+
+			entries := j.Snapshot()
+			require.Len(t, entries, 1, "the client's own cancellation is not a reason to lose the entry")
+			require.True(t, entries[0].Outcome.Aborted)
+			require.Zero(t, entries[0].Outcome.BytesWritten)
+		})
+	}
+}
+
 func TestHandleTruncateBody(t *testing.T) {
 	t.Parallel()
 

@@ -202,9 +202,10 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 				// BytesWritten and ChunksSent are left at their zero value
 				// here deliberately: this fallback is reachable only when
 				// executeStream never ran at all (the pre-dispatch delay was
-				// cancelled before dispatch — see execute's comment on that
-				// branch), where zero is correct because nothing was
-				// written. executeStream's own abort branches — stream_disconnect
+				// cancelled before dispatch — see the preDispatchDelay error
+				// branch below, where resp.Stream != nil), where zero is
+				// correct because nothing was written. executeStream's own
+				// abort branches — stream_disconnect
 				// and stream_truncate_chunk — call closer with the real
 				// counts BEFORE panicking (closeWith, stream.go), exactly as
 				// the design's §4.3 requires, so this fallback stays a true
@@ -321,9 +322,52 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 		// true of every response, because the client consumes chunk 0 seconds
 		// before the handler returns. The aborting case was always the special
 		// case; streaming is the general one.
-		if out.Aborted || resp.Stream != nil {
+		//
+		// For a stream the entry is recorded HERE, before the pre-dispatch delay
+		// runs at all: closer (above) amends CompletedAt when the exchange
+		// actually closes, exactly as streaming.md §5.1 describes, so an early
+		// CompletedAt here is provisional by design. For a non-streaming
+		// exchange record() is NOT called here — it is deferred until after the
+		// delay below, which is the Phase 6 unit 1 fix: CompletedAt must measure
+		// the observed hang, not the instant this attempt was decided.
+		if resp.Stream != nil {
 			entry.Outcome = out
-			record() // journal BEFORE the client can observe ANYTHING
+			record()
+		}
+
+		// Every non-streaming kind that carries a delay waits here, before
+		// anything is journaled or written. For a non-streaming aborting fault
+		// that is the Phase 6 unit 1 fix — record() used to run before this
+		// sleep — so CompletedAt (and logRequest's duration_ms) now reflect the
+		// hang the client actually observed. Only stream_stall's Delay is
+		// carved out inside preDispatchDelay, folded into a chunk's own pace
+		// instead.
+		if err := preDispatchDelay(r.Context(), attempt, d.DelayMode); err != nil {
+			// The client's own deadline or cancellation ended the request while the
+			// delay was still running. Writing now would be shouting into a closed
+			// socket; the journal records that nothing was delivered.
+			//
+			// out.Aborted is set here only for a NON-streaming exchange, where this
+			// Outcome is what gets retained. For a STREAMING exchange, record()
+			// already ran above with Aborted reflecting the SCRIPT — nothing about
+			// the script aborted this, the client's own cancellation did — so
+			// Aborted must stay false there too; State (amended to client_gone via
+			// closer) is the authoritative signal for a streamed exchange instead.
+			if resp.Stream == nil {
+				out.Aborted = true
+			}
+			out.BytesWritten = 0
+			entry.Outcome = out
+			return // the deferred record() (and, for streams, the fallback closer) stamps CompletedAt now.
+		}
+
+		// Aborting, non-streaming faults (close_before_headers, truncate_body) are
+		// journaled here, after the hang and before the socket is touched — the
+		// property package-design.md §2.2 rule 3 requires: the client cannot
+		// observe the reset before this entry exists.
+		if out.Aborted && resp.Stream == nil {
+			entry.Outcome = out
+			record()
 		}
 		entry.Outcome = execute(r.Context(), w, attempt, resp, d.DelayMode, out, closer)
 	}
