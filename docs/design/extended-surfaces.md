@@ -63,6 +63,11 @@ warning (`perplexity.agent.stream.unsupported`, `perplexity.agent.background.uns
 non-streaming response, matching the `StreamPolicy` treatment the base design gives Exa. Silence would let a consumer
 believe it had exercised a path it never touched.
 
+> Streaming is no longer unconditionally deferred: `docs/design/streaming.md` §7/§9 lands `GrammarTyped` on this
+> surface (Phase 5 unit 3), under the same `warn`/`reject`/`stream` switch Sonar has, and `perplexity.agent.stream.unsupported`
+> is renamed to `perplexity.stream.agent_unsupported` in the process. `background: true` is untouched by that unit
+> and still always warns as this paragraph describes.
+
 ## Scenario model amendment
 
 Under the open registry the Agent surface is its own provider entry, `perplexity_agent`, decoded into its own

@@ -505,6 +505,24 @@ func TestPlanStream(t *testing.T) {
 		p := planStream(&scenario.FaultAttempt{Kind: scenario.FaultStreamDisconnect, AfterChunk: 99}, stream)
 		require.Equal(t, 99, p.disconnectAt, "the plan still records what was asked; the loop simply never reaches it")
 	})
+
+	t.Run("eventNames is nil for GrammarDelta — unnamed frames", func(t *testing.T) {
+		t.Parallel()
+		p := planStream(nil, pacedThreeChunkStream())
+		require.Nil(t, p.eventNames(), "GrammarDelta's frames carry no event: line at all")
+	})
+
+	t.Run("eventNames returns every chunk's Name, in order, for a named (GrammarTyped-shaped) stream", func(t *testing.T) {
+		t.Parallel()
+		events := []SSEEvent{
+			{Name: "response.created", Data: []byte(`{"a":0}`)},
+			{Name: "response.output_text.delta", Data: []byte(`{"a":1}`)},
+			{Name: "response.completed", Data: []byte(`{"a":2}`), Terminal: true},
+		}
+		stream := &Stream{Grammar: GrammarTyped, Chunks: EncodeSSE(events)}
+		p := planStream(nil, stream)
+		require.Equal(t, []string{"response.created", "response.output_text.delta", "response.completed"}, p.eventNames())
+	})
 }
 
 // --- executeStream: aborting fault kinds ------------------------------------

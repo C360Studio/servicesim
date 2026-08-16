@@ -286,6 +286,7 @@ func plannedStreamOutcome(a *scenario.FaultAttempt, s *Stream) *journal.StreamOu
 		ChunkCount:    len(s.Chunks),
 		BytesPlanned:  s.Bytes(),
 		PaceMS:        plan.paceMS(),
+		EventNames:    plan.eventNames(),
 		TerminalIndex: -1,
 		Usage:         s.Usage,
 		CostTotal:     s.CostTotal,

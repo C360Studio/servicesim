@@ -289,6 +289,20 @@ type StreamTurn struct {
 	// none. It is compared against Script.Deltas joined, when both are
 	// non-empty.
 	Answer string
+
+	// ChunkCount overrides chunkCount's default "len(Script.Deltas) + 1"
+	// formula for this turn's after_chunk bound. The default fits
+	// GrammarDelta, the only grammar this formula was written against: one
+	// chunk per delta plus the one terminal chunk. A grammar whose SSE
+	// sequence carries more indexed frames than that — GrammarTyped's
+	// envelope events (response.created, response.output_item.added,
+	// response.output_text.done, response.output_item.done,
+	// response.completed) around the N deltas, for instance — sets this to
+	// its own true count so [ValidateStreamFaultMismatch]'s after_chunk
+	// bound describes the chunks a fault plan can actually reach, not a
+	// GrammarDelta-shaped undercount. Zero, the Go zero value, means "use
+	// the default formula" — no existing caller has to set it.
+	ChunkCount int
 }
 
 // ValidateStreamScripts checks the streaming grammar's load-time coherence
@@ -382,13 +396,21 @@ func joinDeltaText(deltas []StreamDelta) string {
 	return b.String()
 }
 
-// chunkCount is how many indexed chunks (deltas plus the one terminal chunk)
-// a turn's script will produce. A turn with no script, or one that declares
-// no deltas, counts as 1 — the terminal chunk alone — which is already
-// reported by CodeStreamDeltasEmpty; it is not treated as 0 here so a
-// mis-scripted turn cannot make the minimum bound below negative or zero in
-// a way that would reject every after_chunk outright.
+// chunkCount is how many indexed chunks a turn's script will produce, for
+// ValidateStreamFaultMismatch's after_chunk bound. t.ChunkCount, when set,
+// wins outright: it is the calling provider's own true count for a grammar
+// whose SSE sequence does not fit the default formula (see its doc
+// comment). Otherwise this is deltas plus the one terminal chunk — the
+// GrammarDelta shape this formula was written against. A turn with no
+// script, or one that declares no deltas, counts as 1 — the terminal chunk
+// alone — which is already reported by CodeStreamDeltasEmpty; it is not
+// treated as 0 here so a mis-scripted turn cannot make the minimum bound
+// below negative or zero in a way that would reject every after_chunk
+// outright.
 func chunkCount(t StreamTurn) int {
+	if t.ChunkCount > 0 {
+		return t.ChunkCount
+	}
 	if t.Script == nil {
 		return 1
 	}

@@ -354,8 +354,9 @@ wire shape a `stream: true` request receives. It was written ahead of an impleme
 Servicesim simulates" below — since **Phase 5 unit 1 (2026-08-15)** the Sonar surface (`POST /v1/sonar` and its
 two aliases) serves this shape for a `stream: true` request against an entry whose policy is `stream`. An entry
 whose policy is `warn` (the default) still receives a complete non-streaming body plus a warning, and `reject`
-still answers `422`. The Agent API's typed SSE grammar remains unimplemented and still answers every
-`stream: true` request with a warning; see "What Servicesim simulates" for the exact split.
+still answers `422`. Since **Phase 5 unit 3 (2026-08-15)** the Agent API's typed SSE grammar is simulated too,
+on `POST /v1/agent` and its aliases, under the same `warn`/`reject`/`stream` switch; see "What Servicesim
+simulates" for the exact split.
 
 ### Chat completions (`POST /v1/sonar`, `/chat/completions`, `/v1/chat/completions`)
 
@@ -619,8 +620,8 @@ subset a C360 research adapter parses:
 
 - `POST /v1/sonar` and its `/chat/completions` and `/v1/chat/completions` aliases — full request
   validation, `choices`, `citations`, `search_results`, `usage` with required `cost`.
-- `POST /v1/agent` and its `/v1/responses` and `/responses` aliases — non-streaming, with `message` and
-  `search_results` output items, `usage`/`cost`, and the `ErrorInfo` envelope.
+- `POST /v1/agent` and its `/v1/responses` and `/responses` aliases — the non-streaming body, with `message`
+  and `search_results` output items, `usage`/`cost`, and the `ErrorInfo` envelope, plus streaming (below).
 - Sonar streaming, `stream_mode: full` only. `providers.perplexity.stream:` (a Sonar entry's
   `when_requested`) selects between three behaviours. The default, `warn`, journals
   `perplexity.stream.unimplemented` and answers a `stream: true` request with a complete non-streaming
@@ -631,15 +632,50 @@ subset a C360 research adapter parses:
   streaming entry is served that same full-mode transcript with a
   `perplexity.stream_mode.concise.unscripted` warning, not rejected and not the concise-mode sequence — see
   below.
+- Agent API streaming, the `GrammarTyped` sequence, since **Phase 5 unit 3 (2026-08-15)**.
+  `providers.perplexity_agent.stream:` (the Agent entry's `when_requested`) selects between the same three
+  behaviours Sonar has, decoded and validated exactly the same way. The default, `warn`, journals
+  `perplexity.stream.agent_unsupported` — the renamed
+  (from `perplexity.agent.stream.unsupported`) unconditional warning this surface always raised before this
+  unit — and answers with a complete non-streaming body. `reject` turns that into a `422` naming
+  `body.stream`. `stream` serves six of the fourteen `EventType` members, in this exact order, for a turn
+  scripting N deltas: `response.created` (the `ResponsesResponse` in its initial `in_progress` state — empty
+  `output`, zero `usage`), `response.output_item.added` (the message item, `in_progress`, empty `content`),
+  N × `response.output_text.delta`, `response.output_text.done` (the aggregate text),
+  `response.output_item.done` (the completed message item), and terminal `response.completed`, whose
+  `response` is the identical `ResponsesResponse` the non-streaming route renders for the same turn —
+  `output[]`, `usage` and `cost` included, one function building both. Every one of the four message-item
+  events' `output_index` is the message item's actual position within the turn's `output[]` — 1, not 0, for a
+  turn that also projects a `search_results` item, which always renders first. `response.in_progress` is not
+  emitted — this build's minimal reading of the design's own illustrative sketch in
+  [`docs/design/streaming.md`](../../docs/design/streaming.md) §7 (repo-authored, not a vendor example), which
+  shows only created → delta → completed. Every event carries a monotonically increasing `sequence_number`
+  starting at 0 and an `event: <type>` SSE line (simulator-chosen — see the "Streaming (SSE)" section above).
+  No `data: [DONE]` sentinel: it is a chat-completions concept only, and `terminal.omit_done` is meaningless
+  here — declaring it on an Agent turn raises the load-time warning `perplexity.stream.done_ignored` rather
+  than being silently accepted. `terminal.omit_usage` nils `usage` inside `response.completed`'s `response`
+  object specifically, leaving every other field untouched — except key order: dropping a key round-trips the
+  object through a map, so it comes back alphabetised at every nesting level, unlike every other frame's
+  struct order. A turn whose `status` is `failed` or `cancelled` renders no message output item at all (the
+  non-streaming route's own rule), so `stream` degrades to just two frames for such a turn —
+  `response.created` then `response.completed` (the latter carrying `status: "failed"`/`"cancelled"` and
+  `error`) — rather than the six-event sequence above; `response.failed` itself is not simulated (below).
 
-Deliberately **not** simulated in the initial release, because no consumer parses them yet:
+Deliberately **not** simulated, because no consumer parses them yet:
 
 - **`stream_mode: concise`'s own four-object-type grammar** (`chat.reasoning`, `chat.reasoning.done`,
   `chat.completion.chunk`, `chat.completion.done`). A request naming it is served the full-mode transcript
   instead, with the warning noted above, not the concise-mode sequence.
-- **The Agent API's typed SSE grammar** (the 14 `EventType` members above). Unaffected by Phase 5 unit 1;
-  every `stream: true` request against `/v1/agent` (and its aliases) still answers with
-  `perplexity.agent.stream.unsupported`, exactly as before.
+- **The Agent API's eight remaining `EventType` members**: the `response.reasoning.*` family
+  (`started`, `search_queries`, `search_results`, `fetch_url_queries`, `fetch_url_results`, `stopped`) and
+  `response.failed`. None has scenario vocabulary yet — there is no scripted "reasoning step" or "this turn
+  fails mid-stream" shape to project them from — and each is a bounded addition behind the same scenario
+  model whenever a consumer needs it, exactly like the items below.
+- **An `output_item.added`/`.done` pair for the `search_results` output item.** Only the message item gets
+  one; a turn that projects search results has them appear, unannounced, inside `response.completed`'s
+  `output[]` at whatever index precedes the message item (see `output_index`, below). No scenario vocabulary
+  scripts a `response.reasoning.*` sequence for the search step this item represents, so there is nothing to
+  hang an added/done pair off of yet.
 - The `sandbox_results`, `mcp_list_tools`, `mcp_call`, `function_call`, `finance_results`,
   `people_search_results`, `fetch_url_results` and `tool_search_output` output-item types.
 - Background mode and the `GET /v1/agent/{id}` polling lifecycle, the files endpoints, and

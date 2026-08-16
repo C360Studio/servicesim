@@ -248,10 +248,15 @@ func TestAgentUnauthorizedGolden(t *testing.T) {
 	require.Equal(t, string(goldenBytes(t, "perplexity-agent-401.json")), string(body))
 }
 
-// TestAgentDeferredFeaturesWarnLoudly is the addendum's rule: a deferred feature
-// must fail loudly, never silently. Both requests still receive an ordinary
-// non-streaming, synchronous body — and both leave a named finding behind, so a
-// consumer cannot believe it exercised a path it never touched.
+// TestAgentDeferredFeaturesWarnLoudly is the addendum's rule: a deferred
+// feature must fail loudly, never silently. background is deferred
+// unconditionally; stream is deferred under agentCorpus's default (no
+// `stream:` key, hence `warn`) policy specifically — Phase 5 unit 3 gives
+// this surface a stream: key that serves a real GrammarTyped sequence, see
+// stream_test.go's TestAgentStreamPolicySwitch. Both requests here still
+// receive an ordinary non-streaming, synchronous body — and both leave a
+// named finding behind, so a consumer cannot believe it exercised a path it
+// never touched.
 func TestAgentDeferredFeaturesWarnLoudly(t *testing.T) {
 	t.Parallel()
 

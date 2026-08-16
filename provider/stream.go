@@ -16,9 +16,7 @@ import (
 // docs/design/streaming.md §7.
 type SSEGrammar string
 
-// The simulated grammars. GrammarTyped is declared for §3.2's completeness —
-// the [SSEGrammar] enum this build's transport layer understands — but no
-// provider package renders it yet; that is a later unit (Agent API SSE).
+// The simulated grammars.
 const (
 	// GrammarDelta is the OpenAI-compatible chat-completions dialect: unnamed
 	// frames whose payload is a chat.completion.chunk object, closed by the
@@ -35,8 +33,9 @@ const (
 // encoder below turns them into bytes.
 type SSEEvent struct {
 	// Name fills the "event:" line. Empty omits the line entirely, which is
-	// the chat-completions grammar. Built by [EncodeSSE] but not yet used by
-	// any renderer this unit ships — GrammarTyped is a later unit.
+	// the chat-completions grammar (GrammarDelta); GrammarTyped's renderer
+	// (renderAgentStream, provider/perplexity/agent.go) sets it on every
+	// frame.
 	Name string
 
 	// Data is written verbatim after "data: ". It is normally compact JSON,
@@ -45,10 +44,9 @@ type SSEEvent struct {
 	Data []byte
 
 	// Pace is the minimum wall time between the previous frame reaching the
-	// wire and this one starting. No renderer this unit ships sets it above
-	// zero — the scenario grammar has no `pace:` key yet — but the field and
-	// the sleep it drives through [executeStream] are real: honouring a
-	// future nonzero value needs no further plumbing, only a source for one.
+	// wire and this one starting, resolved from the scenario's `pace:` key
+	// (StreamScript.Pace, a per-delta or per-terminal override) by whichever
+	// provider renderer built this event.
 	Pace time.Duration
 
 	// Terminal marks the frame carrying usage and cost. Exactly zero or one
@@ -290,6 +288,29 @@ func (p streamPlan) paceMS() []int64 {
 	out := make([]int64, len(p.chunks))
 	for i := range p.chunks {
 		out[i] = p.paceOf(i).Milliseconds()
+	}
+	return out
+}
+
+// eventNames renders each chunk's "event:" value in order, for
+// journal.StreamOutcome.EventNames. It returns nil, not an empty slice, when
+// every chunk is unnamed (GrammarDelta), so a reader can tell the two
+// grammars apart by the field's presence alone rather than by comparing an
+// empty slice against nil.
+func (p streamPlan) eventNames() []string {
+	named := false
+	for _, c := range p.chunks {
+		if c.Name != "" {
+			named = true
+			break
+		}
+	}
+	if !named {
+		return nil
+	}
+	out := make([]string, len(p.chunks))
+	for i, c := range p.chunks {
+		out[i] = c.Name
 	}
 	return out
 }

@@ -288,3 +288,46 @@ goldens:
       above: that distinction is the entire reason this fault kind exists
       rather than reusing stream_disconnect. Entirely simulator-chosen: no
       vendor page documents a truncated-frame transcript.
+
+  - golden: perplexity-agent-stream.sse
+    endpoint: POST /v1/agent (aliases POST /v1/responses, POST /responses), GrammarTyped
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/docs/agent-api/output-control.md
+    verified: 2026-08-15
+    note: >-
+      Phase 5 unit 3 (docs/design/streaming.md §7 "Responses / Agent"). A
+      three-delta turn with one search_results item, so the message output
+      item's own output_index (1, not 0) is pinned too. Vendor-pinned: the
+      six event names emitted (response.created, response.output_item.added,
+      response.output_text.delta, response.output_text.done,
+      response.output_item.done, response.completed — six of the fourteen
+      ResponseStreamEvent members openapi.json declares), every field name on
+      each event's payload (type, sequence_number, response, item,
+      output_index, item_id, content_index, delta, text), and that
+      sequence_number is monotonically increasing. Simulator-chosen,
+      correctable from a captured live response per
+      docs/design/streaming.md §10 step 3: that a literal "event: <type>"
+      SSE line is written at all (openapi.json has 0 occurrences of that
+      framing for this schema; unpinned by Perplexity, but the OpenAI
+      Responses streaming dialect the Agent API declares compatible with
+      does); the minimal event sequence itself, in particular that
+      response.in_progress is never emitted (the design's own worked example
+      shows only created/delta/completed, and this build keeps that reading);
+      response.created's response object in its "initial in_progress state"
+      (empty output, zero usage — the specification declares this field only
+      as "the initial response object" with no further shape); the added
+      message item's transient status ("in_progress", empty content) before
+      any delta has arrived; and that sequence_number starts at 0. No
+      [DONE] sentinel anywhere: unstated for this surface by any fetched
+      page or by openapi.json (0 hits), and this build treats [DONE] as a
+      chat-completions concept only (A4, docs/design/streaming.md §7). Also
+      simulator-chosen: the search_results item at output_index 0 is never
+      announced by its own output_item.added/.done pair — response.created's
+      output is empty and the only output_item.added/.done pair this golden
+      emits is the message item's, so a consumer replaying the transcript
+      sees output_index 0 revealed only inside response.completed, with a
+      gap where an added/done pair for it might otherwise be expected. The
+      two response headers this golden's request would receive on the real
+      wire are the same simulator-chosen pair perplexity-sonar-stream.sse
+      already carries, for the same reason.

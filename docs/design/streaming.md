@@ -1,5 +1,82 @@
 # SSE streaming
 
+> ## SHIPPED (unit 3) — 2026-08-15
+>
+> **Phase 5 unit 3 has landed**: the Agent API's `GrammarTyped` grammar, on `perplexity_agent`. The projection
+> (`PerplexityAgent.Stream scenario.StreamScript`), decode and load-time validation are wired exactly as Sonar's —
+> `agentStreamPolicy`/`rejectAgentStream` mirror `streamPolicy`/`rejectStream`, and `AgentValidator.ValidateProjections`
+> now calls `scenario.ValidateStreamScripts`/`ValidateStreamFaultMismatch` exactly as `SonarValidator` does — so the
+> unconditional `perplexity.agent.stream.unsupported` warning this surface always raised is retired in favour of the
+> same `warn`/`reject`/`stream` switch, under the renamed code `perplexity.stream.agent_unsupported`
+> (`CodeAgentStreamUnsupported`, unchanged Go identifier, changed string value — §9's rename, now live). The Agent
+> renderer (`renderAgentStream`, `provider/perplexity/agent.go`) emits six of the fourteen `EventType` members, for a
+> turn scripting N deltas: `response.created` (the `ResponsesResponse` in its initial `in_progress` state — empty
+> `output`, zero `usage`), `response.output_item.added` (the message item, `in_progress`, empty `content`), N ×
+> `response.output_text.delta`, `response.output_text.done` (the aggregate text), `response.output_item.done` (the
+> completed message item), and terminal `response.completed`, whose `response` is the byte-identical
+> `ResponsesResponse` the non-streaming route renders for the same turn — built once by the new `agentResponse`
+> helper and shared by both transports, never re-implemented for the stream (proved by
+> `TestAgentStreamCompletedResponseMatchesNonStreamingBody`). `response.in_progress` is NOT emitted — see the
+> resolved ambiguity below. `sequence_number` is monotonic from 0; every frame carries an `event: <type>` line (A4,
+> simulator-chosen, unchanged from unit 2's resolution). Pacing is simulator-chosen too, and narrower than §4.3's
+> "gates every chunk" rule as written, because `GrammarTyped` has four envelope frames `StreamScript` has no
+> per-frame override for: `response.created` and the terminal `response.completed` use the script's ordinary
+> chunk-pace resolution (own override else script default) exactly like `GrammarDelta`'s chunk 0 and terminal
+> chunk; `response.output_item.added`, `response.output_text.done` and `response.output_item.done` — frames with
+> no scenario-authored content of their own — carry no gap at all (`Pace: 0`), since nothing in `StreamScript`
+> names one for them. `StreamTerminal.OmitDone` has no effect on `GrammarTyped`
+> (it never wrote `[DONE]` to begin with — that remains a `GrammarDelta`-only sentinel) and now raises the load-time
+> warning `perplexity.stream.done_ignored` (`CodeStreamDoneIgnored`) when declared on an Agent turn, rather than
+> being silently accepted. `terminal.omit_usage` nils `usage` specifically inside `response.completed`'s `response`
+> object, via `wire.Omit` on the rendered bytes rather than a pointer field on the shared `ResponsesResponse` type —
+> see the resolved ambiguity below. The three `stream_*` fault kinds needed no changes at all — `executeStream`,
+> `planStream` and `EncodeSSE` are exactly as grammar-blind as §7 always said — proved by one disconnect test on
+> `/v1/agent` (`TestAgentStreamDisconnect`). `journal.StreamOutcome.EventNames` (§5.1) is live for both grammars now:
+> non-nil and populated for `GrammarTyped`, `nil` for `GrammarDelta` (`streamPlan.eventNames`, `provider/stream.go`),
+> exactly as §5.1's unit-1/2 notes anticipated. Golden: `contracts/perplexity/perplexity-agent-stream.sse`, rendered
+> through the real handler on `/v1/agent`, `/v1/responses` and `/responses` (byte-identical, `TestAgentStreamGolden`).
+> `contracts/perplexity/README.md`'s "What Servicesim simulates" section is updated to describe Agent streaming
+> alongside Sonar's. Out of unit 3: the `response.reasoning.*` event family and `response.failed` — no scenario
+> vocabulary exists for either, both noted as later-unit additions in the contract; `testkit.AssertGoldenSSE` and the
+> other `testkit` streaming surface, built-in scenarios, and Exa/Tavily streaming remain unit 4 / never.
+>
+> **Two points this unit had to resolve that the design left unpinned, both because the design's own text was
+> written before a real `GrammarTyped` renderer existed to test it against:**
+>
+> - **`scenario.chunkCount`'s default formula (`len(Deltas) + 1`) undercounts `GrammarTyped`.** That formula is
+>   `GrammarDelta`-shaped — one chunk per delta plus the one terminal chunk — and `ValidateStreamFaultMismatch` uses
+>   it to bound `after_chunk`. `GrammarTyped`'s real count is `len(Deltas) + 5` (the five envelope events above) for
+>   a turn whose message item renders at all, or 2 for a failed/cancelled turn (§7's shipped-as note on the sketch,
+>   above), so using the unmodified formula would have rejected a perfectly valid `after_chunk` anywhere in
+>   `[N+1, N+4]` as "out of range" against a false, too-small bound — the opposite failure from the one
+>   `CodeStreamAfterChunkOutOfRange` exists to catch. Resolved additively: `scenario.StreamTurn` gains a
+>   `ChunkCount int` field (zero means "use the default formula", so no existing caller — Sonar's — has to set it),
+>   and `chunkCount` prefers it when set. `AgentValidator` computes it per turn via the new `agentChunkCount`
+>   helper, which takes the turn's decoded `Status` as well as its `Script` for exactly this reason — a first
+>   pass that computed it from `Script` alone (ignoring `Status`) shipped `len(Deltas)+5` unconditionally, which
+>   overstated the bound for a failed/cancelled turn and let an unreachable `after_chunk` load clean; a review
+>   pass caught it before release and `TestAgentStreamAfterChunkOutOfRangeAtLoadFailedStatus` is the regression.
+>   `TestAgentStreamAfterChunkOutOfRangeAtLoad` covers the ordinary (non-failed) case: it targets chunk 8, which the
+>   WRONG default formula would have accepted (only 4 chunks) and the real one correctly rejects (valid range is
+>   `0..7`).
+> - **`ResponsesResponse.Usage` is a plain, always-present field — `terminal.omit_usage` cannot express "absent" on
+>   it directly.** Unlike Sonar's `ChatCompletionChunkResponse.Usage *Usage`, a streaming-only pointer field
+>   dedicated to this one edge case, the Agent surface's `ResponsesResponse` is the SAME type the non-streaming route
+>   renders — the whole point of `agentResponse` being shared. Retyping `Usage` to a pointer to accommodate one
+>   streaming-only omission would ripple into every non-streaming Agent response's shape. Resolved by keeping
+>   `ResponsesResponse` unchanged and applying `wire.Omit(bytes, []string{"usage"})` to the already-rendered
+>   `response.completed` payload instead — the same tool `PerplexityResult.OmitFields` already uses for a structurally
+>   identical problem on the Sonar side, reused rather than a new mechanism invented for this one. One consequence
+>   worth naming rather than leaving implicit: `wire.Omit` always round-trips the object through a map, so a turn
+>   that sets `terminal.omit_usage` gets a `response.completed` whose `response` object is key-alphabetised at every
+>   nesting level, unlike every other frame in the same stream, which stays in struct order — deterministic either
+>   way, and the same divergence `renderSonarStream` already documents for an extra-fields terminal frame, not a
+>   new kind of non-determinism.
+>
+> Neither is a conceptual disagreement with anything §7 or §9 says; both are load-bearing details the prose left to
+> "whoever builds this next" because nothing before this unit needed a `GrammarTyped` chunk count or a `GrammarTyped`
+> usage omission to exist as real code.
+>
 > ## SHIPPED (unit 2) — 2026-08-15
 >
 > **Phase 5 unit 2 has landed**: the three `stream_*` fault kinds (`stream_disconnect`, `stream_truncate_chunk`,
@@ -1320,6 +1397,17 @@ reader cannot recover it from the entry. That is acceptable because `[DONE]`'s p
 used the default; it is exercised end to end by `provider.TestHandleStreamDonePaceIsHonouredUnderDelayReal`
 (`provider/stream_test.go`), which reads it from `Outcome.BytesWritten`/`State` rather than from `PaceMS`.
 
+**Shipped as (Phase 5 unit 3):** `EventNames` now lands too, exactly as the unit-2 note anticipated. It is
+`streamPlan.eventNames()` (`provider/stream.go`), computed the same PLANNED way `paceMS()` is — a pass over
+`plan.chunks`, no clock read — and wired into `plannedStreamOutcome` alongside `PaceMS`. It is `nil`, not an empty
+slice, whenever every chunk is unnamed, which is how a reader tells the two grammars apart by the field's presence
+alone: `GrammarDelta` streams (Sonar) still produce `nil`, `GrammarTyped` streams (the Agent surface) produce the
+six-or-more names in wire order. Grammar-blind by construction — `eventNames()` reads `StreamChunk.Name`, which
+`EncodeSSE` already populated from `SSEEvent.Name` since unit 1 — so no branch anywhere in `provider` had to learn
+that a second grammar exists. `TestAgentStreamJournalOutcome` (`provider/perplexity/stream_test.go`) pins it
+end-to-end through the real Agent handler; `TestPlanStream`'s two `eventNames` subtests (`provider/stream_test.go`)
+pin the pure function against both a `nil`-producing unnamed stream and a hand-built named one.
+
 **`Terminal`/`TerminalIndex` mark the closing frame, not the presence of usage.** Every stream this design
 produces has exactly one terminal chunk — `StreamTerminal` tunes what it carries, it does not make it optional
 — so `TerminalIndex` is always `chunk_count - 1` for a fully-scripted `GrammarDelta` or `GrammarTyped` stream;
@@ -1694,6 +1782,47 @@ data: {"type":"response.completed","response":{"id":"resp_...","status":"complet
 
 ```
 
+**Shipped as (Phase 5 unit 3):** this three-frame sketch was always illustrative (the banner), and the shipped
+sequence is eight frames for the three-delta example above, not three — `response.created`,
+`response.output_item.added`, three `response.output_text.delta`, `response.output_text.done`,
+`response.output_item.done`, `response.completed`. The sketch omitted `output_item.added`/`.done` and
+`output_text.done` entirely; the P5U3 unit-scope spec that commissioned this build named all three explicitly, so
+they are not an extension the implementing unit invented, only ones this illustrative block never showed. What the
+sketch's minimalism DID settle correctly, per its own reading here: `response.in_progress` — a member the
+`ResponseCreatedEvent`/`ResponseInProgressEvent`/`ResponseCompletedEvent` schemas make optional and structurally
+interchangeable — is NOT emitted; this sketch's own choice to go straight from `created` to the first `delta` is
+the minimal sequence the shipped renderer (`renderAgentStream`, `provider/perplexity/agent.go`) keeps, rather than
+inventing a fourth envelope-only event nothing in this document ever asked for. `sequence_number` starts at 0 and
+is monotonic across every frame, matching the numbers shown here. `response.completed`'s `response` is not
+hand-assembled the way this sketch's elided `output: [...]` suggests: it is the byte-identical `ResponsesResponse`
+`agentResponse` builds for `renderAgent`'s non-streaming body, the same struct, not a second rendering of it — see
+the "One mechanism serves both" note just below, corrected in the same pass. `response.created`'s own `response`
+carries more than this sketch's `{id, status}` pair: `object`, `model`, `created_at`, an empty `output: []` and a
+zero-valued `usage` object, all fields `ResponsesResponse` always carries — the sketch elided them as illustrative
+shorthand, not as a narrower shape the shipped code is meant to match. The golden,
+`contracts/perplexity/perplexity-agent-stream.sse`, is where the real wire bytes are pinned; this block stays what
+it always was, a shape sketch, not a byte-for-byte example.
+
+Two more points this sketch's `output_index: 0` and the P5U3 spec's literal `output_index: 0` example left
+unstated, both settled by the shipped renderer rather than by this section's prose: **`output_index` is the
+message item's actual position in `output[]`, not always 0** — a turn that also projects a `search_results`
+item (that item always renders first) gets `output_index: 1` on every one of the four message-item events, and
+the golden pins this (`provenance.yaml`: "the message output item's own output_index (1, not 0) is pinned
+too"). The `search_results` item itself gets no `output_item.added`/`.done` pair of its own — it is revealed
+only inside `response.completed`'s `output[]`, never announced mid-stream — which is simulator-chosen and
+recorded as such in the contract's "not simulated" list, not an oversight. **A turn whose `status` is `failed`
+or `cancelled` renders no message output item at all** — `renderAgentOutput`'s own rule, shared with the
+non-streaming route — so `renderAgentStream` has nothing to attach `output_item.added`/the deltas/
+`output_text.done`/`output_item.done` to and degrades to exactly two frames, `response.created` then
+`response.completed` (the latter carrying `status: "failed"`/`"cancelled"` and `error`), never `response.failed`
+itself (out of scope, "Out of scope" above). This wire shape is now recorded in
+`contracts/perplexity/README.md`'s "What Servicesim simulates" bullet, not only in `renderAgentStream`'s own doc
+comment — a real, on-the-wire sequence belongs in the contract, house rule 1, even when it is a simulator-chosen
+degradation pending a later unit's `response.failed`. The same status split feeds
+`scenario.StreamTurn.ChunkCount` (§9's `agentChunkCount`, corrected below): a failed/cancelled turn's true chunk
+count is 2, not `len(Deltas)+5`, and an `agentChunkCount` that ignored status overstated it — see the
+correction note at the end of this unit's banner.
+
 **Vendor-verified 2026-08-15**: the `ResponseStreamEvent` schema is retrievable from `openapi.json` (an earlier
 edition of this document and of the contract said it could not be — a fetch-tooling artefact, not a vendor gap)
 and is exactly the 14 members matching the `EventType` enum, discriminated by `type`, with a monotonically
@@ -1733,6 +1862,21 @@ Two consequences worth stating because they are the places a shared mechanism co
 - `Stream.Usage` is populated by the renderer that knows where usage lives, so the journal's spend fields are
   identical across grammars even though the wire shapes are not. That is what lets one adopter assertion cover both
   surfaces, which is the entire reason for reconciling them now rather than after the migration.
+
+**Shipped as (Phase 5 unit 3):** this paragraph's own present tense ("carries no `Stream` field today", "until then,
+`perplexity_agent` entries have no way to opt into streaming at all") described the state before this unit and is
+now the state this unit replaced, not a standing fact — `PerplexityAgent` gains `Stream scenario.StreamScript`
+exactly as sketched, `CodeAgentStreamUnsupported`'s unconditional warn retires in favour of
+`agentStreamPolicy`/`rejectAgentStream` (the Agent-surface twins of `streamPolicy`/`rejectStream`), and
+`AgentValidator.ValidateProjections` now calls `scenario.ValidateStreamScripts`/`ValidateStreamFaultMismatch` exactly
+as `SonarValidator` does. The two "differs in exactly two places" bullets above hold exactly as written, with one
+addition neither anticipated: `GrammarTyped`'s `ValidateStreamFaultMismatch` bound needed a THIRD reconciliation
+point — not a difference in `SSEEvent.Name` or the payload renderer, but in how many indexed chunks a turn's script
+produces at all. See the top-of-document unit-3 banner's second resolved point and §9's `ChunkCount` note for why
+and how. `StreamTerminal.OmitUsage` — unmentioned by either bullet above, which only discuss `OmitDone` and where
+`Stream.Usage` is populated from — is honoured on `GrammarTyped` exactly as on `GrammarDelta`: it drops `usage`
+from `response.completed`'s `response` object specifically, via `wire.Omit` on the already-rendered bytes rather
+than a pointer field on the shared `ResponsesResponse` type (the banner's resolved points explain why).
 
 **Route reconciliation.** The adopter's client calls `/chat/completions` with `stream: true` and
 `model: sonar-deep-research`, already an accepted model in `validateSonarRequest`. `GrammarDelta` on
@@ -1852,6 +1996,17 @@ same slice `ValidateStreamScripts` already takes) so it can compute the minimum 
 `out_of_range` needs from one pass over the same per-turn state, rather than a second exported function
 re-walking the entry. `perplexity.stream.done_ignored` remains unshipped: it is `GrammarTyped`-scoped (unit 3),
 untouched by this unit.
+
+**Shipped as (Phase 5 unit 3):** `perplexity.stream.done_ignored` (`CodeStreamDoneIgnored`,
+`provider/perplexity/agent.go`) is live: `AgentValidator.ValidateProjections` raises it, addressed at
+`.stream.terminal.omit_done`, whenever a turn's decoded `Stream.Terminal.OmitDone` is true — unconditionally on
+whether the entry's effective policy is `stream`, because the key is meaningless for this GRAMMAR, not merely
+inert for this particular turn's transport. `perplexity.agent.stream.unsupported`'s rename (this section's table
+above, and the "one provider code is misnamed" paragraph below) is also live now: `CodeAgentStreamUnsupported`'s
+string value is `perplexity.stream.agent_unsupported`; the Go identifier is unchanged, so no source reference in
+this repository needed updating, only the wire value a consumer's journal assertion matches against. It now fires
+under exactly the same two-severity pattern `CodeStreamUnimplemented` already uses on Sonar — a warning under
+`warn`, an error (folded into the surface's 422) under `reject` — rather than unconditionally.
 
 **`scenario.fault.stream_mismatch` and `scenario.fault.after_chunk.out_of_range` are load-time checks only where a
 provider's own `ValidateProjections` calls `ValidateStreamFaultMismatch` — today, only Perplexity's

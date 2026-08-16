@@ -1,0 +1,24 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_9f2c1d8b7a6e5f4c3b2a1908f7e6d5c4","object":"response","model":"openai/gpt-5","created_at":1767225600,"status":"in_progress","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cost":{"currency":"USD","input_cost":0,"output_cost":0,"total_cost":0}}}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":1,"item":{"type":"message","id":"msg_4e3d2c1b0a9f8e7d6c5b4a39281706f5","role":"assistant","status":"in_progress","content":[]},"output_index":1}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":2,"item_id":"msg_4e3d2c1b0a9f8e7d6c5b4a39281706f5","output_index":1,"content_index":0,"delta":"Report A "}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_4e3d2c1b0a9f8e7d6c5b4a39281706f5","output_index":1,"content_index":0,"delta":"finds "}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":4,"item_id":"msg_4e3d2c1b0a9f8e7d6c5b4a39281706f5","output_index":1,"content_index":0,"delta":"that X."}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","sequence_number":5,"item_id":"msg_4e3d2c1b0a9f8e7d6c5b4a39281706f5","output_index":1,"content_index":0,"text":"Report A finds that X."}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":6,"item":{"type":"message","id":"msg_4e3d2c1b0a9f8e7d6c5b4a39281706f5","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Report A finds that X.","annotations":[]}]},"output_index":1}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":7,"response":{"id":"resp_9f2c1d8b7a6e5f4c3b2a1908f7e6d5c4","object":"response","model":"openai/gpt-5","created_at":1767225600,"status":"completed","output":[{"type":"search_results","queries":["deterministic simulator adapter tests"],"results":[{"id":1,"title":"Report A","url":"https://example.test/report-a","snippet":"Report A finds that deterministic simulators remove flakiness.","date":"2025-11-16","source":"web"}]},{"type":"message","id":"msg_4e3d2c1b0a9f8e7d6c5b4a39281706f5","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Report A finds that X.","annotations":[]}]}],"usage":{"input_tokens":42,"output_tokens":128,"total_tokens":170,"cost":{"currency":"USD","input_cost":0.00021,"output_cost":0.00128,"total_cost":0.00149}}}}
+

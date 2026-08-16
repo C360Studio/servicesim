@@ -459,6 +459,9 @@ func cloneEntry(e Entry) Entry {
 		if orig.PaceMS != nil {
 			s.PaceMS = append([]int64(nil), orig.PaceMS...)
 		}
+		if orig.EventNames != nil {
+			s.EventNames = append([]string(nil), orig.EventNames...)
+		}
 		s.CostTotal = clonePtr(orig.CostTotal)
 		s.AbortAfterChunk = clonePtr(orig.AbortAfterChunk)
 		s.TruncatedAtByte = clonePtr(orig.TruncatedAtByte)

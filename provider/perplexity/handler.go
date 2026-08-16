@@ -290,7 +290,11 @@ func handleAgent(x *provider.Exchange) provider.Response {
 
 	checkContentType(x)
 	checkAuth(x, entry)
-	model := validateAgentRequest(x)
+	if rejectAgentStream(x, entry) {
+		return validationResponse(SurfaceAgent, x.Findings(), agentFields)
+	}
+	policy := agentStreamPolicy(entry)
+	model := validateAgentRequest(x, policy)
 	if x.Failed() {
 		return validationResponse(SurfaceAgent, x.Findings(), agentFields)
 	}
@@ -310,18 +314,33 @@ func handleAgent(x *provider.Exchange) provider.Response {
 		x.Fault()
 	}
 
+	// Body is rendered unconditionally, mirroring handleSonar: it is what a
+	// non-streaming caller of this same turn receives and what a
+	// stream-suppressing fault writes.
 	body, err := renderAgent(x, &p, model)
 	if err != nil {
 		x.Fail(CodeRenderFailed, "", "response body could not be rendered: %s", err)
 		return errorResponse(SurfaceAgent, http.StatusInternalServerError, "")
 	}
-	return provider.Response{
+	resp := provider.Response{
 		Status:        http.StatusOK,
 		Body:          body,
 		Label:         "perplexity.agent.ok",
 		FaultEligible: true,
 		FaultBody:     faultBody(SurfaceAgent),
 	}
+
+	if wantsStream(x) && policy == scenario.StreamServe {
+		stream, err := renderAgentStream(x, &p, model)
+		if err != nil {
+			x.Fail(CodeRenderFailed, "", "response stream could not be rendered: %s", err)
+			return errorResponse(SurfaceAgent, http.StatusInternalServerError, "")
+		}
+		resp.Stream = stream
+		resp.Label = "perplexity.agent.stream"
+		resp.Header = provider.StreamHeader()
+	}
+	return resp
 }
 
 // streamPolicy returns the Sonar provider entry's EFFECTIVE streaming
@@ -370,6 +389,41 @@ func rejectStream(x *provider.Exchange, e *scenario.ProviderEntry) bool {
 		return false
 	}
 	x.Fail(CodeStreamUnimplemented, "body.stream",
+		"streaming responses are not simulated and this scenario rejects them; "+
+			"a non-streaming request is served normally")
+	return true
+}
+
+// agentStreamPolicy returns the Agent provider entry's EFFECTIVE streaming
+// policy — the Agent analogue of streamPolicy. It reads turn 0 for the same
+// ordering reason: rejection has to happen before turn selection claims an
+// attempt.
+func agentStreamPolicy(e *scenario.ProviderEntry) scenario.StreamPolicy {
+	if e == nil || len(e.Turns) == 0 {
+		return scenario.StreamWarn
+	}
+	var p PerplexityAgent
+	if err := e.Turns[0].DecodeProjection(e.Name, 0, &p); err != nil {
+		// Unreachable through internal/server, which validates before readiness.
+		return scenario.StreamWarn
+	}
+	return p.Stream.EffectivePolicy()
+}
+
+// rejectAgentStream applies a `stream: reject` policy to a streaming Agent
+// request and reports whether it rejected one — the Agent analogue of
+// rejectStream, for the same ordering reason: it runs ahead of
+// validateAgentRequest and returns immediately, because validateAgentRequest's
+// own stream warning promises "this request receives the ordinary
+// non-streaming body", which is a lie under this policy.
+func rejectAgentStream(x *provider.Exchange, e *scenario.ProviderEntry) bool {
+	if agentStreamPolicy(e) != scenario.StreamReject {
+		return false
+	}
+	if !wantsStream(x) {
+		return false
+	}
+	x.Fail(CodeAgentStreamUnsupported, "body.stream",
 		"streaming responses are not simulated and this scenario rejects them; "+
 			"a non-streaming request is served normally")
 	return true
@@ -458,15 +512,87 @@ func (AgentValidator) Routes() []provider.Route { return AgentRoutes() }
 
 // ValidateProjections decodes every turn's Agent projection body and reports
 // what it finds, addressed by the turn's YAML path.
+//
+// The streaming grammar's own coherence is checked once here, across every
+// turn together, exactly as SonarValidator does — same reasoning, same
+// shared scenario.ValidateStreamScripts/ValidateStreamFaultMismatch calls
+// (docs/design/streaming.md §7: "landing GrammarTyped is what gives the
+// Agent entry a stream: key at all"). One difference from Sonar: each
+// turn's StreamTurn carries an explicit ChunkCount, because GrammarTyped's
+// after_chunk bound is len(Deltas)+5 (the five envelope events) for a
+// completed/incomplete/in_progress/queued turn, 2 for a failed or cancelled
+// one (renderAgentOutput emits no message item for those, so renderAgentStream
+// has nothing to attach the envelope events around) — not scenario's
+// GrammarDelta-shaped len(Deltas)+1 default — see agentChunkCount.
 func (AgentValidator) ValidateProjections(s *scenario.Scenario, e *scenario.ProviderEntry) []scenario.Finding {
-	return validateTurns(s, e, func(path string, turn *scenario.Turn, index int) []scenario.Finding {
+	if s == nil || e == nil {
+		return nil
+	}
+	streamTurns := make([]scenario.StreamTurn, len(e.Turns))
+	findings := validateTurns(s, e, func(path string, turn *scenario.Turn, index int) []scenario.Finding {
 		var p PerplexityAgent
 		if err := turn.DecodeProjection(e.Name, index, &p); err != nil {
+			streamTurns[index] = scenario.StreamTurn{Path: path}
 			return []scenario.Finding{decodeFinding(path, err)}
 		}
-		findings := s.ResolveRefs(path, &p)
-		return append(findings, validateAgentProjection(path, &p)...)
+		streamTurns[index] = scenario.StreamTurn{
+			Path: path, Script: &p.Stream, Answer: p.Answer,
+			ChunkCount: agentChunkCount(&p.Stream, p.Status),
+		}
+		out := s.ResolveRefs(path, &p)
+		out = append(out, validateAgentProjection(path, &p)...)
+		if p.Stream.Terminal != nil && p.Stream.Terminal.OmitDone {
+			out = append(out, scenario.Finding{
+				Severity: scenario.SeverityWarning,
+				Code:     CodeStreamDoneIgnored,
+				Path:     path + ".stream.terminal.omit_done",
+				Message: "omit_done has no effect on the Agent API's typed SSE grammar, which has no " +
+					"[DONE] sentinel to omit",
+			})
+		}
+		return out
 	})
+
+	findings = append(findings, scenario.ValidateStreamScripts(streamTurns)...)
+	var entryPolicy scenario.StreamPolicy
+	if len(streamTurns) > 0 {
+		entryPolicy = streamTurns[0].Script.EffectivePolicy() // nil-safe: StreamWarn when turn 0 has none
+	}
+	findings = append(findings, scenario.ValidateStreamFaultMismatch(e, entryPolicy, streamTurns)...)
+	return findings
+}
+
+// agentChunkCount computes the scenario.StreamTurn.ChunkCount override
+// GrammarTyped needs: renderAgentStream's own sequence is response.created,
+// response.output_item.added, one response.output_text.delta per scripted
+// delta, response.output_text.done, response.output_item.done and
+// response.completed — five envelope events around the N deltas, not the
+// one terminal chunk scenario's provider-neutral default (written against
+// GrammarDelta) assumes. A turn with no script returns 0, scenario's own
+// "no override" sentinel, so chunkCount's nil-Script fallback (1) still
+// applies.
+//
+// status matters because renderAgentOutput omits the message output item
+// entirely for a failed or cancelled turn, and renderAgentStream then has
+// nothing to attach output_item.added/the N deltas/output_text.done/
+// output_item.done to — it emits only response.created and
+// response.completed, two chunks, regardless of how many deltas the turn
+// still scripts. Using the five-envelope formula unconditionally for such a
+// turn overstates its true chunk count, which understates nothing about
+// after_chunk's UPPER bound (still checked against the smaller number) but
+// makes the LOWER bound wrong: an after_chunk in [2, N+4] would load clean
+// as "in range" while the stream that actually plays back has only 2 chunks
+// to abort, so the fault never fires and the stream completes normally —
+// exactly the silent no-op scenario.ValidateStreamFaultMismatch exists to
+// catch. See TestAgentStreamAfterChunkOutOfRangeAtLoadFailedStatus.
+func agentChunkCount(s *scenario.StreamScript, status AgentStatus) int {
+	if s == nil {
+		return 0
+	}
+	if status == StatusFailed || status == StatusCancelled {
+		return 2
+	}
+	return len(s.Deltas) + 5
 }
 
 // validateTurns walks an entry's turns in declaration order and addresses each

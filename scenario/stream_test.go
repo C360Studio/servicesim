@@ -388,6 +388,28 @@ func TestValidateStreamFaultMismatch(t *testing.T) {
 		require.Equal(t, SeverityError, findings[0].Severity)
 	})
 
+	t.Run("StreamTurn.ChunkCount overrides the default len(Deltas)+1 formula", func(t *testing.T) {
+		t.Parallel()
+		// One delta, but the calling provider's own grammar produces 5 more
+		// indexed frames around it (GrammarTyped's envelope events) — the
+		// default formula (1+1=2) would wrongly reject after_chunk: 3, which
+		// is in range against the overridden count (6).
+		turns := []StreamTurn{
+			{Path: "providers.perplexity_agent", Script: &StreamScript{Policy: StreamServe, Deltas: deltas("a")}, ChunkCount: 6},
+		}
+		e := &ProviderEntry{Name: "perplexity_agent", Turns: []Turn{
+			{Fault: &Fault{Attempts: []FaultAttempt{{Kind: FaultStreamDisconnect, AfterChunk: 3}}}},
+		}}
+		require.Empty(t, ValidateStreamFaultMismatch(e, StreamServe, turns),
+			"after_chunk 3 is in range against the overridden ChunkCount (6), not the default formula's (2)")
+
+		findings := ValidateStreamFaultMismatch(e, StreamServe, []StreamTurn{
+			{Path: "providers.perplexity_agent", Script: &StreamScript{Policy: StreamServe, Deltas: deltas("a")}, ChunkCount: 3},
+		})
+		require.Len(t, findings, 1, "after_chunk 3 is out of range against a smaller override (3)")
+		require.Equal(t, CodeStreamAfterChunkOutOfRange, findings[0].Code)
+	})
+
 	t.Run("stream_truncate_chunk and stream_stall are bounded the same way as stream_disconnect", func(t *testing.T) {
 		t.Parallel()
 		for _, kind := range []FaultKind{FaultStreamTruncateChunk, FaultStreamStall} {

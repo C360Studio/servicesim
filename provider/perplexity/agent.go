@@ -1,9 +1,11 @@
 package perplexity
 
 import (
+	"encoding/json"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -24,16 +26,36 @@ const (
 	CodeStoreInvalid      = "perplexity.agent.store.invalid"
 	CodeBackgroundInvalid = "perplexity.agent.background.invalid"
 
-	// CodeAgentStreamUnsupported is raised, as a warning, for stream: true.
-	// Streaming is deferred; the request still receives the ordinary
-	// non-streaming body. A deferred feature must fail loudly, because silence
-	// would let a consumer believe it had exercised a path it never touched.
-	CodeAgentStreamUnsupported = "perplexity.agent.stream.unsupported"
+	// CodeAgentStreamUnsupported is raised for stream: true under an entry
+	// whose effective streaming policy is not stream — a warning under the
+	// warn default, an error (422) under reject, exactly mirroring
+	// [CodeStreamUnimplemented]'s two-severity use on the Sonar surface. It
+	// does NOT fire under a stream-policy entry: a request that will
+	// actually receive the scripted GrammarTyped sequence must not also
+	// carry a warning promising it will not.
+	//
+	// The code was renamed from perplexity.agent.stream.unsupported
+	// (docs/design/streaming.md §9): the surface qualifier used to sort
+	// before the subject, which broke a consumer's perplexity.stream. prefix
+	// filter. Landing GrammarTyped (Phase 5 unit 3) is what gives this
+	// surface the warn/reject/stream switch Sonar already had — before that,
+	// the warning fired unconditionally.
+	CodeAgentStreamUnsupported = "perplexity.stream.agent_unsupported"
 
 	// CodeAgentBackgroundUnsupported is raised, as a warning, for
 	// background: true. The queued/poll lifecycle is deferred; the request
 	// receives the ordinary synchronous body rather than a queued stub.
 	CodeAgentBackgroundUnsupported = "perplexity.agent.background.unsupported"
+
+	// CodeStreamDoneIgnored is raised, as a warning, when a turn declares
+	// terminal.omit_done on the Agent surface. GrammarTyped never writes a
+	// [DONE] sentinel — it is a chat-completions concept only
+	// (docs/design/streaming.md §7) — so the key has nothing to omit; this
+	// says so rather than silently ignoring it. It is load-time, not
+	// per-request: the grammar is fixed by the provider entry (§9), so
+	// whether the key is meaningful never depends on what a specific request
+	// asks for.
+	CodeStreamDoneIgnored = "perplexity.stream.done_ignored"
 )
 
 // MaxModelChain is the longest model fallback chain the Agent API accepts.
@@ -118,6 +140,20 @@ type PerplexityAgent struct { //revive:disable-line:exported // the scenario sch
 	// Error renders ResponsesResponse.error. It is required when Status is
 	// StatusFailed; validation rejects a failed status with no error.
 	Error *AgentError `yaml:"error,omitempty"`
+
+	// Stream selects the behaviour for a request carrying "stream": true —
+	// the Agent surface's own when_requested/deltas/terminal script, decoded
+	// exactly as PerplexityProjection.Stream is
+	// (docs/design/streaming.md §7: "landing GrammarTyped is what gives the
+	// Agent entry a stream: key at all"). Defaults to StreamWarn:
+	// [CodeAgentStreamUnsupported] plus the ordinary non-streaming body,
+	// exactly as this surface has always behaved. StreamReject turns that
+	// into this surface's own error envelope naming body.stream.
+	// StreamServe serves the GrammarTyped sequence renderAgentStream builds
+	// instead — see that function's doc comment for the exact event
+	// sequence. Only the first turn's policy is read, for the same ordering
+	// reason PerplexityProjection.Stream's doc comment gives.
+	Stream scenario.StreamScript `yaml:"stream,omitempty"`
 
 	Usage       *AgentUsage          `yaml:"usage,omitempty"`
 	ExtraFields scenario.ExtraFields `yaml:"extra_fields,omitempty"`
@@ -216,11 +252,17 @@ type AgentCost struct {
 
 // validateAgentRequest applies the Agent API's request checks.
 //
-// stream and background are the two deferred features a consumer is most likely
-// to reach for. Both produce a named warning and an ordinary non-streaming,
-// synchronous response: loud enough to assert on, and never a silent success
-// that looks like the real path.
-func validateAgentRequest(x *provider.Exchange) string {
+// background is a deferred feature: it always produces a named warning and an
+// ordinary synchronous response. stream is no longer always deferred —
+// policy is the entry's effective streaming policy (agentStreamPolicy(entry)),
+// the same call rejectAgentStream already makes before turn selection.
+// Threading it through, rather than re-deriving it here, is what lets the
+// stream: true check below be conditional on it: reject is unreachable at
+// this point (rejectAgentStream already returned), warn fires exactly as it
+// always has, and stream does NOT fire it, because a request that will
+// actually receive the scripted GrammarTyped sequence must not also carry a
+// warning promising the opposite. This mirrors validateSonarRequest exactly.
+func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) string {
 	if bodyUnusable(x) {
 		return ""
 	}
@@ -267,7 +309,7 @@ func validateAgentRequest(x *provider.Exchange) string {
 				"background execution is not simulated; this request receives the ordinary synchronous body")
 		}
 	}
-	if stream, ok := x.Bool("stream"); ok && stream {
+	if stream, ok := x.Bool("stream"); ok && stream && policy != scenario.StreamServe {
 		x.Warn(CodeAgentStreamUnsupported, "body.stream",
 			"streaming is not simulated; this request receives the ordinary non-streaming body")
 	}
@@ -304,6 +346,60 @@ func validateAgentModel(x *provider.Exchange) string {
 	return model
 }
 
+// renderAgentIdentity computes the id, message id, created timestamp and
+// status shared by the JSON body and the GrammarTyped SSE stream for one
+// turn — the Agent analogue of renderSonarIdentity (render.go) — so both
+// transports render identical values everywhere docs/design/streaming.md §7
+// says they must agree.
+//
+// The attempt index is claimed whether or not the scenario pins the
+// identifiers, so the journal's attempt number never depends on whether a
+// fixture happened to declare them. Both identifiers hang off idParts, so
+// both move with the call index and neither moves with anything else. The
+// "agent" and "message" discriminators are what keep resp_ distinct from the
+// Sonar completion id and msg_ distinct from resp_ within one call.
+func renderAgentIdentity(x *provider.Exchange, p *PerplexityAgent, callIndex int) (id, messageID string, created int64, status AgentStatus) {
+	id = p.ResponseID
+	if id == "" {
+		id = "resp_" + ids.Hex32(idParts(x, callIndex, "agent")...)
+	}
+	messageID = p.MessageID
+	if messageID == "" {
+		messageID = "msg_" + ids.Hex32(idParts(x, callIndex, "agent", "message")...)
+	}
+	created = p.CreatedAt
+	if created == 0 {
+		created = x.Deps.Scenario.BaseTime().Unix()
+	}
+	status = p.Status
+	if status == "" {
+		status = StatusCompleted
+	}
+	return id, messageID, created, status
+}
+
+// agentResponse builds the ResponsesResponse struct for p from already-computed
+// identity fields and an already-built output trace. It is shared, unchanged,
+// by renderAgent's non-streaming body and renderAgentStream's
+// response.completed event, so the two transports render the identical
+// usage/cost/output[] for one turn rather than the stream re-implementing this
+// object (docs/design/streaming.md §7's "one mechanism serves both" rule).
+func agentResponse(p *PerplexityAgent, id string, created int64, model string, status AgentStatus, output []OutputItem) ResponsesResponse {
+	resp := ResponsesResponse{
+		ID:        id,
+		Object:    ObjectResponse,
+		Model:     model,
+		CreatedAt: created,
+		Status:    string(status),
+		Output:    output,
+		Usage:     renderAgentUsage(p.Usage),
+	}
+	if p.Error != nil {
+		resp.Error = &ErrorInfo{Code: p.Error.Code, Message: p.Error.Message, Type: p.Error.Type}
+	}
+	return resp
+}
+
 // renderAgent projects p into the Agent API wire envelope.
 //
 // The order of output[] is fixed and deterministic: search_results first, then
@@ -311,47 +407,188 @@ func validateAgentModel(x *provider.Exchange) string {
 // searches, then it answers — and gives consumers a stable index. A scenario
 // cannot reorder it.
 func renderAgent(x *provider.Exchange, p *PerplexityAgent, requestModel string) ([]byte, error) {
-	s := x.Deps.Scenario
-
-	// The attempt index is claimed whether or not the scenario pins the
-	// identifiers, so the journal's attempt number never depends on whether a
-	// fixture happened to declare them.
 	callIndex := x.CallIndex()
-
-	// Both identifiers hang off idParts, so both move with the call index and
-	// neither moves with anything else. The "agent" and "message" discriminators
-	// are what keep resp_ distinct from the Sonar completion id and msg_ distinct
-	// from resp_ within one call.
-	id := p.ResponseID
-	if id == "" {
-		id = "resp_" + ids.Hex32(idParts(x, callIndex, "agent")...)
-	}
-	messageID := p.MessageID
-	if messageID == "" {
-		messageID = "msg_" + ids.Hex32(idParts(x, callIndex, "agent", "message")...)
-	}
-	created := p.CreatedAt
-	if created == 0 {
-		created = s.BaseTime().Unix()
-	}
-	status := p.Status
-	if status == "" {
-		status = StatusCompleted
-	}
-
-	resp := ResponsesResponse{
-		ID:        id,
-		Object:    ObjectResponse,
-		Model:     firstNonEmpty(p.Model, requestModel),
-		CreatedAt: created,
-		Status:    string(status),
-		Output:    renderAgentOutput(p, messageID, status),
-		Usage:     renderAgentUsage(p.Usage),
-	}
-	if p.Error != nil {
-		resp.Error = &ErrorInfo{Code: p.Error.Code, Message: p.Error.Message, Type: p.Error.Type}
-	}
+	id, messageID, created, status := renderAgentIdentity(x, p, callIndex)
+	model := firstNonEmpty(p.Model, requestModel)
+	output := renderAgentOutput(p, messageID, status)
+	resp := agentResponse(p, id, created, model, status, output)
 	return wire.Render(resp, p.ExtraFields)
+}
+
+// renderAgentStream projects p into the GrammarTyped SSE sequence for the
+// Agent surface (docs/design/streaming.md §7 "Responses / Agent";
+// contracts/perplexity/README.md "Streaming (SSE)" → "Responses / Agent"):
+//
+//  1. response.created — the ResponsesResponse in its initial in_progress
+//     state (empty output, zero usage).
+//  2. response.output_item.added — the message item, in progress, with no
+//     content yet.
+//  3. one response.output_text.delta per scripted delta.
+//  4. response.output_text.done — the aggregate text.
+//  5. response.output_item.done — the completed message item.
+//  6. response.completed — the terminal frame, whose response is the SAME
+//     ResponsesResponse agentResponse builds for the non-streaming route:
+//     never re-implemented for the stream.
+//
+// response.in_progress is deliberately NOT emitted. §7's own worked example
+// shows only response.created → response.output_text.delta →
+// response.completed, and — per the design's own "where a block and the
+// prose disagree, the prose wins; where the code disagrees with a block, the
+// code wins" rule — this build keeps that minimal sequence rather than
+// inventing a fourth envelope-only event the design's own illustration never
+// shows (P5U3 spec item 2's explicit instruction on this point). The
+// reasoning.* event family and response.failed have no scenario vocabulary
+// and are never emitted (contracts/perplexity/README.md "What Servicesim
+// simulates").
+//
+// A turn whose Status is failed or cancelled produces no message output item
+// at all (renderAgentOutput's own rule) and therefore has nothing for steps
+// 2-5 above to attach to; this renderer then emits only response.created and
+// response.completed. response.failed itself is a later unit's job (P5U3
+// spec, "Out of scope"), so a scripted failure streamed through this surface
+// degrades to that minimal pair rather than panicking on a missing item.
+func renderAgentStream(x *provider.Exchange, p *PerplexityAgent, requestModel string) (*provider.Stream, error) {
+	callIndex := x.CallIndex()
+	id, messageID, created, status := renderAgentIdentity(x, p, callIndex)
+	model := firstNonEmpty(p.Model, requestModel)
+	output := renderAgentOutput(p, messageID, status)
+
+	outputIndex := -1
+	var msgItem MessageOutput
+	for i, item := range output {
+		if m, ok := item.(MessageOutput); ok {
+			msgItem, outputIndex = m, i
+			break
+		}
+	}
+
+	// pace resolves one event's gap the same way renderSonarStream's does:
+	// its own override when set (nonzero — StreamDelta.Pace's doc comment
+	// explains why zero means "no override"), falling back to the script's
+	// own default otherwise.
+	pace := func(override scenario.Duration) time.Duration {
+		if override != 0 {
+			return override.Duration()
+		}
+		return p.Stream.Pace.Duration()
+	}
+	var seq int64
+	nextSeq := func() int64 {
+		n := seq
+		seq++
+		return n
+	}
+
+	events := make([]provider.SSEEvent, 0, len(p.Stream.Deltas)+5)
+
+	initial := ResponsesResponse{
+		ID: id, Object: ObjectResponse, Model: model, CreatedAt: created,
+		Status: string(StatusInProgress), Output: []OutputItem{}, Usage: renderAgentUsage(nil),
+	}
+	initialBytes, err := wire.Render(initial, nil)
+	if err != nil {
+		return nil, err
+	}
+	createdData, err := wire.Render(ResponseCreatedEvent{
+		Type: EventResponseCreated, SequenceNumber: nextSeq(), Response: json.RawMessage(initialBytes),
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	events = append(events, provider.SSEEvent{Name: EventResponseCreated, Data: createdData, Pace: pace(0)})
+
+	var aggregate strings.Builder
+	if outputIndex >= 0 {
+		addedData, err := wire.Render(OutputItemAddedEvent{
+			Type: EventOutputItemAdded, SequenceNumber: nextSeq(),
+			Item: MessageOutput{
+				Type: OutputTypeMessage, ID: messageID, Role: RoleAssistant,
+				Status: string(StatusInProgress), Content: []ContentPart{},
+			},
+			OutputIndex: outputIndex,
+		}, nil)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, provider.SSEEvent{Name: EventOutputItemAdded, Data: addedData})
+
+		for _, d := range p.Stream.Deltas {
+			aggregate.WriteString(d.Text)
+			data, err := wire.Render(TextDeltaEvent{
+				Type: EventOutputTextDelta, SequenceNumber: nextSeq(),
+				ItemID: messageID, OutputIndex: outputIndex, ContentIndex: 0, Delta: d.Text,
+			}, nil)
+			if err != nil {
+				return nil, err
+			}
+			events = append(events, provider.SSEEvent{Name: EventOutputTextDelta, Data: data, Pace: pace(d.Pace)})
+		}
+
+		textDoneData, err := wire.Render(TextDoneEvent{
+			Type: EventOutputTextDone, SequenceNumber: nextSeq(),
+			ItemID: messageID, OutputIndex: outputIndex, ContentIndex: 0, Text: aggregate.String(),
+		}, nil)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, provider.SSEEvent{Name: EventOutputTextDone, Data: textDoneData})
+
+		itemDoneData, err := wire.Render(OutputItemDoneEvent{
+			Type: EventOutputItemDone, SequenceNumber: nextSeq(), Item: msgItem, OutputIndex: outputIndex,
+		}, nil)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, provider.SSEEvent{Name: EventOutputItemDone, Data: itemDoneData})
+	}
+
+	final := agentResponse(p, id, created, model, status, output)
+	finalBytes, err := wire.Render(final, p.ExtraFields)
+	if err != nil {
+		return nil, err
+	}
+	// terminal.omit_usage nils usage inside response.completed's response
+	// object (P5U3 spec item 3). wire.Omit, not a pointer field on
+	// ResponsesResponse: see ResponseCompletedEvent's doc comment for why.
+	omitUsage := p.Stream.Terminal != nil && p.Stream.Terminal.OmitUsage
+	if omitUsage {
+		// wire.Omit always round-trips through a map (internal/wire/render.go),
+		// so the response object comes out with alphabetised keys at every
+		// nesting level when this fires — every OTHER response.completed
+		// frame stays in struct order. Deterministic either way, and the same
+		// divergence renderSonarStream documents for an extra-fields terminal
+		// frame; noted here only so a captured transcript's mixed ordering
+		// does not read as a bug later.
+		finalBytes, err = wire.Omit(finalBytes, []string{"usage"})
+		if err != nil {
+			return nil, err
+		}
+	}
+	var terminalPaceOverride scenario.Duration
+	if p.Stream.Terminal != nil {
+		terminalPaceOverride = p.Stream.Terminal.Pace
+	}
+	completedData, err := wire.Render(ResponseCompletedEvent{
+		Type: EventResponseCompleted, SequenceNumber: nextSeq(), Response: json.RawMessage(finalBytes),
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	events = append(events, provider.SSEEvent{
+		Name: EventResponseCompleted, Data: completedData, Terminal: true, Pace: pace(terminalPaceOverride),
+	})
+
+	stream := &provider.Stream{Grammar: provider.GrammarTyped, Chunks: provider.EncodeSSE(events)}
+	if !omitUsage {
+		usageBytes, err := json.Marshal(final.Usage)
+		if err != nil {
+			return nil, err
+		}
+		stream.Usage = json.RawMessage(usageBytes)
+		costTotal := final.Usage.Cost.TotalCost
+		stream.CostTotal = &costTotal
+	}
+	return stream, nil
 }
 
 // renderAgentOutput builds the ordered trace.

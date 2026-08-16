@@ -31,9 +31,13 @@ type StreamOutcome struct {
 
 	// ---- planned: final at append, never amended -------------------------
 
-	// ChunkCount is len(provider.Stream.Chunks): the N scripted deltas plus
-	// the one terminal chunk. The [DONE] sentinel, when written, is never
-	// one of them.
+	// ChunkCount is len(provider.Stream.Chunks) — how many indexed chunks
+	// this grammar's own renderer produced, not a fixed formula: N+1 for
+	// GrammarDelta (the N scripted deltas plus the one terminal chunk), N+5
+	// for GrammarTyped (the same N deltas plus its five envelope events), or
+	// fewer still for a GrammarTyped turn whose message item never renders
+	// at all (a failed or cancelled status). The [DONE] sentinel, when
+	// written, is never one of them.
 	ChunkCount int `json:"chunk_count"`
 
 	// BytesPlanned is the total bytes the plan will write, [DONE] included.
@@ -48,6 +52,12 @@ type StreamOutcome struct {
 	// and safe to read before the exchange closes. len(PaceMS) ==
 	// ChunkCount; [DONE], never being indexed, is not one of them.
 	PaceMS []int64 `json:"pace_ms,omitempty"`
+
+	// EventNames is each frame's "event:" value, in the same order as
+	// Stream.Chunks. It is empty for GrammarDelta, whose frames carry no
+	// "event:" line at all — which is how a reader tells the two grammars
+	// apart without parsing a byte. len(EventNames) == ChunkCount when set.
+	EventNames []string `json:"event_names,omitempty"`
 
 	// TerminalIndex is the chunk carrying usage and cost, or -1 when no
 	// chunk is marked terminal — reserved for a future grammar this build

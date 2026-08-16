@@ -113,7 +113,8 @@ func TestRingSnapshotDeepCopiesStreamOutcome(t *testing.T) {
 		Seq: r.Next(), Provider: "perplexity",
 		Outcome: journal.Outcome{Stream: &journal.StreamOutcome{
 			ChunkCount: 2, State: journal.StreamOpen, Usage: []byte(`{"a":1}`),
-			PaceMS: []int64{0, 40}, CostTotal: &cost,
+			PaceMS: []int64{0, 40}, EventNames: []string{"response.created", "response.completed"},
+			CostTotal:       &cost,
 			AbortAfterChunk: &abortAt, TruncatedAtByte: &truncAt, StallBeforeMS: &stallMS,
 		}},
 	})
@@ -122,6 +123,7 @@ func TestRingSnapshotDeepCopiesStreamOutcome(t *testing.T) {
 	snap.Outcome.Stream.State = journal.StreamAborted
 	snap.Outcome.Stream.Usage[2] = 'X' // corrupt the byte at "a" if it aliases
 	snap.Outcome.Stream.PaceMS[1] = 999
+	snap.Outcome.Stream.EventNames[1] = "corrupted"
 	*snap.Outcome.Stream.CostTotal = 999
 	*snap.Outcome.Stream.AbortAfterChunk = 999
 	*snap.Outcome.Stream.TruncatedAtByte = 999
@@ -139,6 +141,10 @@ func TestRingSnapshotDeepCopiesStreamOutcome(t *testing.T) {
 	if fresh.Outcome.Stream.PaceMS[1] != 40 {
 		t.Errorf("PaceMS[1] = %d after mutating a snapshot's backing array, want unchanged (40)",
 			fresh.Outcome.Stream.PaceMS[1])
+	}
+	if fresh.Outcome.Stream.EventNames[1] != "response.completed" {
+		t.Errorf("EventNames[1] = %q after mutating a snapshot's backing array, want unchanged: "+
+			"Snapshot must not alias the ring's EventNames slice", fresh.Outcome.Stream.EventNames[1])
 	}
 	if *fresh.Outcome.Stream.CostTotal != 0.5 {
 		t.Errorf("CostTotal = %v after writing through a snapshot's pointer, want unchanged (0.5)",

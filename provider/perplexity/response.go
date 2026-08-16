@@ -1,6 +1,7 @@
 package perplexity
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/c360studio/servicesim/internal/wire"
@@ -383,6 +384,92 @@ type ErrorInfo struct {
 // AgentErrorResponse is the Agent API's non-422 error envelope.
 type AgentErrorResponse struct {
 	Error ErrorInfo `json:"error"`
+}
+
+// -----------------------------------------------------------------------------
+// Surface 2 — Agent API — GrammarTyped SSE events
+// -----------------------------------------------------------------------------
+
+// The GrammarTyped event names this build emits: six of the fourteen members
+// the specification's ResponseStreamEvent/EventType union declares
+// (contracts/perplexity/README.md "Responses / Agent"). The other eight — the
+// reasoning.* family and response.failed — have no scenario vocabulary yet
+// and are never emitted; see renderAgentStream's doc comment.
+const (
+	EventResponseCreated   = "response.created"
+	EventOutputItemAdded   = "response.output_item.added"
+	EventOutputTextDelta   = "response.output_text.delta"
+	EventOutputTextDone    = "response.output_text.done"
+	EventOutputItemDone    = "response.output_item.done"
+	EventResponseCompleted = "response.completed"
+)
+
+// ResponseCreatedEvent is the response.created frame's payload — the
+// specification's own name for this schema. Response carries the
+// ResponsesResponse in its initial in_progress state: empty output, zero
+// usage, nothing has streamed yet. It is json.RawMessage rather than
+// ResponsesResponse because renderAgentStream builds it directly rather than
+// through wire.Render's extra-fields path, unlike ResponseCompletedEvent's.
+type ResponseCreatedEvent struct {
+	Type           string          `json:"type"`
+	SequenceNumber int64           `json:"sequence_number"`
+	Response       json.RawMessage `json:"response"`
+}
+
+// OutputItemAddedEvent is the response.output_item.added frame's payload.
+// Item is the OutputItem interface, matching the specification's
+// discriminated union field, even though this build only ever populates it
+// with a MessageOutput: the reasoning.*/search_results item types have no
+// streaming vocabulary yet (see renderAgentStream).
+type OutputItemAddedEvent struct {
+	Type           string     `json:"type"`
+	SequenceNumber int64      `json:"sequence_number"`
+	Item           OutputItem `json:"item"`
+	OutputIndex    int        `json:"output_index"`
+}
+
+// OutputItemDoneEvent is the response.output_item.done frame's payload.
+type OutputItemDoneEvent struct {
+	Type           string     `json:"type"`
+	SequenceNumber int64      `json:"sequence_number"`
+	Item           OutputItem `json:"item"`
+	OutputIndex    int        `json:"output_index"`
+}
+
+// TextDeltaEvent is the response.output_text.delta frame's payload.
+type TextDeltaEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number"`
+	ItemID         string `json:"item_id"`
+	OutputIndex    int    `json:"output_index"`
+	ContentIndex   int    `json:"content_index"`
+	Delta          string `json:"delta"`
+}
+
+// TextDoneEvent is the response.output_text.done frame's payload.
+type TextDoneEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number"`
+	ItemID         string `json:"item_id"`
+	OutputIndex    int    `json:"output_index"`
+	ContentIndex   int    `json:"content_index"`
+	Text           string `json:"text"`
+}
+
+// ResponseCompletedEvent is the response.completed frame's payload: the FULL
+// ResponsesResponse the non-streaming Agent route would have rendered for
+// this turn — output[], usage and cost included — built once by
+// agentResponse and shared by both transports (docs/design/streaming.md §7's
+// "one mechanism serves both" rule). Response is json.RawMessage, not
+// ResponsesResponse, so renderAgentStream can drop the usage key with
+// wire.Omit when the script sets terminal.omit_usage: ResponsesResponse.Usage
+// is a plain (non-pointer) field, always present on the non-streaming body,
+// and changing its type to accommodate one streaming-only edge case would
+// ripple into every non-streaming Agent response.
+type ResponseCompletedEvent struct {
+	Type           string          `json:"type"`
+	SequenceNumber int64           `json:"sequence_number"`
+	Response       json.RawMessage `json:"response"`
 }
 
 // -----------------------------------------------------------------------------
