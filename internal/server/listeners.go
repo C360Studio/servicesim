@@ -271,9 +271,14 @@ const mcpCodeInvalidRequest = -32600
 // than exported from that package solely for this one call site: a scenario
 // refusal has no request to build a provider.Exchange for, so it cannot go
 // through mcp.New's own handler.
+//
+// There is deliberately no id member: schema.json's RequestId admits only a
+// string or an integer (never null) and JSONRPCErrorResponse.id is optional,
+// so an error that cannot be attributed to a request omits it — the same
+// rule every body provider/mcp itself builds follows (provider/mcp/doc.go,
+// decision 6).
 type mcpErrorEnvelope struct {
 	JSONRPC string      `json:"jsonrpc"`
-	ID      any         `json:"id"`
 	Error   mcpRPCError `json:"error"`
 }
 
@@ -337,11 +342,10 @@ func scenarioNotFoundBody(name provider.Name) []byte {
 		// parses.
 		body, err := wire.Render(mcpErrorEnvelope{
 			JSONRPC: "2.0",
-			ID:      nil,
 			Error:   mcpRPCError{Code: mcpCodeInvalidRequest, Message: http.StatusText(http.StatusNotFound)},
 		}, nil)
 		if err != nil {
-			return []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Not Found"}}`)
+			return []byte(`{"jsonrpc":"2.0","error":{"code":-32600,"message":"Not Found"}}`)
 		}
 		return body
 

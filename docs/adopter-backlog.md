@@ -6,9 +6,12 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-16 (evening), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6) plus
-Phase 7 merged on top, unreleased, and Phase 8 unit 1 (the MCP contract, `contracts/mcp/`) and unit 2 (the MCP
-profile, `provider/mcp/`) on the `phase-8` branch cut from `main` at `b1a64da`.
+Recorded 2026-08-16 (late evening), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6)
+plus Phase 7 merged on top, unreleased, and **Phase 8 complete on the `phase-8` branch** (cut from `main` at
+`b1a64da`): unit 1 (the MCP contract, `contracts/mcp/`), unit 2 (the MCP profile, `provider/mcp/`, `39d5809`) and
+unit 3 (the docs sweep — README onboarding, `examples/mcpclient.go` + `examples/mcp_test.go`,
+`docs/design/mcp-profile.md`, the D9 tier-2 evidence, the CONTRIBUTING checklist, troubleshooting) — **pending
+merge to `main`, then the v0.5.0 release**.
 
 | Phase | State |
 |---|---|
@@ -20,7 +23,8 @@ profile, `provider/mcp/`) on the `phase-8` branch cut from `main` at `b1a64da`.
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
 | 6 — G-3 depth: hostile content, oversized bodies, hangs after headers, resilience built-ins, pacing evidence | **shipped** in v0.4.0 — units 1–6, the closing docs sweep, D9 tier 1; the adopter's own guardrail vectors are still an append to `malicious-content` when they arrive |
 | 7 — packaging, deployment and the contract-fidelity process | **DONE (rescoped) and merged to `main` (`6a43316`, PR #3), unreleased** — items 1–2 (the Gitea mirror, the Kubernetes manifest) dropped 2026-08-16 (owner; D3 reworded: no replicas by design); item 3 shipped 2026-08-15; items 4 and 5b shipped: a `spec:` block (url/version/sha256/retrieved) for every vendor's OpenAPI document, `contracts.Spec`/`ProviderSpec`, `Record.APIVersion`, and the no-canary refresh procedure (D10) |
-| 8 onward | open — **Phase 8 (the MCP profile, in-tree per D6) is in progress and is the last feature phase**: unit 1 (contract verification, `contracts/mcp/`) is DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp`, listener `mcp` on `POST /mcp` port 8084) is DONE 2026-08-16; unit 3 (the docs sweep, design record, README onboarding example, `examples/`) is next; ODR is out of Phase 8 per D12 (owner, 2026-08-16); D11 (which protocol era the profile serves) is pending owner — unit 2 shipped modern-only per the recommendation; D9 tier 2 (the seam export) is decided after Phase 8; the adopter's own guardrail vectors when they arrive |
+| 8 — the MCP profile (in-tree per D6) | **COMPLETE on `phase-8`, pending merge and release (v0.5.0)** — the last feature phase: unit 1 (contract verification, `contracts/mcp/`) DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp`, listener `mcp` on `POST /mcp` port 8084) DONE 2026-08-16; unit 3 (the docs sweep: README, `examples/` MCP client and tests, `docs/design/mcp-profile.md`, D9 tier-2 evidence, CONTRIBUTING, troubleshooting) DONE 2026-08-16. ODR is out per D12; D11 (era) pending owner — modern-only shipped, legacy only if needed; D9 tier 2 pending owner with the evidence now written |
+| 9 onward | open — the two doctrine-contradicting features (Phase 9), the shared-pipeline hardening follow-up from unit 2's review, the adopter's own guardrail vectors when they arrive |
 
 **v0.4.0** is the last tag (2026-08-16, `b788f00`): Phase 6 end to end — `completed_at` observing every scripted
 hang, the `malicious-content`, `oversized-body`, `timeout`, `brownout`, `hang-then-abort` and `credential-rotation`
@@ -31,8 +35,9 @@ assertions could notice are in the tag note: Tavily's `faultBody` serves its err
 an error status, and `POST /research` warns `tavily.api_key.in_body` as `/search` does. The annotated tag message is
 the release note; every spelling resolves to one digest (`sha256:5a7d6d05…`) and the README/Compose pins follow it.
 `main` is where work lands now; `phase-6` and `phase-7` are merged and deleted. **Unreleased on `main` since
-v0.4.0:** Phase 7 (`df1eb64`) — a release note for it can be built from that commit's body; cut it when there is
-a reason to.
+v0.4.0:** Phase 7 (`df1eb64`). **Unmerged: `phase-8`** — three commits (`f5dd08e` unit 1, `39d5809` unit 2, unit 3
+on top). Merging it and cutting **v0.5.0** is the next release; the tag-note bullets are drafted in the Phase 8
+section below so the release commit can lift them.
 
 **Authority rule, reaffirmed by the owner 2026-08-15 evening:** vendor documentation decides every wire contract; the
 adopter's client code and remarks are not evidence ("we have no idea if their client works — we use the vendor
@@ -71,19 +76,21 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    `contracts/README.md` "Keeping them honest" rewritten around **D10** — no live contract canary; drift detection is
    a dated, manual re-verification whose first step is the hash comparison. ADR 0002 carries an "Amended 2026-08-16"
    section.
-4. **Phase 8 — the MCP profile** is in progress and is the last feature phase. **Unit 1 (contract verification)
-   is DONE 2026-08-16**: `contracts/mcp/README.md` + `provenance.yaml` record what the 2026-07-28 specification
-   actually says (spec sha256 `ef70b61f…`, the D11 era question and the SDK evidence, every point where the
-   specification is silent). **Unit 2 (the modern 2026-07-28 MCP profile) is DONE 2026-08-16**: `provider/mcp`,
-   listener `mcp` on `POST /mcp` port 8084, `server/discover`/`tools/list`/`tools/call`, JSON and per-request SSE
-   answers, strict request validation, 18 goldens registered under `contracts.MCP`, every built-in scenario's own
-   `mcp:` block, and the composition-layer/image/docs edits the section below enumerates. **Unit 3 (the docs
-   sweep, design record, README onboarding example, `examples/`, the CONTRIBUTING checklist) is next** — read the
-   Phase 8 section below and `provider/mcp/doc.go` before starting. **ODR is out of Phase 8 per D12** (owner,
-   2026-08-16) — it is the adopter's problem for now, not blocking anything. **D11 (which protocol era the profile
-   serves) is pending owner**; unit 2 shipped modern-only per the recommendation on record, legacy 2025-11-25 as a
-   follow-on only if the adopter's client is pinned to a pre-2026-07-28 SDK. After unit 3, decide **D9 tier 2**
-   (export the provider seam) on what MCP actually needed — `docs/proposals/d9-framework-framing.md` has the shape.
+4. ~~**Phase 8 — the MCP profile**~~ **COMPLETE on `phase-8` 2026-08-16, pending merge.** Unit 1 (contract
+   verification: `contracts/mcp/README.md` + `provenance.yaml`, spec sha256 `ef70b61f…`, the D11 evidence), unit 2
+   (the modern 2026-07-28 profile: `provider/mcp`, listener `mcp` on `POST /mcp` port 8084,
+   `server/discover`/`tools/list`/`tools/call`, JSON and per-request SSE answers, strict request validation, 18
+   goldens under `contracts.MCP`, every built-in's `mcp:` block) and unit 3 (the docs sweep: README's MCP
+   onboarding with a real `curl` and a real test excerpt, `examples/mcpclient.go` + `examples/mcp_test.go` — nine
+   tests, compiled and run by CI —, `docs/design/mcp-profile.md` the design record incl. the D9 tier-2 seam
+   evidence, `docs/proposals/d9-framework-framing.md` "Evidence from Phase 8", the CONTRIBUTING "Adding a provider"
+   checklist rewritten from the real diff, the troubleshooting MCP section, the small sweeps) are all done. **Next:
+   merge `phase-8` to `main`, then cut v0.5.0** (tag-note bullets drafted in the Phase 8 section; CONTRIBUTING
+   "Releasing" order: tag, publish, then move the pins). **ODR is out per D12.** **D11 (era) is pending owner** —
+   modern-only shipped; a legacy 2025-11-25 follow-on only if the adopter's client is pinned below go-sdk `v1.7.0`
+   / TypeScript `2.0.0` / python-sdk `v2.0.0`. **D9 tier 2 (export the provider seam) is pending owner** — the
+   evidence is written (`docs/design/mcp-profile.md` §12, the proposal's "Evidence from Phase 8"); it frames two
+   options and their cost and recommends nothing.
 5. Tell the adopter v0.3.0 and v0.4.0 exist; their questions in the two contract READMEs are still open; their
    own guardrail-classifier vectors are an append to `malicious-content` (add any new prefix to
    `hostileSourcePrefixes` in `scenarios/scenarios_test.go`).
@@ -169,7 +176,7 @@ These are settled. Re-open one only with new evidence, and record why.
 |  D6 | MCP and ODR are two new provider profiles for G-3. Build them in-tree, or make out-of-tree providers a supported path? | **Build MCP and ODR in-tree** (owner overrode the recommendation to export the seam instead). (ODR dropped from Phase 8 by D12, 2026-08-16.)  |
 |  D7 | Exa /contents, /findSimilar and Tavily /extract have no verified contract in this repository — contracts/exa/README.md:23 explicitly declines to as... | **Re-verify against vendor docs first** for `/contents`, `/findSimilar`, `/extract` — ADR-0002 holds as written.  |
 |  D8 | What should the adopter do about stream:true fixtures in the window before SSE ships (Phase 5)? | Tell the adopter **not to record `stream:true` fixtures** yet, and ship a `stream: reject` policy so their path fails loudly. **Reversed 2026-08-15: Phase 5 has shipped.** `stream: {when_requested: stream, deltas: [...]}` now serves a real, golden-tested SSE sequence on both Perplexity surfaces — the adopter can record `stream:true` fixtures today, against `testkit.AssertGoldenSSE`. `stream: reject` remains available for a suite that wants a hard failure instead. |
-|  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Decided 2026-08-16: tier 1 adopted** — README and CLAUDE.md now lead with "a deterministic service-simulator framework shipping three research-API profiles", the non-goals hold for any profile, README says what is provider-neutral versus profile-specific. **Tier 2 (export the seam, re-opening D6) is deferred until Phase 8's MCP/ODR have exercised the seam in-tree; tier 3 (positioning) stays open.** (ODR dropped from Phase 8 by D12, 2026-08-16 — tier 2 waits on the MCP profile alone.) The proposal, with the reasoning and the tier 2 shape, is [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md). |
+|  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Decided 2026-08-16: tier 1 adopted** — README and CLAUDE.md led, as of tier 1, with "a deterministic service-simulator framework shipping three research-API profiles" (four profiles since Phase 8), the non-goals hold for any profile, README says what is provider-neutral versus profile-specific. **Tier 2 (export the seam, re-opening D6) is deferred until Phase 8's MCP/ODR have exercised the seam in-tree; tier 3 (positioning) stays open.** (ODR dropped from Phase 8 by D12, 2026-08-16 — tier 2 waits on the MCP profile alone.) The proposal, with the reasoning and the tier 2 shape, is [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md). **Evidence for tier 2 recorded 2026-08-16** (Phase 8 unit 3): the proposal's "Evidence from Phase 8" section and `docs/design/mcp-profile.md` §12 — what the fourth in-tree profile needed from the seam (nothing new), the one framework change (`internal/redact` mirrored headers), the 41 hand-maintained enumeration sites in 12 files it touched, and what an out-of-tree profile would need exported. Tier 2 awaits the owner. |
 |  D10 | How is contract drift detected without a canary? | **Dated, manual re-verification**, never a live canary — none is built or planned. Every provider's contract is generated with a machine-readable spec behind it — Exa's `exa-spec.yaml`, Tavily's `openapi.json` and Perplexity's `openapi.json`, each covering every route this repository simulates for that vendor — and each carries a RECORDED spec version and SHA-256 (`contracts.Spec`, `contracts/<provider>/provenance.yaml`'s `spec:` block) that a fresh fetch is compared against as the first, cheap step. That hash comparison is a drift SIGNAL, not a substitute for reading: most entries in every provider are still verified against the vendor's rendered prose pages (each entry's own `documentation_url`), which have no stable byte hash of their own — a page's bytes change with every site deploy independent of the content that matters — so a changed spec hash means a person re-reads the consumed fields against both the cited pages and the spec, never a hash of the prose itself. Only entries whose `documentation_url` IS the spec (all of Perplexity's, and Exa's three `/findSimilar` entries) were read from the spec directly and carry `api_version`; every other entry was read from prose and carries none. Reason for no canary: a canary is outbound infrastructure and a scheduled dependency on vendor availability, for a test simulator whose value is determinism; the recorded hash or the cited page gives a reviewer the same answer ("did the vendor change or did we?") on demand, without the outbound dependency. `contracts/README.md` "Keeping them honest" is the sanctioned procedure; ADR 0002 carries an "Amended 2026-08-16" section recording the same change. Owner, 2026-08-16.  |
 |  D11 | Which MCP protocol era(s) does the Phase 8 profile serve — **modern** (2026-07-28 only: stateless, per-request `_meta`, `server/discover`, no session, no handshake), **legacy** (2025-11-25 only: `initialize`/`notifications/initialized`, `MCP-Session-Id`, optional GET stream and `Last-Event-ID` resumability), or **dual-era** (both, selected per request by how the client opens)? The terms are the specification's own (`basic/versioning`, "Terminology"). | **Pending owner (recorded 2026-08-16).** Recommendation on record, from `contracts/mcp/README.md` "Protocol eras": **modern first** — 2026-07-28 is `latest` and the verified authority; it is stateless, which is exactly Servicesim's request/response model (nothing to hold between calls); and it is what every official SDK now sends by default (evidence via `gh api`, 2026-08-16: go-sdk `v1.7.0` 2026-07-28 — "full support for protocol version 2026-07-28", "enabled by default for new clients", Streamable HTTP serves 2026-07-28 only with `Stateless = true`; typescript-sdk `@modelcontextprotocol/server@2.0.0` 2026-07-27 — "Align the 2026-07-28 wire with the final revision" (note: `1.30.0` the same day is a v1.x maintenance release whose notes do not mention 2026-07-28); python-sdk `v2.0.0` 2026-07-28 — "supports the 2026-07-28 revision … and serves every earlier revision"). Every one of those clients falls back to `initialize` only when the server's answer to its first modern request (go-sdk: `server/discover`, per `mcp/client.go` on `main`) is not a recognised modern error, so a modern-only simulator is reachable from all of them. Build the **legacy 2025-11-25 path as a follow-on unit only if the adopter's mcp-adapter is pinned below** go-sdk `v1.7.0` / the TypeScript `2.0.0` packages / python-sdk `v2.0.0` — ask them (contract file, "Open questions for the adopter", Q1). A dual-era server is a superset and re-introduces the session state the profile would otherwise never hold. The legacy surface is recorded in the contract file's "Legacy revision 2025-11-25" subsection so the decision is made from a record, not a rebuild. **Unit 2 shipped modern-only per the recommendation; legacy is a follow-on if the owner decides dual-era.** |
 |  D12 | Is the ODR — "open-deep-research" — provider profile part of Phase 8? | **Owner, 2026-08-16: no.** "Let's not worry about Open Deep Research for P8 — we can make that an adopter problem for now." Phase 8 is the MCP profile alone; ODR is not built here and is not blocking anything. Recorded beside it, the reason it could not have been built from this tree anyway: the repository has no verifiable identity or wire surface for "open-deep-research" — the name matches several open-source projects with different or no HTTP APIs — and house rule 1 forbids writing a wire field from memory. If the adopter later wants it, the first step is theirs: name the project and its API documentation, and the contract-verification unit runs the way MCP's did before any handler. The audit table's ODR row below is the adopter's historical status and is left as written. |
@@ -794,7 +801,7 @@ troubleshooting, the Compose example, the startup log and `job.foreign_id`.
 - Note that the multi-replica README and troubleshooting text ships in Phase 3, not here — it must land with the job
   store that makes the divergence a hard 404.
 
-### Phase 8 — the MCP profile
+### Phase 8 — the MCP profile — COMPLETE, pending merge and v0.5.0
 
 **Renamed 2026-08-16 (D12): Phase 8 is the MCP profile alone.** This is the adopter's G-3 second adapter and the
 largest single commitment in the backlog, which is why decision 6 recommends opening the seam before committing to
@@ -845,9 +852,47 @@ is theirs (D12); Servicesim does not unblock it.
   decisions" section is recorded, with a matching `chosen:` line, in `provider/mcp/doc.go` and as a `note:` on the
   golden it shapes. The composition-layer edits below, all 20 built-in scenarios' `mcp:` blocks, the image, and the
   docs the guards force all shipped with it; `x-mcp-header`, `Origin` validation, resources, prompts, completion,
-  `subscriptions/listen`, MRTR and the legacy 2025-11-25 era are NOT SIMULATED — unit 3 (docs/design record,
-  README onboarding example, `examples/`, CONTRIBUTING checklist, D9 tier 2 evidence) and any legacy follow-on are
-  what remains.
+  `subscriptions/listen`, MRTR and the legacy 2025-11-25 era are NOT SIMULATED.
+- **Unit 3 — the docs sweep — DONE 2026-08-16**: README (lead and provider-neutral paragraph name the fourth
+  profile as a protocol; a "Pointing your code at it → MCP" subsection with the headers, the optional-credential
+  default, the SSE answer, the three statuses a retry policy must know, and a real `server/discover` `curl` with
+  its exact bytes; an "In a Go test" excerpt copied from `examples/mcp_test.go`; the built-ins table amended row by
+  row for what each `mcp:` block does; the Documentation index); `examples/mcpclient.go` (a minimal Streamable HTTP
+  client, stdlib-only) and `examples/mcp_test.go` (nine tests: the correct request from the journal, `tools/list`
+  order and caching hints, `tools/call` content + `structuredContent` + determinism, unknown tool not retried, the
+  hostile pack on MCP's shapes, an SSE `tools/call` golden-pinned with and without `progressToken`, a scripted 429
+  classified by status, parallel namespaces, catalogue drift → re-list) with a golden under `examples/testdata/`;
+  `docs/design/mcp-profile.md` (the design record, incl. §12 the seam observations for D9 tier 2);
+  `docs/proposals/d9-framework-framing.md` "Evidence from Phase 8"; CONTRIBUTING "Adding a provider" rewritten as
+  the true checklist from the unit-2 diff; `docs/troubleshooting.md`'s MCP section (every entry reproduced with
+  `curl` against the binary); the small sweeps (CLAUDE.md, `contracts/mcp/README.md`'s `x-mcp-header` row,
+  `docs/scenario-schema.md`, the plan's dated one-liner, the "three → four" sentences). No behaviour change.
+- **What remains after Phase 8:** merge `phase-8`; cut **v0.5.0**; **D11** (owner) — a legacy follow-on only if
+  the adopter's client needs it; **D9 tier 2** (owner) — evidence written, decision open; the shared-pipeline
+  hardening follow-up below; Phase 9.
+- **v0.5.0 tag-note bullets (draft, for the release commit to lift):**
+  - Phase 8 unit 1: `contracts/mcp/` — the MCP contract recorded from the 2026-07-28 specification and its
+    machine-readable schema (`spec:` block, sha256 `ef70b61f…`) before any handler; the D11 era record.
+  - Phase 8 unit 2: the MCP profile — `provider/mcp`, a modern-era (2026-07-28) Streamable HTTP server: listener
+    `mcp`, **new default port 8084 and flag `--mcp-port`** (`SERVICESIM_MCP_PORT`), `POST /mcp`,
+    `server/discover`/`tools/list`/`tools/call`, JSON and per-request SSE answers, strict request validation with
+    JSON-RPC-shaped fail-closed errors, `contracts.MCP` with 18 goldens, `provider.MCP`, `testkit.MCPHandler`,
+    `MCP_BASE_URL` from `Sim.BaseURLs`, an `mcp:` block in every built-in, `EXPOSE 8084` in the image.
+  - **Behaviour a v0.4.0 consumer could notice:** `DefaultProviders` now includes `mcp`, so a bare `servicesim`
+    binary and the image bind a fourth listener on 8084 (`--providers exa,tavily,perplexity` keeps three), and
+    `testkit.Start` with no `WithProviders` filter also starts an MCP `httptest.Server` (ephemeral port) so
+    `Sim.BaseURLs()` gains `MCP_BASE_URL`; and `internal/redact` now masks headers that mirror a
+    credential under a wrapper name (`Mcp-Param-Token`, `Mcp-Session-Id`, and any `Mcp-Param-<credential-shaped
+    name>`) — this applies to **every** profile's journal, so a suite that sent such a header to an Exa/Tavily/
+    Perplexity listener and asserted on its raw value in the journal would see it masked from this release.
+  - Phase 8 unit 3: README MCP onboarding, `examples/mcpclient.go` + `examples/mcp_test.go`,
+    `docs/design/mcp-profile.md`, the D9 tier-2 evidence, the CONTRIBUTING checklist, troubleshooting's MCP section.
+  - Phase 7 (unreleased since v0.4.0): `contracts.Spec`/`ProviderSpec`, `Record.APIVersion`, the `spec:` block per
+    vendor, the D10 no-canary refresh procedure — from `df1eb64`'s body.
+- Two Go doc comments still say "three": `provider/exchange.go`'s `AcceptedPlacements` ("the one precedence rule
+  the three provider packages share") and `internal/redact/redact.go`'s `substringCredentialFragments` ("checked
+  against the three providers' documented field names"). Not wire facts, no guard depends on them, and unit 3's
+  sweep excluded Go outside `examples/` — a one-line tidy for the next unit that touches either file.
 - **Follow-up surfaced by unit 2's review (shared pipeline, not MCP-specific):** `provider/handle.go` reads the
   memoised fault decision (`x.decision`) after the handler returns regardless of `Response.FaultEligible`, so
   "validation has the last word" holds only by the convention that every handler validates before it claims an
@@ -858,8 +903,15 @@ is theirs (D12); Servicesim does not unblock it.
   the next profile's author will not know the convention.
 - Two nits left as recorded, not fixed: the `202` for a notification carries a `Content-Type: application/json`
   header on an empty body (the contract only says "no body"); `extra-fields.yaml`'s `mcp:` block has envelope-level
-  extras only — per-tool and per-content-block `extra_fields` would be a new projection field (unit 3 may add it
-  if a consumer needs to prove tolerance at that level).
+  extras only — per-tool and per-content-block `extra_fields` would be a new projection field (unit 3 did not add
+  it; no consumer has asked to prove tolerance at that level). Two more that unit 3's review found were fixed in
+  unit 3 itself rather than left, because each was a divergence between the code and its own record: the
+  composition layer's `/x/<unknown>` refusal for the `mcp` listener rendered `"id":null` where every body the
+  profile builds omits the member (now omitted, pinned by exact bytes in `TestUnknownScenarioFailsClosed`); and
+  `wantsStream` read the selected turn's `stream.when_requested` rather than turn 0's, honouring at request time
+  a value the load-time WARNING `scenario.stream.policy.ignored` had just said was ignored (now turn 0, as
+  `provider/mcp/doc.go` item 5, the contract and `provider/perplexity` all have it; pinned by
+  `TestStreamPolicyIsReadFromTurnZero`, which fails against the earlier draft).
 - The hostile-behaviour pack for their mcp-adapter defence kit: tool-schema drift between calls (turn model, free),
   oversized results and injection-bearing output (projection bytes, free), **per-request version and header
   mismatches** (a `400` `-32022` with `data.supported`/`data.requested`, a `400` `-32020` header/body mismatch —

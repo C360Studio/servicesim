@@ -822,6 +822,7 @@ wire shape for what it names.
 | The deprecated HTTP+SSE transport (2024-11-05; GET-first with an `endpoint` event) | NOT SIMULATED | "Deprecated since protocol version `2025-03-26`"; "New implementations **SHOULD NOT** adopt it" (`streamable-http`; `deprecated`) |
 | `Mcp-Session-Id` sessions, HTTP GET stream, `Last-Event-ID` resumability, `initialize` / `notifications/initialized`, `ping`, `logging/setLevel` | NOT SIMULATED under 2026-07-28 | Removed by 2026-07-28 (`changelog`). Whether a **legacy** 2025-11-25 path is built later is D11 — see "Protocol eras" |
 | Batched JSON-RPC (array body) | NOT ACCEPTED (simulator-chosen response) | Removed 2025-06-18; the body MUST be a single request or notification |
+| The `x-mcp-header` schema extension and the `Mcp-Param-{name}` headers it produces | NOT SIMULATED (load-rejected) | Optional for servers ("MAY designate"); this build honours no `x-mcp-header`: `Validator` rejects at load any fixture tool whose `inputSchema` contains the key anywhere (`mcp.tool.x_mcp_header_unsupported`, ERROR), so no scenario can believe it is validated, and any `Mcp-Param-*` request header is ignored with WARNING `mcp.header.param_ignored` — the specification does not say what a terminal server does with an unrecognised one. Simulation decision 4 |
 
 ## Protocol eras — the D11 record
 
@@ -1039,10 +1040,10 @@ choice shapes.
    If the profile's fixture tools carry no `x-mcp-header`, no `Mcp-Param-*` header is ever expected;
    if any does, the server MUST validate it (`400` + `-32020` on mismatch). **The specification does
    not say** what a terminal server does with an unrecognised `Mcp-Param-*` header (see above).
-   chosen: not honoured. unit 2: not honoured, load-rejected — `Validator` rejects, at load, any
-   fixture tool whose `inputSchema` contains an `x-mcp-header` key anywhere (finding
-   `mcp.tool.x_mcp_header_unsupported`, ERROR); any `Mcp-Param-*` request header is ignored with
-   WARNING `mcp.header.param_ignored`.
+   chosen: not honoured, load-rejected — `Validator` rejects, at load, any fixture tool whose
+   `inputSchema` contains an `x-mcp-header` key anywhere (finding `mcp.tool.x_mcp_header_unsupported`,
+   ERROR); any `Mcp-Param-*` request header is ignored with WARNING `mcp.header.param_ignored`. Listed
+   in "Not simulated / out of scope" above.
 5. **Whether the profile ever answers with an SSE stream, and for which scripted outcomes.** Fact:
    the server chooses per request; a stream may carry only request-scoped `notifications/progress`
    (opt-in by `progressToken`) and `notifications/message` (opt-in by `logLevel`; the feature is

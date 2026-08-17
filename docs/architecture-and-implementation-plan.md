@@ -37,6 +37,9 @@ providers' real URL paths, including the `POST /search` collision between Exa an
 | `8083` | Perplexity-compatible API |
 | `8084` | MCP-compatible server (Streamable HTTP, modern era) |
 
+The MCP row shipped 2026-08-16 as the modern-era (revision `2026-07-28`) profile, Phase 8; the record of what was
+built is `docs/design/mcp-profile.md`.
+
 The same image can run all providers together or a selected subset. Consumers inject provider base URLs rather than
 overriding DNS or installing test certificate authorities.
 

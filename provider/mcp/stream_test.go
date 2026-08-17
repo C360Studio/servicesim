@@ -313,3 +313,58 @@ providers:
 	require.Contains(t, string(body), `"forbidden by origin policy"`)
 	require.Contains(t, string(body), `-32000`)
 }
+
+// TestStreamPolicyIsReadFromTurnZero pins decision 5's "policy is a
+// property of the entry, read from turn 0" on the one shape the load-time
+// guard lets through with a WARNING rather than an ERROR: a later turn that
+// declares when_requested: stream and no deltas. scenario.ValidateStreamScripts
+// answers that with CodeStreamPolicyIgnored ("read from the first turn
+// only; this value is ignored") — and an earlier draft of wantsStream then
+// read the SELECTED turn's policy anyway and switched that turn's answer to
+// SSE, contradicting the warning it had just issued. (Every other divergent
+// shape — a later turn with deltas under a non-streaming entry, or a
+// streaming entry with a delta-less turn — is a load ERROR and never
+// reaches the handler.)
+func TestStreamPolicyIsReadFromTurnZero(t *testing.T) {
+	t.Parallel()
+
+	const laterTurnDeclaresStream = `
+version: 1
+name: mcp-later-turn-declares-stream
+providers:
+  mcp:
+    turns:
+      - when: {call_index: 0}
+        respond:
+          tools: [{name: search, input_schema: {type: object}}]
+          results: {search: {content: [{type: text, text: "first"}]}}
+      - respond:
+          stream: {when_requested: stream}
+          tools: [{name: search, input_schema: {type: object}}]
+          results: {search: {content: [{type: text, text: "second"}]}}
+`
+	loaded, report, err := scenario.Parse([]byte(laterTurnDeclaresStream))
+	require.NoError(t, err)
+	require.True(t, report.OK(), "%v", report.Findings)
+	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{Name: Validator{}})
+	require.Len(t, findings, 1, "exactly the policy-ignored warning: %v", findings)
+	require.Equal(t, scenario.CodeStreamPolicyIgnored, findings[0].Code)
+	require.Equal(t, scenario.SeverityWarning, findings[0].Severity)
+
+	ring := journal.NewRing(64, 1<<16)
+	srv := httptest.NewServer(New(provider.Deps{
+		Scenario: loaded, Journal: ring, Faults: faults.New(loaded, Routes()),
+	}))
+	t.Cleanup(srv.Close)
+	sim := &sseSim{server: srv, journal: ring}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":` +
+		`{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},` +
+		`"progressToken":"tok"},"name":"search"}}`
+	first, _ := sim.do(t, body, stdHeaders(MethodToolsCall, "search"))
+	require.Equal(t, "application/json", first.Header.Get("Content-Type"))
+	second, out := sim.do(t, body, stdHeaders(MethodToolsCall, "search"))
+	require.Equal(t, "application/json", second.Header.Get("Content-Type"),
+		"turn 1 declares when_requested: stream, but the entry policy is turn 0's: still JSON, as the warning said")
+	require.Contains(t, string(out), `"second"`)
+}

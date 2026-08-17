@@ -842,7 +842,7 @@ catalogue is. `TestBuiltins_ProjectionKeysAreDocumented` cross-checks this table
 | `ttl_ms` | integer | `ttlMs` on `server/discover` and `tools/list`. Defaults to `60000`. |
 | `cache_scope` | `public` \| `private` | `cacheScope` on `server/discover` and `tools/list`. Defaults to `private`. |
 | `tools` | list of ToolProjection | `tools/list`'s `tools[]`, in declaration order — the order this profile always answers in. |
-| `results` | map of tool name to ResultProjection | `tools/call`'s scripted outcomes, keyed by tool name. A key naming no declared `tools` entry is legal (a hidden tool); a `tools` entry with no matching `results` key renders `isError: true` with one text block saying so, never silently. |
+| `results` | map of tool name to ResultProjection | `tools/call`'s scripted outcomes, keyed by tool name. A key naming no declared `tools` entry is legal (a hidden tool); a `tools` entry with no matching `results` key renders `isError: true` with one text block saying so and warns `mcp.tool.unscripted`, never silently; a name in neither is the `-32602` unknown-tool error (`mcp.tool.unknown`). |
 | `stream` | `{when_requested, deltas, terminal, pace}` | Scripts an SSE answer to `tools/call` only — `server/discover` and `tools/list` never stream, regardless of policy. See [Streaming](#streaming-stream); the shared grammar applies, with MCP's own framing (below). |
 | `extra_fields` | map | Merged into **every** result this projection renders — `server/discover`, `tools/list` and `tools/call` alike, unlike every other provider's `extra_fields`, which is per-route. Envelope-level only: neither `ToolProjection` nor `ContentBlock` has an `extra_fields` field of its own, unlike Exa/Tavily's per-result-entry `extra_fields` below. |
 

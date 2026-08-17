@@ -503,6 +503,14 @@ func TestUnknownScenarioFailsClosed(t *testing.T) {
 			want: `{"detail":"Not Found"}`,
 		},
 		{
+			// The JSON-RPC-shaped refusal omits the id member: schema.json's
+			// RequestId admits no null, and JSONRPCErrorResponse.id is optional
+			// (provider/mcp/doc.go, decision 6). Pinned by exact bytes.
+			name: "mcp", surface: string(provider.MCP),
+			path: "/x/nope/mcp", body: `{"jsonrpc":"2.0","id":1,"method":"server/discover"}`,
+			want: `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Not Found"}}`,
+		},
+		{
 			name:    "an invalid name is refused, not sanitised into a lookup",
 			surface: string(provider.Exa),
 			path:    "/x/no.pe/search", body: `{"query":"report a"}`,

@@ -46,12 +46,26 @@ Commits follow `<type>(scope): subject` — `feat`, `fix`, `docs`, `refactor`, `
 ## Adding a provider
 
 The scenario schema is an open registry, so this needs **no change to the `scenario` package** and no schema
-version bump. Concretely:
+version bump — the fourth profile, MCP (Phase 8, `provider/mcp`), added a protocol rather than a vendor and
+touched nothing under `scenario/`. What it did touch is the checklist below, written from that diff
+(`git show 39d5809`) rather than from memory. Tick every box; the guards will tell you about most of the
+ones you miss, but not all.
 
-### 1. Verify the contract first
+### 1. Verify the contract first — before any Go
 
-Write `contracts/<name>/README.md` before any Go. Fetch the vendor's documentation — prefer a machine-readable
-OpenAPI document if one exists, because prose pages describe while the spec decides. Record the URLs and the date.
+- [ ] Fetch the authority: a vendor's OpenAPI document **or** a protocol's machine-readable schema. Prose pages
+      describe; the spec decides. Where a rendered page and the schema disagree, record both and say which said
+      what.
+- [ ] Write `contracts/<name>/README.md`: what is simulated and what consumers parse, each statement citing the
+      page it was read from, with the URLs and the date. List what is **not** simulated as a table rather than
+      omitting it. Every point where the specification is silent is a **simulator-chosen** decision — record it as
+      such, and once the handler ships, record what was chosen beside it.
+- [ ] Write `contracts/<name>/provenance.yaml` with a `spec:` block (`url`, `version`, `sha256`, `retrieved`) and a
+      provider-level `verified:` date. `TestEveryProviderHasSpecRecorded` will insist.
+- [ ] Add the provider's row to `contracts/README.md`'s index table — before a route exists, say so in the row
+      (`contracts/mcp/` is the example of a contract recorded before its provider registered; the docs guard checks
+      that table against `Routes()` in both directions, so an unregistered route claim fails and a registered
+      route with no row fails).
 
 Getting this wrong is the expensive mistake: everything downstream is generated from it, and a wrong field type
 propagates into fixtures that then look authoritative.
@@ -60,46 +74,75 @@ propagates into fixtures that then look authoritative.
 
 ```text
 provider/<name>/
-  doc.go       package comment — say what is simulated and, importantly, what is NOT
-  handler.go   New(provider.Deps) http.Handler, and Routes() []provider.Route
-  request.go   request decoding and validation
+  doc.go       package comment — what is simulated, what is NOT, and every simulator-chosen default, numbered to
+               match the contract file's "Simulation decisions"
+  handler.go   Name, Pattern*, FaultKey*, Routes() []provider.Route (a function, not a var), New(provider.Deps),
+               Validator, selectProjection
+  request.go   finding codes (exported), request decoding and validation, checkAuth
   response.go  the wire types, json tags exactly as the vendor names them
-  render.go    canonical sources -> this vendor's shape
-  errors.go    this vendor's error envelope
+  render.go    Projection (yours, in your package) + canonical -> this vendor's shape
+  errors.go    this vendor's error envelope, faultBody, the 404/405 bodies for NewMux
 ```
 
-Four things that are easy to get wrong:
+- [ ] **Your projection type lives in your package**, not in `scenario`. Get it by calling `Turn.DecodeProjection`
+      on the turn `provider.SelectTurnFor` chose. That is what keeps `scenario` from importing provider packages.
+- [ ] **Validate before you claim.** `SelectTurnFor` claims a fault attempt; every request-side check that needs
+      nothing from the projection — auth, headers, method shape, params shape — runs before it, or a rejected
+      request spends a scripted fault's budget (and, because the decision is memoised, wears its status).
+- [ ] **Implement `provider.Validator`** (and `provider.RouteLister` if your entries use `when.route`) so
+      projections are decoded and checked at startup. A bad fixture must fail at boot, not on the first request.
+- [ ] **One route, many methods?** `provider.NewMux` keys handlers by pattern, so two routes sharing one pattern
+      collide: dispatch on the body inside one handler (MCP dispatches on `body.method`), and give the listener its
+      own JSON-shaped 404/405 through `MuxSpec.NotFound`/`MethodNotAllowed`.
+- [ ] **`Route.FaultKey` groups aliases.** Two routes that are the same operation share a key so a retry through
+      the alias draws on the same attempt budget. Two genuinely different surfaces get different keys.
+- [ ] **Register `Response.FaultBody`** on every fault-eligible response so a scripted 429/503 renders in *your*
+      envelope, honouring the shared `body:`/`error:` overrides.
+- [ ] **Handle the multi-turn form**, not just the single-shot one. They are the same shape after load
+      normalisation, so this is usually free — but test it.
+- [ ] **Streaming?** Reuse `provider.Stream`/`EncodeSSE` and the two grammars; call `scenario.ValidateStreamScripts`
+      and `ValidateStreamFaultMismatch` from your Validator. Add nothing to the transport.
+- [ ] **Redaction.** If the protocol defines a header family that carries a value under a wrapper name, check
+      `internal/redact` judges it — MCP's `Mcp-Param-*`/`Mcp-Session-Id` needed `stripMirrorPrefix`. Then try to
+      get a credential into a retained structure by any path; that is the review lens that finds it.
 
-- **Your projection type lives in your package**, not in `scenario`. Get it by calling `Turn.DecodeProjection` on
-  the turn `provider.SelectTurnFor` chose. That is what keeps `scenario` from importing provider packages.
-- **Implement `provider.Validator`** so projections are decoded and checked at startup. A bad fixture must fail at
-  boot, not on the first request.
-- **`Route.FaultKey` groups aliases.** Two routes that are the same operation share a key so a retry through the
-  alias draws on the same attempt budget. Two genuinely different surfaces get different keys.
-- **Handle the multi-turn form**, not just the single-shot one. They are the same shape after load normalisation,
-  so this is usually free — but test it.
+### 3. Register it — every site, all mechanical
 
-### 3. Register it
-
-Three places, all mechanical:
+There is no registry; a provider is enumerated by hand in each of these. Every one is a switch or a list keyed on
+the name. Missing one is usually a compile error or a failing guard, but not always — `image-smoke.sh` and the
+docs tables fail only in CI.
 
 | File | What to add |
 |---|---|
-| `internal/config` | the listener and its port |
-| `internal/server/listeners.go` | `<name>.New(deps)` in the listener switch |
-| `internal/server/server.go` | `<name>.Routes()` in the route concat, `<name>.Validator{}` in the validator map |
+| `provider/provider.go` | the `Name` constant |
+| `internal/config/config.go` | ten sites: the port default, `DefaultProviders`, `allProviders`, the `Config` field, the env binding, the raw flag target, the flag registration, `assemble`, the validate port table, the `listener()` switch |
+| `internal/server/listeners.go` | four switches: the import, `newSurfaces`, `newProviderHandler` (`<name>.New(deps)`), and `scenarioNotFoundBody` — the vendor-shaped body for an `/x/<unknown>` refusal |
+| `internal/server/server.go` | `<name>.Routes()` in the routes concat; `<name>.Validator{}` in the entry-kind validators map |
+| `testkit/server.go` | the import, `allProviders`, `routes`, `validators`, the `build` switch, a `<Name>Handler` constructor (exported — a compatibility obligation), the `BaseURLs` doc comment (the env var itself derives from the name) |
+| `testkit/golden.go` | only if your responses mint an identifier that must be pruned from goldens: `derivedIDPaths` / `streamDerivedIDPaths` |
+| `contracts/contracts.go` | the `//go:embed` line, the `Provider` constant, `Providers()`; plus the `byName` map in `contracts/provenance_internal_test.go` |
+| `contracts/<name>/` | goldens satisfying `TestEveryProviderHasHappyAndEmptyAndErrorGoldens` (a happy, an empty and an error case), each with a `provenance.yaml` entry (a golden with no provenance fails the build) — and a golden test in your package pinning each to the live handler |
+| `scenarios/protocol/*.yaml` | a block in **every** built-in — `TestBuiltins_CoverEveryImplementedProvider` requires it — expressing that file's intent on your surface; `malicious-content` needs every hostile source projected with a marker-bearing field (`TestMaliciousContent_EveryHostileSourceCarriesAMarker`) |
+| `scenarios/scenarios_test.go` | `implementedProviders`; `documentedProjectionKeys` (your `respond:` keys, cross-checked with `docs/scenario-schema.md`) |
+| `scripts/image-smoke.sh` | a route check and the per-provider journal loop; `Dockerfile` `EXPOSE` (and the description label); `docker-compose.example.yml` port and `*_BASE_URL` |
+| `cmd/servicesim/main.go` | the help banner |
+| Documents | the listener/port/base-URL tables in `README.md`, `docs/troubleshooting.md`, `docs/architecture-and-implementation-plan.md`, `CLAUDE.md`'s diagram; `docs/scenario-schema.md`'s entry-name list **and** a projection-body section for your keys; `contracts/README.md`'s index row now carries the `METHOD /path` |
+
+The docs guard (`scripts/check-docs.sh`) reads every backticked `METHOD /path` in the scanned docs as a route
+claim, every `builtin:<name>` as a scenario name, every backticked `testkit.` or `provider.` symbol as an exported
+name, and every dash-prefixed token as a CLI flag — and it checks the contracts index table against `Routes()` in
+both directions. Expect it to fail while the tables and the code are half-updated; that is what it is for.
 
 ### 4. Prove it
 
-- Golden fixtures in `contracts/<name>/`, each with a `provenance.yaml` entry. A golden with no provenance fails
-  the contracts test — that is deliberate, because an unattributed fixture is unreviewable.
-- **Compare raw JSON bytes, not round-tripped structs.** A wrong JSON type round-trips cleanly through a permissive
-  decoder, so a struct-level assertion lets exactly the bugs that matter survive.
-- Add the provider to every built-in under `scenarios/protocol/` — the guard in `scenarios/scenarios_test.go`
-  requires each one to declare every implemented provider — so the existing protocol coverage applies to it too.
-  `malicious-content` in particular needs every hostile source projected and a marker-bearing synthesised-answer
-  field on the new surface.
-- Extend `scripts/image-smoke.sh` with its route.
+- [ ] **Compare raw JSON bytes, not round-tripped structs.** A wrong JSON type round-trips cleanly through a
+      permissive decoder, so a struct-level assertion lets exactly the bugs that matter survive.
+- [ ] Prove determinism from the consumer's side: the same request twice is byte-identical.
+- [ ] Prove a credential sent on every probe never appears in `/__admin/requests`.
+- [ ] Add a worked consumer under `examples/` — a compiled, CI-run test file is the one piece of documentation that
+      cannot rot (`examples/mcp_test.go` is the shape).
+- [ ] Write the design record under `docs/design/` (what shipped; Go blocks illustrative; the code wins).
+- [ ] `task check` — as a plain command, reading the real exit code.
 
 ## Changing an existing wire shape
 

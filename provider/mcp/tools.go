@@ -97,7 +97,7 @@ func handleToolsCall(x *provider.Exchange, id json.RawMessage, pp parsedParams, 
 	}
 	resp := methodResult(id, body, "mcp.tools_call.ok")
 
-	if wantsStream(p) {
+	if wantsStream(x.Entry()) {
 		stream, err := renderProgressStream(pp, p, resp.Body)
 		if err != nil {
 			return internalErrorResponse(id, err)
@@ -137,11 +137,36 @@ func hasDeclaredTool(p *Projection, name string) bool {
 	return false
 }
 
-// wantsStream reports whether the entry's effective stream policy asks
-// this profile to answer tools/call as SSE. It is a property of the
-// SCRIPT, not of the request: the client has no field of its own that
-// asks to stream (decision 5), so — unlike every other provider package's
+// wantsStream reports whether the ENTRY's stream policy asks this profile
+// to answer tools/call as SSE. It is a property of the entry — read from
+// turn 0, the same rule provider/perplexity's streamPolicy applies and the
+// rule decision 5, contracts/mcp/README.md and scenario.StreamScript's own
+// doc all record: "Policy is read from turn 0 only … a policy on a later
+// turn raises CodeStreamPolicyIgnored". Reading the SELECTED turn's policy
+// instead (an earlier draft did) let a later turn's script switch the
+// content type on its own, which the load-time WARNING had just told the
+// author it would not. The selected turn's script still supplies the
+// deltas and paces (renderProgressStream reads p.Stream); only the
+// JSON-vs-SSE decision comes from turn 0. It is a property of the SCRIPT,
+// not of the request: the client has no field of its own that asks to
+// stream (decision 5), so — unlike every other provider package's
 // wantsStream — there is no request-side signal to combine this with.
-func wantsStream(p *Projection) bool {
-	return p.Stream.EffectivePolicy() == scenario.StreamServe
+func wantsStream(entry *scenario.ProviderEntry) bool {
+	return streamPolicy(entry) == scenario.StreamServe
+}
+
+// streamPolicy is the entry-level policy: turn 0's effective policy,
+// StreamWarn (the permissive default) when there is no entry or no turn.
+// An undecodable turn 0 also yields the default — unreachable through
+// internal/server, which validates every projection before readiness, and
+// reported on its own path when a caller built the scenario by hand.
+func streamPolicy(entry *scenario.ProviderEntry) scenario.StreamPolicy {
+	if entry == nil || len(entry.Turns) == 0 {
+		return scenario.StreamWarn
+	}
+	var p Projection
+	if err := entry.Turns[0].DecodeProjection(entry.Name, 0, &p); err != nil {
+		return scenario.StreamWarn
+	}
+	return p.Stream.EffectivePolicy()
 }
