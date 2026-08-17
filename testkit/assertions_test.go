@@ -11,9 +11,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/c360studio/servicesim/provider"
+	"github.com/c360studio/servicesim/provider/exa"
+	"github.com/c360studio/servicesim/provider/tavily"
+	"github.com/c360studio/servicesim/scenarios"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,6 +38,13 @@ type stubTB struct {
 
 // Helper is a no-op: there is no real test frame to attribute a failure to.
 func (s *stubTB) Helper() {}
+
+// Cleanup is a no-op. Without it, a stub standing in for a testing.TB whose
+// embedded interface is nil would panic the moment code under test (build's
+// tb.Cleanup(s.Close), for one) reached this call — turning a test meant to
+// inspect a recorded failure message into an uninformative nil-pointer
+// panic instead, and aborting the rest of the package's run with it.
+func (s *stubTB) Cleanup(func()) {}
 
 // Errorf records a failure.
 func (s *stubTB) Errorf(format string, args ...any) {
@@ -70,7 +81,7 @@ func entryFor(tb testing.TB, sim *testkit.Sim, body string, headers map[string]s
 	tb.Helper()
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		sim.URL(provider.Exa)+"/search", strings.NewReader(body))
+		sim.URL(exa.Name)+"/search", strings.NewReader(body))
 	require.NoError(tb, err)
 	req.Header.Set("Content-Type", "application/json")
 	for name, value := range headers {
@@ -81,7 +92,7 @@ func entryFor(tb testing.TB, sim *testkit.Sim, body string, headers map[string]s
 	require.NoError(tb, err)
 	require.NoError(tb, resp.Body.Close())
 
-	entries := sim.Requests(provider.Exa)
+	entries := sim.Requests(exa.Name)
 	require.NotEmpty(tb, entries)
 	return entries[len(entries)-1]
 }
@@ -89,13 +100,13 @@ func entryFor(tb testing.TB, sim *testkit.Sim, body string, headers map[string]s
 func TestAssertRequestCount(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 	entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "test-key"})
 
-	testkit.AssertRequestCount(t, sim, provider.Exa, 1)
+	testkit.AssertRequestCount(t, sim, exa.Name, 1)
 
 	stub := &stubTB{}
-	testkit.AssertRequestCount(stub, sim, provider.Exa, 2)
+	testkit.AssertRequestCount(stub, sim, exa.Name, 2)
 	assert.True(t, stub.Failed())
 	assert.Contains(t, stub.Message(), "want 2")
 }
@@ -103,7 +114,7 @@ func TestAssertRequestCount(t *testing.T) {
 func TestCredentialAssertions(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 
 	apiKey := entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "test-key"})
 	bearer := entryFor(t, sim, `{"query":"report a"}`, map[string]string{"Authorization": "Bearer test-key"})
@@ -145,7 +156,7 @@ func TestCredentialAssertions(t *testing.T) {
 func TestAssertDifferentCredential(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 
 	first := entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "old-key"})
 	rotated := entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "rotated-key"})
@@ -182,10 +193,10 @@ func TestAssertDifferentCredential(t *testing.T) {
 func TestAssertNoCredentialLeak(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		sim.URL(provider.Exa)+"/search?api_key=sk-live-leak",
+		sim.URL(exa.Name)+"/search?api_key=sk-live-leak",
 		strings.NewReader(`{"query":"report a","api_key":"sk-live-leak"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -224,10 +235,10 @@ providers:
       - respond:
           results: []
 `
-	sim := testkit.Start(t, testkit.WithScenarioYAML(laneKeyYAML), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithScenarioYAML(laneKeyYAML), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		sim.URL(provider.Exa)+"/search", strings.NewReader(`{"api_keys":["sk-live-lane-leak"]}`))
+		sim.URL(exa.Name)+"/search", strings.NewReader(`{"api_keys":["sk-live-lane-leak"]}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -241,7 +252,7 @@ providers:
 func TestAssertJSONBody(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 	entry := entryFor(t, sim, `{"numResults":5,"query":"report a"}`,
 		map[string]string{"x-api-key": "test-key"})
 
@@ -258,7 +269,7 @@ func TestAssertJSONBody(t *testing.T) {
 func TestFindingAssertions(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 
 	clean := entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "test-key"})
 	testkit.AssertNoErrors(t, clean)
@@ -314,15 +325,20 @@ func TestAssertGoldenJSON(t *testing.T) {
 		testkit.AssertGoldenJSON(t, path, body)
 	})
 
-	t.Run("derived identifiers are ignored by default", func(t *testing.T) {
-		// A route with a fault plan varies requestId per attempt by design, so the
-		// default must not compare it.
+	t.Run("GoldenDerivedIDs prunes a named path", func(t *testing.T) {
+		// A route with a fault plan varies requestId per attempt by design, so a
+		// caller that names it must not compare it.
 		varied := []byte(`{"requestId":"zzz","results":[{"title":"Report A"}],"costDollars":{"total":0.005}}`)
-		testkit.AssertGoldenJSON(t, path, varied)
 
 		stub := &stubTB{}
-		testkit.AssertGoldenJSON(stub, path, varied, testkit.GoldenExactIDs())
-		assert.True(t, stub.Failed(), "GoldenExactIDs opts back into comparing requestId")
+		testkit.AssertGoldenJSON(stub, path, varied)
+		assert.True(t, stub.Failed(), "no GoldenDerivedIDs was passed, so requestId is compared exactly")
+
+		testkit.AssertGoldenJSON(t, path, varied, testkit.GoldenDerivedIDs("requestId"))
+
+		stub2 := &stubTB{}
+		testkit.AssertGoldenJSON(stub2, path, varied, testkit.GoldenDerivedIDs("requestId"), testkit.GoldenExactIDs())
+		assert.True(t, stub2.Failed(), "GoldenExactIDs opts back out of every path GoldenDerivedIDs named")
 	})
 
 	t.Run("GoldenIgnore excludes a dotted path", func(t *testing.T) {
@@ -342,6 +358,92 @@ func TestAssertGoldenJSON(t *testing.T) {
 		assert.True(t, stub.Failed())
 		assert.Contains(t, stub.Message(), "not JSON")
 	})
+}
+
+// TestAssertCoversOnTheBuiltInCorpus is the positive case against a real
+// fs.FS: scenarios.FS is exactly the input scenarios/scenarios_test.go's own
+// TestBuiltins_CoverEveryImplementedProvider already proves clean, so
+// AssertCovers must report nothing wrong against it either, for the same
+// seven entry kinds that test enumerates.
+func TestAssertCoversOnTheBuiltInCorpus(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubTB{}
+	testkit.AssertCovers(stub, scenarios.FS,
+		"exa", "tavily", "perplexity", "perplexity_agent", "exa_agent_runs", "tavily_research", "mcp")
+	assert.False(t, stub.Failed(), "the shipped built-ins must cover every implemented kind: %s", stub.Message())
+}
+
+// TestAssertCoversOnADeliberatelyIncompleteFS is the negative case: a fixture
+// tree with two files, the SECOND of which is missing one of the two
+// required kinds, must name both that file and the missing kind. The first
+// file is complete, so this also pins that AssertCovers walks every file
+// rather than only the first the walk visits.
+func TestAssertCoversOnADeliberatelyIncompleteFS(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"scenarios/a-covers-both.yaml": &fstest.MapFile{Data: []byte(`
+version: 1
+name: covers-both
+providers:
+  exa:
+    results: []
+  tavily:
+    results: []
+`)},
+		"scenarios/z-covers-exa-only.yaml": &fstest.MapFile{Data: []byte(`
+version: 1
+name: covers-exa-only
+providers:
+  exa:
+    results: []
+`)},
+	}
+
+	stub := &stubTB{}
+	testkit.AssertCovers(stub, fsys, "exa", "tavily")
+
+	require.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), "z-covers-exa-only.yaml")
+	assert.Contains(t, stub.Message(), `"tavily"`)
+	assert.NotContains(t, stub.Message(), "a-covers-both.yaml", "the complete file must not be reported")
+}
+
+// TestAssertCoversRejectsNoKinds pins the vacuous-pass guard: calling
+// AssertCovers with zero kinds must fail loudly rather than reporting
+// coverage of nothing as success.
+func TestAssertCoversRejectsNoKinds(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"scenarios/happy.yaml": &fstest.MapFile{Data: []byte(`
+version: 1
+name: happy
+providers:
+  exa:
+    results: []
+`)},
+	}
+
+	stub := &stubTB{}
+	testkit.AssertCovers(stub, fsys)
+
+	require.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), "no kinds given")
+}
+
+// TestAssertCoversReportsAnEmptyFS is the broken-guard case AssertCovers must
+// not pass silently: an fs.FS with no .yaml/.yml file anywhere is far more
+// likely a wrong path than an empty corpus.
+func TestAssertCoversReportsAnEmptyFS(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubTB{}
+	testkit.AssertCovers(stub, fstest.MapFS{"README.md": &fstest.MapFile{Data: []byte("not a scenario")}}, "exa")
+
+	assert.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), "no .yaml or .yml file")
 }
 
 // TestAssertOverlappedRejectsAdjacentRequests pins the strictness of the
@@ -558,12 +660,12 @@ func TestPacingAssertionsLive(t *testing.T) {
 	t.Run("AssertMaxRate over N serial requests", func(t *testing.T) {
 		t.Parallel()
 
-		sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+		sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 		const n = 4
 		for range n {
 			entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "test-key"})
 		}
-		entries := sim.Requests(provider.Exa)
+		entries := sim.Requests(exa.Name)
 		require.Len(t, entries, n)
 
 		// n calls inside an hour-long window trivially holds a budget of n.
@@ -580,11 +682,11 @@ func TestPacingAssertionsLive(t *testing.T) {
 	t.Run("AssertObservedDuration over a real 400ms hang", func(t *testing.T) {
 		t.Parallel()
 
-		sim := testkit.Start(t, testkit.WithBuiltin("brownout"), testkit.WithProviders(provider.Exa))
+		sim := testkit.Start(t, testkit.WithBuiltin("brownout"), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 		for range 4 {
 			entryFor(t, sim, `{"query":"report a"}`, map[string]string{"x-api-key": "test-key"})
 		}
-		entries := sim.Requests(provider.Exa)
+		entries := sim.Requests(exa.Name)
 		require.Len(t, entries, 4)
 
 		// entries[3] is the ladder's fourth call: brownout.yaml's declared
@@ -601,13 +703,13 @@ func TestPacingAssertionsLive(t *testing.T) {
 func TestAssertNamespacesIsolated(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(retryScenario), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithScenarioYAML(retryScenario), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 	alpha := sim.Namespace(t, "alpha")
 	beta := sim.Namespace(t, "beta")
 
 	for range 2 {
-		searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
-		searchIn(t, sim, beta.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+		searchIn(t, sim, alpha.URL(exa.Name), exa.Name, `{"query":"report a"}`)
+		searchIn(t, sim, beta.URL(exa.Name), exa.Name, `{"query":"report a"}`)
 	}
 
 	stub := &stubTB{}
@@ -622,13 +724,13 @@ func TestAssertNamespacesIsolated(t *testing.T) {
 func TestAssertNamespacesIsolatedRefusesAVacuousComparison(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 	used := sim.Namespace(t, "used")
-	searchIn(t, sim, used.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	searchIn(t, sim, used.URL(exa.Name), exa.Name, `{"query":"report a"}`)
 
-	otherSim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	otherSim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 	elsewhere := otherSim.Namespace(t, "elsewhere")
-	searchIn(t, otherSim, elsewhere.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	searchIn(t, otherSim, elsewhere.URL(exa.Name), exa.Name, `{"query":"report a"}`)
 
 	tests := []struct {
 		name    string
@@ -734,7 +836,7 @@ func requestJob(tb testing.TB, sim *testkit.Sim, p provider.Name, method, path s
 
 	req, err := http.NewRequestWithContext(context.Background(), method, path, nil)
 	require.NoError(tb, err)
-	if p == provider.Exa {
+	if p == exa.Name {
 		req.Header.Set("x-api-key", "test-key")
 	} else {
 		req.Header.Set("Authorization", "Bearer test-key")
@@ -769,28 +871,28 @@ func TestAssertPollSequence(t *testing.T) {
 	t.Run("tavily research status tracks task state", func(t *testing.T) {
 		t.Parallel()
 
-		sim := testkit.Start(t, testkit.WithScenarioYAML(tavilyResearchPollScenario), testkit.WithProviders(provider.Tavily))
-		id := createResearch(t, sim, sim.URL(provider.Tavily))
+		sim := testkit.Start(t, testkit.WithScenarioYAML(tavilyResearchPollScenario), testkit.WithProfiles(tavily.Profile()), testkit.WithProviders(tavily.Name))
+		id := createResearch(t, sim, sim.URL(tavily.Name))
 
 		for range 3 {
-			pollJob(t, sim, provider.Tavily, sim.URL(provider.Tavily)+"/research/"+id)
+			pollJob(t, sim, tavily.Name, sim.URL(tavily.Name)+"/research/"+id)
 		}
 
-		testkit.AssertPollSequence(t, sim.Requests(provider.Tavily), id,
+		testkit.AssertPollSequence(t, sim.Requests(tavily.Name), id,
 			http.StatusAccepted, http.StatusAccepted, http.StatusOK)
 	})
 
 	t.Run("exa agent run attempt indices carry the assertion", func(t *testing.T) {
 		t.Parallel()
 
-		sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProviders(provider.Exa))
-		id := createAgentRun(t, sim, sim.URL(provider.Exa))
+		sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
+		id := createAgentRun(t, sim, sim.URL(exa.Name))
 
 		for range 3 {
-			pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)
+			pollJob(t, sim, exa.Name, sim.URL(exa.Name)+"/agent/runs/"+id)
 		}
 
-		testkit.AssertPollSequence(t, sim.Requests(provider.Exa), id,
+		testkit.AssertPollSequence(t, sim.Requests(exa.Name), id,
 			http.StatusOK, http.StatusOK, http.StatusOK)
 	})
 }
@@ -801,24 +903,24 @@ func TestAssertPollSequence(t *testing.T) {
 func TestAssertPollSequenceIgnoresHeadAndOtherJobs(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProviders(provider.Exa))
-	id := createAgentRun(t, sim, sim.URL(provider.Exa))
+	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
+	id := createAgentRun(t, sim, sim.URL(exa.Name))
 	// other lands at call_index 1 of the SAME lane as id (call_index 0), which is
 	// why this NotEqual holds. It is not general: two creates in DIFFERENT
 	// namespaces at the same call index mint the identical id, because job
 	// identifiers carry no namespace component (see
 	// TestSimJobsAndNamespaceJobs). Moving this second create into another
 	// namespace to "strengthen" the test would make it collide with id instead.
-	other := createAgentRun(t, sim, sim.URL(provider.Exa))
+	other := createAgentRun(t, sim, sim.URL(exa.Name))
 	require.NotEqual(t, id, other, "two creates must mint different identifiers")
 
-	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)    // id's attempt 0
-	headJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)    // must not consume a poll
-	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+other) // other's poll, not id's
-	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)    // id's attempt 1
-	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)    // id's attempt 2
+	pollJob(t, sim, exa.Name, sim.URL(exa.Name)+"/agent/runs/"+id)    // id's attempt 0
+	headJob(t, sim, exa.Name, sim.URL(exa.Name)+"/agent/runs/"+id)    // must not consume a poll
+	pollJob(t, sim, exa.Name, sim.URL(exa.Name)+"/agent/runs/"+other) // other's poll, not id's
+	pollJob(t, sim, exa.Name, sim.URL(exa.Name)+"/agent/runs/"+id)    // id's attempt 1
+	pollJob(t, sim, exa.Name, sim.URL(exa.Name)+"/agent/runs/"+id)    // id's attempt 2
 
-	testkit.AssertPollSequence(t, sim.Requests(provider.Exa), id, http.StatusOK, http.StatusOK, http.StatusOK)
+	testkit.AssertPollSequence(t, sim.Requests(exa.Name), id, http.StatusOK, http.StatusOK, http.StatusOK)
 }
 
 // TestAssertPollSequenceFailsOnWrongStatus proves the assertion actually
@@ -828,12 +930,12 @@ func TestAssertPollSequenceIgnoresHeadAndOtherJobs(t *testing.T) {
 func TestAssertPollSequenceFailsOnWrongStatus(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProviders(provider.Exa))
-	id := createAgentRun(t, sim, sim.URL(provider.Exa))
-	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)
+	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
+	id := createAgentRun(t, sim, sim.URL(exa.Name))
+	pollJob(t, sim, exa.Name, sim.URL(exa.Name)+"/agent/runs/"+id)
 
 	stub := &stubTB{}
-	testkit.AssertPollSequence(stub, sim.Requests(provider.Exa), id, http.StatusTooManyRequests)
+	testkit.AssertPollSequence(stub, sim.Requests(exa.Name), id, http.StatusTooManyRequests)
 	assert.True(t, stub.Failed())
 	assert.Contains(t, stub.Message(), "want status 429")
 	assert.Contains(t, stub.Message(), "observed polls:")
@@ -848,12 +950,12 @@ func TestAssertPollSequenceFailsOnWrongStatus(t *testing.T) {
 func TestAssertPollSequenceFailsOnWrongCount(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProviders(provider.Exa))
-	id := createAgentRun(t, sim, sim.URL(provider.Exa))
-	pollJob(t, sim, provider.Exa, sim.URL(provider.Exa)+"/agent/runs/"+id)
+	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
+	id := createAgentRun(t, sim, sim.URL(exa.Name))
+	pollJob(t, sim, exa.Name, sim.URL(exa.Name)+"/agent/runs/"+id)
 
 	stub := &stubTB{}
-	testkit.AssertPollSequence(stub, sim.Requests(provider.Exa), id, http.StatusOK, http.StatusOK)
+	testkit.AssertPollSequence(stub, sim.Requests(exa.Name), id, http.StatusOK, http.StatusOK)
 	assert.True(t, stub.Failed())
 	assert.Contains(t, stub.Message(), "recorded 1 polls, want 2")
 	assert.Contains(t, stub.Message(), "observed polls:")
@@ -870,29 +972,29 @@ func TestAssertPollSequenceFailsOnWrongCount(t *testing.T) {
 func TestAssertPollSequenceRejectsCrossNamespaceCollision(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithScenarioYAML(exaPollScenario), testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name))
 	alpha := sim.Namespace(t, "alpha")
 	beta := sim.Namespace(t, "beta")
 
-	alphaID := createAgentRun(t, sim, alpha.URL(provider.Exa))
-	betaID := createAgentRun(t, sim, beta.URL(provider.Exa))
+	alphaID := createAgentRun(t, sim, alpha.URL(exa.Name))
+	betaID := createAgentRun(t, sim, beta.URL(exa.Name))
 	require.Equal(t, alphaID, betaID, "same call index, no namespace component: ids collide by design")
 	id := alphaID
 
-	pollJob(t, sim, provider.Exa, alpha.URL(provider.Exa)+"/agent/runs/"+id)
-	pollJob(t, sim, provider.Exa, beta.URL(provider.Exa)+"/agent/runs/"+id)
-	pollJob(t, sim, provider.Exa, alpha.URL(provider.Exa)+"/agent/runs/"+id)
+	pollJob(t, sim, exa.Name, alpha.URL(exa.Name)+"/agent/runs/"+id)
+	pollJob(t, sim, exa.Name, beta.URL(exa.Name)+"/agent/runs/"+id)
+	pollJob(t, sim, exa.Name, alpha.URL(exa.Name)+"/agent/runs/"+id)
 
 	// Scoped to one namespace, the assertion sees only that lane's polls and
 	// passes: alpha claimed attempts 0 and 1, in order.
-	testkit.AssertPollSequence(t, alpha.Requests(provider.Exa), id, http.StatusOK, http.StatusOK)
-	testkit.AssertPollSequence(t, beta.Requests(provider.Exa), id, http.StatusOK)
+	testkit.AssertPollSequence(t, alpha.Requests(exa.Name), id, http.StatusOK, http.StatusOK)
+	testkit.AssertPollSequence(t, beta.Requests(exa.Name), id, http.StatusOK)
 
 	// Read across the whole Sim, the same id's polls span two namespaces.
 	// That must fail loudly, not merge into a plausible-looking sequence of
 	// three.
 	stub := &stubTB{}
-	testkit.AssertPollSequence(stub, sim.Requests(provider.Exa), id, http.StatusOK, http.StatusOK, http.StatusOK)
+	testkit.AssertPollSequence(stub, sim.Requests(exa.Name), id, http.StatusOK, http.StatusOK, http.StatusOK)
 	require.True(t, stub.Failed())
 	assert.Contains(t, stub.Message(), "different namespaces")
 	assert.Contains(t, stub.Message(), "alpha")
@@ -909,7 +1011,7 @@ func TestAssertPollSequenceRejectsCrossNamespaceCollision(t *testing.T) {
 // rather than a Sim is what makes this possible from outside the module.
 func fakePollEntry(path string, status, attemptIndex int) testkit.Entry {
 	return testkit.Entry{
-		Provider: string(provider.Exa),
+		Provider: string(exa.Name),
 		Method:   http.MethodGet,
 		Path:     path,
 		Outcome:  testkit.Outcome{Status: status, AttemptIndex: attemptIndex},
@@ -953,15 +1055,15 @@ func TestAssertNamespacesIsolatedReportsABrokenCursor(t *testing.T) {
 
 	sim := testkit.Start(t,
 		testkit.WithScenarioYAML(retryScenario),
-		testkit.WithProviders(provider.Exa),
+		testkit.WithProfiles(exa.Profile()), testkit.WithProviders(exa.Name),
 		testkit.WithJournalCapacity(1))
 	alpha := sim.Namespace(t, "alpha")
 	beta := sim.Namespace(t, "beta")
 
 	for range 2 {
-		searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+		searchIn(t, sim, alpha.URL(exa.Name), exa.Name, `{"query":"report a"}`)
 	}
-	searchIn(t, sim, beta.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	searchIn(t, sim, beta.URL(exa.Name), exa.Name, `{"query":"report a"}`)
 
 	require.Len(t, alpha.Journal(), 1, "capacity 1 retains only the second call")
 

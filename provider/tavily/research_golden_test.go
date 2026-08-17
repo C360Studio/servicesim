@@ -139,7 +139,7 @@ func TestGolden_ResearchCreateAtTheJobBound(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
 
-	h := New(provider.Deps{Scenario: loaded, Jobs: jobs.NewRegistry(jobs.Limits{MaxJobs: 1})})
+	h := Profile().Handler(provider.Deps{Scenario: loaded, Jobs: jobs.NewRegistry(jobs.Limits{MaxJobs: 1})})
 
 	first := post(t, h, "/research", `{"input":"first"}`, bearer)
 	require.Equal(t, http.StatusCreated, first.Code, "the first create must succeed: %s", first.Body.String())

@@ -92,7 +92,7 @@ func TestHeadIsServedByItsOwnHandler(t *testing.T) {
 			return Response{Status: http.StatusOK, Label: "head"}
 		},
 	)
-	mux := NewMux(Deps{}, Exa, testRefuse, spec)
+	mux := NewMux(Deps{}, testProviderExa, testRefuse, spec)
 
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodHead, "/runs/run_a", nil))
@@ -112,7 +112,7 @@ func TestHeadAppearsInAllow(t *testing.T) {
 		okHandler(`{"status":"running"}`),
 		func(_ *Exchange) Response { return Response{Status: http.StatusOK, Label: "head"} },
 	)
-	mux := NewMux(Deps{}, Exa, testRefuse, spec)
+	mux := NewMux(Deps{}, testProviderExa, testRefuse, spec)
 
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/runs/run_a", nil))
@@ -141,7 +141,7 @@ func TestHeadDoesNotAdvanceThePollCursor(t *testing.T) {
 			return Response{Status: http.StatusOK, Label: "head"}
 		},
 	)
-	mux := NewMux(Deps{}, Exa, testRefuse, spec)
+	mux := NewMux(Deps{}, testProviderExa, testRefuse, spec)
 
 	for range 3 {
 		w := httptest.NewRecorder()
@@ -172,7 +172,7 @@ func TestPollCursorsArePerJob(t *testing.T) {
 		},
 		func(_ *Exchange) Response { return Response{Status: http.StatusOK, Label: "head"} },
 	)
-	mux := NewMux(Deps{}, Exa, testRefuse, spec)
+	mux := NewMux(Deps{}, testProviderExa, testRefuse, spec)
 
 	for _, id := range []string{"run_a", "run_b", "run_a", "run_b", "run_a"} {
 		w := httptest.NewRecorder()
@@ -232,7 +232,7 @@ func TestNewMuxRoutingTable(t *testing.T) {
 			t.Parallel()
 
 			j := journal.NewRing(8, 4096)
-			mux := NewMux(Deps{Journal: j}, Exa, testExaRefuse, testSpec())
+			mux := NewMux(Deps{Journal: j}, testProviderExa, testExaRefuse, testSpec())
 
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
@@ -283,7 +283,7 @@ func TestNewMuxAllowHeaderIsSorted(t *testing.T) {
 	}
 
 	for range 20 {
-		mux := NewMux(Deps{}, Exa, testRefuse, spec)
+		mux := NewMux(Deps{}, testProviderExa, testRefuse, spec)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, httptest.NewRequest(http.MethodPatch, "/search", nil))
 
@@ -302,7 +302,7 @@ func TestNewMuxSuppliesAllowAndFindingWhenTheProviderDoesNot(t *testing.T) {
 		Handlers: map[string]Handler{"POST /search": okHandler(`{}`)},
 	}
 	j := journal.NewRing(8, 4096)
-	mux := NewMux(Deps{Journal: j}, Exa, testRefuse, spec)
+	mux := NewMux(Deps{Journal: j}, testProviderExa, testRefuse, spec)
 
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/search", nil))
@@ -316,7 +316,7 @@ func TestNewMuxUnmatchedConsumesNoFaultBudget(t *testing.T) {
 	t.Parallel()
 
 	engine := &countingFaults{}
-	mux := NewMux(Deps{Faults: engine}, Exa, testExaRefuse, testSpec())
+	mux := NewMux(Deps{Faults: engine}, testProviderExa, testExaRefuse, testSpec())
 
 	for _, target := range []string{"/nope", "/search/"} {
 		w := httptest.NewRecorder()
@@ -336,7 +336,7 @@ func TestNewMuxSharesOneJournalSequenceAcrossRoutes(t *testing.T) {
 	// Deps is normalised once, in NewMux, so two routes on one listener cannot
 	// draw sequence numbers from two different substitute journals.
 	j := journal.NewRing(8, 4096)
-	mux := NewMux(Deps{Journal: j}, Exa, testExaRefuse, testSpec())
+	mux := NewMux(Deps{Journal: j}, testProviderExa, testExaRefuse, testSpec())
 
 	for _, path := range []string{"/search", "/answer", "/search"} {
 		w := httptest.NewRecorder()

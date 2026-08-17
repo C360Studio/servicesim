@@ -207,9 +207,13 @@ The aliases live in `testkit`, not in `provider`, because putting them in `provi
 
 Nothing in the compiler keeps this set complete, so **U19's `examples/adapter` module — already a separate module —
 owns the guard**: `examples/adapter/journal_test.go` declares a type implementing `testkit.Journal` (all five methods,
-`Stats() testkit.Stats` included), passes it as `provider.Deps{Journal: ...}`, and reads `e.Outcome.Kind`,
-`e.Auth.Fingerprint` and `e.Findings[0].Severity` through the aliased types. If an alias is missing, that module stops
-compiling; without it, the gap is invisible until a consumer hits it.
+`Stats() testkit.Stats` included), passes it as `provider.Deps{Journal: ...}`, and reads `e.Outcome.Kind` and
+`e.Auth.Fingerprint` through the aliased types. If an alias is missing, that module stops compiling; without it, the
+gap is invisible until a consumer hits it. `Finding` and `Severity` are deliberately NOT in this set (Phase 10 unit
+4): they are `provider.Finding`/`provider.Severity`, converted at the boundary rather than aliased, because
+`journal.Finding` prints as a documentation dead end (`go doc testkit Entry` showed no fields, no methods, an
+unreachable target) — `e.Findings[0].Severity` is still readable off a real `Entry`, through type inference rather
+than a named `testkit.Finding`/`testkit.Severity` variable.
 
 ---
 

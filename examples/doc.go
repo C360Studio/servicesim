@@ -14,14 +14,19 @@
 //
 //	import (
 //	    "github.com/c360studio/servicesim/provider"
+//	    "github.com/c360studio/servicesim/provider/exa"
 //	    "github.com/c360studio/servicesim/testkit"
 //	)
 //
-// and gets exactly the surface these files use. Nothing here may reach into
-// github.com/c360studio/servicesim/internal/..., because a consumer outside this
-// module cannot: Go's own import rules forbid it. An example that used an
-// internal package would be teaching something impossible, so imports_test.go
-// parses every file in this directory and fails if one ever does.
+// and gets exactly the surface these files use. `testkit.WithProfiles(exa.Profile(), ...)` is how a test
+// says which simulated APIs it needs — required, not defaulted, so a team simulating one vendor never
+// pulls in every reference profile's contracts and goldens; the four reference profiles live at
+// provider/exa, provider/tavily, provider/perplexity and provider/mcp, each exporting Profile(). Nothing
+// here may reach into github.com/c360studio/servicesim/internal/..., because a consumer outside this
+// module cannot: Go's own import rules forbid it. An example that used an internal package would be
+// teaching something impossible, so imports_test.go parses every file in this directory and fails if
+// one ever does. A profile package import (provider/exa and friends) is fine — it is what a consumer
+// does.
 //
 // The adapter itself imports nothing from Servicesim at all. That is the shape a
 // consumer wants: production code has no dependency on the simulator, and only

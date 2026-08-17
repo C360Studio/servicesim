@@ -216,7 +216,7 @@ func TestSelectTurnForSharesTheFaultCounter(t *testing.T) {
 
 	for callIndex, c := range calls {
 		x := &Exchange{
-			Deps: d, Provider: Exa, Route: testRoute,
+			Deps: d, Provider: testProviderExa, Route: testRoute,
 			Raw:      []byte(c.raw),
 			decision: FaultDecision{Index: -1},
 		}
@@ -233,7 +233,7 @@ func TestSelectTurnForRecordsAFindingWhenNothingMatches(t *testing.T) {
 	entry := mustScenario(t, noFallbackYAML).Provider("exa")
 	d := Deps{Faults: &scriptedFaults{}}.Normalized()
 
-	x := &Exchange{Deps: d, Provider: Exa, Route: testRoute, decision: FaultDecision{Index: -1}}
+	x := &Exchange{Deps: d, Provider: testProviderExa, Route: testRoute, decision: FaultDecision{Index: -1}}
 	_ = x.Fault() // claim 0
 	x.claimed = true
 	x.decision = FaultDecision{Index: 1, Key: testRoute.FaultKey}
@@ -440,7 +440,7 @@ func TestSelectTurnForIsKeyedOnTheLaneNotTheRoute(t *testing.T) {
 
 	call := func(lane Lane, raw string) int {
 		x := &Exchange{
-			Deps: d, Provider: Exa, Route: testRoute,
+			Deps: d, Provider: testProviderExa, Route: testRoute,
 			Raw: []byte(raw), lane: lane,
 			decision: FaultDecision{Index: -1},
 		}
@@ -466,7 +466,7 @@ func TestSelectTurnForIsKeyedOnTheLaneNotTheRoute(t *testing.T) {
 func TestExchangeCursorKeyFallsBackToTheRoute(t *testing.T) {
 	t.Parallel()
 
-	x := &Exchange{Deps: Deps{}.Normalized(), Provider: Exa, Route: testRoute}
+	x := &Exchange{Deps: Deps{}.Normalized(), Provider: testProviderExa, Route: testRoute}
 	require.Equal(t, testRoute.FaultKey, x.cursorKey())
 	require.Equal(t, testRoute.FaultKey, x.Fault().Key)
 

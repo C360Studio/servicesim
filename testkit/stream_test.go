@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/c360studio/servicesim/provider"
+	"github.com/c360studio/servicesim/provider/exa"
+	"github.com/c360studio/servicesim/provider/perplexity"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +38,7 @@ providers:
 func doStream(tb testing.TB, sim *testkit.Sim, base string) []byte {
 	tb.Helper()
 
-	req := newRequest(context.Background(), tb, base+"/v1/sonar", provider.Perplexity,
+	req := newRequest(context.Background(), tb, base+"/v1/sonar", perplexity.Name,
 		`{"model":"sonar-deep-research","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 	resp, err := sim.Client().Do(req)
 	require.NoError(tb, err)
@@ -55,13 +56,13 @@ func doStream(tb testing.TB, sim *testkit.Sim, base string) []byte {
 func TestAwaitStreamClosedWaitsForCompletion(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(perplexityStreamScenario),
-		testkit.WithProviders(provider.Perplexity))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(perplexityStreamScenario),
+		testkit.WithProviders(perplexity.Name))
 
-	transcript := doStream(t, sim, sim.URL(provider.Perplexity))
+	transcript := doStream(t, sim, sim.URL(perplexity.Name))
 	assert.Contains(t, string(transcript), "[DONE]")
 
-	entries := sim.AwaitRequests(t, provider.Perplexity, 1)
+	entries := sim.AwaitRequests(t, perplexity.Name, 1)
 	require.Len(t, entries, 1)
 	seq := entries[0].Seq
 
@@ -82,13 +83,13 @@ func TestAwaitStreamClosedWaitsForCompletion(t *testing.T) {
 func TestNamespaceAwaitStreamClosedScopesToItsLane(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(perplexityStreamScenario),
-		testkit.WithProviders(provider.Perplexity))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(perplexityStreamScenario),
+		testkit.WithProviders(perplexity.Name))
 	ns := sim.NamespaceFor(t)
 
-	_ = doStream(t, sim, ns.URL(provider.Perplexity))
+	_ = doStream(t, sim, ns.URL(perplexity.Name))
 
-	entries := ns.AwaitRequests(t, provider.Perplexity, 1)
+	entries := ns.AwaitRequests(t, perplexity.Name, 1)
 	require.Len(t, entries, 1)
 
 	closed := ns.AwaitStreamClosed(t, entries[0].Seq)
@@ -103,11 +104,11 @@ func TestNamespaceAwaitStreamClosedScopesToItsLane(t *testing.T) {
 func TestAwaitStreamClosedFailsOnANonStreamingEntry(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
-	resp := search(t, sim, provider.Exa, "/search", `{"query":"report a"}`)
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
+	resp := search(t, sim, exa.Name, "/search", `{"query":"report a"}`)
 	require.Equal(t, 200, resp.StatusCode)
 
-	entries := sim.AwaitRequests(t, provider.Exa, 1)
+	entries := sim.AwaitRequests(t, exa.Name, 1)
 	require.Len(t, entries, 1)
 	require.Nil(t, entries[0].Outcome.Stream)
 
@@ -124,11 +125,11 @@ func TestAwaitStreamClosedFailsOnANonStreamingEntry(t *testing.T) {
 func TestAssertStreamPacingComparesThePlannedSchedule(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(perplexityStreamScenario),
-		testkit.WithProviders(provider.Perplexity))
-	_ = doStream(t, sim, sim.URL(provider.Perplexity))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(perplexityStreamScenario),
+		testkit.WithProviders(perplexity.Name))
+	_ = doStream(t, sim, sim.URL(perplexity.Name))
 
-	entries := sim.AwaitRequests(t, provider.Perplexity, 1)
+	entries := sim.AwaitRequests(t, perplexity.Name, 1)
 	require.Len(t, entries, 1)
 	e := entries[0]
 	require.NotNil(t, e.Outcome.Stream)
@@ -150,11 +151,11 @@ func TestAssertStreamPacingComparesThePlannedSchedule(t *testing.T) {
 func TestAssertStreamUsageComparesTheDeclaredUsage(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(perplexityStreamScenario),
-		testkit.WithProviders(provider.Perplexity))
-	_ = doStream(t, sim, sim.URL(provider.Perplexity))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(perplexityStreamScenario),
+		testkit.WithProviders(perplexity.Name))
+	_ = doStream(t, sim, sim.URL(perplexity.Name))
 
-	entries := sim.AwaitRequests(t, provider.Perplexity, 1)
+	entries := sim.AwaitRequests(t, perplexity.Name, 1)
 	require.Len(t, entries, 1)
 	e := entries[0]
 	require.NotNil(t, e.Outcome.Stream)
@@ -189,11 +190,11 @@ providers:
       terminal:
         omit_usage: true
 `
-	sim := testkit.Start(t, testkit.WithScenarioYAML(omitUsageScenario),
-		testkit.WithProviders(provider.Perplexity))
-	_ = doStream(t, sim, sim.URL(provider.Perplexity))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(omitUsageScenario),
+		testkit.WithProviders(perplexity.Name))
+	_ = doStream(t, sim, sim.URL(perplexity.Name))
 
-	entries := sim.AwaitRequests(t, provider.Perplexity, 1)
+	entries := sim.AwaitRequests(t, perplexity.Name, 1)
 	require.Len(t, entries, 1)
 	e := entries[0]
 	require.NotNil(t, e.Outcome.Stream)

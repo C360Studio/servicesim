@@ -178,10 +178,12 @@ type Profile struct {
 	// in a later unit) refuses a fixture or a Go default for naming.
 	Hosts []string
 
-	// DerivedIDs are response JSON paths whose value is derived per call
-	// (an attempt-varying request/response identifier), pruned by default
-	// from a golden compare — see testkit/golden.go's derivedIDPaths, which
-	// this field replaces the hand-maintained union of.
+	// DerivedIDs are response JSON paths whose value is derived per call (an
+	// attempt-varying request/response identifier). A golden compare prunes
+	// them only when a caller opts in — testkit.AssertGoldenJSON/SSE ignore
+	// nothing by default — by passing testkit.GoldenDerivedIDs(paths...),
+	// most often sourced from this field through provider.Set.DerivedIDs and
+	// testkit.Sim.DerivedIDs rather than named by hand.
 	DerivedIDs []string
 
 	// StreamDerivedIDs are the same, for paths inside a decoded SSE frame

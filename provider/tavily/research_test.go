@@ -198,7 +198,7 @@ func TestResearchCreateAtTheJobBound(t *testing.T) {
 	})
 	require.Empty(t, findings, "the fixture must validate before it is served")
 
-	h := New(provider.Deps{Scenario: loaded, Jobs: jobs.NewRegistry(jobs.Limits{MaxJobs: 1})})
+	h := Profile().Handler(provider.Deps{Scenario: loaded, Jobs: jobs.NewRegistry(jobs.Limits{MaxJobs: 1})})
 
 	rec := post(t, h, "/research", `{"input":"first"}`, bearer)
 	require.Equal(t, http.StatusCreated, rec.Code, "the first create must succeed: %s", rec.Body.String())

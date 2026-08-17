@@ -91,8 +91,8 @@ func pollAsyncJob(t *testing.T, client *http.Client, base, id string) map[string
 func TestAsyncJobCreateThenPollThroughTestkit(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(asyncJobScenario), testkit.WithProviders(provider.Exa))
-	base := sim.URL(provider.Exa)
+	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile()), testkit.WithScenarioYAML(asyncJobScenario), testkit.WithProviders(exa.Name))
+	base := sim.URL(exa.Name)
 
 	id := createAsyncJob(t, sim.Client(), base)
 
@@ -107,7 +107,7 @@ func TestAsyncJobCreateThenPollThroughTestkit(t *testing.T) {
 	require.Len(t, jobs, 1, "the poll loop above created exactly one job")
 	assert.Equal(t, id, jobs[0].ID)
 
-	testkit.AssertPollSequence(t, sim.Requests(provider.Exa), id, http.StatusOK, http.StatusOK, http.StatusOK)
+	testkit.AssertPollSequence(t, sim.Requests(exa.Name), id, http.StatusOK, http.StatusOK, http.StatusOK)
 }
 
 // asyncJobScenarioAliased is design §2.1's shape verbatim: the anchor on the
@@ -182,8 +182,8 @@ func TestAsyncJobScenario_AliasedRespondAcrossTurns(t *testing.T) {
 	require.NoError(t, err, "scenario.Parse: %+v", report.Findings)
 	assert.Empty(t, report.Findings, "the §2.1 shape must load with no findings")
 
-	sim := testkit.Start(t, testkit.WithScenario(s), testkit.WithProviders(provider.Exa))
-	base := sim.URL(provider.Exa)
+	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile()), testkit.WithScenario(s), testkit.WithProviders(exa.Name))
+	base := sim.URL(exa.Name)
 
 	id := createAsyncJob(t, sim.Client(), base)
 
@@ -194,7 +194,7 @@ func TestAsyncJobScenario_AliasedRespondAcrossTurns(t *testing.T) {
 	done := pollAsyncJob(t, sim.Client(), base, id)
 	assert.Equal(t, "completed", done["status"])
 
-	testkit.AssertPollSequence(t, sim.Requests(provider.Exa), id, http.StatusOK, http.StatusOK, http.StatusOK)
+	testkit.AssertPollSequence(t, sim.Requests(exa.Name), id, http.StatusOK, http.StatusOK, http.StatusOK)
 }
 
 // pollAsyncJobBytes issues one poll and returns the raw response body, for
@@ -226,10 +226,10 @@ func pollAsyncJobBytes(t *testing.T, client *http.Client, base, id string) []byt
 func TestAsyncJobScenario_AliasedRendersByteIdenticalToLonghand(t *testing.T) {
 	t.Parallel()
 
-	aliased := testkit.Start(t, testkit.WithScenarioYAML(asyncJobScenarioAliased), testkit.WithProviders(provider.Exa))
-	longhand := testkit.Start(t, testkit.WithScenarioYAML(asyncJobScenarioLonghand), testkit.WithProviders(provider.Exa))
+	aliased := testkit.Start(t, testkit.WithProfiles(exa.Profile()), testkit.WithScenarioYAML(asyncJobScenarioAliased), testkit.WithProviders(exa.Name))
+	longhand := testkit.Start(t, testkit.WithProfiles(exa.Profile()), testkit.WithScenarioYAML(asyncJobScenarioLonghand), testkit.WithProviders(exa.Name))
 
-	aliasedBase, longhandBase := aliased.URL(provider.Exa), longhand.URL(provider.Exa)
+	aliasedBase, longhandBase := aliased.URL(exa.Name), longhand.URL(exa.Name)
 
 	aliasedID := createAsyncJob(t, aliased.Client(), aliasedBase)
 	longhandID := createAsyncJob(t, longhand.Client(), longhandBase)
@@ -251,16 +251,25 @@ func TestAsyncJobScenario_AliasedRendersByteIdenticalToLonghand(t *testing.T) {
 // returned; Deps.Jobs left nil means a create still answers but every poll
 // after it 404s. The job is read back through Jobs.Lookup, naming only the
 // aliased [testkit.Job].
+//
+// The handler and the fault engine both come from one provider.Set —
+// provider.NewSet(exa.Profile()).Lookup(exa.Name).Handler(deps) and
+// set.Faults(s) — in place of the deleted exa.New and testkit.NewFaults:
+// (*provider.Set).Faults is the only exported fault-engine constructor.
 func TestAsyncJobViaHandBuiltDeps(t *testing.T) {
 	t.Parallel()
 
 	s, _, err := scenario.Parse([]byte(asyncJobScenario))
 	require.NoError(t, err)
 
+	set := provider.MustSet(exa.Profile())
+	p, ok := set.Lookup(exa.Name)
+	require.True(t, ok)
+
 	store := testkit.NewJobs()
-	srv := httptest.NewServer(exa.New(provider.Deps{
+	srv := httptest.NewServer(p.Handler(provider.Deps{
 		Scenario: s,
-		Faults:   testkit.NewFaults(s),
+		Faults:   set.Faults(s),
 		Jobs:     store,
 	}))
 	t.Cleanup(srv.Close)

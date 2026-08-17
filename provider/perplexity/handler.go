@@ -132,8 +132,8 @@ func AgentRoutes() []provider.Route {
 	return []provider.Route{RouteAgent(), RouteResponses(), RouteResponsesBare()}
 }
 
-// handlers maps every route this profile serves to its handler, shared by
-// Profile() and the deprecated New.
+// handlers maps every route this profile serves to its handler, read by
+// Profile().
 func handlers() map[string]provider.Handler {
 	return map[string]provider.Handler{
 		PatternSonar:             handleSonar,
@@ -153,21 +153,6 @@ func announce(d provider.Deps) {
 	d.Logger.Info("perplexity.sonar.sunset",
 		slog.String("date", SunsetDate.Format("2006-01-02")),
 		slog.String("successor", PatternAgent))
-}
-
-// New returns the Perplexity handler, built with provider.NewMux over Routes().
-//
-// The zero Deps is usable: it serves well-shaped empty successes on all six
-// routes with no journal, no faults and a real clock. Note that a zero Deps
-// means no faults even if the Scenario declares them — pass testkit.NewFaults(s)
-// as Deps.Faults, or use testkit.Start, to get the scenario's declared faults;
-// Deps.Normalized logs deps.faults_ignored if you do not.
-//
-// Deprecated: use Profile().Handler(deps). New is removed once
-// internal/server and testkit are rewired onto provider.Set (Phase 10 units
-// 3-4).
-func New(deps provider.Deps) http.Handler {
-	return Profile().Handler(deps)
 }
 
 // errorResponse builds a provider-shaped error response for a surface.

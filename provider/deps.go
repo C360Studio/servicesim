@@ -135,8 +135,8 @@ func (f *noopFaults) Reset() {
 }
 
 // Deps is everything a provider handler is constructed with. The zero value is
-// usable: exa.New(provider.Deps{}) serves well-shaped empty successes with no
-// journal, no faults and a real clock.
+// usable: exa.Profile().Handler(provider.Deps{}) serves well-shaped empty
+// successes with no journal, no faults and a real clock.
 type Deps struct {
 	// Scenario is the loaded, validated, resolved corpus. nil means scenario.Empty().
 	Scenario *scenario.Scenario
@@ -151,7 +151,8 @@ type Deps struct {
 	// almost always a wiring mistake rather than an intent, Normalized logs a
 	// deps.faults_ignored warning when Scenario.HasFaults() is true and Faults is
 	// nil. testkit.Start and internal/server always wire it; a consumer building
-	// Deps by hand gets one from testkit.NewFaults(s).
+	// Deps by hand gets one from a Set's own (*Set).Faults(s) — the only
+	// exported fault-engine constructor.
 	//
 	// Normalized substitutes a no-op implementation for nil: it claims attempt
 	// indices, because the turn cursor reads them, and never returns an attempt.
@@ -268,7 +269,7 @@ func (d Deps) Normalized() Deps {
 		if d.Scenario.HasFaults() {
 			d.Logger.Warn("deps.faults_ignored",
 				slog.String("scenario", d.Scenario.Name),
-				slog.String("hint", "the scenario declares faults but Deps.Faults is nil; pass testkit.NewFaults(s)"))
+				slog.String("hint", "the scenario declares faults but Deps.Faults is nil; pass NewSet(ps...).Faults(s)"))
 		}
 		d.Faults = &noopFaults{}
 	}

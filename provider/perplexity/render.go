@@ -206,7 +206,7 @@ var FinishReasons = []string{"stop", "length"}
 func idParts(x *provider.Exchange, callIndex int, extra ...string) []string {
 	parts := []string{
 		x.Deps.Scenario.SeedKey(),
-		string(provider.Perplexity),
+		string(Name),
 		x.Route.FaultKey,
 		strconv.Itoa(callIndex),
 	}

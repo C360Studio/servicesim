@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/c360studio/servicesim/provider"
+	"github.com/c360studio/servicesim/provider/exa"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/require"
 )
@@ -79,7 +79,7 @@ func (l *spacingLimiter) wait() {
 func TestClientLimiterHoldsItsBudget(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile()), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 	adapter := newAdapter(sim.Client(), sim.BaseURLs())
 
 	const (
@@ -95,7 +95,7 @@ func TestClientLimiterHoldsItsBudget(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	entries := sim.Requests(provider.Exa)
+	entries := sim.Requests(exa.Name)
 	require.Len(t, entries, n)
 
 	testkit.AssertMaxRate(t, entries, 1, assertPer)

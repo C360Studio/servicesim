@@ -881,7 +881,8 @@ is theirs (D12); Servicesim does not unblock it.
   - Phase 8 unit 2: the MCP profile — `provider/mcp`, a modern-era (2026-07-28) Streamable HTTP server: listener
     `mcp`, **new default port 8084 and flag `--mcp-port`** (`SERVICESIM_MCP_PORT`), `POST /mcp`,
     `server/discover`/`tools/list`/`tools/call`, JSON and per-request SSE answers, strict request validation with
-    JSON-RPC-shaped fail-closed errors, `contracts.MCP` with 18 goldens, `provider.MCP`, `testkit.MCPHandler`,
+    JSON-RPC-shaped fail-closed errors, `contracts.MCP` with 18 goldens, the `provider` package's `MCP` constant
+    and the `testkit` package's `MCPHandler` constructor (both since removed, Phase 10 unit 4),
     `MCP_BASE_URL` from `Sim.BaseURLs`, an `mcp:` block in every built-in, `EXPOSE 8084` in the image.
   - **Behaviour a v0.4.0 consumer could notice:** `DefaultProviders` now includes `mcp`, so a bare `servicesim`
     binary and the image bind a fourth listener on 8084 (`--providers exa,tavily,perplexity` keeps three), and
@@ -926,8 +927,9 @@ is theirs (D12); Servicesim does not unblock it.
     `internal/server`'s `relaxAuth` is rewritten to consult each entry's OWNING PROFILE's `DefaultAuth` rather than
     flattening every profile to one strict-auth behaviour — MCP's own optional default was already correct and is
     now provably so under both `--strict-auth` settings, not by accident. `testkit.WithProfiles` (additive; required
-    in unit 4) and `testkit.NewJournal()` close AUDIT 1 gaps 7 and 8; `testkit.NewFaults` is deprecated, not yet
-    deleted. All four in-tree profiles still build and pass; a fifteen-line out-of-tree profile, registered with
+    in unit 4) and `testkit.NewJournal()` close AUDIT 1 gaps 7 and 8; the `testkit` package's `NewFaults` helper
+    is deprecated at this point, not yet deleted (that is unit 4's work). All four in-tree profiles still build
+    and pass; a fifteen-line out-of-tree profile, registered with
     `provider.NewSet` and served through `Profile.Handler`, proves the seam end to end with no import of
     `servicesim/internal` in its own source (Go's own internal-visibility rule makes that structural, not merely
     tested) — `scratchpad/u2-outoftree/` at unit-2 time, not carried into the repository.
@@ -978,7 +980,7 @@ is theirs (D12); Servicesim does not unblock it.
     `"scenario.unknown"`, not `RefusalKind`'s own spelling (`"scenario_unknown"`) — preserving the exact bytes
     `internal/server`'s deleted `scenarioNotFoundBody` produced pre-unit-2, since nothing forced that value to
     change and an adopter reading it as a stable identifier had no reason to expect otherwise.
-  - `provider.Exa`/`Tavily`/`Perplexity`/`MCP` (the four constants) now carry a `// Deprecated:` doc line, as the
+  - The `provider` package's `Exa`/`Tavily`/`Perplexity`/`MCP` constants now carry a `// Deprecated:` doc line, as the
     spec's DoD for every deferred deletion requires; two profile doc comments that said a constant was
     "now-deleted" are corrected to "now-deprecated" (it is not deleted — that is unit 3's work, once
     `internal/config`/`internal/server` stop naming it).
@@ -1044,8 +1046,8 @@ is theirs (D12); Servicesim does not unblock it.
   `exa.Profile()`, `tavily.Profile()`, `perplexity.Profile()`, `mcp.Profile()` into one `provider.MustSet(...)`
   and calls `servicesim.Main`. `internal/faults` is deleted (unit 1b): `provider/fault_engine.go` — the copy
   `(*Set).Faults` had to use in unit 2, since `internal/faults` imports `provider` — is now the only fault
-  engine; its 28 tests moved into `provider/fault_engine_test.go` with no drop in count, and
-  `testkit.NewFaults` becomes a wrapper over the four reference `Profile()`s and `set.Faults`. A new startup
+  engine; its 28 tests moved into `provider/fault_engine_test.go` with no drop in count, and the `testkit`
+  package's `NewFaults` becomes a wrapper over the four reference `Profile()`s and `set.Faults`. A new startup
   finding, `scenario.profile.unscripted`, warns once per registered-and-enabled profile whose scenario declares
   no block for any of its entry kinds, so a profile with nothing scripted answers with a diagnosed empty
   response instead of a silent one. Proved end to end by an out-of-module consumer under `scratchpad/u3-consumer/`
@@ -1158,6 +1160,25 @@ is theirs (D12); Servicesim does not unblock it.
   projection-body section). The `scenario` package needs nothing: `providers:` is an open registry and
   `when.body_json` already takes nested dotted paths. Note testkit derives the base-URL env var from the provider
   name, so MCP_BASE_URL arrives with no mapping table.
+- **Phase 10 unit 4 (2026-08-17): `testkit` generalised over the `Set`.** `WithProfiles` is REQUIRED — `Start` and
+  the new generic `Handler(tb, name, opts...)` fail `tb`, named, with the one-line fix when it is omitted, closing
+  D-5; the four `XHandler` constructors, `NewFaults`, and the `Finding`/`Severity` aliases (now `provider.Finding`/
+  `provider.Severity`, one name per concept) are deleted, and `testkit` imports no profile package.
+  `derivedIDPaths`/`streamDerivedIDPaths` stop being package globals: `GoldenDerivedIDs(paths ...string)` is the
+  caller-declared replacement, and `Sim.DerivedIDs()` hands back the registered set's own so a caller need not name
+  a vendor's field by hand. `AssertCovers(tb, fsys, kinds...)` is the library form of
+  `TestBuiltins_CoverEveryImplementedProvider`. The deletions whose last in-tree caller was `testkit` land here too:
+  `provider/{exa,tavily,perplexity,mcp}.New` and the `provider` package's four `Exa`/`Tavily`/`Perplexity`/`MCP`
+  constants — every profile's typed `Name` (`exa.Name`, `tavily.Name`, `perplexity.Name`, `mcp.Name`) is the sole
+  surviving spelling. The mechanical sweep the guard forces followed: every `examples/*.go` `testkit.Start` gained
+  the minimal `WithProfiles` its test needs, and every reference to one of the deleted constants was rewritten to
+  the matching profile's typed `Name` tree-wide
+  (`scenarios/scenarios_test.go`, `provider`'s own in-package tests, which needed two local `Name` constants —
+  `testProviderExa`/`testProviderPerplexity` — since they never named a vendor package to begin with), README,
+  `docs/troubleshooting.md`, `docs/scenario-schema.md` and `CONTRIBUTING.md` re-copied from the changed examples.
+  The out-of-tree module from unit 2 (`scratchpad/u2-outoftree/`) moved to `WithProfiles`/`Handler` and gained a
+  `GoldenDerivedIDs("acme_id")` golden test, proving the pruning really is caller-declared rather than
+  testkit-assumed.
 
 ### Phase 9 — The two doctrine-contradicting features
 

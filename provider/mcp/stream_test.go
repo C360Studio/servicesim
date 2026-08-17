@@ -57,7 +57,7 @@ func newSSESim(t *testing.T, src string) *sseSim {
 	require.Empty(t, provider.ValidateScenario(loaded, map[string]provider.Validator{string(Name): Validator{}}))
 
 	ring := journal.NewRing(64, 1<<16)
-	srv := httptest.NewServer(New(provider.Deps{
+	srv := httptest.NewServer(Profile().Handler(provider.Deps{
 		Scenario: loaded, Journal: ring, Faults: provider.MustSet(Profile()).Faults(loaded),
 	}))
 	t.Cleanup(srv.Close)
@@ -351,7 +351,7 @@ providers:
 	require.Equal(t, scenario.SeverityWarning, findings[0].Severity)
 
 	ring := journal.NewRing(64, 1<<16)
-	srv := httptest.NewServer(New(provider.Deps{
+	srv := httptest.NewServer(Profile().Handler(provider.Deps{
 		Scenario: loaded, Journal: ring, Faults: provider.MustSet(Profile()).Faults(loaded),
 	}))
 	t.Cleanup(srv.Close)

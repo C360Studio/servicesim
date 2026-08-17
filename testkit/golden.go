@@ -26,8 +26,9 @@ const UpdateGoldenEnv = "SERVICESIM_UPDATE_GOLDEN"
 
 // goldenOptions is the resolved configuration of one AssertGoldenJSON call.
 type goldenOptions struct {
-	ignore   []string
-	exactIDs bool
+	ignore     []string
+	derivedIDs []string
+	exactIDs   bool
 }
 
 // GoldenOption tunes [AssertGoldenJSON] and [AssertGoldenSSE]; for the
@@ -45,53 +46,47 @@ func GoldenIgnore(paths ...string) GoldenOption {
 	}
 }
 
-// GoldenExactIDs opts back into comparing the derived identifier fields that are
-// ignored by default. Use it for a test that always asserts at the same call
-// position: an identifier advances with call index on every call, whether or
-// not the route has a declared fault plan, so it is stable across runs only for
-// the same call position, never merely because no fault plan is declared.
+// GoldenDerivedIDs names dotted JSON paths a caller declares as derived per
+// call — a response field or SSE-frame field whose value advances with call
+// index (an attempt-scripted identifier, most often), so comparing it would
+// make a retry or fault-plan test fail for the one reason it should not.
+//
+// There is no default set: a package that names no vendor cannot know a
+// vendor's field spelling, so nothing is pruned unless a caller says so.
+// [Sim.DerivedIDs] returns the registered profiles' own declared paths —
+// sourcing GoldenDerivedIDs from it, rather than naming a field by hand, is
+// what proves the pruning is caller-declared, not testkit-assumed:
+//
+//	paths, streamPaths := sim.DerivedIDs()
+//	testkit.AssertGoldenSSE(t, path, transcript, testkit.GoldenDerivedIDs(append(paths, streamPaths...)...))
+//
+// [GoldenExactIDs] opts back out of every path this option named, for a test
+// that always asserts at the same call position: an identifier advances with
+// call index on every call, whether or not the route has a declared fault
+// plan, so it is stable across runs only for the same call position, never
+// merely because no fault plan is declared.
+func GoldenDerivedIDs(paths ...string) GoldenOption {
+	return func(o *goldenOptions) {
+		o.derivedIDs = append(o.derivedIDs, paths...)
+	}
+}
+
+// GoldenExactIDs opts out of pruning the paths [GoldenDerivedIDs] named, so a
+// golden compares them exactly rather than ignoring them.
 func GoldenExactIDs() GoldenOption {
 	return func(o *goldenOptions) {
 		o.exactIDs = true
 	}
 }
 
-// derivedIDPaths are the identifier fields ignored by default: Exa's requestId,
-// Tavily's request_id and Perplexity's top-level id. A route with a declared
-// fault plan varies them per attempt by design, because the attempt index is
-// part of the identifier tuple, so comparing them would make a retry test fail
-// for the one reason it should not.
-//
-// MCP mints no identifier of its own — the top-level "id" in an MCP response
-// envelope is the JSON-RPC id the CLIENT sent, echoed back verbatim, never
-// derived from the attempt index — but "id" is already in this list for
-// Perplexity's sake, and pruning a client-echoed id by default is harmless:
-// it is not attempt-varying, so nothing about it needed a fault-aware ignore
-// rule, and [GoldenExactIDs] restores it for a test that wants to assert the
-// exact echo.
-var derivedIDPaths = []string{"requestId", "request_id", "id"}
-
-// streamDerivedIDPaths are additional derived-identifier paths AssertGoldenSSE
-// prunes by default, on top of derivedIDPaths. They exist because a frame's
-// decoded data is a typed SSE event payload, not a response body: the
-// GrammarTyped (Perplexity Agent) envelope carries its call-index-derived ids
-// nested under "response" and "item" rather than at the frame's own top
-// level — response.created and response.completed wrap the ResponsesResponse
-// under "response", and the output_item/output_text events name the message
-// item under "item" or "item_id". Without these, an Agent stream golden fails
-// on every frame past the call it was recorded at, because every one of these
-// ids advances with call index exactly as the top-level "id" derivedIDPaths
-// already prunes for the Sonar grammar.
-var streamDerivedIDPaths = []string{"response.id", "item.id", "item_id"}
-
 // AssertGoldenJSON compares got against the golden file at path, semantically:
 // both sides are decoded into any and diffed with go-cmp, because extra-field
 // merging reorders keys and JSON object order is not part of any of these wire
 // contracts.
 //
-// By default it ignores the derived identifier fields — requestId, request_id
-// and the top-level Perplexity id. [GoldenExactIDs] opts back in, and
-// [GoldenIgnore] excludes more.
+// It ignores nothing by default: pass [GoldenDerivedIDs] naming the paths
+// this golden's own vendor derives per call, and [GoldenIgnore] to exclude
+// more.
 //
 // It performs a plain comparison and knows nothing about provenance: a consumer's
 // goldens live in the consumer's repository, and failing their first call with an
@@ -133,7 +128,7 @@ func AssertGoldenJSON(tb testing.TB, path string, got []byte, opts ...GoldenOpti
 
 	ignore := o.ignore
 	if !o.exactIDs {
-		ignore = slices.Concat(derivedIDPaths, ignore)
+		ignore = slices.Concat(o.derivedIDs, ignore)
 	}
 	for _, p := range ignore {
 		wantValue = prune(wantValue, p)
@@ -176,18 +171,19 @@ func writeGolden(tb testing.TB, path string, value any) {
 // one-frame diff, not a whole-file diff.
 //
 // Each frame's data line is decoded as JSON and compared semantically,
-// through the same [GoldenOption]s AssertGoldenJSON accepts: derived
-// identifiers are pruned from every frame's data by default, because a
-// chunk id advances with call index by design. For the Sonar (GrammarDelta)
-// grammar that is the same top-level requestId/request_id/id derivedIDPaths
-// prunes for AssertGoldenJSON; for the Agent (GrammarTyped) grammar, whose
-// frames wrap a typed event payload rather than a bare response body, it is
-// also response.id, item.id, item_id, and every element of
-// response.completed's response.output array — the last of those because it
-// sits inside a JSON array, which the dotted GoldenIgnore path syntax cannot
-// address by design (see [GoldenIgnore]), so it is pruned unconditionally
-// rather than left permanently unmatchable. [GoldenExactIDs] opts back in to
-// comparing all of the above for a route with no declared fault plan, and
+// through the same [GoldenOption]s AssertGoldenJSON accepts: pass
+// [GoldenDerivedIDs] naming every path this golden's own vendor derives per
+// call, inside every frame's decoded data — for a typed-event grammar whose
+// frames wrap a payload rather than a bare response body, that is commonly a
+// nested path such as response.id or item_id, not only a top-level one. One
+// path shape needs no declaring at all: every element's "id" inside a
+// response.output array (a typed-event grammar's list of output items) is
+// pruned whenever any pruning applies (whenever [GoldenExactIDs] was not
+// passed), because it sits inside a JSON array, which the dotted
+// GoldenIgnore/GoldenDerivedIDs path syntax cannot address by design (see
+// [GoldenIgnore]) — pruned unconditionally rather than left permanently
+// unmatchable. [GoldenExactIDs] opts back into comparing all of the above,
+// including that one, for a route with no declared fault plan, and
 // [GoldenIgnore] excludes more. The bare "[DONE]" token is not JSON and is
 // compared as the literal string it is — its presence or absence is itself
 // part of the golden, which is what lets a scripted terminal.omit_done be
@@ -213,7 +209,7 @@ func AssertGoldenSSE(tb testing.TB, path string, transcript []byte, opts ...Gold
 	ignore := o.ignore
 	pruneOutputIDs := false
 	if !o.exactIDs {
-		ignore = slices.Concat(derivedIDPaths, streamDerivedIDPaths, ignore)
+		ignore = slices.Concat(o.derivedIDs, ignore)
 		pruneOutputIDs = true
 	}
 
@@ -360,7 +356,7 @@ func decodeSSEFrames(raw []sseRawFrame, ignore []string, pruneOutputIDs bool) []
 // pruneResponseOutputIDs strips the "id" field from every element of
 // response.output, when v decodes to a frame shaped that way (the
 // GrammarTyped response.created/response.completed events). It is not
-// expressible through the dotted-path GoldenIgnore/derivedIDPaths mechanism
+// expressible through the dotted-path GoldenIgnore/GoldenDerivedIDs mechanism
 // because response.output is a JSON array and prune does not address array
 // elements by index — deliberately, per GoldenIgnore's doc comment, because a
 // golden that pins one element of an array is pinning the wrong thing. This

@@ -14,17 +14,15 @@ import (
 // instead of naming one.
 const defaultPort = 8081
 
-// Name is this listener's identity in a provider.Set, the scenario provider
-// entry's key, and — since exa.Name has never had a typed spelling before
-// this unit — the canonical replacement for provider.Exa, deprecated in this
-// unit and deleted once internal/config and internal/server stop naming it
-// (framework-seam.md: "a framework core has no business naming four
-// vendors").
+// Name is this listener's identity in a provider.Set and the scenario
+// provider entry's key — the canonical spelling of what the deleted
+// provider.Exa constant used to name (framework-seam.md: "a framework core
+// has no business naming four vendors").
 const Name provider.Name = "exa"
 
 // Profile returns the registration record Exa is served from: everything
-// New used to build by hand, plus the fields New never needed because
-// internal/config and internal/server supplied them from their own
+// the deleted New used to build by hand, plus the fields New never needed
+// because internal/config and internal/server supplied them from their own
 // four-vendor switches.
 func Profile() provider.Profile {
 	sub, err := fs.Sub(contracts.FS(), "exa")

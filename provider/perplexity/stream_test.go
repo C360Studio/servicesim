@@ -260,7 +260,7 @@ func TestSonarStreamJournalOutcome(t *testing.T) {
 func newSimDelaySkip(t *testing.T, s *scenario.Scenario) *sim {
 	t.Helper()
 	ring := journal.NewRing(64, 1<<16)
-	srv := httptest.NewServer(New(provider.Deps{
+	srv := httptest.NewServer(Profile().Handler(provider.Deps{
 		Scenario:  s,
 		Journal:   ring,
 		Faults:    provider.MustSet(Profile()).Faults(s),

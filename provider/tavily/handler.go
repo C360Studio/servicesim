@@ -45,8 +45,8 @@ func RouteSearch() provider.Route {
 	}
 }
 
-// handlers maps every route this profile serves to its handler, shared by
-// Profile() and the deprecated New.
+// handlers maps every route this profile serves to its handler, read by
+// Profile().
 func handlers() map[string]provider.Handler {
 	return map[string]provider.Handler{
 		PatternSearch:         handleSearch,
@@ -55,22 +55,6 @@ func handlers() map[string]provider.Handler {
 		PatternResearchPoll:   handleResearchPoll,
 		PatternResearchHead:   handleResearchHead,
 	}
-}
-
-// New returns the Tavily handler, built with provider.NewMux over Routes().
-//
-// The zero Deps is usable: tavily.New(provider.Deps{}) serves well-shaped empty
-// successes with no journal, no faults and a real clock. Note that a zero Deps
-// means no faults *even if the Scenario declares them* — pass
-// testkit.NewFaults(s) as Deps.Faults, or use testkit.Start, to get the
-// scenario's declared faults; Deps.Normalized logs deps.faults_ignored if you
-// do not.
-//
-// Deprecated: use Profile().Handler(deps). New is removed once
-// internal/server and testkit are rewired onto provider.Set (Phase 10 units
-// 3-4).
-func New(deps provider.Deps) http.Handler {
-	return Profile().Handler(deps)
 }
 
 // Validator decodes and checks this package's projection bodies at startup.
@@ -216,8 +200,8 @@ func handleSearch(x *provider.Exchange) provider.Response {
 //
 // A scenario that declares no Tavily block at all is not an error: it renders
 // the zero projection, which is a well-shaped empty success, and is what makes
-// tavily.New(provider.Deps{}) a usable zero-configuration handler. A scenario
-// that declares the block but no turn matching this request *is* an error —
+// Profile().Handler(provider.Deps{}) a usable zero-configuration handler. A
+// scenario that declares the block but no turn matching this request *is* an error —
 // the author wrote a script that cannot answer, and answering with an empty 200
 // would hide it.
 func selectProjection(x *provider.Exchange, entry *scenario.ProviderEntry) (*Projection, bool) {

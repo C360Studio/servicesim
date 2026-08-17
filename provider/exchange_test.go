@@ -25,7 +25,7 @@ func newExchange(t *testing.T, src string) *Exchange {
 	if src != "" {
 		d.Scenario = mustScenario(t, src)
 	}
-	return &Exchange{Deps: d.Normalized(), Provider: Exa}
+	return &Exchange{Deps: d.Normalized(), Provider: testProviderExa}
 }
 
 func TestExchangeAccessors(t *testing.T) {
@@ -284,7 +284,7 @@ func TestExchangeFaultClaimsOnce(t *testing.T) {
 	engine := &countingFaults{}
 	x := &Exchange{
 		Deps:     Deps{Faults: engine}.Normalized(),
-		Provider: Exa,
+		Provider: testProviderExa,
 		Route:    Route{Pattern: "POST /search", FaultKey: "exa:search"},
 		decision: FaultDecision{Index: -1, Key: "exa:search"},
 	}

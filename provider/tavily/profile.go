@@ -84,7 +84,7 @@ func refusalBody(r provider.Refusal) []byte {
 // Name is this listener's identity in a provider.Set and the scenario
 // provider entry's key. It was already exported and untyped before this
 // unit (framework-seam.md: "tavily.Name and mcp.Name exist (untyped
-// today; they become typed)"); this typed constant replaces the now-deprecated
-// provider.Tavily, which named the same listener as an untyped string
-// constant on the wrong package.
+// today; they become typed)"); this typed constant replaces the deleted
+// provider.Tavily (Phase 10 unit 4), which named the same listener as an
+// untyped string constant on the wrong package.
 const Name provider.Name = "tavily"

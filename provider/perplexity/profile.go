@@ -15,7 +15,7 @@ import (
 const defaultPort = 8083
 
 // Name is this listener's identity in a provider.Set. It is the canonical
-// replacement for the now-deprecated provider.Perplexity constant
+// replacement for the deleted provider.Perplexity constant (Phase 10 unit 4)
 // (framework-seam.md: "a framework core has no business naming four
 // vendors") and is deliberately a separate spelling from [NameSonar] and
 // [NameAgent], which stay as entry-KIND names: a listener may serve more

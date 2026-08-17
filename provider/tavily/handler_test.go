@@ -311,7 +311,7 @@ providers:
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
 
-	handler := New(provider.Deps{
+	handler := Profile().Handler(provider.Deps{
 		Scenario: loaded,
 		Faults:   provider.MustSet(Profile()).Faults(loaded),
 	})
@@ -356,7 +356,7 @@ providers:
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
 
-	handler := New(provider.Deps{
+	handler := Profile().Handler(provider.Deps{
 		Scenario: loaded,
 		Faults:   provider.MustSet(Profile()).Faults(loaded),
 	})
@@ -403,7 +403,7 @@ providers:
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
 
-	handler := New(provider.Deps{
+	handler := Profile().Handler(provider.Deps{
 		Scenario: loaded,
 		Faults:   provider.MustSet(Profile()).Faults(loaded),
 	})
@@ -531,7 +531,7 @@ providers:
 func TestZeroDepsServesAWellShapedEmptySuccess(t *testing.T) {
 	t.Parallel()
 
-	rec := post(t, New(provider.Deps{}), "/search", `{"query":"report a"}`, bearer)
+	rec := post(t, Profile().Handler(provider.Deps{}), "/search", `{"query":"report a"}`, bearer)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	decoded := decode(t, rec)
@@ -764,7 +764,7 @@ func TestBuiltInScenariosProjectThroughTavily(t *testing.T) {
 			require.NotEqual(t, scenario.SeverityError, f.Severity, "%s: %+v", name, f)
 		}
 
-		rec := post(t, New(provider.Deps{Scenario: loaded}), "/search",
+		rec := post(t, Profile().Handler(provider.Deps{Scenario: loaded}), "/search",
 			`{"query":"report a","include_answer":true}`, bearer)
 		require.Contains(t, []int{http.StatusOK, http.StatusUnauthorized}, rec.Code, name)
 		served++
@@ -797,7 +797,7 @@ func newHandler(t *testing.T, src string, ring *journal.Ring) http.Handler {
 	if ring != nil {
 		deps.Journal = ring
 	}
-	return New(deps)
+	return Profile().Handler(deps)
 }
 
 // post issues a POST /search-shaped request against the handler.

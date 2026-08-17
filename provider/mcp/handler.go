@@ -47,28 +47,12 @@ func Routes() []provider.Route {
 	return []provider.Route{RouteMCP()}
 }
 
-// handlers maps every route this profile serves to its handler, shared by
-// Profile() and the deprecated New.
+// handlers maps every route this profile serves to its handler, read by
+// Profile().
 func handlers() map[string]provider.Handler {
 	return map[string]provider.Handler{
 		PatternMCP: handleMCP,
 	}
-}
-
-// New returns the MCP handler, built with provider.NewMux over Routes().
-//
-// The zero Deps is usable: mcp.New(provider.Deps{}) serves a well-shaped
-// empty server/discover, an empty tools/list, and an "unknown tool" for
-// any tools/call — no scenario, no journal, no faults, a real clock. A
-// zero Deps means no faults even if the Scenario declares them; pass
-// testkit.NewFaults(s) as Deps.Faults, or use testkit.Start, to get the
-// scenario's declared faults.
-//
-// Deprecated: use Profile().Handler(deps). New is removed once
-// internal/server and testkit are rewired onto provider.Set (Phase 10 units
-// 3-4).
-func New(deps provider.Deps) http.Handler {
-	return Profile().Handler(deps)
 }
 
 // handleMCP dispatches every POST /mcp request. The order is fixed

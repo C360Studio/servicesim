@@ -3,14 +3,17 @@ package testkit
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/c360studio/servicesim/provider"
+	"github.com/c360studio/servicesim/scenario"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -682,4 +685,78 @@ func normalize(v any) (any, error) {
 		return nil, err
 	}
 	return decodeJSON(encoded)
+}
+
+// AssertCovers asserts that every scenario file under fsys — every ".yaml" or
+// ".yml" file found by walking it — declares a non-empty block for every name
+// in kinds. It is the library form of the coverage guard the four reference
+// profiles have run against scenarios.FS since before this package existed
+// (scenarios/scenarios_test.go's TestBuiltins_CoverEveryImplementedProvider):
+// a consumer whose own corpus should mean the same thing on every listener it
+// registers runs this in its own CI, in place of copying that test.
+//
+// kinds names scenario ENTRY KINDS — [provider.Set.EntryKinds] lists a
+// registered set's own — not listener names: a multi-entry profile such as
+// Perplexity (Sonar plus Agent) or Exa (search plus its async agent-run
+// surface) has more entry kinds than listeners, and each is checked on its
+// own.
+//
+// A file that fails to load is reported and skipped rather than aborting the
+// walk, so one broken fixture does not hide every other file's own coverage
+// gaps in the same run.
+func AssertCovers(tb testing.TB, fsys fs.FS, kinds ...string) {
+	tb.Helper()
+
+	files, err := scenarioFiles(fsys)
+	if err != nil {
+		tb.Errorf("testkit.AssertCovers: walking the scenario tree: %v", err)
+		return
+	}
+	if len(files) == 0 {
+		tb.Errorf("testkit.AssertCovers: no .yaml or .yml file found")
+		return
+	}
+	if len(kinds) == 0 {
+		tb.Errorf("testkit.AssertCovers: no kinds given")
+		return
+	}
+
+	for _, name := range files {
+		s, report, err := scenario.LoadFS(fsys, name)
+		if err != nil {
+			tb.Errorf("testkit.AssertCovers: %s: %v%s", name, err, formatFindings(report.Findings))
+			continue
+		}
+		for _, kind := range kinds {
+			entry := s.Provider(kind)
+			if entry == nil {
+				tb.Errorf("testkit.AssertCovers: %s declares no %q block", name, kind)
+				continue
+			}
+			if len(entry.Turns) == 0 {
+				tb.Errorf("testkit.AssertCovers: %s: %q has no turns", name, kind)
+			}
+		}
+	}
+}
+
+// scenarioFiles walks fsys and returns every ".yaml"/".yml" file's path, in
+// the stable, sorted order fs.WalkDir already visits directory entries in —
+// a coverage failure that reordered its own file list between runs would be
+// miserable to diff.
+func scenarioFiles(fsys fs.FS) ([]string, error) {
+	var out []string
+	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if ext := path.Ext(p); ext == ".yaml" || ext == ".yml" {
+			out = append(out, p)
+		}
+		return nil
+	})
+	return out, err
 }

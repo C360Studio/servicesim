@@ -18,7 +18,7 @@ func mintExchange(t *testing.T, store jobs.Store, attempt *scenario.FaultAttempt
 	t.Helper()
 	x := &Exchange{
 		Deps:     Deps{Jobs: store}.Normalized(),
-		Provider: Exa,
+		Provider: testProviderExa,
 		Route:    Route{Pattern: "POST /agent/runs", FaultKey: "exa:agent_runs.create"},
 		claimed:  true,
 		decision: FaultDecision{Index: 0, Key: "exa:agent_runs.create", Attempt: attempt},
@@ -429,7 +429,7 @@ func TestValidJobIDRejectsEverySeparator(t *testing.T) {
 func resolveExchange(store jobs.Store, namespace string, capture *capturingLogger) *Exchange {
 	return &Exchange{
 		Deps:     Deps{Jobs: store, Logger: capture.logger}.Normalized(),
-		Provider: Exa,
+		Provider: testProviderExa,
 		Route:    Route{Pattern: "GET /agent/runs/{id}", FaultKey: "exa:agent_runs.poll"},
 		lane:     Lane{Namespace: namespace, Key: "exa:agent_runs.poll"},
 	}

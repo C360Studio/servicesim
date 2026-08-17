@@ -523,7 +523,7 @@ func (s *Scenario) HasFaults() bool {
 
 // Empty returns a valid scenario with no sources and no projections. Every
 // provider renders a well-shaped empty success against it, which makes
-// exa.New(provider.Deps{}) a usable zero-configuration handler.
+// exa.Profile().Handler(provider.Deps{}) a usable zero-configuration handler.
 func Empty() *Scenario {
 	s := &Scenario{Version: SchemaVersion, Name: "servicesim"}
 	// Resolve on an empty corpus cannot fail; the indexes must still exist so

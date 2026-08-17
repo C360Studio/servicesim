@@ -117,12 +117,11 @@ docs tables fail only in CI.
 
 | File | What to add |
 |---|---|
-| `provider/provider.go` | the `Name` constant |
 | `internal/config/config.go` | ten sites: the port default, `DefaultProviders`, `allProviders`, the `Config` field, the env binding, the raw flag target, the flag registration, `assemble`, the validate port table, the `listener()` switch |
 | `internal/server/listeners.go` | four switches: the import, `newSurfaces`, `newProviderHandler` (`<name>.New(deps)`), and `scenarioNotFoundBody` — the vendor-shaped body for an `/x/<unknown>` refusal |
 | `internal/server/server.go` | `<name>.Routes()` in the routes concat; `<name>.Validator{}` in the entry-kind validators map |
-| `testkit/server.go` | the import, `allProviders`, `routes`, `validators`, the `build` switch, a `<Name>Handler` constructor (exported — a compatibility obligation), the `BaseURLs` doc comment (the env var itself derives from the name) |
-| `testkit/golden.go` | only if your responses mint an identifier that must be pruned from goldens: `derivedIDPaths` / `streamDerivedIDPaths` |
+| `testkit/server.go` | nothing (Phase 10 unit 4): `testkit` derives routes, validators, the fault engine and every handler from the registered `*provider.Set` — pass your `Profile()` to `testkit.WithProfiles` and it is served through the one generic `testkit.Handler` |
+| `testkit/golden.go` | nothing: declare `Profile.DerivedIDs`/`StreamDerivedIDs` on your registration record and a caller prunes them with `testkit.GoldenDerivedIDs(sim.DerivedIDs()...)` |
 | `contracts/contracts.go` | the `//go:embed` line, the `Provider` constant, `Providers()`; plus the `byName` map in `contracts/provenance_internal_test.go` |
 | `contracts/<name>/` | goldens satisfying `TestEveryProviderHasHappyAndEmptyAndErrorGoldens` (a happy, an empty and an error case), each with a `provenance.yaml` entry (a golden with no provenance fails the build) — and a golden test in your package pinning each to the live handler |
 | `scenarios/protocol/*.yaml` | a block in **every** built-in — `TestBuiltins_CoverEveryImplementedProvider` requires it — expressing that file's intent on your surface; `malicious-content` needs every hostile source projected with a marker-bearing field (`TestMaliciousContent_EveryHostileSourceCarriesAMarker`) |

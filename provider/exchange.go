@@ -435,6 +435,10 @@ func (x *Exchange) refuse(kind RefusalKind, status int) []byte {
 // rendered message, not an opaque value with none of those shapes, so args
 // must never include a raw [Credential.Value] — compare it, quote what was
 // WRONG about it, never the value itself.
+//
+// Reject already calls Fail with code — do not call Fail with the same code
+// first. A handler that does double-records the finding, and
+// AssertFindings then reports it twice.
 func (x *Exchange) Reject(status int, code, field, format string, args ...any) Response {
 	x.Fail(code, field, format, args...)
 	return Response{

@@ -41,7 +41,7 @@ type sim struct {
 func newSim(t *testing.T, s *scenario.Scenario) *sim {
 	t.Helper()
 	ring := journal.NewRing(64, 1<<16)
-	srv := httptest.NewServer(New(provider.Deps{
+	srv := httptest.NewServer(Profile().Handler(provider.Deps{
 		Scenario: s,
 		Journal:  ring,
 		Faults:   provider.MustSet(Profile()).Faults(s),
@@ -778,7 +778,7 @@ providers:
 // every route with a well-shaped body rather than a 404 from turn selection.
 func TestZeroDepsServesEmptySuccesses(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(New(provider.Deps{}))
+	srv := httptest.NewServer(Profile().Handler(provider.Deps{}))
 	t.Cleanup(srv.Close)
 	s := &sim{server: srv, journal: journal.NewRing(1, 1)}
 

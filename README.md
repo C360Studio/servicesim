@@ -52,8 +52,8 @@ ghcr.io/c360studio/servicesim@sha256:5a7d6d055fa4d6f9662d538823e8f9274b28416fb41
 
 Working on Servicesim itself, or want the tip of `main`? `task image:build` produces `servicesim:dev` locally, and
 every example below works the same with that tag substituted. The MCP listener (`:8084`) ships in v0.5.0; on
-`v0.4.0` that port is not bound and `go get` resolves to a module without `provider.MCP` — until the tag lands,
-use `servicesim:dev` or a `replace` directive on this repository for the MCP examples below.
+`v0.4.0` that port is not bound and `go get` resolves to a module with no MCP profile at all — until the tag
+lands, use `servicesim:dev` or a `replace` directive on this repository for the MCP examples below.
 
 In another terminal, ask Exa's listener for a search. Any fake key works:
 
@@ -216,7 +216,8 @@ default (what the specification left open) is numbered in `provider/mcp/doc.go`.
 
 Requires Go 1.26, this repository's own `go.mod` version. Add it as a dependency —
 `go get github.com/c360studio/servicesim` — then import `github.com/c360studio/servicesim/testkit` and
-`github.com/c360studio/servicesim/provider`.
+`github.com/c360studio/servicesim/provider`, plus the profile package(s) your test simulates, for example
+`github.com/c360studio/servicesim/provider/exa`.
 
 `testkit` starts one `httptest.Server` per provider in-process and registers its own cleanup, so there is nothing
 to defer, no port to pick and no Docker to wait for.
@@ -231,15 +232,15 @@ standard library). This is the shape of it, excerpted from
 func TestAdapterSendsACorrectExaRequest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile()), testkit.WithBuiltin("happy"))
 	adapter := newAdapter(sim.Client(), sim.BaseURLs())
 
 	results, err := adapter.SearchExa(t.Context(), "report a")
 	require.NoError(t, err)
 	require.Len(t, results, 2, "the happy scenario projects two canonical sources through Exa")
 
-	testkit.AssertRequestCount(t, sim, provider.Exa, 1)
-	entry := sim.Requests(provider.Exa)[0]
+	testkit.AssertRequestCount(t, sim, exa.Name, 1)
+	entry := sim.Requests(exa.Name)[0]
 
 	testkit.AssertAPIKeyHeader(t, entry)
 	testkit.AssertJSONBody(t, entry, map[string]any{
@@ -250,6 +251,11 @@ func TestAdapterSendsACorrectExaRequest(t *testing.T) {
 	testkit.AssertNoCredentialLeak(t, sim, exaKey, tavilyKey, perplexityKey)
 }
 ```
+
+`testkit.WithProfiles` names the simulated APIs a test needs — required, not defaulted, so a team simulating one
+vendor never pulls in every reference profile's contracts and goldens. The four in-tree profiles live at
+`provider/exa`, `provider/tavily`, `provider/perplexity` and `provider/mcp`, each exporting a typed `Name` and a
+`Profile()`.
 
 `sim.Client()` returns an `*http.Client` with keep-alives disabled and the proxy environment ignored, so a
 connection-abort fault is observed rather than absorbed by a pooled connection — the property the `hang-then-abort`
@@ -273,7 +279,7 @@ client sent the correct MCP request rather than merely got a `200`:
 func TestMCPClientSendsACorrectToolsCallRequest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(mcp.Profile()), testkit.WithBuiltin("happy"))
 	client := newMCPClient(sim.Client(), sim.BaseURLs(), examples.WithMCPBearerToken(mcpToken))
 
 	resp, err := client.CallTool(t.Context(), "search", map[string]any{"query": "report a"})
@@ -281,8 +287,8 @@ func TestMCPClientSendsACorrectToolsCallRequest(t *testing.T) {
 	require.NotNil(t, resp.Result)
 	assert.False(t, resp.Result.IsError)
 
-	testkit.AssertRequestCount(t, sim, provider.MCP, 1)
-	entry := sim.Requests(provider.MCP)[0]
+	testkit.AssertRequestCount(t, sim, mcp.Name, 1)
+	entry := sim.Requests(mcp.Name)[0]
 
 	headers := http.Header(entry.Headers)
 	assert.Equal(t, "2026-07-28", headers.Get("MCP-Protocol-Version"))
@@ -309,17 +315,18 @@ rotation actually switched to a new one, from two entries alone. The `credential
 scenario both exist to test against.
 
 `sim.BaseURLs()` returns the URLs keyed exactly as the environment variables above, so one helper configures your
-client from either a `*testkit.Sim` or a container. `sim.URL(provider.Exa)` returns one provider's base URL
+client from either a `*testkit.Sim` or a container. `sim.URL(exa.Name)` returns one provider's base URL
 directly, for a test that only needs the one. `testkit.WithScenarioYAML(yaml string)` keeps a single-purpose
 fixture inline next to the test; `testkit.WithScenarioFile(path string)` loads one from disk, and
 `testkit.WithScenario(s *scenario.Scenario)` takes one already parsed with the `scenario` package.
 
 For the async create-then-poll surfaces (Exa agent runs, Tavily research), `sim.Jobs()` returns every live job
-record across every namespace, and `testkit.AssertPollSequence(t, sim.Requests(provider.Exa), id, 200, 200, 200)`
+record across every namespace, and `testkit.AssertPollSequence(t, sim.Requests(exa.Name), id, 200, 200, 200)`
 asserts, from the journal alone, that a job's polls arrived in order from its own per-job lane — pass
 `ns.Requests(...)` when the test uses namespaces, because job identifiers repeat across namespaces by design.
-`testkit.NewJobs()` mirrors `testkit.NewFaults`: it is what a consumer wiring `provider.Deps` by hand passes as
-`Deps.Jobs`, and without it a create still answers but no poll can ever resolve.
+`testkit.NewJobs()` is what a consumer wiring `provider.Deps` by hand passes as `Deps.Jobs`, and without it a
+create still answers but no poll can ever resolve; `(*provider.Set).Faults(s)` is the equally hand-built
+`Deps.Faults` — the only exported fault-engine constructor, built from whichever profiles the Set registers.
 
 For a scripted SSE response, `testkit.AssertGoldenSSE(t, path, transcript)` regression-tests the reassembled
 stream frame by frame — an SSE transcript is not JSON, and a byte-for-byte comparison would flake on TCP read
@@ -411,7 +418,7 @@ t.Run(name, func(t *testing.T) {
 
 	ns := sim.NamespaceFor(t)
 	adapter := newAdapter(ns.Client(), ns.BaseURLs())
-	// ns.Requests(provider.Exa) sees this lane's traffic and nothing else.
+	// ns.Requests(exa.Name) sees this lane's traffic and nothing else.
 })
 ```
 
@@ -476,7 +483,7 @@ replicas by whatever balances them, and each replica counts only the calls it ha
 |---|---|
 | `call_index: 0`, then `call_index: 1` | Both replicas start at 0. The second call lands on the other replica and is served turn 0 again. |
 | `attempts: [{status: 429}, {status: 200}]` | Each replica owns a full budget, so the 429 is served **twice** — once per replica — before either succeeds. |
-| `AssertRequestCount(t, sim, provider.Exa, 3)` | The journal read reaches one replica and sees only its share: 1 or 2, varying run to run. |
+| `AssertRequestCount(t, sim, exa.Name, 3)` | The journal read reaches one replica and sees only its share: 1 or 2, varying run to run. |
 | `POST /__admin/reset?namespace=t1` | Resets the replica that answered. The others keep their cursors. |
 | `POST /agent/runs` then `GET /agent/runs/{id}` (or Tavily's `/research` equivalent) | The create lands on one replica; if the poll lands on another, it holds no record of the job and answers the vendor's 404 for a job that exists — "polls 404 intermittently". |
 
@@ -535,7 +542,7 @@ product-specific corpora belong in your own repository.
 
 Several rows below tell you to read the journal with `sim.AwaitRequests` rather than a bare `sim.Requests` call:
 `func (s *Sim) AwaitRequests(tb testing.TB, p provider.Name, n int) []Entry` blocks until `p` has recorded `n`
-entries, or fails `tb` after a short deadline, and returns them — `entries := sim.AwaitRequests(t, provider.Exa,
+entries, or fails `tb` after a short deadline, and returns them — `entries := sim.AwaitRequests(t, exa.Name,
 2)` is the shape. Use it instead of `sim.Requests` whenever a row below says the client sees the exchange end at
 the transport level (a reset, a client-side timeout, an off-goroutine retry): the server goroutine can still be
 completing the entry after your client already returned, and a bare `sim.Requests` call is a race that passes on a

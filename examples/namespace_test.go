@@ -4,6 +4,9 @@ import (
 	"testing"
 
 	"github.com/c360studio/servicesim/provider"
+	"github.com/c360studio/servicesim/provider/exa"
+	"github.com/c360studio/servicesim/provider/perplexity"
+	"github.com/c360studio/servicesim/provider/tavily"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +30,7 @@ import (
 func TestParallelSubtestsShareOneSimulator(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("rate-limited"))
+	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile(), tavily.Profile(), perplexity.Profile()), testkit.WithBuiltin("rate-limited"))
 
 	names := []string{"alpha", "beta", "gamma"}
 	lanes := make([]*testkit.Namespace, len(names))
@@ -57,7 +60,7 @@ func TestParallelSubtestsShareOneSimulator(t *testing.T) {
 
 				// The lane sees its own traffic and nothing else, however many
 				// sibling subtests are running against the same listeners.
-				for _, p := range []provider.Name{provider.Exa, provider.Tavily, provider.Perplexity} {
+				for _, p := range []provider.Name{exa.Name, tavily.Name, perplexity.Name} {
 					own := ns.Requests(p)
 					require.Len(t, own, 2, "%s saw only this namespace's two calls", p)
 					for _, e := range own {

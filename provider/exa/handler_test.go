@@ -78,7 +78,7 @@ func newSimWithJobs(t *testing.T, src string, store *jobs.Registry) *sim {
 		DelayMode: provider.DelaySkip,
 		Jobs:      store,
 	}
-	return &sim{t: t, handler: New(deps), journal: ring}
+	return &sim{t: t, handler: Profile().Handler(deps), journal: ring}
 }
 
 // request is one HTTP call against the listener.
@@ -1268,7 +1268,7 @@ func TestBuiltIn_HappyRendersBothRoutes(t *testing.T) {
 func TestNew_ZeroDepsServesAWellShapedEmptySuccess(t *testing.T) {
 	t.Parallel()
 
-	handler := New(provider.Deps{})
+	handler := Profile().Handler(provider.Deps{})
 	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewBufferString(`{"query":"report a"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-key")
@@ -1290,7 +1290,7 @@ func TestNew_ZeroDepsServesAWellShapedEmptySuccess(t *testing.T) {
 func TestNew_ZeroDepsContentsIsNoContentFoundNotEmptySuccess(t *testing.T) {
 	t.Parallel()
 
-	handler := New(provider.Deps{})
+	handler := Profile().Handler(provider.Deps{})
 	req := httptest.NewRequest(http.MethodPost, "/contents",
 		bytes.NewBufferString(`{"urls":["https://example.test/report-a"]}`))
 	req.Header.Set("Content-Type", "application/json")

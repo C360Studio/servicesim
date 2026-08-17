@@ -128,10 +128,23 @@ func okHandler(body string) Handler {
 
 var testRoute = Route{Pattern: "POST /search", FaultKey: "exa:search"}
 
+// testProviderExa and testProviderPerplexity are Name values this package's
+// own tests use to exercise Handle, NewMux and Exchange without naming a
+// vendor package — provider.Exa/Tavily/Perplexity/MCP were deleted in Phase
+// 10 unit 4 ("a framework core has no business naming four vendors"). The
+// spellings match some tests' scenario fixtures, which declare "exa" and
+// "perplexity"/"perplexity_agent" provider blocks by the same convention
+// the vendor packages themselves use; that is a fixture-authoring choice,
+// not a dependency on either package.
+const (
+	testProviderExa        Name = "exa"
+	testProviderPerplexity Name = "perplexity"
+)
+
 // serve runs one in-process request through Handle with an httptest recorder.
 func serve(d Deps, h Handler, r *http.Request) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
-	Handle(d, Exa, testRoute, h)(w, r)
+	Handle(d, testProviderExa, testRoute, h)(w, r)
 	return w
 }
 
@@ -815,7 +828,7 @@ func TestHandleCloseBeforeHeadersWithDelayAfterHeadersStillRecordsEarly(t *testi
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultCloseBeforeHeaders, DelayAfterHeaders: scenario.Duration(time.Hour)},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	start := time.Now()
@@ -859,7 +872,7 @@ func TestHandleDelayAfterHeadersHeadersArriveBeforeTheHang(t *testing.T) {
 
 	j := journal.NewRing(8, 4096)
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{{DelayAfterHeaders: scenario.Duration(delay)}}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -901,7 +914,7 @@ func TestHandleDelayAndDelayAfterHeadersCompose(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Delay: scenario.Duration(preDelay), DelayAfterHeaders: scenario.Duration(afterDelay)},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 	defer srv.Close()
 
 	start := time.Now()
@@ -938,7 +951,7 @@ func TestHandleDelayAfterHeadersDelaySkipRecordsBothWithoutWaiting(t *testing.T)
 		{Delay: scenario.Duration(preDelay), DelayAfterHeaders: scenario.Duration(afterDelay)},
 	}}
 	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine, DelayMode: DelaySkip},
-		Exa, testRoute, okHandler(`{"ok":true}`)))
+		testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	start := time.Now()
@@ -979,7 +992,7 @@ func TestHandleDelayAfterHeadersClientCancelledDuringHangLandsAbortedEntry(t *te
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{DelayAfterHeaders: scenario.Duration(time.Hour)},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1019,7 +1032,7 @@ func TestHandleDelayAfterHeadersTruncateBodyClientCancelledDuringHangLandsDeferr
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultTruncateBody, DelayAfterHeaders: scenario.Duration(time.Hour), Reset: true},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1071,7 +1084,7 @@ func TestHandleDelayAfterHeadersTruncateBodyRecordsAfterTheHangBeforeTheAbort(t 
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultTruncateBody, DelayAfterHeaders: scenario.Duration(delay), Reset: true},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -1117,7 +1130,7 @@ func TestHandleOversizedBodyDelayAfterHeaders(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultOversizedBody, BodyBytes: wantLen, DelayAfterHeaders: scenario.Duration(delay)},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -1146,7 +1159,7 @@ func TestHandleCloseBeforeHeadersIsJournaledBeforeTheAbort(t *testing.T) {
 
 	j := journal.NewRing(8, 4096)
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{{Kind: scenario.FaultCloseBeforeHeaders}}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	_, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -1216,7 +1229,7 @@ func TestHandleAbortingFaultDelayIsObservedInCompletedAt(t *testing.T) {
 
 			j := journal.NewRing(8, 4096)
 			engine := &scriptedFaults{attempts: []scenario.FaultAttempt{tc.attempt}}
-			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 			defer srv.Close()
 
 			start := time.Now()
@@ -1257,7 +1270,7 @@ func TestHandleAbortingFaultDelaySkipRecordsRequestedDelayWithoutWaiting(t *test
 		{Kind: scenario.FaultCloseBeforeHeaders, Delay: scenario.Duration(declared)},
 	}}
 	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine, DelayMode: DelaySkip},
-		Exa, testRoute, okHandler(`{"ok":true}`)))
+		testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	start := time.Now()
@@ -1370,7 +1383,7 @@ func TestHandleTruncateBody(t *testing.T) {
 
 			j := journal.NewRing(8, 4096)
 			engine := &scriptedFaults{attempts: []scenario.FaultAttempt{tc.attempt}}
-			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 			defer srv.Close()
 
 			resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -1442,7 +1455,7 @@ func TestHandleOversizedBodyFault(t *testing.T) {
 
 			j := journal.NewRing(8, 4096)
 			engine := &scriptedFaults{attempts: []scenario.FaultAttempt{tc.attempt}}
-			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 			defer srv.Close()
 
 			resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -1499,7 +1512,7 @@ func TestHandleOversizedBodyUsesTheProviderShapedBody(t *testing.T) {
 		{Status: http.StatusInternalServerError, BodyBytes: len(errBody) + 64},
 	}}
 	j := journal.NewRing(8, 4096)
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, h))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, h))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -1622,7 +1635,7 @@ func TestHandleRecordIsIdempotent(t *testing.T) {
 	// record. Exactly one entry must exist afterwards.
 	j := journal.NewRing(8, 4096)
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{{Kind: scenario.FaultCloseBeforeHeaders}}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{}`)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{}`)))
 	defer srv.Close()
 
 	_, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -1651,7 +1664,7 @@ func TestHandleIsRaceFree(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Status: http.StatusTooManyRequests}, {Status: http.StatusTooManyRequests},
 	}}
-	handler := Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`))
+	handler := Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`))
 
 	const n = 32
 	var wg sync.WaitGroup

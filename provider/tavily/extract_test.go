@@ -421,7 +421,7 @@ func TestExtractFaultUsesItsOwnBudget(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
 
-	h := New(provider.Deps{Scenario: loaded, Faults: provider.MustSet(Profile()).Faults(loaded)})
+	h := Profile().Handler(provider.Deps{Scenario: loaded, Faults: provider.MustSet(Profile()).Faults(loaded)})
 
 	first := post(t, h, "/extract", `{"urls":"https://example.test/report-a"}`, bearer)
 	require.Equal(t, http.StatusTooManyRequests, first.Code)

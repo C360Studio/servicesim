@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/c360studio/servicesim/examples"
-	"github.com/c360studio/servicesim/provider"
+	"github.com/c360studio/servicesim/provider/mcp"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,7 +43,7 @@ func newMCPClient(client *http.Client, baseURLs map[string]string, opts ...examp
 func TestMCPClientSendsACorrectToolsCallRequest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(mcp.Profile()), testkit.WithBuiltin("happy"))
 	client := newMCPClient(sim.Client(), sim.BaseURLs(), examples.WithMCPBearerToken(mcpToken))
 
 	resp, err := client.CallTool(t.Context(), "search", map[string]any{"query": "report a"})
@@ -51,8 +51,8 @@ func TestMCPClientSendsACorrectToolsCallRequest(t *testing.T) {
 	require.NotNil(t, resp.Result)
 	assert.False(t, resp.Result.IsError)
 
-	testkit.AssertRequestCount(t, sim, provider.MCP, 1)
-	entry := sim.Requests(provider.MCP)[0]
+	testkit.AssertRequestCount(t, sim, mcp.Name, 1)
+	entry := sim.Requests(mcp.Name)[0]
 
 	headers := http.Header(entry.Headers)
 	assert.Equal(t, "2026-07-28", headers.Get("MCP-Protocol-Version"))
@@ -71,7 +71,7 @@ func TestMCPClientSendsACorrectToolsCallRequest(t *testing.T) {
 func TestMCPClientListsToolsInDeclarationOrder(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(mcp.Profile()), testkit.WithBuiltin("happy"))
 	client := newMCPClient(sim.Client(), sim.BaseURLs())
 
 	result, err := client.ListTools(t.Context())
@@ -86,7 +86,7 @@ func TestMCPClientListsToolsInDeclarationOrder(t *testing.T) {
 	assert.Equal(t, int64(60000), result.TTLMs, "the happy scenario declares no ttl_ms override; DefaultTTLMs applies")
 	assert.Equal(t, "private", result.CacheScope, "the happy scenario declares no cache_scope override; DefaultCacheScope applies")
 
-	testkit.AssertNoErrors(t, sim.Requests(provider.MCP)[0])
+	testkit.AssertNoErrors(t, sim.Requests(mcp.Name)[0])
 }
 
 // TestMCPClientCallToolParsesContentAndStructuredContent is the decoding
@@ -97,7 +97,7 @@ func TestMCPClientListsToolsInDeclarationOrder(t *testing.T) {
 func TestMCPClientCallToolParsesContentAndStructuredContent(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(mcp.Profile()), testkit.WithBuiltin("happy"))
 	client := newMCPClient(sim.Client(), sim.BaseURLs())
 
 	first, err := client.CallTool(t.Context(), "search", map[string]any{"query": "report a"})
@@ -120,7 +120,7 @@ func TestMCPClientCallToolParsesContentAndStructuredContent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, first.Result, second.Result, "the same call twice is byte-identical")
 
-	testkit.AssertRequestCount(t, sim, provider.MCP, 2)
+	testkit.AssertRequestCount(t, sim, mcp.Name, 2)
 }
 
 // TestMCPClientCallToolUnknownToolIsNotRetryable is the failure half of the
@@ -131,7 +131,7 @@ func TestMCPClientCallToolParsesContentAndStructuredContent(t *testing.T) {
 func TestMCPClientCallToolUnknownToolIsNotRetryable(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(mcp.Profile()), testkit.WithBuiltin("happy"))
 	client := newMCPClient(sim.Client(), sim.BaseURLs())
 
 	_, err := client.CallTool(t.Context(), "nonexistent", nil)
@@ -143,8 +143,8 @@ func TestMCPClientCallToolUnknownToolIsNotRetryable(t *testing.T) {
 	assert.Equal(t, "Unknown tool: nonexistent", mcpErr.Message)
 	assert.False(t, mcpErr.Retryable(), "a 200 carrying a method-level JSON-RPC error is never worth retrying")
 
-	testkit.AssertRequestCount(t, sim, provider.MCP, 1)
-	testkit.AssertFindings(t, sim.Requests(provider.MCP)[0], "mcp.tool.unknown")
+	testkit.AssertRequestCount(t, sim, mcp.Name, 1)
+	testkit.AssertFindings(t, sim.Requests(mcp.Name)[0], "mcp.tool.unknown")
 }
 
 // mcpMaliciousContentMarkers is the marker vocabulary
@@ -180,7 +180,7 @@ var mcpMaliciousContentMarkers = []string{
 func TestMCPClientMaliciousContentReachesEveryShape(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("malicious-content"))
+	sim := testkit.Start(t, testkit.WithProfiles(mcp.Profile()), testkit.WithBuiltin("malicious-content"))
 	client := newMCPClient(sim.Client(), sim.BaseURLs())
 
 	discover, err := client.Discover(t.Context())
@@ -276,9 +276,9 @@ func mcpContainsBenignReport(content []examples.MCPContentBlock) bool {
 func TestMCPClientToolsCallStreamsProgressThenResponse(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("streaming"), testkit.WithProviders(provider.MCP))
+	sim := testkit.Start(t, testkit.WithProfiles(mcp.Profile()), testkit.WithBuiltin("streaming"), testkit.WithProviders(mcp.Name))
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, sim.URL(provider.MCP)+"/mcp", strings.NewReader(
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, sim.URL(mcp.Name)+"/mcp", strings.NewReader(
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{`+
 			`"io.modelcontextprotocol/protocolVersion":"2026-07-28",`+
 			`"io.modelcontextprotocol/clientCapabilities":{},`+
@@ -301,8 +301,8 @@ func TestMCPClientToolsCallStreamsProgressThenResponse(t *testing.T) {
 	require.NoError(t, err)
 	testkit.AssertGoldenSSE(t, "testdata/mcp-tools-call-stream.sse", transcript)
 
-	testkit.AssertRequestCount(t, sim, provider.MCP, 1)
-	entry := sim.Requests(provider.MCP)[0]
+	testkit.AssertRequestCount(t, sim, mcp.Name, 1)
+	entry := sim.Requests(mcp.Name)[0]
 	testkit.AssertNoErrors(t, entry)
 
 	closed := sim.AwaitStreamClosed(t, entry.Seq)
@@ -328,7 +328,7 @@ func TestMCPClientToolsCallStreamsProgressThenResponse(t *testing.T) {
 	assert.Empty(t, withoutToken.Progress, "no progressToken, no progress frames")
 	assert.Equal(t, withToken.Result, withoutToken.Result, "the script is unconditional: the token changes only the framing")
 
-	testkit.AssertRequestCount(t, sim, provider.MCP, 3)
+	testkit.AssertRequestCount(t, sim, mcp.Name, 3)
 }
 
 // TestMCPClientClassifiesARateLimitAsRetryable is the fault-classification
@@ -340,7 +340,7 @@ func TestMCPClientToolsCallStreamsProgressThenResponse(t *testing.T) {
 func TestMCPClientClassifiesARateLimitAsRetryable(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("rate-limited"), testkit.WithProviders(provider.MCP))
+	sim := testkit.Start(t, testkit.WithProfiles(mcp.Profile()), testkit.WithBuiltin("rate-limited"), testkit.WithProviders(mcp.Name))
 	client := newMCPClient(sim.Client(), sim.BaseURLs())
 
 	_, err := client.CallTool(t.Context(), "search", map[string]any{"query": "report a"})
@@ -356,7 +356,7 @@ func TestMCPClientClassifiesARateLimitAsRetryable(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, result.Result.Content)
 
-	entries := sim.Requests(provider.MCP)
+	entries := sim.Requests(mcp.Name)
 	require.Len(t, entries, 2)
 	assert.Equal(t, testkit.OutcomeFault, entries[0].Outcome.Kind)
 	assert.Equal(t, testkit.OutcomeScenario, entries[1].Outcome.Kind)
@@ -369,7 +369,7 @@ func TestMCPClientClassifiesARateLimitAsRetryable(t *testing.T) {
 func TestMCPClientParallelNamespacesEachHaveTheirOwnCursor(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("namespaced"), testkit.WithProviders(provider.MCP))
+	sim := testkit.Start(t, testkit.WithProfiles(mcp.Profile()), testkit.WithBuiltin("namespaced"), testkit.WithProviders(mcp.Name))
 
 	names := []string{"alpha", "beta"}
 	lanes := make([]*testkit.Namespace, len(names))
@@ -394,7 +394,7 @@ func TestMCPClientParallelNamespacesEachHaveTheirOwnCursor(t *testing.T) {
 				assert.Equal(t, first, second,
 					"the namespaced scenario's mcp block is single-shot: both calls in this lane see the same catalogue")
 
-				own := ns.Requests(provider.MCP)
+				own := ns.Requests(mcp.Name)
 				require.Len(t, own, 2, "this namespace saw only its own two calls")
 				for _, e := range own {
 					assert.Equal(t, ns.Name(), e.Namespace)
@@ -417,7 +417,7 @@ func TestMCPClientParallelNamespacesEachHaveTheirOwnCursor(t *testing.T) {
 func TestMCPClientReListsToolsAfterAnUnknownToolError(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("conversation"), testkit.WithProviders(provider.MCP))
+	sim := testkit.Start(t, testkit.WithProfiles(mcp.Profile()), testkit.WithBuiltin("conversation"), testkit.WithProviders(mcp.Name))
 	client := newMCPClient(sim.Client(), sim.BaseURLs())
 
 	// Call 0: the catalogue at this point in the script is "search" only.
@@ -441,5 +441,5 @@ func TestMCPClientReListsToolsAfterAnUnknownToolError(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, result.Result.Content)
 
-	testkit.AssertRequestCount(t, sim, provider.MCP, 3)
+	testkit.AssertRequestCount(t, sim, mcp.Name, 3)
 }

@@ -131,7 +131,7 @@ func newHandler(t *testing.T, src string, ring *journal.Ring) http.Handler {
 	if ring != nil {
 		deps.Journal = ring
 	}
-	return New(deps)
+	return Profile().Handler(deps)
 }
 
 // do issues a POST /mcp request with the given body and headers.
@@ -1167,7 +1167,7 @@ providers:
 
 func TestZeroDepsIsUsable(t *testing.T) {
 	t.Parallel()
-	handler := New(provider.Deps{})
+	handler := Profile().Handler(provider.Deps{})
 
 	rec := do(handler, discoverRequest("1"), stdHeaders(MethodDiscover, ""))
 	require.Equal(t, http.StatusOK, rec.Code)

@@ -115,7 +115,7 @@ func TestGoldenWireBodies(t *testing.T) {
 // zero-configuration server (no "mcp" block at all).
 func TestGoldenToolsListEmpty(t *testing.T) {
 	t.Parallel()
-	handler := New(provider.Deps{})
+	handler := Profile().Handler(provider.Deps{})
 	want := mcpGoldenBytes(t, "mcp-tools-list-empty.json")
 	rec := do(handler, listRequest("1", ""), stdHeaders(MethodToolsList, ""))
 	require.JSONEq(t, string(want), rec.Body.String())

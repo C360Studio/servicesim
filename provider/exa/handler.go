@@ -88,8 +88,8 @@ func answerFault(s *scenario.Scenario) *scenario.Fault {
 	return nil
 }
 
-// handlers maps every route this profile serves to its handler, shared by
-// Profile() and the deprecated New.
+// handlers maps every route this profile serves to its handler, read by
+// Profile().
 func handlers() map[string]provider.Handler {
 	return map[string]provider.Handler{
 		patternSearch:      handleSearch,
@@ -100,25 +100,6 @@ func handlers() map[string]provider.Handler {
 		patternRunPoll:     handleAgentRunPoll,
 		patternRunHead:     handleAgentRunHead,
 	}
-}
-
-// New returns the Exa handler, built with provider.NewMux over Routes(). The
-// zero Deps is usable: it serves well-shaped empty successes with no journal, no
-// faults and a real clock — except POST /contents, whose D-g NO_CONTENT_FOUND
-// branch fires on a zero Deps' empty corpus exactly as it would on any
-// scenario where no requested identifier resolves, answering 400 rather than
-// a 200 with results: [].
-//
-// A zero Deps means no faults *even if the Scenario declares them* — pass
-// testkit.NewFaults(s) as Deps.Faults, or use testkit.Start, to get the
-// scenario's declared faults. Deps.Normalized logs deps.faults_ignored if you do
-// not.
-//
-// Deprecated: use Profile().Handler(deps). New is removed once
-// internal/server and testkit are rewired onto provider.Set (Phase 10 units
-// 3-4).
-func New(deps provider.Deps) http.Handler {
-	return Profile().Handler(deps)
 }
 
 // handleSearch serves POST /search.
@@ -219,8 +200,8 @@ func selectProjection(x *provider.Exchange, e *scenario.ProviderEntry) (*Project
 	if err := turn.DecodeProjection(providerName, index, p); err != nil {
 		// Unreachable through internal/server, which runs
 		// provider.ValidateScenario before readiness. Reachable through
-		// exa.New(provider.Deps{Scenario: s}) with an unvalidated scenario, and
-		// a journaled 500 beats a panic on a request path.
+		// Profile().Handler(provider.Deps{Scenario: s}) with an unvalidated
+		// scenario, and a journaled 500 beats a panic on a request path.
 		x.Fail(codeProjectionInvalid, "", "the scenario's Exa projection could not be decoded: %v", err)
 		return nil, false
 	}
