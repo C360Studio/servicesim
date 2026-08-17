@@ -57,7 +57,7 @@ shopt -s nullglob
 root_go_files=(./*.go)
 shopt -u nullglob
 
-SEARCH_PATHS=(scenarios provider scenario testkit internal cmd "${root_go_files[@]}")
+SEARCH_PATHS=(scenarios provider profiles scenario testkit internal cmd "${root_go_files[@]}")
 
 status=0
 for path in "${SEARCH_PATHS[@]}"; do

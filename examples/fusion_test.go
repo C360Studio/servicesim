@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"github.com/c360studio/servicesim/examples"
+	"github.com/c360studio/servicesim/profiles/exa"
+	"github.com/c360studio/servicesim/profiles/perplexity"
+	"github.com/c360studio/servicesim/profiles/tavily"
 	"github.com/c360studio/servicesim/provider"
-	"github.com/c360studio/servicesim/provider/exa"
-	"github.com/c360studio/servicesim/provider/perplexity"
-	"github.com/c360studio/servicesim/provider/tavily"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

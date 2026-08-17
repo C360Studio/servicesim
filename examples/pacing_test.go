@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/c360studio/servicesim/provider/exa"
+	"github.com/c360studio/servicesim/profiles/exa"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/require"
 )

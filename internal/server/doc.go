@@ -1,8 +1,8 @@
 // Package server composes handlers, binds listeners and manages lifecycle.
 //
 // It names no profile package (Phase 10 unit 3, docs/proposals/
-// framework-seam.md): everything it used to wire by importing provider/exa,
-// provider/tavily, provider/perplexity and provider/mcp by hand — the fault
+// framework-seam.md): everything it used to wire by importing profiles/exa,
+// profiles/tavily, profiles/perplexity and profiles/mcp by hand — the fault
 // engine's key set, the projection validator registry, every listener's
 // handler — it now derives from the single [provider.Set] its [config.Config]
 // carries, through [provider.Set.Faults], [provider.Set.Validators] and

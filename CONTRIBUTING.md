@@ -46,7 +46,7 @@ Commits follow `<type>(scope): subject` — `feat`, `fix`, `docs`, `refactor`, `
 ## Adding a provider
 
 The scenario schema is an open registry, so this needs **no change to the `scenario` package** and no schema
-version bump — the fourth profile, MCP (Phase 8, `provider/mcp`), added a protocol rather than a vendor and
+version bump — the fourth profile, MCP (Phase 8, `profiles/mcp`), added a protocol rather than a vendor and
 touched nothing under `scenario/`. What it did touch is the checklist below, written from that diff
 (`git show 39d5809`) rather than from memory. Tick every box; the guards will tell you about most of the
 ones you miss, but not all.
@@ -73,7 +73,7 @@ propagates into fixtures that then look authoritative.
 ### 2. Write the package
 
 ```text
-provider/<name>/
+profiles/<name>/
   doc.go       package comment — what is simulated, what is NOT, and every simulator-chosen default, numbered to
                match the contract file's "Simulation decisions"
   handler.go   Name, Pattern*, FaultKey*, Routes() []provider.Route (a function, not a var), New(provider.Deps),

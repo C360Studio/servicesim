@@ -162,7 +162,7 @@ type Server struct {
 // exactly this reason: an engine built from anything other than the whole
 // registered Set could be missing an out-of-tree profile's route, and would
 // then silently serve a clean 200 where the scenario scripted a 429. Deriving
-// it from cfg.Set — rather than provider/exa.Routes() and its three
+// it from cfg.Set — rather than profiles/exa.Routes() and its three
 // siblings, concatenated by hand — is also what lets this package import no
 // profile package at all (Phase 10 unit 3): cfg.Set is the ONLY thing
 // internal/server knows about which providers this build serves.

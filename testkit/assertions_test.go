@@ -14,9 +14,9 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/c360studio/servicesim/profiles/exa"
+	"github.com/c360studio/servicesim/profiles/tavily"
 	"github.com/c360studio/servicesim/provider"
-	"github.com/c360studio/servicesim/provider/exa"
-	"github.com/c360studio/servicesim/provider/tavily"
 	"github.com/c360studio/servicesim/scenarios"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
@@ -755,7 +755,7 @@ func TestAssertNamespacesIsolatedRefusesAVacuousComparison(t *testing.T) {
 	}
 }
 
-// exaPollScenario is the shape provider/exa/agentrun_test.go's asyncScenario
+// exaPollScenario is the shape profiles/exa/agentrun_test.go's asyncScenario
 // uses: two pending polls, then a terminal snapshot that also answers every
 // poll after it. Exa's poll HTTP status is 200 throughout — only the attempt
 // index moves — which is why the Exa case is where AssertPollSequence's
@@ -781,7 +781,7 @@ providers:
 `
 
 // tavilyResearchPollScenario walks pending -> in_progress -> completed, verified
-// against provider/tavily/research.go: the poll's HTTP status VARIES with task
+// against profiles/tavily/research.go: the poll's HTTP status VARIES with task
 // state (202 while pending or in progress, 200 once terminal).
 const tavilyResearchPollScenario = `
 version: 1

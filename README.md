@@ -23,8 +23,8 @@ implement every field of every vendor — only the *consumed contract*.
 
 What is provider-neutral and what is not: the scenario schema and turn model, the fault engine and its catalogue,
 the redacted journal and admin surface, `testkit`, the built-in scenarios mechanism and the image are the
-framework — the same for every profile. A profile is one provider package (`provider/exa`, `provider/tavily`,
-`provider/perplexity`, `provider/mcp`) plus its verified contract under `contracts/`; that is where a vendor's
+framework — the same for every profile. A profile is one provider package (`profiles/exa`, `profiles/tavily`,
+`profiles/perplexity`, `profiles/mcp`) plus its verified contract under `contracts/`; that is where a vendor's
 routes, request validation and wire shapes live, and it is the part that grows when a profile is added. The fourth
 profile is a protocol, not a vendor — an MCP server whose contract is the specification and its machine-readable
 schema — and it needed no change to the scenario schema, the fault engine, the journal, the stream path or any
@@ -210,14 +210,14 @@ is the profile telling you the request was accepted but was not the request a ca
 field — the response shapes `tools[]`, `content[]`, `structuredContent`, `isError`, `ttlMs`/`cacheScope`
 included — is recorded in [`contracts/mcp/README.md`](contracts/mcp/README.md), and
 [`examples/mcpclient.go`](examples/mcpclient.go) declares the consumed subset as Go types; every simulator-chosen
-default (what the specification left open) is numbered in `provider/mcp/doc.go`.
+default (what the specification left open) is numbered in `profiles/mcp/doc.go`.
 
 ## In a Go test, with no container at all
 
 Requires Go 1.26, this repository's own `go.mod` version. Add it as a dependency —
 `go get github.com/c360studio/servicesim` — then import `github.com/c360studio/servicesim/testkit` and
 `github.com/c360studio/servicesim/provider`, plus the profile package(s) your test simulates, for example
-`github.com/c360studio/servicesim/provider/exa`.
+`github.com/c360studio/servicesim/profiles/exa`.
 
 `testkit` starts one `httptest.Server` per provider in-process and registers its own cleanup, so there is nothing
 to defer, no port to pick and no Docker to wait for.
@@ -254,7 +254,7 @@ func TestAdapterSendsACorrectExaRequest(t *testing.T) {
 
 `testkit.WithProfiles` names the simulated APIs a test needs — required, not defaulted, so a team simulating one
 vendor never pulls in every reference profile's contracts and goldens. The four in-tree profiles live at
-`provider/exa`, `provider/tavily`, `provider/perplexity` and `provider/mcp`, each exporting a typed `Name` and a
+`profiles/exa`, `profiles/tavily`, `profiles/perplexity` and `profiles/mcp`, each exporting a typed `Name` and a
 `Profile()`.
 
 `sim.Client()` returns an `*http.Client` with keep-alives disabled and the proxy environment ignored, so a

@@ -494,8 +494,8 @@ Sources:
   Specification" entry), `title: Exa Public API`, `version: 2.0.0`. Confirmed as canonical for `/contents` and used
   above for the `anyOf [<type>, null]` nullability and the `entities`/`extras`/`statuses` schemas below.
 
-**Status: canonical, verified, simulated.** Implemented on `provider/exa`, exercised by
-`provider/exa/contents_test.go` and `provider/exa/contents_golden_test.go`, with fixtures in this directory.
+**Status: canonical, verified, simulated.** Implemented on `profiles/exa`, exercised by
+`profiles/exa/contents_test.go` and `profiles/exa/contents_golden_test.go`, with fixtures in this directory.
 `contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth for what the binary
 registers.
 

@@ -44,7 +44,7 @@ type RouteLister interface {
 // own projection bodies. It is the seam scenario.Validate cannot cross: under the
 // open provider registry a `respond:` body is an undecoded YAML node whose Go
 // type only the provider package knows, and scenario is a level-1 package that
-// must not import provider/exa to find out.
+// must not import profiles/exa to find out.
 //
 // This is a real seam with several implementations — one per provider package —
 // so it does not repeat the anti-pattern the design review rejected when it

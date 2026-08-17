@@ -163,7 +163,7 @@ func (p *Providers) Len() int {
 // ProviderEntry is one provider's block. The scenario package decodes the
 // envelope and leaves each turn's projection body undecoded, because a level-1
 // package cannot know what an Exa result looks like without importing
-// provider/exa and creating a cycle.
+// profiles/exa and creating a cycle.
 type ProviderEntry struct {
 	// Name is the map key.
 	Name string

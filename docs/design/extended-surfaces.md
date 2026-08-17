@@ -4,7 +4,7 @@
 >
 > This addendum describes surfaces that have since shipped: the Perplexity Agent API, Exa `/answer`, the open
 > provider registry and turn model, and per-request namespaces. **The code is authoritative** wherever this
-> document and the shipped `provider/perplexity`, `provider` or `scenario` packages disagree — read the source
+> document and the shipped `profiles/perplexity`, `provider` or `scenario` packages disagree — read the source
 > first. **Every Go block here is illustrative**, not a contract to depend on; where a block and the shipped code
 > disagree, the code wins. `contracts/perplexity/README.md` outranks this document on any wire field
 > ([ADR 0002](../adr/0002-verified-contract-precedence.md)). Later phases extended the surface further — the
@@ -97,7 +97,7 @@ providers:
       - source: source-a
 ```
 
-Both projection types live in `provider/perplexity` and are decoded from their turn via `Turn.DecodeProjection`.
+Both projection types live in `profiles/perplexity` and are decoded from their turn via `Turn.DecodeProjection`.
 
 ```go
 // PerplexityAgent projects canonical sources into an Agent API response.
@@ -215,7 +215,7 @@ type AgentCost struct {
 
 ## Rendering rules
 
-The wire types live in `provider/perplexity/response.go` alongside the Sonar types and follow the same convention:
+The wire types live in `profiles/perplexity/response.go` alongside the Sonar types and follow the same convention:
 `json` tags exactly as the specification names them, `omitempty` only where the field is genuinely optional.
 
 Ordering of `output[]` is fixed and deterministic: **`search_results` first, then `message`**. This mirrors the
@@ -266,7 +266,7 @@ convention, while the Agent API declares its own `ErrorInfo`. Do not unify them.
 |---|---|
 | **U0** | **Do not split `Taskfile.yml` into `taskfiles/`.** The base design proposes this for house consistency. The plan document's repository layout specifies a single root `Taskfile.yml`, `semsource` also uses a single file, and the existing one is complete and working. Churn without benefit; U0's scope is `go.mod`/`go.sum` only. |
 | **U5** | `contracts/{exa,tavily,perplexity}/README.md` are **already written** and are generated provenance — Perplexity's from `openapi.json` directly. U5 owns golden JSON fixtures and `provenance.yaml` in those directories and must **not** rewrite the README files. |
-| **U13** | Extended: also owns `provider/perplexity/agent.go` and `provider/perplexity/agent_test.go`, and serves all four Perplexity routes. |
+| **U13** | Extended: also owns `profiles/perplexity/agent.go` and `profiles/perplexity/agent_test.go`, and serves all four Perplexity routes. |
 | **U19**, **U20** | **Deferred.** Consumer examples are plan Phase 4 and the live canary is Phase 5; this release is Phases 0–3. `contracts/README.md` already documents the canary's contract for when it is built. |
 | **U21** | Also owns this file. |
 

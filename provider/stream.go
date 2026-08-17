@@ -34,7 +34,7 @@ const (
 type SSEEvent struct {
 	// Name fills the "event:" line. Empty omits the line entirely, which is
 	// the chat-completions grammar (GrammarDelta); GrammarTyped's renderer
-	// (renderAgentStream, provider/perplexity/agent.go) sets it on every
+	// (renderAgentStream, profiles/perplexity/agent.go) sets it on every
 	// frame.
 	Name string
 

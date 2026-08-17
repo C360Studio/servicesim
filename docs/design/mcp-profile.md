@@ -2,13 +2,13 @@
 
 > ## Status: record of what shipped — Phase 8 unit 2, 2026-08-16, on `phase-8` (`39d5809`)
 >
-> This document is a **record**, not a specification. It describes the fourth provider profile, `provider/mcp`, as
+> This document is a **record**, not a specification. It describes the fourth provider profile, `profiles/mcp`, as
 > it was built: a Model Context Protocol Streamable HTTP server, modern era only (protocol revision `2026-07-28`),
 > one listener (`mcp`, default port 8084), one route (`POST /mcp`), JSON-RPC 2.0 dispatch on `body.method` to
 > `server/discover`, `tools/list` and `tools/call`. **The code is authoritative** wherever this document and
-> `provider/mcp/*.go` disagree — read the source first. **Every Go block here is illustrative**, not a compiled
+> `profiles/mcp/*.go` disagree — read the source first. **Every Go block here is illustrative**, not a compiled
 > contract. On any wire field, [`contracts/mcp/README.md`](../../contracts/mcp/README.md) outranks this document
-> ([ADR 0002](../adr/0002-verified-contract-precedence.md)); on any simulator-chosen default, `provider/mcp/doc.go`'s
+> ([ADR 0002](../adr/0002-verified-contract-precedence.md)); on any simulator-chosen default, `profiles/mcp/doc.go`'s
 > numbered list ("Recorded simulator-chosen defaults", 1–14) is the record this document paraphrases, and the
 > contract file's "Simulation decisions" carry the same numbers with a `chosen:` line each.
 >
@@ -128,7 +128,7 @@ type Projection struct {
   fixture's malicious-content markers live in `Text`. Resolution is a dedicated pass, `resolveContentSources`,
   called by both `Validator` and `selectProjection`, **not** `scenario.ResolveRefs`'s reflection walk:
   `ContentBlock` is decoded from a slice of tagged-union mappings, none of which is a bare `scenario.SourceRef`, and
-  an inlined `SourceRef` there hits the same yaml.v3 whole-mapping-Unmarshaler collision `provider/tavily`'s
+  an inlined `SourceRef` there hits the same yaml.v3 whole-mapping-Unmarshaler collision `profiles/tavily`'s
   `rawResultProjection` documents.
 - **Zero configuration.** A scenario with no `mcp` block at all renders a well-shaped empty server (empty
   discover, `"tools":[]`, unknown tool for any call); a block that declares turns none of which match is an
@@ -220,7 +220,7 @@ The shared stream path (`streaming.md`) carries it; what MCP decides is:
 
 - **The script decides, not the request — and the ENTRY's script, read from turn 0.** `wantsStream(entry)`
   (`tools.go`) reads turn 0's effective policy through `streamPolicy(entry)`, the same rule
-  `provider/perplexity.streamPolicy` applies and the rule `scenario.StreamScript` documents ("read from turn 0
+  `profiles/perplexity.streamPolicy` applies and the rule `scenario.StreamScript` documents ("read from turn 0
   only"); the *selected* turn's script still supplies the deltas and paces. The client has no field that asks
   MCP to stream — the server decides unilaterally — so `reject` has nothing to reject and is a load ERROR
   (`mcp.stream.reject_meaningless`). The load-time guard (`ValidateProjections` + the shared
@@ -291,13 +291,13 @@ journal `mcp.error.not_found`/`mcp.error.method_not_allowed`. `provider.Profile.
 refusals itself (`provider/mux.go`'s `notFound`/`methodNotAllowed`), on every listener, and labels them the
 framework's own `route.not_found`/`route.method_not_allowed` — `Profile.ErrorBody`'s signature is
 `func(Refusal) []byte`, bytes only, so a per-vendor Label has no path back onto the wire through it.
-`provider/mcp/errors.go`'s `notFoundResponse`/`methodNotAllowedResponse` still carry the old strings on their own
+`profiles/mcp/errors.go`'s `notFoundResponse`/`methodNotAllowedResponse` still carry the old strings on their own
 `Response.Label` field for symmetry with this file's other `statusResponse` calls, but that field is unreachable
 here: only `.Body` is read. Wire bytes are unchanged; only `outcome.label` in the journal differs. The other three
 profiles' 404/405 labels changed the same way (`exa.error.NOT_FOUND` → `route.not_found`, etc.) — this is a
 framework-wide simplification, not an MCP-specific regression.
 
-Finding codes (`provider/mcp/request.go`; every one exported so a consumer's test asserts on the code, not on a
+Finding codes (`profiles/mcp/request.go`; every one exported so a consumer's test asserts on the code, not on a
 status the simulator could produce for another reason):
 
 | Code | Severity | When |

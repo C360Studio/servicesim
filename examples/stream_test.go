@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/c360studio/servicesim/provider/perplexity"
+	"github.com/c360studio/servicesim/profiles/perplexity"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

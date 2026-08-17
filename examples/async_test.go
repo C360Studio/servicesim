@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/c360studio/servicesim/profiles/exa"
 	"github.com/c360studio/servicesim/provider"
-	"github.com/c360studio/servicesim/provider/exa"
 	"github.com/c360studio/servicesim/scenario"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"

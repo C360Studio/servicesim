@@ -7,13 +7,13 @@ redistribution of the specification. Re-verify and update the date above on the 
 re-verification cadence (`contracts/README.md` "Keeping them honest" — there is no live contract
 canary).
 
-**Status: simulated (Phase 8 unit 2).** The handler is `provider/mcp`; the listener is `mcp`, default
+**Status: simulated (Phase 8 unit 2).** The handler is `profiles/mcp`; the listener is `mcp`, default
 port 8084; the one route is `POST /mcp`, JSON-RPC 2.0 dispatch on `body.method` to `server/discover`,
 `tools/list` and `tools/call` — modern era only (`2026-07-28`; see "Protocol eras" below). It registers
 as `contracts.MCP`, and this directory's goldens are embedded and enumerated by `contracts.Providers()`.
 Everything below is still what the specification says; the "Simulation decisions" section records, next
 to each open question, the choice unit 2 actually shipped ("chosen: …") and where in
-`provider/mcp/doc.go` and `contracts/mcp/provenance.yaml` that choice is recorded.
+`profiles/mcp/doc.go` and `contracts/mcp/provenance.yaml` that choice is recorded.
 
 ## Authority and revision
 
@@ -993,7 +993,7 @@ the 2026-07-28 `schema.json`.
 Each item names the contract fact that constrains it and, where there is one, a recommendation with
 its reason. Nothing here is decided by this file. **Simulation decisions — recorded 2026-08-16 (unit
 2):** every item below now also carries a `chosen:` line naming what unit 2 actually shipped, and
-where — `provider/mcp/doc.go`'s numbered "Recorded simulator-chosen defaults" list uses this same
+where — `profiles/mcp/doc.go`'s numbered "Recorded simulator-chosen defaults" list uses this same
 numbering, and `contracts/mcp/provenance.yaml` records the corresponding `note:` on the golden each
 choice shapes.
 
@@ -1008,12 +1008,12 @@ choice shapes.
    superset of both and is not free: it re-introduces the session state the profile would otherwise
    never hold.
    chosen: modern only, per the recommendation. `SupportedVersions = ["2026-07-28"]`
-   (`provider/mcp/doc.go`). D11 itself stays pending owner; unit 2 shipping modern-only precludes
+   (`profiles/mcp/doc.go`). D11 itself stays pending owner; unit 2 shipping modern-only precludes
    nothing — the era-specific header/`_meta` layer lives in its own file (`transport.go`) precisely
    so a legacy follow-on unit has one place to extend.
 2. **The endpoint path.** Fact: server-chosen; the specification's own example is `/mcp`. Choose in
    unit 2; the docs guard will then require the `METHOD /path` row in `contracts/README.md`.
-   chosen: `POST /mcp`, listener `mcp`, default port 8084 (`provider.MCP`, `provider/mcp.PatternMCP`).
+   chosen: `POST /mcp`, listener `mcp`, default port 8084 (`provider.MCP`, `profiles/mcp.PatternMCP`).
    `contracts/README.md`'s index row now carries this route.
 3. **Whether the profile requires an `Authorization: Bearer` credential** like the three research
    profiles. Fact: the spec says authentication SHOULD exist and leaves the scheme to the

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/c360studio/servicesim/examples"
-	"github.com/c360studio/servicesim/provider/mcp"
+	"github.com/c360studio/servicesim/profiles/mcp"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

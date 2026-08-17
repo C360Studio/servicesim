@@ -5,7 +5,7 @@
 // shared per-request lifecycle.
 //
 // Everything a provider package needs in order to serve a request lives here, so
-// that provider/exa, provider/tavily and provider/perplexity write provider
+// that profiles/exa, profiles/tavily and profiles/perplexity write provider
 // semantics and nothing else. Two responsibilities are here rather than where
 // they might first be looked for, and both placements are forced:
 //

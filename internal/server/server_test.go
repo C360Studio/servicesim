@@ -21,11 +21,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/internal/config"
+	"github.com/c360studio/servicesim/profiles/exa"
+	"github.com/c360studio/servicesim/profiles/mcp"
+	"github.com/c360studio/servicesim/profiles/perplexity"
+	"github.com/c360studio/servicesim/profiles/tavily"
 	"github.com/c360studio/servicesim/provider"
-	"github.com/c360studio/servicesim/provider/exa"
-	"github.com/c360studio/servicesim/provider/mcp"
-	"github.com/c360studio/servicesim/provider/perplexity"
-	"github.com/c360studio/servicesim/provider/tavily"
 )
 
 // testKey is the credential every request in this package presents. It is a
@@ -616,7 +616,7 @@ func TestUnknownScenarioFailsClosed(t *testing.T) {
 		{
 			// The JSON-RPC-shaped refusal omits the id member: schema.json's
 			// RequestId admits no null, and JSONRPCErrorResponse.id is optional
-			// (provider/mcp/doc.go, decision 6). Pinned by exact bytes.
+			// (profiles/mcp/doc.go, decision 6). Pinned by exact bytes.
 			name: "mcp", surface: string(mcp.Name),
 			path: "/x/nope/mcp", body: `{"jsonrpc":"2.0","id":1,"method":"server/discover"}`,
 			want: `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Not Found"}}`,
@@ -985,7 +985,7 @@ func TestRequestLogIsStructuredAndCredentialFree(t *testing.T) {
 // presented (turn_key: [header:authorization]), and the raw token composed into
 // the lane key must not survive by ANY path — not the structured log line, and
 // not GET /__admin/requests, which serves the journal this process retained.
-// provider/exa's TestAgentRunCreateCredentialTurnKeyNeverLeaksTheToken covers the
+// profiles/exa's TestAgentRunCreateCredentialTurnKeyNeverLeaksTheToken covers the
 // journal entry and the job registry directly; this is the whole-process path
 // for the two surfaces that only exist once a real Server is running.
 func TestCredentialTurnKeyNeverReachesLogsOrAdmin(t *testing.T) {
@@ -1079,7 +1079,7 @@ func TestLogLevelIsHonoured(t *testing.T) {
 // docs/design/async-jobs.md §2.4: a single-shot block normalises into one
 // unconditional turn, so the first poll is already terminal. That is all these
 // tests need — they exercise the create/reset/poll wiring, not the poll
-// cursor's own turn selection, which provider/exa/agentrun_test.go covers.
+// cursor's own turn selection, which profiles/exa/agentrun_test.go covers.
 const asyncAgentRunScenario = `
 version: 1
 name: async-reset
@@ -1378,8 +1378,8 @@ providers:
 	}
 
 	// mcpMeta/mcpHeaders are the minimal well-formed shape checkTransport
-	// (provider/mcp/transport.go) requires before auth is ever consulted —
-	// mirrored from provider/mcp/handler_test.go's own stdHeaders/defaultMeta,
+	// (profiles/mcp/transport.go) requires before auth is ever consulted —
+	// mirrored from profiles/mcp/handler_test.go's own stdHeaders/defaultMeta,
 	// since those are unexported to that package.
 	const mcpMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
 	mcpHeaders := map[string]string{

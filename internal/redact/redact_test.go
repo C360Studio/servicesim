@@ -723,7 +723,7 @@ func TestString_MasksCredentialShapedText(t *testing.T) {
 // storage boundary, so a second pass must change nothing.
 func TestString_TellsRequirementTextFromCredentials(t *testing.T) {
 	// The prose cases are the live finding messages this repository emits, verbatim
-	// from provider/tavily/request.go and provider/perplexity/request.go. Four of
+	// from profiles/tavily/request.go and profiles/perplexity/request.go. Four of
 	// the five were mangled, which is why the fix cannot be a rule about the phrase
 	// "is required".
 	tests := []struct {

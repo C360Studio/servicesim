@@ -31,7 +31,7 @@ func sseTranscript(id, secondDeltaText string) []byte {
 // carry a call-index-derived response id nested under "response", while the
 // output_item/output_text events carry a call-index-derived message id under
 // "item" or "item_id" — respId and msgID stand in for both, matching
-// renderAgentIdentity's shape (provider/perplexity/agent.go) closely enough
+// renderAgentIdentity's shape (profiles/perplexity/agent.go) closely enough
 // to exercise AssertGoldenSSE's default id pruning without a live Sim.
 func agentTranscript(respID, msgID string) []byte {
 	var b strings.Builder

@@ -341,8 +341,8 @@ func WithProviders(names ...provider.Name) Option {
 //
 //	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile(), tavily.Profile()))
 //
-// The four in-tree profiles live at provider/exa, provider/tavily,
-// provider/perplexity and provider/mcp, each exporting its own Profile().
+// The four in-tree profiles live at profiles/exa, profiles/tavily,
+// profiles/perplexity and profiles/mcp, each exporting its own Profile().
 //
 // [Start] and [Handler] derive routes, validators (unfiltered — every
 // registered profile's, not only the enabled subset) and the fault engine
@@ -560,7 +560,7 @@ func profileSet(tb testing.TB, ps []provider.Profile) *provider.Set {
 			`testkit.WithProfiles(<yourpkg>.Profile()) — any provider.Profile, yours or a reference one; ` +
 			`for example testkit.WithProfiles(exa.Profile(), tavily.Profile(), perplexity.Profile(), mcp.Profile()) ` +
 			"(or whichever of them your test needs) — the four reference profiles live at " +
-			"provider/exa, provider/tavily, provider/perplexity and provider/mcp, each exporting Profile(). " +
+			"profiles/exa, profiles/tavily, profiles/perplexity and profiles/mcp, each exporting Profile(). " +
 			"A default profile set was deliberately removed: it would pull every reference profile's " +
 			"contracts and goldens into the build graph of a team simulating one other API (owner decision D-5, " +
 			"docs/proposals/framework-seam.md).")

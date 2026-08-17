@@ -60,9 +60,9 @@ point of use, and the four that change the design are:
 |---|---|---|
 | `scenario` | exported | The versioned YAML scenario schema: parse, validate, resolve source references, apply defaults. Knows nothing about HTTP. |
 | `provider` | exported | The handler seam. Provider identity, routes, `Deps`, `Clock`, the fault-selection *interface*, fault *execution*, the mux builder, the per-request `Exchange`, and the shared request lifecycle wrapper. |
-| `provider/exa` | exported | Exa wire contract: routing, request validation, response/error encoding for `POST /search` and `POST /answer`. |
-| `provider/tavily` | exported | Tavily wire contract for `POST /search`. |
-| `provider/perplexity` | exported | Perplexity Sonar wire contract for `POST /v1/sonar` and `POST /chat/completions`. |
+| `profiles/exa` | exported | Exa wire contract: routing, request validation, response/error encoding for `POST /search` and `POST /answer`. |
+| `profiles/tavily` | exported | Tavily wire contract for `POST /search`. |
+| `profiles/perplexity` | exported | Perplexity Sonar wire contract for `POST /v1/sonar` and `POST /chat/completions`. |
 | `testkit` | exported | In-process consumer helpers: start `httptest` servers, read the journal, assert on it. |
 | `scenarios` | exported | `embed.FS` of the built-in protocol scenarios plus a lookup by name. |
 | `contracts` | exported (test data) | Golden wire fixtures and their provenance records, plus an `embed.FS` over them and a provenance lookup used by this repository's own contract test. Imports `embed` and nothing else; no provider logic, and nothing in the module imports it except `contracts/contracts_test.go`. |
@@ -106,9 +106,9 @@ imports anything not listed.
 | 2 | `scenarios` | `scenario` |
 | 3 | `provider` | `scenario`, `internal/journal`, `internal/httpx`, `internal/redact` |
 | 4 | `internal/faults` | `scenario`, `provider` |
-| 5 | `provider/exa` | `scenario`, `provider`, `internal/httpx`, `internal/wire`, `internal/ids`, `internal/journal` |
-| 5 | `provider/tavily` | same as `provider/exa` |
-| 5 | `provider/perplexity` | same as `provider/exa` |
+| 5 | `profiles/exa` | `scenario`, `provider`, `internal/httpx`, `internal/wire`, `internal/ids`, `internal/journal` |
+| 5 | `profiles/tavily` | same as `profiles/exa` |
+| 5 | `profiles/perplexity` | same as `profiles/exa` |
 | 5 | `internal/config` | `provider` |
 | 5 | `internal/admin` | `scenario`, `provider`, `internal/journal` |
 | 6 | `internal/server` | `scenario`, `scenarios`, `provider`, `provider/{exa,tavily,perplexity}`, `internal/{admin,faults,journal,config}` |
@@ -130,7 +130,7 @@ because they are the ones a reviewer will want to check:
 - **`internal/faults` &rarr; `provider`, and never the reverse.** The seam declares the `Faults` *interface*; the
   engine implements it, and the engine does **selection only**. Fault *execution* lives in `provider` itself
   (`provider/fault_exec.go`), because `Handle` calls it and a package `Handle` calls cannot import `provider`. Provider
-  handler packages therefore never import `internal/faults`, so a consumer importing `provider/exa` does not drag in
+  handler packages therefore never import `internal/faults`, so a consumer importing `profiles/exa` does not drag in
   the engine's mutable state.
 - **`provider/*` never imports `provider/*`.** The three provider packages are siblings with no edges between them.
   Everything they share lives in `provider`, `internal/httpx` or `internal/wire`.
@@ -1774,7 +1774,7 @@ Three named tests are mandatory:
 
 Two responsibilities, two packages, and the split is forced rather than stylistic. **Selection** — which attempt index
 this request claims and what that attempt declares — is stateful, and its state must not be reachable from a consumer
-importing `provider/exa`; it lives in `internal/faults` at level 4, which imports `provider`. **Execution** — how those
+importing `profiles/exa`; it lives in `internal/faults` at level 4, which imports `provider`. **Execution** — how those
 bytes reach the socket, or fail to — is called by `provider.Handle`, so it must live at or below `provider`; it lives
 in `provider/fault_exec.go` (§2.2). Putting execution in `internal/faults` would require
 `provider` &rarr; `internal/faults` &rarr; `provider`, which does not compile.
@@ -3110,7 +3110,7 @@ Each provider listener gets its own `http.ServeMux` carrying **only** that provi
 the `POST /search` collision between Exa and Tavily without a host-based hack. Three registrations per route.
 
 This logic has **one home**: `provider.NewMux` (§2.2), owned by U9 in `provider/mux.go`. It is not reimplemented in
-`provider/exa`, `provider/tavily`, `provider/perplexity` or `internal/server`. Those three provider packages are
+`profiles/exa`, `profiles/tavily`, `profiles/perplexity` or `internal/server`. Those three provider packages are
 written in parallel by different agents against this document; any one of them that registered only `POST /search` plus
 `/` would return 404 for `GET /search`, `scripts/image-smoke.sh` asserts 405, and before CI caught it the in-process
 handler and the container would disagree on a documented status code — precisely the divergence `testkit` exists to
@@ -3366,9 +3366,9 @@ Two tree-wide rules that make this safe:
 | **U8** Request helpers | `internal/httpx/doc.go`, `internal/httpx/body.go`, `internal/httpx/auth.go`, `internal/httpx/contenttype.go`, `internal/httpx/body_test.go`, `internal/httpx/auth_test.go` | U6 |
 | **U9** Provider seam | `provider/doc.go`, `provider/provider.go`, `provider/clock.go`, `provider/deps.go`, `provider/exchange.go`, `provider/response.go`, `provider/handle.go`, `provider/mux.go`, `provider/fault_exec.go`, `provider/clock_test.go`, `provider/handle_test.go`, `provider/exchange_test.go`, `provider/mux_test.go`, `provider/fault_exec_test.go` | U4, U6 |
 | **U10** Fault selection | `internal/faults/doc.go`, `internal/faults/engine.go`, `internal/faults/engine_test.go` | U9 |
-| **U11** Exa provider | `provider/exa/doc.go`, `provider/exa/handler.go`, `provider/exa/request.go`, `provider/exa/response.go`, `provider/exa/render.go`, `provider/exa/errors.go`, `provider/exa/handler_test.go`, `provider/exa/request_test.go`, `provider/exa/render_test.go`, `provider/exa/testdata/**` | U9, U8, U3, U2, U5 |
-| **U12** Tavily provider | `provider/tavily/doc.go`, `provider/tavily/handler.go`, `provider/tavily/request.go`, `provider/tavily/response.go`, `provider/tavily/render.go`, `provider/tavily/errors.go`, `provider/tavily/handler_test.go`, `provider/tavily/request_test.go`, `provider/tavily/render_test.go`, `provider/tavily/testdata/**` | U9, U8, U3, U2, U5 |
-| **U13** Perplexity provider | `provider/perplexity/doc.go`, `provider/perplexity/handler.go`, `provider/perplexity/request.go`, `provider/perplexity/response.go`, `provider/perplexity/render.go`, `provider/perplexity/errors.go`, `provider/perplexity/handler_test.go`, `provider/perplexity/request_test.go`, `provider/perplexity/render_test.go`, `provider/perplexity/testdata/**` | U9, U8, U3, U2, U5 |
+| **U11** Exa provider | `profiles/exa/doc.go`, `profiles/exa/handler.go`, `profiles/exa/request.go`, `profiles/exa/response.go`, `profiles/exa/render.go`, `profiles/exa/errors.go`, `profiles/exa/handler_test.go`, `profiles/exa/request_test.go`, `profiles/exa/render_test.go`, `profiles/exa/testdata/**` | U9, U8, U3, U2, U5 |
+| **U12** Tavily provider | `profiles/tavily/doc.go`, `profiles/tavily/handler.go`, `profiles/tavily/request.go`, `profiles/tavily/response.go`, `profiles/tavily/render.go`, `profiles/tavily/errors.go`, `profiles/tavily/handler_test.go`, `profiles/tavily/request_test.go`, `profiles/tavily/render_test.go`, `profiles/tavily/testdata/**` | U9, U8, U3, U2, U5 |
+| **U13** Perplexity provider | `profiles/perplexity/doc.go`, `profiles/perplexity/handler.go`, `profiles/perplexity/request.go`, `profiles/perplexity/response.go`, `profiles/perplexity/render.go`, `profiles/perplexity/errors.go`, `profiles/perplexity/handler_test.go`, `profiles/perplexity/request_test.go`, `profiles/perplexity/render_test.go`, `profiles/perplexity/testdata/**` | U9, U8, U3, U2, U5 |
 | **U14** Configuration | `internal/config/doc.go`, `internal/config/config.go`, `internal/config/scenario.go`, `internal/config/config_test.go`, `internal/config/scenario_test.go` | U9 |
 | **U15** Admin surface | `internal/admin/doc.go`, `internal/admin/handler.go`, `internal/admin/requests.go`, `internal/admin/handler_test.go` | U9, U6 |
 | **U16** Server composition | `internal/server/doc.go`, `internal/server/server.go`, `internal/server/listeners.go`, `internal/server/logging.go`, `internal/server/server_test.go` | U10, U11, U12, U13, U14, U15 |
@@ -3483,4 +3483,4 @@ not re-proposed in a later review.
 | Break the `provider` &harr; `internal/faults` cycle by declaring a `FaultExecutor` interface and injecting it through `Deps` | Adds a nil-able seam and a second `Response` type for behaviour that will only ever have one implementation, and leaves "who sets `entry.Outcome`" split across two packages | Moving execution into `provider/fault_exec.go`; `internal/faults` keeps selection only (§2.2, §2.5) |
 | Keep `FakeClock` but have `Now()` advance a fixed tick per call so instants are strictly increasing | A fake whose correctness depends on being *called* often enough is a trap, and it still cannot make a client deadline fire — a deadline is observed by bytes not arriving | `Clock` reduced to `Now()`, defaulting to real time everywhere; delays governed by `Deps.DelayMode` (§2.2, §3.2) |
 | Make `AssertOverlapped` use non-strict comparisons | With real timestamps, strict comparison is exactly right; the non-strict form also passes for strictly serial calls, which is the one thing the assertion exists to reject | Real-time journal timestamps by default (§2.10, §3.2) |
-| Export `provider.NewFaults` so the direct `exa.New(Deps{...})` path can build an engine | Would pull selection state into `provider`, so a consumer importing `provider/exa` drags in the engine's mutable state — the property the level table is built to preserve | `testkit.NewFaults`, plus the `deps.faults_ignored` warning from `Deps.Normalized` (§2.2, §2.10) |
+| Export `provider.NewFaults` so the direct `exa.New(Deps{...})` path can build an engine | Would pull selection state into `provider`, so a consumer importing `profiles/exa` drags in the engine's mutable state — the property the level table is built to preserve | `testkit.NewFaults`, plus the `deps.faults_ignored` warning from `Deps.Normalized` (§2.2, §2.10) |

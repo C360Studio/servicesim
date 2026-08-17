@@ -8,8 +8,9 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 Recorded 2026-08-17 (early), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6) plus,
 unreleased on `main`: Phase 7 (`6a43316`) and **Phase 8, merged to `main` at `16c4688` (PR #4, merge commit)** —
-unit 1 (the MCP contract, `contracts/mcp/`, `f5dd08e`), unit 2 (the MCP profile, `provider/mcp/`, `39d5809`) and
-unit 3 (the docs sweep — README onboarding, `examples/mcpclient.go` + `examples/mcp_test.go`,
+unit 1 (the MCP contract, `contracts/mcp/`, `f5dd08e`), unit 2 (the MCP profile, `provider/mcp/`
+(now `profiles/mcp/`), `39d5809`) and unit 3 (the docs sweep — README onboarding, `examples/mcpclient.go` +
+`examples/mcp_test.go`,
 `docs/design/mcp-profile.md`, the D9 tier-2 evidence, the CONTRIBUTING checklist, troubleshooting, `02a0917`).
 The `phase-8` branch is merged and deleted. **Owner decisions the same morning: D11 — "modern only is a fine
 start"; D9 tier 2 — YES, Servicesim is a framework and the four profiles are reference examples (the quote is in
@@ -26,7 +27,7 @@ the v0.5.0 release; its design proposal is being written first.**
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
 | 6 — G-3 depth: hostile content, oversized bodies, hangs after headers, resilience built-ins, pacing evidence | **shipped** in v0.4.0 — units 1–6, the closing docs sweep, D9 tier 1; the adopter's own guardrail vectors are still an append to `malicious-content` when they arrive |
 | 7 — packaging, deployment and the contract-fidelity process | **DONE (rescoped) and merged to `main` (`6a43316`, PR #3), unreleased** — items 1–2 (the Gitea mirror, the Kubernetes manifest) dropped 2026-08-16 (owner; D3 reworded: no replicas by design); item 3 shipped 2026-08-15; items 4 and 5b shipped: a `spec:` block (url/version/sha256/retrieved) for every vendor's OpenAPI document, `contracts.Spec`/`ProviderSpec`, `Record.APIVersion`, and the no-canary refresh procedure (D10) |
-| 8 — the MCP profile (in-tree per D6) | **COMPLETE — merged to `main` (`16c4688`, PR #4), unreleased; v0.5.0 is the release** — the last feature phase: unit 1 (contract verification, `contracts/mcp/`) DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp`, listener `mcp` on `POST /mcp` port 8084) DONE 2026-08-16; unit 3 (the docs sweep: README, `examples/` MCP client and tests, `docs/design/mcp-profile.md`, D9 tier-2 evidence, CONTRIBUTING, troubleshooting) DONE 2026-08-16. ODR is out per D12; D11 (era) pending owner — modern-only shipped, legacy only if needed; D9 tier 2 pending owner with the evidence now written |
+| 8 — the MCP profile (in-tree per D6) | **COMPLETE — merged to `main` (`16c4688`, PR #4), unreleased; v0.5.0 is the release** — the last feature phase: unit 1 (contract verification, `contracts/mcp/`) DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp` (now `profiles/mcp`), listener `mcp` on `POST /mcp` port 8084) DONE 2026-08-16; unit 3 (the docs sweep: README, `examples/` MCP client and tests, `docs/design/mcp-profile.md`, D9 tier-2 evidence, CONTRIBUTING, troubleshooting) DONE 2026-08-16. ODR is out per D12; D11 (era) pending owner — modern-only shipped, legacy only if needed; D9 tier 2 pending owner with the evidence now written |
 | 9 onward | **Phase 10 — the framework seam (D9 tier 2, owner 2026-08-17) is next and gates v0.5.0**: promote what a profile needs into exported packages, replace the 41 provider-name enumerations with a registry, an exported composition entry point so a consumer builds their own binary/image, the four profiles as reference examples, guards as library helpers a consumer runs in their own CI; the design proposal comes first. Then Phase 9 (the two doctrine-contradicting features), the shared-pipeline hardening follow-up from unit 2's review (folded into Phase 10 — a framework cannot rely on handler convention), the adopter's own guardrail vectors when they arrive |
 
 **v0.4.0** is the last tag (2026-08-16, `b788f00`): Phase 6 end to end — `completed_at` observing every scripted
@@ -81,7 +82,7 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    section.
 4. ~~**Phase 8 — the MCP profile**~~ **COMPLETE — merged to `main` 2026-08-17 (`16c4688`, PR #4).** Unit 1 (contract
    verification: `contracts/mcp/README.md` + `provenance.yaml`, spec sha256 `ef70b61f…`, the D11 evidence), unit 2
-   (the modern 2026-07-28 profile: `provider/mcp`, listener `mcp` on `POST /mcp` port 8084,
+   (the modern 2026-07-28 profile: `provider/mcp` (now `profiles/mcp`), listener `mcp` on `POST /mcp` port 8084,
    `server/discover`/`tools/list`/`tools/call`, JSON and per-request SSE answers, strict request validation, 18
    goldens under `contracts.MCP`, every built-in's `mcp:` block) and unit 3 (the docs sweep: README's MCP
    onboarding with a real `curl` and a real test excerpt, `examples/mcpclient.go` + `examples/mcp_test.go` — nine
@@ -531,10 +532,10 @@ that wired the built-ins, docs and image smoke once all three landed.
   only `completed` carries it. Fixed, golden and the one disagreeing README row corrected with citation and date.
 - costDollars.total on both new Exa routes from their first release — **DONE**, avoiding the expensive-later
   fixture rewrite A3 warned about.
-- Wire the stream_mode full|concise enum — **DONE.** `provider/perplexity/request.go`'s already-declared
-  `StreamModes` constant is now enforced on `/v1/sonar` and every alias, with the same enum-error style as
-  `search_mode`/`reasoning_effort`/`search_recency_filter`, unblocking Phase 5's need to validate it before adding
-  the streaming behaviour it selects between.
+- Wire the stream_mode full|concise enum — **DONE.** `provider/perplexity/request.go`'s (now
+  `profiles/perplexity/request.go`) already-declared `StreamModes` constant is now enforced on `/v1/sonar` and
+  every alias, with the same enum-error style as `search_mode`/`reasoning_effort`/`search_recency_filter`,
+  unblocking Phase 5's need to validate it before adding the streaming behaviour it selects between.
 
 `docs/scenario-schema.md` documents the three new sub-keys (`exa.contents`, `exa.find_similar`, `tavily.extract`),
 the D-a fetch-shaped-route echo rule and the D-b relevance-route distinction. Every built-in scenario under
@@ -854,9 +855,10 @@ is theirs (D12); Servicesim does not unblock it.
   path, `405` on every method but POST, `202` no body for a notification, `200` — not `400` — for every ordinary
   method-level JSON-RPC error so the spec's client era-detection signal stays reserved). Registers `contracts.MCP`
   with 18 golden fixtures and a provenance entry each; every simulator-chosen point in the contract's "Simulation
-  decisions" section is recorded, with a matching `chosen:` line, in `provider/mcp/doc.go` and as a `note:` on the
-  golden it shapes. The composition-layer edits below, all 20 built-in scenarios' `mcp:` blocks, the image, and the
-  docs the guards force all shipped with it; `x-mcp-header`, `Origin` validation, resources, prompts, completion,
+  decisions" section is recorded, with a matching `chosen:` line, in `provider/mcp/doc.go` (now
+  `profiles/mcp/doc.go`) and as a `note:` on the golden it shapes. The composition-layer edits below, all 20
+  built-in scenarios' `mcp:` blocks, the image, and the docs the guards force all shipped with it; `x-mcp-header`,
+  `Origin` validation, resources, prompts, completion,
   `subscriptions/listen`, MRTR and the legacy 2025-11-25 era are NOT SIMULATED.
 - **Unit 3 — the docs sweep — DONE 2026-08-16**: README (lead and provider-neutral paragraph name the fourth
   profile as a protocol; a "Pointing your code at it → MCP" subsection with the headers, the optional-credential
@@ -904,7 +906,8 @@ is theirs (D12); Servicesim does not unblock it.
     Fixed by routing exa's per-result render through the new `provider.Render(v, extra, omit)`, which every
     profile now calls instead of `internal/wire` directly (`provider/framework.go` — house rule 2's byte-fidelity
     guarantee, unchanged bytes everywhere else, proven by the full golden suite passing with no golden
-    regenerated). See `provider/exa/render_test.go`'s `TestRender_OmitFieldsWinsOverExtraFields`.
+    regenerated). See `provider/exa/render_test.go`'s (now `profiles/exa/render_test.go`)
+    `TestRender_OmitFieldsWinsOverExtraFields`.
   - **Phase 10 unit 2: `provider.Profile`/`Set`, refusals by construction, the fault engine as a Set method, an
     open SSE grammar.** `provider.Profile` (16 fields) + `Set`/`NewSet`/`MustSet`, each of the four in-tree
     profiles gains `Profile()` and a typed `Name` (exa's and perplexity's are new); `<pkg>.New` becomes a
@@ -1004,7 +1007,8 @@ is theirs (D12); Servicesim does not unblock it.
     opposite order from exa's and perplexity's own (pre-existing) guards, which already served the scenario body
     in this case. All three profiles now agree, matching `docs/scenario-schema.md`'s "a status below 400 means
     no fault" reading. Pinned by
-    `provider/tavily/handler_test.go`'s `TestFaultWithErrorButNoErrorStatusServesTheScenarioBody`.
+    `provider/tavily/handler_test.go`'s (now `profiles/tavily/handler_test.go`)
+    `TestFaultWithErrorButNoErrorStatusServesTheScenarioBody`.
   - **Confirmed, not fixed, journal-only (no wire byte changed):** every listener's 404/405 `outcome.label`
     changed from a vendor-specific spelling (`exa.error.NOT_FOUND`, `tavily.error.405`,
     `perplexity.sonar.error.404`, `mcp.error.not_found`) to the framework's own `route.not_found`/
@@ -1133,7 +1137,8 @@ is theirs (D12); Servicesim does not unblock it.
   profile builds omits the member (now omitted, pinned by exact bytes in `TestUnknownScenarioFailsClosed`); and
   `wantsStream` read the selected turn's `stream.when_requested` rather than turn 0's, honouring at request time
   a value the load-time WARNING `scenario.stream.policy.ignored` had just said was ignored (now turn 0, as
-  `provider/mcp/doc.go` item 5, the contract and `provider/perplexity` all have it; pinned by
+  `provider/mcp/doc.go` (now `profiles/mcp/doc.go`) item 5, the contract and `provider/perplexity`
+  (now `profiles/perplexity`) all have it; pinned by
   `TestStreamPolicyIsReadFromTurnZero`, which fails against the earlier draft).
 - The hostile-behaviour pack for their mcp-adapter defence kit: tool-schema drift between calls (turn model, free),
   oversized results and injection-bearing output (projection bytes, free), **per-request version and header

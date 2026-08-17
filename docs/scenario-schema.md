@@ -882,7 +882,7 @@ ContentBlock, keyed by `type` (`text` \| `image` \| `audio` \| `resource_link` \
 ResourceBlock: `uri` (required), `mime_type`, `text`, `blob` — exactly one of `text`/`blob` on a well-formed
 fixture (`TextResourceContents` or `BlobResourceContents`); nothing downstream rejects a fixture that sets both.
 
-**Simulator-chosen defaults**, recorded in full in `provider/mcp/doc.go` and `contracts/mcp/README.md`'s
+**Simulator-chosen defaults**, recorded in full in `profiles/mcp/doc.go` and `contracts/mcp/README.md`'s
 "Simulation decisions": credentials are OPTIONAL by default (the opposite default from every other provider — a
 scenario needs an explicit `auth: {mode: required}` to reject a missing credential, `expect_key` alone is not
 enough); every JSON-RPC method-level error (unknown tool, invalid params, an internal render failure) answers

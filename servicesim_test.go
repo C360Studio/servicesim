@@ -17,11 +17,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/c360studio/servicesim/profiles/exa"
+	"github.com/c360studio/servicesim/profiles/mcp"
+	"github.com/c360studio/servicesim/profiles/perplexity"
+	"github.com/c360studio/servicesim/profiles/tavily"
 	"github.com/c360studio/servicesim/provider"
-	"github.com/c360studio/servicesim/provider/exa"
-	"github.com/c360studio/servicesim/provider/mcp"
-	"github.com/c360studio/servicesim/provider/perplexity"
-	"github.com/c360studio/servicesim/provider/tavily"
 	"github.com/c360studio/servicesim/scenario"
 )
 

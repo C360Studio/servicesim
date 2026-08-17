@@ -2,8 +2,8 @@
 // serve a [provider.Set] as a process — flags, listeners, the admin surface,
 // the journal, scenario loading, health checks and startup logs — built from
 // nothing but the Set a caller registers. It names no vendor: the four
-// reference profiles this repository ships (provider/exa, provider/tavily,
-// provider/perplexity, provider/mcp) are consumed by [cmd/servicesim/main.go]
+// reference profiles this repository ships (profiles/exa, profiles/tavily,
+// profiles/perplexity, profiles/mcp) are consumed by [cmd/servicesim/main.go]
 // exactly the way an out-of-tree profile is consumed by anyone else's.
 //
 // A consumer's whole main.go is:

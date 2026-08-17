@@ -18,11 +18,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	"github.com/c360studio/servicesim/profiles/exa"
+	"github.com/c360studio/servicesim/profiles/mcp"
+	"github.com/c360studio/servicesim/profiles/perplexity"
+	"github.com/c360studio/servicesim/profiles/tavily"
 	"github.com/c360studio/servicesim/provider"
-	"github.com/c360studio/servicesim/provider/exa"
-	"github.com/c360studio/servicesim/provider/mcp"
-	"github.com/c360studio/servicesim/provider/perplexity"
-	"github.com/c360studio/servicesim/provider/tavily"
 	"github.com/c360studio/servicesim/scenario"
 	"github.com/c360studio/servicesim/scenarios"
 	"github.com/c360studio/servicesim/testkit"
@@ -577,7 +577,7 @@ func TestMaliciousContent_WireResponsesCarryMarkersVerbatim(t *testing.T) {
 		},
 		{
 			// text:true is what makes /answer's citations carry the source's
-			// full text (provider/exa/render.go renderAnswer), not only titles.
+			// full text (profiles/exa/render.go renderAnswer), not only titles.
 			name:    "exa answer",
 			p:       exa.Name,
 			path:    "/answer",
@@ -586,7 +586,7 @@ func TestMaliciousContent_WireResponsesCarryMarkersVerbatim(t *testing.T) {
 		},
 		{
 			// include_raw_content:true is what makes /search's raw_content field
-			// carry markup-script's override sentence (provider/tavily/render.go
+			// carry markup-script's override sentence (profiles/tavily/render.go
 			// renderRawContent) — the one string on this surface that reaches the
 			// wire ONLY through raw_content, since content already falls back
 			// through snippet then text and would carry every other marker even

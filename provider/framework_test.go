@@ -104,7 +104,7 @@ func TestRenderMergesExtraFieldsAtTopLevel(t *testing.T) {
 // TestRenderOmitsAfterMerge is the ordering case docs/scenario-schema.md
 // documents: "the merge happens first and the omission second, so
 // omit_fields can remove a key extra_fields added". This is the property
-// that fixes exa's response-ordering bug (see provider/exa's
+// that fixes exa's response-ordering bug (see profiles/exa's
 // TestRender_OmitFieldsWinsOverExtraFields for the end-to-end case).
 func TestRenderOmitsAfterMerge(t *testing.T) {
 	t.Parallel()

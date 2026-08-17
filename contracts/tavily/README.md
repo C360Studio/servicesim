@@ -311,8 +311,8 @@ fetched directly and returns **HTTP 404**, so it is a stale reference, not a sou
 below come from its own page, matching the pattern this file already records for `/search`: every documented
 status uses its own fully-shown example rather than deferring to a shared reference.
 
-**Status: canonical, verified, simulated.** Implemented on `provider/tavily`, exercised by
-`provider/tavily/extract_test.go` and `provider/tavily/extract_golden_test.go`, with fixtures in this directory.
+**Status: canonical, verified, simulated.** Implemented on `profiles/tavily`, exercised by
+`profiles/tavily/extract_test.go` and `profiles/tavily/extract_golden_test.go`, with fixtures in this directory.
 `contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth for what the binary
 registers.
 
