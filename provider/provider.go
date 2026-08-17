@@ -10,6 +10,13 @@ import (
 type Name string
 
 // The simulated providers.
+//
+// Deprecated: name the profile package's own typed Name instead (exa.Name,
+// tavily.Name, perplexity.Name, mcp.Name). These constants are last read by
+// internal/config and internal/server's four-vendor switches and are
+// removed once those are rewired onto provider.Set (Phase 10 unit 3) — a
+// framework core has no business naming four vendors
+// (docs/proposals/framework-seam.md).
 const (
 	Exa        Name = "exa"
 	Tavily     Name = "tavily"

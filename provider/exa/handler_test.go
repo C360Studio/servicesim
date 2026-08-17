@@ -400,7 +400,7 @@ func TestAuth_RouteCredentialsNarrowTheProviderDefault(t *testing.T) {
 	t.Run("a route accepting only Authorization rejects x-api-key", func(t *testing.T) {
 		t.Parallel()
 		x := newExchange(t, []string{provider.PlacementAuthorization}, "x-api-key", "test-key")
-		authenticate(x, nil)
+		authenticate(x)
 
 		assert.True(t, x.Failed(), "a placement the route does not accept must not authenticate")
 		assert.True(t, hasCode(x, codeAuthMissing))
@@ -411,7 +411,7 @@ func TestAuth_RouteCredentialsNarrowTheProviderDefault(t *testing.T) {
 	t.Run("and still accepts the placement it does declare", func(t *testing.T) {
 		t.Parallel()
 		x := newExchange(t, []string{provider.PlacementAuthorization}, "Authorization", "Bearer test-key")
-		authenticate(x, nil)
+		authenticate(x)
 
 		assert.False(t, x.Failed())
 		assert.Empty(t, x.Findings())
@@ -420,7 +420,7 @@ func TestAuth_RouteCredentialsNarrowTheProviderDefault(t *testing.T) {
 	t.Run("a route declaring nothing keeps the provider default", func(t *testing.T) {
 		t.Parallel()
 		x := newExchange(t, nil, "x-api-key", "test-key")
-		authenticate(x, nil)
+		authenticate(x)
 
 		assert.False(t, x.Failed(),
 			"every route registered before Credentials existed relies on this fallback")

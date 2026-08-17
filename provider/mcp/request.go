@@ -170,22 +170,6 @@ const (
 // header, the only form the specification documents (decision 3).
 var defaultPlacements = []string{provider.PlacementAuthorization}
 
-// authPolicy returns the entry's auth policy, defaulting to optional —
-// deliberately the opposite default from the three research profiles
-// (decision 3): the specification leaves authentication to the
-// deployment, and this profile must not invent a requirement the
-// specification does not make.
-func authPolicy(entry *scenario.ProviderEntry) scenario.AuthPolicy {
-	if entry == nil || entry.Auth == nil {
-		return scenario.AuthPolicy{Mode: scenario.AuthOptional}
-	}
-	policy := *entry.Auth
-	if policy.Mode == "" {
-		policy.Mode = scenario.AuthOptional
-	}
-	return policy
-}
-
 // acceptedPlacements resolves which credential placements authenticate,
 // applying the shared precedence (scenario auth.headers, then the route's
 // own Credentials, then this package's default).
@@ -208,12 +192,17 @@ func presentedCredentials(x *provider.Exchange, accepted []string) []provider.Cr
 	return presented
 }
 
-// checkAuth applies decision 3: optional by default, PlacementAuthorization
-// the only accepted placement, a wrong scheme WARNs but still
-// authenticates (matching the other profiles' "seen and journaled, not
-// silently rejected" treatment of an off-placement credential).
-func checkAuth(x *provider.Exchange, entry *scenario.ProviderEntry) {
-	policy := authPolicy(entry)
+// checkAuth applies decision 3: optional by default — x.AuthPolicy() reads
+// Profile.DefaultAuth, which this profile sets to scenario.AuthOptional,
+// deliberately the opposite default from the three research profiles,
+// because the specification leaves authentication to the deployment and
+// this profile must not invent a requirement the specification does not
+// make — PlacementAuthorization the only accepted placement, a wrong scheme
+// WARNs but still authenticates (matching the other profiles' "seen and
+// journaled, not silently rejected" treatment of an off-placement
+// credential).
+func checkAuth(x *provider.Exchange) {
+	policy := x.AuthPolicy()
 	accepted := acceptedPlacements(x, policy)
 	presented := presentedCredentials(x, accepted)
 

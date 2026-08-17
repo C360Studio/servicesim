@@ -57,7 +57,7 @@ func findSimilarFault(s *scenario.Scenario) *scenario.Fault {
 // projection /search renders, over the same renderResult.
 func handleFindSimilar(x *provider.Exchange) provider.Response {
 	entry := x.Entry()
-	authenticate(x, entry)
+	authenticate(x)
 	validateFindSimilarRequest(x)
 	if x.Failed() {
 		return rejection(x)

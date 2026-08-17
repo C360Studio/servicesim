@@ -245,6 +245,13 @@ func TestFaultBodyGoldenWire(t *testing.T) {
 // TestFaultBodyPrecedence proves the three ways an attempt can shape its body,
 // and the one case where it must not: a fault whose point is the transport
 // keeps the scenario's own payload.
+//
+// A `- {}` / status: 200 attempt is no longer exercised directly against
+// this package's own faultBody: the "FaultBody is never even called for a
+// non-error status" guarantee moved into provider/fault_exec.go (Phase 10
+// unit 2), which is where it is now tested, on a hand-built profile —
+// see provider's own profile_test.go
+// (TestFaultBodyGuardSkipsANonErrorAttempt).
 func TestFaultBodyPrecedence(t *testing.T) {
 	t.Parallel()
 
@@ -263,8 +270,61 @@ func TestFaultBodyPrecedence(t *testing.T) {
 	t.Run("a non-status fault keeps the scenario body", func(t *testing.T) {
 		t.Parallel()
 		require.Nil(t, faultBody(scenario.FaultAttempt{Kind: scenario.FaultTruncateBody}))
-		require.Nil(t, faultBody(scenario.FaultAttempt{Status: http.StatusOK}))
 	})
+}
+
+// TestFaultWithErrorButNoErrorStatusServesTheScenarioBody pins a behaviour
+// change Phase 10 unit 2 made, undisclosed in either implementer's report:
+// before this unit, an attempt carrying `error:` with no error status (a
+// bare `- error: "..."` or `- {status: 200, error: "..."}`) served this
+// package's error envelope at 200, because faultBody's own (now-deleted)
+// `if a.Status < 400 { return nil }` guard ran AFTER the a.Error check, not
+// before it — the opposite order from exa's and perplexity's own guards,
+// which already served the scenario body in this case. provider/fault_exec.go
+// now gates on `a.Status >= 400 || len(a.Body) > 0` BEFORE faultBody ever
+// runs (Phase 10 unit 2, "the Status < 400 guard"), so all three profiles
+// agree: `error:` with no error status is a no-op attempt, and the
+// scenario's own body is served. Intentional — the framework guarantee
+// this unit added — not a regression; recorded in docs/adopter-backlog.md's
+// Phase 10 unit 2 entry.
+func TestFaultWithErrorButNoErrorStatusServesTheScenarioBody(t *testing.T) {
+	t.Parallel()
+
+	src := `
+version: 1
+name: error-no-status
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  tavily:
+    fault:
+      attempts:
+        - error: "Odd attempt with error but no status."
+        - status: 200
+          error: "Odd attempt with error but no status, explicit 200."
+    results:
+      - source: source-a
+        score: 0.98
+`
+	loaded, report, err := scenario.Parse([]byte(src))
+	require.NoError(t, err)
+	require.True(t, report.OK(), "%v", report.Findings)
+
+	handler := New(provider.Deps{
+		Scenario: loaded,
+		Faults:   faults.New(loaded, Routes()),
+	})
+
+	for i := 0; i < 2; i++ {
+		resp := post(t, handler, "/search", `{"query":"report a"}`, bearer)
+		require.Equal(t, http.StatusOK, resp.Code)
+		require.Contains(t, resp.Body.String(), `"results"`,
+			"attempt %d: error: with no error status must not produce the error envelope; "+
+				"the scenario's own body is served", i)
+		require.NotContains(t, resp.Body.String(), "Odd attempt")
+	}
 }
 
 // TestRateLimitFaultServesTheDocumentedEnvelope drives a declared fault plan
@@ -657,7 +717,7 @@ providers:
 			require.NoError(t, err)
 			require.True(t, report.OK(), "%v", report.Findings)
 
-			findings := provider.ValidateScenario(loaded, map[string]provider.Validator{Name: Validator{}})
+			findings := provider.ValidateScenario(loaded, map[string]provider.Validator{string(Name): Validator{}})
 			require.NotEmpty(t, findings)
 
 			codes := make([]string, 0, len(findings))
@@ -680,7 +740,7 @@ func TestValidatorAcceptsTheBuiltInProjections(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
 
-	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{Name: Validator{}})
+	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{string(Name): Validator{}})
 	require.Empty(t, findings)
 }
 
@@ -697,10 +757,10 @@ func TestBuiltInScenariosProjectThroughTavily(t *testing.T) {
 		require.NoError(t, err, name)
 		require.True(t, report.OK(), "%s: %v", name, report.Findings)
 
-		if loaded.Provider(Name) == nil {
+		if loaded.Provider(string(Name)) == nil {
 			continue
 		}
-		findings := provider.ValidateScenario(loaded, map[string]provider.Validator{Name: Validator{}})
+		findings := provider.ValidateScenario(loaded, map[string]provider.Validator{string(Name): Validator{}})
 		for _, f := range findings {
 			require.NotEqual(t, scenario.SeverityError, f.Severity, "%s: %+v", name, f)
 		}
@@ -726,7 +786,7 @@ func newHandler(t *testing.T, src string, ring *journal.Ring) http.Handler {
 	require.True(t, report.OK(), "%v", report.Findings)
 
 	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{
-		Name:         Validator{},
+		string(Name): Validator{},
 		NameResearch: ResearchValidator{},
 	})
 	require.Empty(t, findings, "the fixture must validate before it is served")

@@ -7,20 +7,20 @@ import (
 	"strings"
 )
 
-// MuxSpec is everything a provider package supplies to build its listener's mux.
+// MuxSpec is everything a provider package supplies to build its listener's
+// mux beyond the refusal shape.
+//
+// NotFound and MethodNotAllowed no longer live here (Phase 10 unit 2): house
+// rule 3 now makes every refusal render through a Profile's own ErrorBody
+// (see Refusal and Profile.Refuse), so NewMux builds the 404 and 405
+// handlers itself from the refuse function it is given, and a provider
+// package no longer supplies its own.
 type MuxSpec struct {
 	// Routes are the provider's real routes.
 	Routes []Route
 
 	// Handlers maps Route.Pattern to the handler serving it.
 	Handlers map[string]Handler
-
-	// NotFound answers any unknown path with a provider-shaped 404.
-	NotFound Handler
-
-	// MethodNotAllowed answers a known path with an unsupported method. allow is
-	// the sorted list of methods that path does support, for the Allow header.
-	MethodNotAllowed func(allow []string) Handler
 }
 
 // NewMux builds a provider listener's mux. It is exported and lives here, rather
@@ -29,6 +29,13 @@ type MuxSpec struct {
 // the package design. Its verification table (POST /search 200, GET /search 405
 // with Allow, POST /nope 404, POST /search/ 404) is provider/mux_test.go's test
 // table.
+//
+// refuse renders every framework-generated refusal — 404 for an unmatched
+// path, 405 for a known path with an unsupported method — in the profile's
+// own vendor shape (house rule 3). [Profile.Handler] passes its own bound
+// Refuse method; a caller building a mux directly may pass any
+// func(Refusal) []byte, including one built from a bare Profile's Refuse
+// method for a Profile that was never registered in a Set.
 //
 // The method-less pattern per known path is mandatory, not stylistic. Verified on
 // Go 1.26.4: with only "POST /search" and "/" registered, GET /search returns 404
@@ -45,7 +52,7 @@ type MuxSpec struct {
 // itself: re-entry would loop on a path like "/n/a/n/b/search", while an inner
 // mux with no prefix patterns answers it from the catch-all, which is the
 // fail-closed behaviour a malformed prefix should get.
-func NewMux(d Deps, p Name, spec MuxSpec) *http.ServeMux {
+func NewMux(d Deps, p Name, refuse func(Refusal) []byte, spec MuxSpec) *http.ServeMux {
 	// Normalise once, so every route on this listener shares one journal sequence
 	// counter and one attempt counter. Normalized is idempotent, so Handle's own
 	// call is a no-op.
@@ -56,7 +63,7 @@ func NewMux(d Deps, p Name, spec MuxSpec) *http.ServeMux {
 
 	for _, rt := range spec.Routes {
 		method, path, _ := strings.Cut(rt.Pattern, " ")
-		inner.Handle(rt.Pattern, Handle(d, p, rt, spec.Handlers[rt.Pattern]))
+		inner.Handle(rt.Pattern, Handle(d, p, rt, recoverPanic(refuse, spec.Handlers[rt.Pattern])))
 		paths[path] = append(paths[path], method)
 	}
 
@@ -65,12 +72,12 @@ func NewMux(d Deps, p Name, spec MuxSpec) *http.ServeMux {
 	// the Allow header's method order differ run to run (§3.3).
 	for _, path := range slices.Sorted(maps.Keys(paths)) {
 		allow := slices.Sorted(slices.Values(paths[path]))
-		h := methodNotAllowed(spec, allow)
-		inner.Handle(path, Handle(d, p, Route{Pattern: path}, h))
+		h := methodNotAllowed(refuse, allow)
+		inner.Handle(path, Handle(d, p, Route{Pattern: path}, recoverPanic(refuse, h)))
 	}
 
 	// A catch-all produces a provider-shaped 404 for every unknown path.
-	inner.Handle("/", Handle(d, p, Route{Pattern: "/"}, notFound(spec)))
+	inner.Handle("/", Handle(d, p, Route{Pattern: "/"}, recoverPanic(refuse, notFound(refuse))))
 
 	outer := http.NewServeMux()
 	outer.Handle("/", inner)
@@ -78,6 +85,47 @@ func NewMux(d Deps, p Name, spec MuxSpec) *http.ServeMux {
 	outer.Handle("/"+scenarioSegment+"/", stripper)
 	outer.Handle("/"+namespaceSegment+"/", stripper)
 	return outer
+}
+
+// recoverPanic wraps h so a non-abort panic renders as the profile's own
+// RefuseInternal 500 — with a handler.panic ERROR finding — instead of
+// reaching net/http as an unrecovered panic, which today's caller (a
+// nil-dereferencing handler, say) meets as a connection reset with no status
+// and no body.
+//
+// http.ErrAbortHandler panics through unchanged: it is net/http's own
+// sentinel for a deliberate transport-level abort (close_before_headers,
+// stream_disconnect, and siblings), and every existing abort fault still
+// needs to reach the server as a genuine abort, not a 500. Re-panicking it
+// here lets it reach Handle's own recover/record defer exactly as before —
+// nothing about the journal-append-in-defer or the abort-fault timing
+// changes.
+//
+// h == nil passes through untouched, so a route registered with no handler
+// still reaches Handle's own noHandler substitution instead of this wrapper
+// dereferencing a nil func.
+func recoverPanic(refuse func(Refusal) []byte, h Handler) Handler {
+	if h == nil {
+		return nil
+	}
+	return func(x *Exchange) (resp Response) {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			x.Fail(CodeHandlerPanic, "", "handler panicked: %v", rec)
+			resp = Response{
+				Status: http.StatusInternalServerError,
+				Body:   refuse(Refusal{Kind: RefuseInternal, Status: http.StatusInternalServerError, X: x}),
+				Label:  "provider.panic",
+			}
+		}()
+		return h(x)
+	}
 }
 
 // stripLanePrefix removes the lane path prefixes and hands the parsed result to
@@ -99,54 +147,37 @@ func stripLanePrefix(inner http.Handler) http.Handler {
 	})
 }
 
-// notFound wraps the provider's 404 handler so the route.unmatched finding is
-// journaled whether or not the provider remembered to record it. §5.2 requires
-// the finding on every unmatched request; leaving that to three parallel
-// implementations is how one of them ends up without it.
-func notFound(spec MuxSpec) Handler {
-	inner := spec.NotFound
-	if inner == nil {
-		inner = func(_ *Exchange) Response {
-			return Response{Status: http.StatusNotFound, Label: "route.not_found"}
-		}
-	}
+// notFound answers an unmatched path with the profile's own 404 shape,
+// rendered through refuse, and records route.unmatched — §5.2 requires the
+// finding on every unmatched request.
+func notFound(refuse func(Refusal) []byte) Handler {
 	return func(x *Exchange) Response {
-		resp := inner(x)
-		if !x.HasFinding(CodeUnmatched) {
-			x.Fail(CodeUnmatched, "", "no route serves %s %s", x.Request.Method, x.Request.URL.Path)
+		x.Fail(CodeUnmatched, "", "no route serves %s %s", x.Request.Method, x.Request.URL.Path)
+		return Response{
+			Status:        http.StatusNotFound,
+			Body:          refuse(Refusal{Kind: RefuseNotFound, Status: http.StatusNotFound, X: x}),
+			Label:         "route.not_found",
+			FaultEligible: false,
 		}
-		resp.FaultEligible = false
-		return resp
 	}
 }
 
-// methodNotAllowed wraps the provider's 405 handler, guaranteeing both the
-// finding and the Allow header. The header is part of the documented behaviour
-// image-smoke.sh asserts, so it is set here rather than trusted to each provider.
-func methodNotAllowed(spec MuxSpec, allow []string) Handler {
-	var inner Handler
-	if spec.MethodNotAllowed != nil {
-		inner = spec.MethodNotAllowed(allow)
-	}
-	if inner == nil {
-		inner = func(_ *Exchange) Response {
-			return Response{Status: http.StatusMethodNotAllowed, Label: "route.method_not_allowed"}
-		}
-	}
+// methodNotAllowed answers a known path with an unsupported method, rendered
+// through refuse, guaranteeing both the finding and the Allow header. The
+// header is part of the documented behaviour image-smoke.sh asserts.
+func methodNotAllowed(refuse func(Refusal) []byte, allow []string) Handler {
 	allowed := strings.Join(allow, ", ")
 	return func(x *Exchange) Response {
-		resp := inner(x)
-		if !x.HasFinding(CodeMethodNotAllowed) {
-			x.Fail(CodeMethodNotAllowed, "", "%s is not allowed on %s; allowed: %s",
-				x.Request.Method, x.Request.URL.Path, allowed)
+		x.Fail(CodeMethodNotAllowed, "", "%s is not allowed on %s; allowed: %s",
+			x.Request.Method, x.Request.URL.Path, allowed)
+		return Response{
+			Status: http.StatusMethodNotAllowed,
+			Header: http.Header{"Allow": []string{allowed}},
+			Body: refuse(Refusal{
+				Kind: RefuseMethodNotAllowed, Status: http.StatusMethodNotAllowed, Allow: allow, X: x,
+			}),
+			Label:         "route.method_not_allowed",
+			FaultEligible: false,
 		}
-		if resp.Header == nil {
-			resp.Header = http.Header{}
-		}
-		if resp.Header.Get("Allow") == "" {
-			resp.Header.Set("Allow", allowed)
-		}
-		resp.FaultEligible = false
-		return resp
 	}
 }

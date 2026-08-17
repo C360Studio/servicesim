@@ -89,18 +89,19 @@ func ErrorBody(surface Surface, status int, message string) []byte {
 //
 // The attempt's own `body:` wins outright when it declares one, because an
 // author who spelled out a body meant it. Otherwise the attempt's `error:`
-// becomes the message inside this surface's envelope. A non-error status
-// returns nil, which leaves the rendered scenario body in place — a delay-only
-// or `status: 200` attempt is not an error at all.
+// becomes the message inside this surface's envelope.
+//
+// provider/fault_exec.go's faultBody only calls this at all when a.Status is
+// an error status or a.Body is set (Phase 10 unit 2): the "a non-error
+// status returns nil, which leaves the rendered scenario body in place — a
+// delay-only or status: 200 attempt is not an error at all" guard this
+// closure used to carry itself is now the framework's guarantee.
 func faultBody(surface Surface) func(scenario.FaultAttempt) []byte {
 	return func(a scenario.FaultAttempt) []byte {
 		if len(a.Body) > 0 {
 			if b, err := json.Marshal(a.Body); err == nil {
 				return b
 			}
-		}
-		if a.Status < http.StatusBadRequest {
-			return nil
 		}
 		return ErrorBody(surface, a.Status, a.Error)
 	}

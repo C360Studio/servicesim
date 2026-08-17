@@ -438,7 +438,7 @@ func parseDomains(x *provider.Exchange, field string, limit int, code string) []
 // type. §6.3 names a code per field for the enum and range checks; a type error
 // on any other documented property follows the same shape.
 func invalidCode(field string) string {
-	return Name + "." + field + ".invalid"
+	return string(Name) + "." + field + ".invalid"
 }
 
 // describeAcceptedPlacements renders a route's accepted credential placements
@@ -505,8 +505,8 @@ func quoteAlternatives(values []string) string {
 // the one failure mode a simulator must never have. Accepting it costs nothing a
 // consumer needs, because which placement arrived is still recorded: the
 // journal's auth observation names it and tavily.api_key.in_body flags it.
-func checkAuth(x *provider.Exchange, entry *scenario.ProviderEntry) {
-	policy := authPolicy(entry)
+func checkAuth(x *provider.Exchange) {
+	policy := x.AuthPolicy()
 	accepted := acceptedPlacements(x, policy)
 	presented := presentedCredentials(x, accepted)
 
@@ -600,18 +600,6 @@ func bodyCredential(x *provider.Exchange) (provider.Credential, bool) {
 		return provider.Credential{}, false
 	}
 	return provider.Credential{Header: PlacementBodyAPIKey, Value: value}, true
-}
-
-// authPolicy returns the entry's policy, or the documented default.
-func authPolicy(entry *scenario.ProviderEntry) scenario.AuthPolicy {
-	if entry == nil || entry.Auth == nil {
-		return scenario.AuthPolicy{Mode: scenario.AuthRequired}
-	}
-	policy := *entry.Auth
-	if policy.Mode == "" {
-		policy.Mode = scenario.AuthRequired
-	}
-	return policy
 }
 
 // defaultPlacements are the placements a Tavily route accepts when it declares

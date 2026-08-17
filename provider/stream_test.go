@@ -79,19 +79,19 @@ func TestStreamBytes(t *testing.T) {
 		chunkBytes += len(c.Bytes)
 	}
 
-	t.Run("GrammarDelta counts DONE's bytes even though it is never a chunk", func(t *testing.T) {
+	t.Run("a set Sentinel counts its bytes even though it is never a chunk", func(t *testing.T) {
+		t.Parallel()
+		s := &Stream{Grammar: GrammarDelta, Chunks: EncodeSSE(events), Sentinel: DoneSentinel}
+		require.Equal(t, chunkBytes+len(DoneSentinel), s.Bytes())
+	})
+
+	t.Run("a nil Sentinel adds nothing to the total, on either grammar", func(t *testing.T) {
 		t.Parallel()
 		s := &Stream{Grammar: GrammarDelta, Chunks: EncodeSSE(events)}
-		require.Equal(t, chunkBytes+len(doneChunk().Bytes), s.Bytes())
+		require.Equal(t, chunkBytes, s.Bytes(), "Sentinel is data now: the framework infers nothing from Grammar")
 	})
 
-	t.Run("OmitDone drops DONE's bytes from the total", func(t *testing.T) {
-		t.Parallel()
-		s := &Stream{Grammar: GrammarDelta, Chunks: EncodeSSE(events), OmitDone: true}
-		require.Equal(t, chunkBytes, s.Bytes())
-	})
-
-	t.Run("GrammarTyped never adds DONE's bytes", func(t *testing.T) {
+	t.Run("GrammarTyped never implies a Sentinel", func(t *testing.T) {
 		t.Parallel()
 		s := &Stream{Grammar: GrammarTyped, Chunks: EncodeSSE(events)}
 		require.Equal(t, chunkBytes, s.Bytes())
@@ -118,6 +118,7 @@ func twoChunkStream() *Stream {
 	return &Stream{
 		Grammar:   GrammarDelta,
 		Chunks:    EncodeSSE(events),
+		Sentinel:  DoneSentinel,
 		Usage:     json.RawMessage(`{}`),
 		CostTotal: func() *float64 { v := 0.5; return &v }(),
 	}
@@ -536,7 +537,7 @@ func pacedThreeChunkStream() *Stream {
 		{Data: []byte(`{"i":1}`), Pace: 10 * time.Millisecond},
 		{Data: []byte(`{"i":2}`), Pace: 5 * time.Millisecond, Terminal: true},
 	}
-	return &Stream{Grammar: GrammarDelta, Chunks: EncodeSSE(events), DonePace: 7 * time.Millisecond}
+	return &Stream{Grammar: GrammarDelta, Chunks: EncodeSSE(events), SentinelPace: 7 * time.Millisecond}
 }
 
 func TestPlanStream(t *testing.T) {
@@ -549,7 +550,7 @@ func TestPlanStream(t *testing.T) {
 		require.Equal(t, -1, p.truncateAt)
 		require.Equal(t, -1, p.stallAt)
 		require.Equal(t, []int64{40, 10, 5}, p.paceMS())
-		require.Equal(t, 7*time.Millisecond, p.donePace)
+		require.Equal(t, 7*time.Millisecond, p.sentinelPace)
 	})
 
 	t.Run("a non-stream_* attempt behaves exactly like nil", func(t *testing.T) {
@@ -899,15 +900,15 @@ func TestHandleStreamPaceIsHonouredUnderDelayReal(t *testing.T) {
 
 // TestHandleStreamDonePaceIsHonouredUnderDelayReal is the DONE-sentinel
 // sibling of the test above: [DONE] is never an indexed chunk (§3.2), so its
-// gap is Stream.DonePace, slept once — through plan.donePace — after the loop
-// over plan.chunks completes, never through plan.paceOf. A build that slept 0
-// there regardless of DonePace would still pass every PaceMS assertion, since
-// PaceMS never includes DONE.
+// gap is Stream.SentinelPace, slept once — through plan.sentinelPace — after
+// the loop over plan.chunks completes, never through plan.paceOf. A build
+// that slept 0 there regardless of SentinelPace would still pass every
+// PaceMS assertion, since PaceMS never includes the sentinel.
 func TestHandleStreamDonePaceIsHonouredUnderDelayReal(t *testing.T) {
 	t.Parallel()
 
-	stream := twoChunkStream() // both chunks pace 0; only DonePace is nonzero
-	stream.DonePace = time.Hour
+	stream := twoChunkStream() // both chunks pace 0; only SentinelPace is nonzero
+	stream.SentinelPace = time.Hour
 
 	j := journal.NewRing(8, 4096)
 	ctx, cancel := context.WithCancel(context.Background())

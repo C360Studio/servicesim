@@ -267,6 +267,26 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 		}
 
 		resp = h(x)
+
+		// The SSE grammar vocabulary is open (Phase 10 unit 2, house rule 3):
+		// the framework can no longer default a missing Grammar to one
+		// dialect's framing, so a profile that forgets to set it fails loudly
+		// — RefuseInternal, not a silent fallback — rather than a third-party
+		// grammar silently inheriting behaviour nobody asked for. This must
+		// run before the suppression/fault logic below, which assumes
+		// resp.Stream != nil means "this exchange WILL stream": replacing
+		// resp here, rather than mutating it, is what keeps that true.
+		if resp.Stream != nil && resp.Stream.Grammar == "" {
+			x.Fail(CodeStreamGrammarMissing, "",
+				"route %q returned a Stream with an empty Grammar; the SSE grammar vocabulary is open, "+
+					"so a stream must declare its own", route.Pattern)
+			resp = Response{
+				Status: http.StatusInternalServerError,
+				Body:   x.refuse(RefuseInternal, http.StatusInternalServerError),
+				Label:  "provider.stream_grammar_missing",
+			}
+		}
+
 		if x.Failed() {
 			// A handler that left FaultEligible set on a rejected request would
 			// otherwise journal the rejection as though it were the scenario's

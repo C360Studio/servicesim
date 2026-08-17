@@ -51,6 +51,15 @@ func methodNotFoundResponse(id json.RawMessage, method string) provider.Response
 // dispatch-time unknown method does, since a wrong path is, from this
 // listener's point of view, the same kind of "nothing here answers that"
 // refusal.
+// Its own Label ("mcp.error.not_found") is unreachable through refusalBody
+// (profile.go), which extracts only .Body: mux.go's notFound builds the
+// outer Response itself, with the framework's own "route.not_found" Label
+// (Phase 10 unit 2 — every profile's 404 renders through Profile.ErrorBody,
+// whose signature is func(Refusal) []byte, so a vendor-specific Label has no
+// path back onto the wire this way). Kept here anyway, rather than passed
+// as "", because notFoundResponse's shape mirrors every other statusResponse
+// call in this file and a reader comparing them should not have to wonder
+// why this one alone omits a label.
 func notFoundResponse() provider.Response {
 	resp := statusResponse(errAt{
 		Status: http.StatusNotFound, Code: CodeMethodNotFoundError,
@@ -62,6 +71,9 @@ func notFoundResponse() provider.Response {
 
 // methodNotAllowedResponse renders decision 6's 405 shape: Allow: POST is
 // added by provider.NewMux's wrapper, not here.
+//
+// Its own Label is unreachable for the same reason notFoundResponse's is —
+// see that function's doc comment.
 func methodNotAllowedResponse() provider.Response {
 	resp := statusResponse(errAt{
 		Status: http.StatusMethodNotAllowed, Code: CodeInvalidRequestError,

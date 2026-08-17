@@ -58,13 +58,13 @@ func RouteExtract() provider.Route {
 // block may each be absent — because it runs at composition time against a
 // scenario that may not have been validated yet.
 func extractFault(s *scenario.Scenario) *scenario.Fault {
-	e := s.Provider(Name)
+	e := s.Provider(string(Name))
 	if e == nil {
 		return nil
 	}
 	for i := range e.Turns {
 		var p Projection
-		if err := e.Turns[i].DecodeProjection(Name, i, &p); err != nil {
+		if err := e.Turns[i].DecodeProjection(string(Name), i, &p); err != nil {
 			// A projection that cannot be decoded is reported by
 			// Validator.ValidateProjections, which runs before readiness.
 			// Here it simply means this turn declares no /extract plan.
@@ -362,7 +362,7 @@ func handleExtract(x *provider.Exchange) provider.Response {
 	entry := x.Entry()
 
 	req := parseExtractRequest(x)
-	checkAuth(x, entry)
+	checkAuth(x)
 	if x.Failed() {
 		return errorResponse(x)
 	}
@@ -381,7 +381,7 @@ func handleExtract(x *provider.Exchange) provider.Response {
 	return provider.Response{
 		Status:        http.StatusOK,
 		Body:          body,
-		Label:         Name + ".extract.ok",
+		Label:         string(Name) + ".extract.ok",
 		FaultEligible: true,
 		FaultBody:     faultBody,
 	}

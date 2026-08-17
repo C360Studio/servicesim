@@ -108,8 +108,8 @@ var authHeaders = []string{"authorization", "x-api-key"}
 // nothing else. It never quotes a credential: the value reaches only
 // AuthPolicy.ExpectKey comparison, and what is journaled is the fingerprint
 // Handle already recorded.
-func authenticate(x *provider.Exchange, e *scenario.ProviderEntry) {
-	policy := authPolicy(e)
+func authenticate(x *provider.Exchange) {
+	policy := x.AuthPolicy()
 	if policy.Mode == scenario.AuthReject {
 		x.Fail(codeAuthMismatch, "", "the scenario rejects every credential presented to this provider")
 		return
@@ -145,19 +145,6 @@ func authenticate(x *provider.Exchange, e *scenario.ProviderEntry) {
 		// the journal, the admin API and the log.
 		x.Fail(codeAuthMismatch, match.Header, "the presented credential does not match the scenario's expected key")
 	}
-}
-
-// authPolicy returns the entry's policy with defaults applied, tolerating a
-// scenario that declares none.
-func authPolicy(e *scenario.ProviderEntry) scenario.AuthPolicy {
-	if e == nil || e.Auth == nil {
-		return scenario.AuthPolicy{Mode: scenario.AuthRequired}
-	}
-	policy := *e.Auth
-	if policy.Mode == "" {
-		policy.Mode = scenario.AuthRequired
-	}
-	return policy
 }
 
 // validateContentType warns about a body that does not claim JSON. It is a

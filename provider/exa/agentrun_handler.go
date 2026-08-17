@@ -96,8 +96,7 @@ func createFault(s *scenario.Scenario) *scenario.Fault {
 // The order is the fail-closed order §4.4 requires: everything that can reject
 // runs before MintJob, because MintJob claims the call index.
 func handleAgentRunCreate(x *provider.Exchange) provider.Response {
-	entry := x.Entry()
-	authenticate(x, entry)
+	authenticate(x)
 	validateAgentRunCreate(x)
 	if x.Failed() {
 		return rejection(x)
@@ -128,7 +127,7 @@ func handleAgentRunCreate(x *provider.Exchange) provider.Response {
 // is the vendor's 404 and must not consume a poll from some other run's script.
 func handleAgentRunPoll(x *provider.Exchange) provider.Response {
 	entry := x.Entry()
-	authenticate(x, entry)
+	authenticate(x)
 	if x.Failed() {
 		return rejection(x)
 	}
@@ -169,8 +168,7 @@ func handleAgentRunPoll(x *provider.Exchange) provider.Response {
 // It reports no status, because reporting one would mean selecting a turn, which
 // is the thing it must not do. A client that wants status sends GET.
 func handleAgentRunHead(x *provider.Exchange) provider.Response {
-	entry := x.Entry()
-	authenticate(x, entry)
+	authenticate(x)
 	if x.Failed() {
 		return rejection(x)
 	}

@@ -193,7 +193,7 @@ func TestResearchCreateAtTheJobBound(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
 	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{
-		Name:         Validator{},
+		string(Name): Validator{},
 		NameResearch: ResearchValidator{},
 	})
 	require.Empty(t, findings, "the fixture must validate before it is served")

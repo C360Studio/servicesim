@@ -414,8 +414,8 @@ func TestUnresolvedReferenceDoesNotPanic(t *testing.T) {
 	body, err := renderSearch(projection, &searchRequest{Query: "a", MaxResults: DefaultMaxResults},
 		renderKeys{
 			Seed: "seed",
-			ID:   []string{"seed", Name, FaultKeySearch},
-			Call: []string{"seed", Name, FaultKeySearch, "0"},
+			ID:   []string{"seed", string(Name), FaultKeySearch},
+			Call: []string{"seed", string(Name), FaultKeySearch, "0"},
 		})
 	require.NoError(t, err)
 
@@ -493,7 +493,7 @@ func render(t *testing.T, src, requestBody string) []byte {
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
 
-	entry := loaded.Provider(Name)
+	entry := loaded.Provider(string(Name))
 	require.NotNil(t, entry)
 	require.NotEmpty(t, entry.Turns)
 
@@ -503,8 +503,8 @@ func render(t *testing.T, src, requestBody string) []byte {
 
 	body, err := renderSearch(projection, requestFrom(t, requestBody), renderKeys{
 		Seed: loaded.SeedKey(),
-		ID:   []string{loaded.SeedKey(), Name, FaultKeySearch},
-		Call: []string{loaded.SeedKey(), Name, FaultKeySearch, "0"},
+		ID:   []string{loaded.SeedKey(), string(Name), FaultKeySearch},
+		Call: []string{loaded.SeedKey(), string(Name), FaultKeySearch, "0"},
 	})
 	require.NoError(t, err)
 	return body

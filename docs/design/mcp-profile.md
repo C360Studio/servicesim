@@ -283,8 +283,19 @@ Response labels (`Response.Label`, journaled as `outcome.label`): `mcp.server_di
 `mcp.tools_call.ok`, `mcp.tools_call.stream`, `mcp.notification.accepted`, `mcp.tools_list.error.invalid_cursor`,
 `mcp.tools_call.error.name_required`, `mcp.tools_call.error.arguments_invalid`,
 `mcp.tools_call.error.unknown_tool`, `mcp.error.parse`, `mcp.error.invalid_request`, `mcp.error.400`,
-`mcp.error.401`, `mcp.error.method_not_found`, `mcp.error.not_found`, `mcp.error.method_not_allowed`,
-`mcp.error.internal`; the composition layer's `/x/<unknown>` refusal is `mcp.scenario.unknown`.
+`mcp.error.401`, `mcp.error.method_not_found`, `mcp.error.internal`; the composition layer's `/x/<unknown>`
+refusal is `mcp.scenario.unknown`.
+
+**Undocumented until Phase 10 unit 2, corrected here:** an unmatched path and an unsupported method no longer
+journal `mcp.error.not_found`/`mcp.error.method_not_allowed`. `provider.Profile.Handler` now builds these two
+refusals itself (`provider/mux.go`'s `notFound`/`methodNotAllowed`), on every listener, and labels them the
+framework's own `route.not_found`/`route.method_not_allowed` — `Profile.ErrorBody`'s signature is
+`func(Refusal) []byte`, bytes only, so a per-vendor Label has no path back onto the wire through it.
+`provider/mcp/errors.go`'s `notFoundResponse`/`methodNotAllowedResponse` still carry the old strings on their own
+`Response.Label` field for symmetry with this file's other `statusResponse` calls, but that field is unreachable
+here: only `.Body` is read. Wire bytes are unchanged; only `outcome.label` in the journal differs. The other three
+profiles' 404/405 labels changed the same way (`exa.error.NOT_FOUND` → `route.not_found`, etc.) — this is a
+framework-wide simplification, not an MCP-specific regression.
 
 Finding codes (`provider/mcp/request.go`; every one exported so a consumer's test asserts on the code, not on a
 status the simulator could produce for another reason):

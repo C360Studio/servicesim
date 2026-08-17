@@ -456,6 +456,102 @@ func TestNewFaultsWiresAConsumerBuiltDeps(t *testing.T) {
 	assert.Equal(t, []int{http.StatusTooManyRequests, http.StatusOK}, statuses)
 }
 
+// acmeProfile is the same fifteen-line hand-built profile shape
+// provider/profile_test.go and scratchpad/u2-outoftree/ use — an
+// out-of-tree profile author's registration record, built with no import
+// this package could not equally reach from another module.
+func acmeProfile() provider.Profile {
+	return provider.Profile{
+		Name:    "acme",
+		Title:   "Acme",
+		Summary: "a fifteen-line test profile",
+		Handlers: map[string]provider.Handler{
+			"POST /v1/answer": func(_ *provider.Exchange) provider.Response {
+				return provider.Response{
+					Status: http.StatusOK, Body: []byte(`{"ok":true}`),
+					Label: "acme.ok", FaultEligible: true,
+				}
+			},
+		},
+		Routes: []provider.Route{{
+			Pattern:  "POST /v1/answer",
+			FaultKey: "acme:answer",
+			Fault:    func(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, "acme") },
+		}},
+		ErrorBody:   func(provider.Refusal) []byte { return []byte(`{"error":"acme refused"}`) },
+		DefaultAuth: scenario.AuthOptional,
+	}
+}
+
+// TestWithProfilesBuildsFromTheSet proves Start derives routes, the fault
+// engine and the handler from a provider.Set when WithProfiles is passed,
+// exactly as it would for one of the four in-tree defaults: a scripted fault
+// on the out-of-tree route applies (proving set.Faults registered it — AUDIT
+// 1's "no exported fault-engine constructor" gap, closed), and an unknown
+// path answers in the profile's own ErrorBody shape (proving the handler came
+// from Lookup(name).Handler(deps), not a hardcoded switch that has never
+// heard of "acme").
+func TestWithProfilesBuildsFromTheSet(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithProfiles(acmeProfile()), testkit.WithScenarioYAML(`
+version: 1
+name: acme-scenario
+providers:
+  acme:
+    fault:
+      attempts:
+        - status: 429
+        - {}
+`))
+
+	addr := sim.URL(provider.Name("acme"))
+	require.NotEmpty(t, addr, "WithProfiles alone (no WithProviders) must start every registered profile")
+
+	resp1, err := http.Post(addr+"/v1/answer", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusTooManyRequests, resp1.StatusCode, "the scripted fault reached the out-of-tree route")
+	require.NoError(t, resp1.Body.Close())
+
+	resp2, err := http.Post(addr+"/v1/answer", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+	require.NoError(t, resp2.Body.Close())
+
+	resp3, err := http.Post(addr+"/nope", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp3.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp3.Body.Close())
+	require.Equal(t, http.StatusNotFound, resp3.StatusCode)
+	require.Equal(t, `{"error":"acme refused"}`, string(body), "the 404 rendered through the profile's own ErrorBody")
+
+	entries := sim.Requests(provider.Name("acme"))
+	require.Len(t, entries, 3)
+}
+
+// TestNewJournalClosesTheHandBuiltDepsGap proves testkit.NewJournal wires a
+// real, per-Deps journal for a consumer building provider.Deps by hand
+// outside Start — AUDIT 1 gap 7, "no journal constructor outside Start".
+func TestNewJournalClosesTheHandBuiltDepsGap(t *testing.T) {
+	t.Parallel()
+
+	s, _, err := scenario.Parse([]byte(retryScenario))
+	require.NoError(t, err)
+
+	j := testkit.NewJournal()
+	srv := httptest.NewServer(exa.New(provider.Deps{Scenario: s, Faults: testkit.NewFaults(s), Journal: j}))
+	t.Cleanup(srv.Close)
+
+	req := newRequest(context.Background(), t, srv.URL+"/search", provider.Exa, `{"query":"report a"}`)
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1, "the journal built by hand recorded the request Deps sent through it")
+}
+
 // TestExaHandlerReturnsItsSim covers the handler constructors: the Sim is
 // returned because the journal is the only source of an Entry, and a bare
 // handler could only prove that a response arrived.

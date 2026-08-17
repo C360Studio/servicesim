@@ -105,6 +105,15 @@ func (f *scriptedFaults) Reset() {
 	f.calls = 0
 }
 
+// testRefuse is the refuse function most tests that build a mux directly (not
+// through Profile.Handler) pass to NewMux: it does not care about the shape
+// of a 404/405/panic body, only that the mux dispatches, journals and
+// applies faults correctly. Tests that assert on refusal body content build
+// their own.
+func testRefuse(r Refusal) []byte {
+	return []byte(`{"kind":"` + string(r.Kind) + `"}`)
+}
+
 // okHandler is the simplest fault-eligible provider handler.
 func okHandler(body string) Handler {
 	return func(_ *Exchange) Response {

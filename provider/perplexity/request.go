@@ -188,23 +188,11 @@ func checkContentType(x *provider.Exchange) {
 // It never interpolates a credential value, not even truncated, into a finding
 // message: these messages reach the journal, the admin API and the log, and a
 // finding whose subject is a credential must state presence and nothing else.
-func checkAuth(x *provider.Exchange, e *scenario.ProviderEntry) {
-	var policy *scenario.AuthPolicy
-	if e != nil {
-		policy = e.Auth
-	}
+func checkAuth(x *provider.Exchange) {
+	policy := x.AuthPolicy()
+	allowed := x.AcceptedPlacements(policy, bearerOnly)
 
-	var effective scenario.AuthPolicy
-	if policy != nil {
-		effective = *policy
-	}
-	mode := effective.Mode
-	if mode == "" {
-		mode = scenario.AuthRequired
-	}
-	allowed := x.AcceptedPlacements(effective, bearerOnly)
-
-	if mode == scenario.AuthReject {
+	if policy.Mode == scenario.AuthReject {
 		x.Fail(CodeAuthRejected, "", "this scenario rejects every credential")
 		return
 	}
@@ -222,13 +210,13 @@ func checkAuth(x *provider.Exchange, e *scenario.ProviderEntry) {
 	}
 
 	if accepted == nil {
-		if mode == scenario.AuthOptional {
+		if policy.Mode == scenario.AuthOptional {
 			return
 		}
 		x.Fail(CodeAuthMissing, "", "no Authorization: Bearer credential was presented")
 		return
 	}
-	if policy != nil && policy.ExpectKey != "" && accepted.Value != policy.ExpectKey {
+	if policy.ExpectKey != "" && accepted.Value != policy.ExpectKey {
 		x.Fail(CodeAuthMismatch, "", "the presented credential does not match the scenario's expected key")
 	}
 }

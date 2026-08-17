@@ -13,8 +13,11 @@ import (
 )
 
 // Name is the provider's key in a scenario's providers registry, the kind
-// a handler is registered under, and the listener's identity.
-const Name = "mcp"
+// a handler is registered under, and the listener's identity. It was
+// already exported and untyped before this unit (framework-seam.md:
+// "tavily.Name and mcp.Name exist (untyped today; they become typed)");
+// typed here as provider.Name.
+const Name provider.Name = "mcp"
 
 // FaultKeyMCP is the attempt budget POST /mcp draws on. There is one route
 // on this listener, so there is one key.
@@ -25,7 +28,7 @@ const FaultKeyMCP = "mcp:mcp"
 const PatternMCP = "POST /mcp"
 
 // mcpFault selects the fault plan out of a scenario.
-func mcpFault(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, Name) }
+func mcpFault(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, string(Name)) }
 
 // RouteMCP returns POST /mcp, keyed "mcp:mcp".
 func RouteMCP() provider.Route {
@@ -44,6 +47,14 @@ func Routes() []provider.Route {
 	return []provider.Route{RouteMCP()}
 }
 
+// handlers maps every route this profile serves to its handler, shared by
+// Profile() and the deprecated New.
+func handlers() map[string]provider.Handler {
+	return map[string]provider.Handler{
+		PatternMCP: handleMCP,
+	}
+}
+
 // New returns the MCP handler, built with provider.NewMux over Routes().
 //
 // The zero Deps is usable: mcp.New(provider.Deps{}) serves a well-shaped
@@ -52,21 +63,12 @@ func Routes() []provider.Route {
 // zero Deps means no faults even if the Scenario declares them; pass
 // testkit.NewFaults(s) as Deps.Faults, or use testkit.Start, to get the
 // scenario's declared faults.
+//
+// Deprecated: use Profile().Handler(deps). New is removed once
+// internal/server and testkit are rewired onto provider.Set (Phase 10 units
+// 3-4).
 func New(deps provider.Deps) http.Handler {
-	return provider.NewMux(deps, provider.MCP, provider.MuxSpec{
-		Routes: Routes(),
-		Handlers: map[string]provider.Handler{
-			PatternMCP: handleMCP,
-		},
-		NotFound: func(_ *provider.Exchange) provider.Response {
-			return notFoundResponse()
-		},
-		MethodNotAllowed: func(_ []string) provider.Handler {
-			return func(_ *provider.Exchange) provider.Response {
-				return methodNotAllowedResponse()
-			}
-		},
-	})
+	return Profile().Handler(deps)
 }
 
 // handleMCP dispatches every POST /mcp request. The order is fixed
@@ -115,7 +117,7 @@ func handleMCP(x *provider.Exchange) provider.Response {
 		return resp
 	}
 
-	checkAuth(x, entry)
+	checkAuth(x)
 	if x.Failed() {
 		return unauthorizedResponse()
 	}

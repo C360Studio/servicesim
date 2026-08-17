@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
@@ -133,6 +132,29 @@ func AgentRoutes() []provider.Route {
 	return []provider.Route{RouteAgent(), RouteResponses(), RouteResponsesBare()}
 }
 
+// handlers maps every route this profile serves to its handler, shared by
+// Profile() and the deprecated New.
+func handlers() map[string]provider.Handler {
+	return map[string]provider.Handler{
+		PatternSonar:             handleSonar,
+		PatternChatCompletions:   handleSonar,
+		PatternChatCompletionsV1: handleSonar,
+		PatternAgent:             handleAgent,
+		PatternResponses:         handleAgent,
+		PatternResponsesBare:     handleAgent,
+	}
+}
+
+// announce logs the Sonar sunset date once, at Handler construction. It is a
+// property of the simulated API rather than of any request, so it is
+// announced here instead of as per-request noise that would drown the
+// findings a consumer can act on.
+func announce(d provider.Deps) {
+	d.Logger.Info("perplexity.sonar.sunset",
+		slog.String("date", SunsetDate.Format("2006-01-02")),
+		slog.String("successor", PatternAgent))
+}
+
 // New returns the Perplexity handler, built with provider.NewMux over Routes().
 //
 // The zero Deps is usable: it serves well-shaped empty successes on all six
@@ -140,39 +162,12 @@ func AgentRoutes() []provider.Route {
 // means no faults even if the Scenario declares them — pass testkit.NewFaults(s)
 // as Deps.Faults, or use testkit.Start, to get the scenario's declared faults;
 // Deps.Normalized logs deps.faults_ignored if you do not.
+//
+// Deprecated: use Profile().Handler(deps). New is removed once
+// internal/server and testkit are rewired onto provider.Set (Phase 10 units
+// 3-4).
 func New(deps provider.Deps) http.Handler {
-	d := deps.Normalized()
-
-	// The Sonar sunset is a property of the simulated API rather than of any
-	// request, so it is announced once here instead of as per-request noise that
-	// would drown the findings a consumer can act on.
-	d.Logger.Info("perplexity.sonar.sunset",
-		slog.String("date", SunsetDate.Format("2006-01-02")),
-		slog.String("successor", PatternAgent))
-
-	return provider.NewMux(d, provider.Perplexity, provider.MuxSpec{
-		Routes: Routes(),
-		Handlers: map[string]provider.Handler{
-			PatternSonar:             handleSonar,
-			PatternChatCompletions:   handleSonar,
-			PatternChatCompletionsV1: handleSonar,
-			PatternAgent:             handleAgent,
-			PatternResponses:         handleAgent,
-			PatternResponsesBare:     handleAgent,
-		},
-		NotFound: func(_ *provider.Exchange) provider.Response {
-			// An unmatched path cannot know which of the two surfaces was
-			// intended, so fail-closed routing uses the Sonar-shaped body.
-			return errorResponse(SurfaceSonar, http.StatusNotFound, "")
-		},
-		MethodNotAllowed: func(allow []string) provider.Handler {
-			return func(_ *provider.Exchange) provider.Response {
-				resp := errorResponse(SurfaceSonar, http.StatusMethodNotAllowed, "")
-				resp.Header = http.Header{"Allow": []string{strings.Join(allow, ", ")}}
-				return resp
-			}
-		},
-	})
+	return Profile().Handler(deps)
 }
 
 // errorResponse builds a provider-shaped error response for a surface.
@@ -208,7 +203,7 @@ func handleSonar(x *provider.Exchange) provider.Response {
 	entry := x.Deps.Scenario.Provider(NameSonar)
 
 	checkContentType(x)
-	checkAuth(x, entry)
+	checkAuth(x)
 	if rejectStream(x, entry) {
 		return validationResponse(SurfaceSonar, x.Findings(), sonarFields)
 	}
@@ -288,7 +283,7 @@ func handleAgent(x *provider.Exchange) provider.Response {
 	entry := x.Deps.Scenario.Provider(NameAgent)
 
 	checkContentType(x)
-	checkAuth(x, entry)
+	checkAuth(x)
 	if rejectAgentStream(x, entry) {
 		return validationResponse(SurfaceAgent, x.Findings(), agentFields)
 	}

@@ -62,7 +62,7 @@
 //     ever rejected on that basis. Framing (the specification does not
 //     say): unnamed events, one "data:" line per line of JSON, blank line
 //     after each, no "event:" name, no "id:", no [DONE] — GrammarDelta with
-//     Stream.OmitDone = true. Headers: provider.StreamHeader() plus
+//     no Stream.Sentinel. Headers: provider.StreamHeader() plus
 //     X-Accel-Buffering: no (the specification SHOULDs this one, unlike
 //     Perplexity's streaming headers, so it is added here). resp.Body is
 //     always the JSON-object answer for the same turn, streamed or not.

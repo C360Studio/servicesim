@@ -140,7 +140,7 @@ func staticResponse(status int, message string) provider.Response {
 
 // label names an error selection for the journal and the logs.
 func label(status int) string {
-	return Name + ".error." + strconv.Itoa(status)
+	return string(Name) + ".error." + strconv.Itoa(status)
 }
 
 // errorFindings returns the error-severity findings in Findings order, after
@@ -178,6 +178,13 @@ func containsAny(findings []provider.Finding, codes []string) bool {
 // left to the caller: provider.faultBody consults the attempt's body only when
 // no FaultBody function was supplied at all, so a provider that declares one
 // owns that precedence.
+//
+// provider/fault_exec.go's faultBody only calls this at all when a.Status is
+// an error status or a.Body is set (Phase 10 unit 2), so the a.Status < 400
+// guard this function used to carry itself — "a delay, a truncation, a wrong
+// content type, an oversized-body pad with no status override, or a trailing
+// status: 200 attempt all keep the scenario's own body" — is now the
+// framework's guarantee rather than this package's own check.
 func faultBody(a scenario.FaultAttempt) []byte {
 	if len(a.Body) > 0 {
 		if body, err := json.Marshal(a.Body); err == nil {
@@ -187,17 +194,6 @@ func faultBody(a scenario.FaultAttempt) []byte {
 	}
 	if a.Error != "" {
 		return errorBody(a.Error)
-	}
-	if a.Status < http.StatusBadRequest {
-		// A delay, a truncation, a wrong content type, an oversized-body pad
-		// with no status override, or a trailing "status: 200" attempt all
-		// keep the scenario's own body. Any kind paired with an error status
-		// — including "status: 500, body_bytes: N" — gets this surface's
-		// documented error envelope instead, matching Exa's and Perplexity's
-		// faultBody. That also means "status: 500, truncate_after_bytes: N"
-		// now truncates the error envelope rather than the scenario body,
-		// as its siblings already do.
-		return nil
 	}
 	if message, ok := statusMessages[a.Status]; ok {
 		return errorBody(message)

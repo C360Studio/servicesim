@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -469,6 +470,49 @@ func TestScenarioPrefixSelectsBehaviourPerRequest(t *testing.T) {
 // The answer is provider-shaped, because a consumer's error decoder is written
 // against the vendor's envelope and a simulator-shaped body would make it fail to
 // parse rather than to report.
+// TestRefusalHandlerWarnsOnAnEmptyBody proves the per-request half of the
+// scenario-unknown refusal: refusalHandler renders its body once, at
+// startup, from a Profile it looks up by name — today, always one of the
+// four in-tree profiles, whose ErrorBody is never empty for
+// RefuseScenarioUnknown. Phase 10 unit 3 wires an arbitrary out-of-tree Set
+// into the server, at which point an ErrorBody that returns nothing for
+// this refusal kind must not silently serve an empty body forever with no
+// finding at all — refusalHandler must warn CodeRefusalEmptyBody per
+// request, not only (as Profile.Refuse already does) at the startup call
+// that has no Exchange to journal through.
+//
+// A name absent from referenceProfiles() (an unregistered name today is
+// exactly the shape an out-of-tree profile's name would be before unit 3
+// composes it in) reproduces the empty-body case without needing a real
+// out-of-tree Profile: Lookup misses, body stays nil, exactly as it would
+// for a registered profile whose ErrorBody chose to return nothing.
+func TestRefusalHandlerWarnsOnAnEmptyBody(t *testing.T) {
+	t.Parallel()
+
+	args := writeScenarioDir(t, map[string]string{
+		"default.yaml": scenarioNamed("default-behaviour", "Default Report"),
+	})
+	cfg := testConfig(t, args...)
+	h := start(t, cfg, discard())
+
+	handler := h.refusalHandler(provider.Name("ghost"), "test reason")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/anything", nil))
+
+	require.Empty(t, w.Body.Bytes(), "an unregistered name renders no body, by construction")
+
+	entries := h.journal.Snapshot()
+	require.NotEmpty(t, entries)
+	last := entries[len(entries)-1]
+	var found bool
+	for _, f := range last.Findings {
+		if f.Code == provider.CodeRefusalEmptyBody {
+			found = true
+		}
+	}
+	require.True(t, found, "an empty refusal body must be journaled per request, not silently served")
+}
+
 func TestUnknownScenarioFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -1203,6 +1247,107 @@ providers:
 	require.Equal(t, http.StatusUnauthorized,
 		unauthenticated(t, h.Addr(string(provider.Tavily)), "/search", `{"query":"report a"}`),
 		"an entry that declares its own policy is left exactly as authored")
+}
+
+// TestStrictAuthFourWayMatrix is Phase 10 unit 2 §4's required test: relaxAuth
+// is rewritten to consult each entry's OWNING PROFILE's DefaultAuth
+// (framework-seam.md) rather than flattening every profile to one
+// strict-auth behaviour, and Exchange.AuthPolicy reads the same DefaultAuth
+// for the fallback --strict-auth=false leaves untouched. Three rows, each run
+// under both --strict-auth (the default, true) and --strict-auth=false:
+//
+//   - mcp declares no auth: block. Its PROFILE default is
+//     scenario.AuthOptional (decision 3), so it is optional under both —
+//     relaxAuth never has to touch it, and AuthPolicy's own fallback already
+//     says optional.
+//   - exa declares no auth: block either. Its PROFILE default is
+//     scenario.AuthRequired, so it is required under strict and relaxed to
+//     optional under --strict-auth=false — the case the OLD relaxAuth (which
+//     ignored the profile entirely) already got right, kept here as the
+//     control row.
+//   - tavily declares its own auth: {mode: required} explicitly. relaxAuth's
+//     "declares no policy of its own" guard means an explicit policy is
+//     never touched, so it stays required under both, regardless of the
+//     owning profile's default.
+func TestStrictAuthFourWayMatrix(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+version: 1
+name: four-way-auth
+time:
+  base: 2026-01-01T00:00:00Z
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa:
+    results:
+      - source: source-a
+  tavily:
+    auth:
+      mode: required
+    answer: A short synthesis of Report A.
+    results:
+      - source: source-a
+        score: 0.98
+  mcp: {}
+`
+	unauthenticatedPost := func(t *testing.T, addr, path, body string, headers map[string]string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+			"http://"+addr+path, strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		return resp.StatusCode
+	}
+
+	// mcpMeta/mcpHeaders are the minimal well-formed shape checkTransport
+	// (provider/mcp/transport.go) requires before auth is ever consulted —
+	// mirrored from provider/mcp/handler_test.go's own stdHeaders/defaultMeta,
+	// since those are unexported to that package.
+	const mcpMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
+	mcpHeaders := map[string]string{
+		"Accept":               "application/json, text/event-stream",
+		"MCP-Protocol-Version": "2026-07-28",
+		"Mcp-Method":           "server/discover",
+	}
+
+	for _, strict := range []bool{true, false} {
+		t.Run(map[bool]string{true: "strict-auth (default)", false: "strict-auth=false"}[strict], func(t *testing.T) {
+			t.Parallel()
+			args := writeScenario(t, src)
+			if !strict {
+				args = append(args, "--strict-auth=false")
+			}
+			h := start(t, testConfig(t, args...), discard())
+
+			mcpBody := `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":` + mcpMeta + `}}`
+			mcpStatus := unauthenticatedPost(t, h.Addr(string(provider.MCP)), "/mcp", mcpBody, mcpHeaders)
+			require.Equal(t, http.StatusOK, mcpStatus,
+				"mcp's own profile default is optional, so it never requires auth, under either flag")
+
+			exaStatus := unauthenticatedPost(t, h.Addr(string(provider.Exa)), "/search", `{"query":"report a"}`, nil)
+			exaWant := http.StatusUnauthorized
+			if !strict {
+				exaWant = http.StatusOK
+			}
+			require.Equal(t, exaWant, exaStatus,
+				"exa's own profile default is required: strict by default, relaxed only under --strict-auth=false")
+
+			tavilyStatus := unauthenticatedPost(t, h.Addr(string(provider.Tavily)), "/search", `{"query":"report a"}`, nil)
+			require.Equal(t, http.StatusUnauthorized, tavilyStatus,
+				"an entry declaring its own auth: {mode: required} is never relaxed, under either flag")
+		})
+	}
 }
 
 // TestScenarioIsResolvedThroughTheConfinedOpener proves the binary never reaches

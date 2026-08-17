@@ -292,6 +292,18 @@ func afterHeadersDelay(ctx context.Context, w http.ResponseWriter, a *scenario.F
 // a raw body override wins outright because it is the only way to send bytes that
 // are not JSON, then the provider's own error shape, then the attempt's declared
 // body, and only then the rendered scenario body.
+//
+// resp.FaultBody is called only when the attempt actually applies — its own
+// Status is >= 400, or it declares an explicit Body of its own to hand the
+// provider's renderer — which is what Response.FaultBody's doc comment has
+// always promised and, before this unit, three of the four in-tree provider
+// packages had to re-implement by hand (`if a.Status < 400 { return nil }`
+// at the top of their own FaultBody). A `{status: 200}` (or bare `- {}`)
+// attempt on any profile, including one written by an author who never
+// copied that guard, now serves the scenario body with no fault body: the
+// call this guard exists to prevent — a scripted 200 wrapped in a
+// 4xx-shaped envelope — is unconstructible rather than merely
+// convention-avoided.
 func faultBody(a *scenario.FaultAttempt, resp Response) []byte {
 	switch a.EffectiveKind() {
 	case scenario.FaultInvalidJSON:
@@ -304,11 +316,12 @@ func faultBody(a *scenario.FaultAttempt, resp Response) []byte {
 	}
 
 	body := resp.Body
-	if resp.FaultBody != nil {
+	switch {
+	case resp.FaultBody != nil && (len(a.Body) > 0 || a.Status >= http.StatusBadRequest):
 		if b := resp.FaultBody(*a); b != nil {
 			body = b
 		}
-	} else if len(a.Body) > 0 {
+	case len(a.Body) > 0:
 		if b, err := json.Marshal(a.Body); err == nil {
 			body = b
 		}

@@ -340,7 +340,7 @@ func renderScore(projected *ResultProjection, src scenario.RenderedSource, keys 
 	if projected.Score != 0 {
 		return projected.Score
 	}
-	return round2(provider.FloatIn(scoreFloor, scoreCeiling, keys.Seed, Name, "score", resultKey(projected, src)))
+	return round2(provider.FloatIn(scoreFloor, scoreCeiling, keys.Seed, string(Name), "score", resultKey(projected, src)))
 }
 
 // renderRawContent gates raw content on include_raw_content. The key is always
@@ -370,7 +370,7 @@ func renderResultID(projected *ResultProjection, src scenario.RenderedSource, ke
 	if projected.ID != "" {
 		return projected.ID
 	}
-	digest := provider.Hex32(keys.Seed, Name, resultKey(projected, src))
+	digest := provider.Hex32(keys.Seed, string(Name), resultKey(projected, src))
 	return fmt.Sprintf("%s-%02d", digest[:derivedIDPrefixLen], index+1)
 }
 

@@ -184,9 +184,9 @@ func validators() map[string]provider.Validator {
 	out := map[string]provider.Validator{
 		string(provider.Exa): exa.Validator{},
 		exa.NameAgentRuns:    exa.AgentRunValidator{},
-		tavily.Name:          tavily.Validator{},
+		string(tavily.Name):  tavily.Validator{},
 		tavily.NameResearch:  tavily.ResearchValidator{},
-		mcp.Name:             mcp.Validator{},
+		string(mcp.Name):     mcp.Validator{},
 	}
 	maps.Copy(out, perplexity.Validators())
 	return out
@@ -202,8 +202,30 @@ func validators() map[string]provider.Validator {
 //	h := exa.New(provider.Deps{Scenario: s, Faults: testkit.NewFaults(s)})
 //
 // [Start] does this for you.
+//
+// Deprecated: registers only the four in-tree profiles' routes, so a route
+// [WithProfiles] adds is fault-blind — exactly the failure class
+// [provider.Set.Faults] exists to make unconstructible. Use
+// provider.NewSet(ps...).Faults(s) instead, or pass [WithProfiles] to [Start]
+// and read faults off the returned [Sim]. Removed in Phase 10 unit 4.
 func NewFaults(s *scenario.Scenario) provider.Faults {
 	return faults.New(s, routes())
+}
+
+// NewJournal returns a fresh, unbounded-capacity in-process journal, wired the
+// way [Start] already wires one. It exists because internal/journal is not
+// importable from another module, and without it a consumer building
+// provider.Deps by hand — provider.Deps{Scenario: s, Faults: set.Faults(s)},
+// registering an out-of-tree profile through [WithProfiles] rather than
+// calling [Start] — has no journal constructor to reach for at all (AUDIT 1
+// gap 7): [NewJobs] already exists for the same shape and this closes the
+// journal's own gap.
+//
+//	set := provider.MustSet(acme.Profile())
+//	p, _ := set.Lookup(acme.Name)
+//	h := p.Handler(provider.Deps{Scenario: s, Faults: set.Faults(s), Journal: testkit.NewJournal()})
+func NewJournal() Journal {
+	return journal.NewRing(defaultJournalCapacity, provider.DefaultMaxJournalBodyBytes)
 }
 
 // options is the resolved configuration a Sim is built from.
@@ -215,9 +237,18 @@ type options struct {
 	load   func() (*scenario.Scenario, scenario.Report, error)
 	source string
 
-	providers []provider.Name
-	clock     provider.Clock
-	delayMode provider.DelayMode
+	providers    []provider.Name
+	setProviders bool
+	clock        provider.Clock
+	delayMode    provider.DelayMode
+
+	// profiles is nil unless WithProfiles was passed. Additive only in this
+	// unit (Phase 10 unit 2 §5): when nil, build derives routes, validators,
+	// the fault engine and handlers from the four in-tree defaults exactly as
+	// it always has; when set, it derives every one of those from a
+	// provider.Set built from this slice instead. The "required" half of D-5
+	// — WithProfiles mandatory, the four defaults deleted — lands in unit 4.
+	profiles []provider.Profile
 
 	capacity    int
 	setCapacity bool
@@ -266,6 +297,28 @@ func WithBuiltin(name string) Option {
 func WithProviders(names ...provider.Name) Option {
 	return func(o *options) {
 		o.providers = slices.Clone(names)
+		o.setProviders = true
+	}
+}
+
+// WithProfiles registers the profile set a Sim is built from, in place of the
+// four in-tree defaults. When passed, [Start] and the handler constructors
+// derive routes, validators (unfiltered — every registered profile's, not
+// only the enabled subset) and the fault engine from
+// provider.NewSet(ps...).{Routes,Validators,Faults}, and each enabled
+// listener's handler from Lookup(name).Handler(deps) — closing AUDIT 1 gap 8,
+// "testkit cannot host a fifth profile at all". NewSet's own refusal fails tb
+// immediately, named, rather than surfacing as an inscrutable panic three
+// calls later.
+//
+// Additive only in this unit (Phase 10 unit 2 §5): omitting it keeps the four
+// in-tree defaults exactly as before. Phase 10 unit 4 makes it required and
+// deletes those defaults (owner decision D-5) — a default Sim that pulls in
+// four vendors' contracts and goldens for a team simulating one API is the
+// cost D-5 names.
+func WithProfiles(ps ...provider.Profile) Option {
+	return func(o *options) {
+		o.profiles = slices.Clone(ps)
 	}
 }
 
@@ -411,7 +464,6 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 	o := options{
 		load:      func() (*scenario.Scenario, scenario.Report, error) { return scenarios.Load(scenarios.Default) },
 		source:    scenarios.Prefix + scenarios.Default,
-		providers: allProviders(),
 		clock:     provider.SystemClock{},
 		delayMode: provider.DelayReal,
 		capacity:  defaultJournalCapacity,
@@ -421,18 +473,34 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 	}
 	if force != nil {
 		o.providers = force
+		o.setProviders = true
 	}
 	if !o.setCapacity {
 		o.capacity = defaultJournalCapacity
 	}
 
-	sc := loadScenario(tb, o)
+	// set is nil unless WithProfiles was passed — see profileSet's doc
+	// comment for what changes below when it is not.
+	set := profileSet(tb, o.profiles)
+
+	// requested defaults to every name the active registry (set, or the four
+	// in-tree defaults) serves, so a caller that passes WithProfiles alone —
+	// no WithProviders — gets every profile it registered started, rather
+	// than being filtered against the four hardcoded names WithProviders'
+	// own default used to mean.
+	available := namesFor(set)
+	requested := available
+	if o.setProviders {
+		requested = o.providers
+	}
+
+	sc := loadScenario(tb, o, validatorsFor(set))
 	s := &Sim{
 		scenario: sc,
 		journal:  journal.NewRing(o.capacity, provider.DefaultMaxJournalBodyBytes),
-		faults:   NewFaults(sc),
+		faults:   faultsFor(set, sc),
 		jobs:     jobs.NewRegistry(jobs.Limits{}),
-		names:    enabled(tb, o.providers),
+		names:    enabled(tb, requested, available),
 		handlers: map[provider.Name]http.Handler{},
 		client:   newClient(),
 	}
@@ -447,6 +515,13 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 		Jobs:      s.jobs,
 	}
 	for _, name := range s.names {
+		if set != nil {
+			// enabled already proved name is in set.Names(), so the miss
+			// branch Lookup offers is unreachable here.
+			p, _ := set.Lookup(name)
+			s.handlers[name] = p.Handler(deps)
+			continue
+		}
 		switch name {
 		case provider.Exa:
 			s.handlers[name] = exa.New(deps)
@@ -463,12 +538,61 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 	return s
 }
 
+// profileSet resolves ps into a validated provider.Set, failing tb — named,
+// immediately — on a refusal, or returns nil when ps is empty (WithProfiles
+// was not passed), which is every build call site's signal to fall back to
+// the four in-tree defaults.
+func profileSet(tb testing.TB, ps []provider.Profile) *provider.Set {
+	tb.Helper()
+	if len(ps) == 0 {
+		return nil
+	}
+	set, err := provider.NewSet(ps...)
+	if err != nil {
+		tb.Fatalf("testkit: WithProfiles: %v", err)
+		return nil
+	}
+	return set
+}
+
+// namesFor returns the provider names a Sim may be built from: set.Names()
+// when a Set was given, the four in-tree defaults otherwise.
+func namesFor(set *provider.Set) []provider.Name {
+	if set == nil {
+		return allProviders()
+	}
+	return set.Names()
+}
+
+// validatorsFor returns the projection validators a scenario is checked
+// against: set.Validators() — unfiltered, every registered profile's, not
+// only the providers this particular Sim enables, matching what
+// provider.ValidateScenario already does for the four in-tree defaults below
+// — or the package-level default map.
+func validatorsFor(set *provider.Set) map[string]provider.Validator {
+	if set == nil {
+		return validators()
+	}
+	return set.Validators()
+}
+
+// faultsFor builds the fault engine sc's scripted attempts are drawn from:
+// registered against every route in set when one was given (so a route
+// WithProfiles added is never fault-blind), or the four in-tree defaults'
+// routes otherwise.
+func faultsFor(set *provider.Set, sc *scenario.Scenario) provider.Faults {
+	if set == nil {
+		return NewFaults(sc)
+	}
+	return set.Faults(sc)
+}
+
 // loadScenario resolves and validates the configured scenario, failing tb with
 // every finding rather than only the first. Projection bodies are checked here
 // for the same reason internal/server checks them before readiness: the scenario
 // package leaves a respond body as a raw YAML node, so nothing before this point
 // has looked inside it.
-func loadScenario(tb testing.TB, o options) *scenario.Scenario {
+func loadScenario(tb testing.TB, o options, vals map[string]provider.Validator) *scenario.Scenario {
 	tb.Helper()
 
 	sc, report, err := o.load()
@@ -481,7 +605,7 @@ func loadScenario(tb testing.TB, o options) *scenario.Scenario {
 		return nil
 	}
 
-	report.Findings = append(report.Findings, provider.ValidateScenario(sc, validators())...)
+	report.Findings = append(report.Findings, provider.ValidateScenario(sc, vals)...)
 	if !report.OK() {
 		tb.Fatalf("testkit: validating %s:%s", o.source, formatFindings(report.Errors()))
 		return nil
@@ -499,23 +623,23 @@ func formatFindings(findings []scenario.Finding) string {
 	return b.String()
 }
 
-// enabled returns the requested provider set in the stable listener order,
-// failing tb on a name no listener serves. Duplicates collapse, so
+// enabled returns the requested provider set in available's stable order,
+// failing tb on a name available does not list. Duplicates collapse, so
 // WithProviders("exa", "exa") starts one server rather than two sharing a port.
-func enabled(tb testing.TB, requested []provider.Name) []provider.Name {
+func enabled(tb testing.TB, requested, available []provider.Name) []provider.Name {
 	tb.Helper()
 
 	want := make(map[provider.Name]bool, len(requested))
 	for _, name := range requested {
-		if !slices.Contains(allProviders(), name) {
-			tb.Fatalf("testkit: unknown provider %q; this build serves %v", name, allProviders())
+		if !slices.Contains(available, name) {
+			tb.Fatalf("testkit: unknown provider %q; this build serves %v", name, available)
 			return nil
 		}
 		want[name] = true
 	}
 
 	var out []provider.Name
-	for _, name := range allProviders() {
+	for _, name := range available {
 		if want[name] {
 			out = append(out, name)
 		}

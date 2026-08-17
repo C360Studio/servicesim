@@ -5,15 +5,10 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
-
-// Name is the provider's key in a scenario's providers registry, and the kind a
-// handler is registered under. It is also the listener's identity.
-const Name = "tavily"
 
 // FaultKeySearch is the attempt budget POST /search draws on. It is declared
 // here, beside the pattern, and nowhere else: internal/faults never has to know
@@ -46,7 +41,19 @@ func RouteSearch() provider.Route {
 		// poll routes Phase 3 adds will declare Authorization alone — they have no
 		// body to carry a key in, which is why this is per route.
 		Credentials: defaultPlacements,
-		Fault:       func(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, Name) },
+		Fault:       func(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, string(Name)) },
+	}
+}
+
+// handlers maps every route this profile serves to its handler, shared by
+// Profile() and the deprecated New.
+func handlers() map[string]provider.Handler {
+	return map[string]provider.Handler{
+		PatternSearch:         handleSearch,
+		PatternExtract:        handleExtract,
+		PatternResearchCreate: handleResearchCreate,
+		PatternResearchPoll:   handleResearchPoll,
+		PatternResearchHead:   handleResearchHead,
 	}
 }
 
@@ -58,27 +65,12 @@ func RouteSearch() provider.Route {
 // testkit.NewFaults(s) as Deps.Faults, or use testkit.Start, to get the
 // scenario's declared faults; Deps.Normalized logs deps.faults_ignored if you
 // do not.
+//
+// Deprecated: use Profile().Handler(deps). New is removed once
+// internal/server and testkit are rewired onto provider.Set (Phase 10 units
+// 3-4).
 func New(deps provider.Deps) http.Handler {
-	return provider.NewMux(deps, provider.Tavily, provider.MuxSpec{
-		Routes: Routes(),
-		Handlers: map[string]provider.Handler{
-			PatternSearch:         handleSearch,
-			PatternExtract:        handleExtract,
-			PatternResearchCreate: handleResearchCreate,
-			PatternResearchPoll:   handleResearchPoll,
-			PatternResearchHead:   handleResearchHead,
-		},
-		NotFound: func(_ *provider.Exchange) provider.Response {
-			return staticResponse(http.StatusNotFound, MessageNotFound)
-		},
-		MethodNotAllowed: func(allow []string) provider.Handler {
-			return func(_ *provider.Exchange) provider.Response {
-				resp := staticResponse(http.StatusMethodNotAllowed, MessageMethodNotAllowed)
-				resp.Header = http.Header{"Allow": []string{strings.Join(allow, ", ")}}
-				return resp
-			}
-		},
-	})
+	return Profile().Handler(deps)
 }
 
 // Validator decodes and checks this package's projection bodies at startup.
@@ -194,7 +186,7 @@ func handleSearch(x *provider.Exchange) provider.Response {
 	entry := x.Entry()
 
 	req := parseSearchRequest(x)
-	checkAuth(x, entry)
+	checkAuth(x)
 	if x.Failed() {
 		return errorResponse(x)
 	}
@@ -213,7 +205,7 @@ func handleSearch(x *provider.Exchange) provider.Response {
 	return provider.Response{
 		Status:        http.StatusOK,
 		Body:          body,
-		Label:         Name + ".search.ok",
+		Label:         string(Name) + ".search.ok",
 		FaultEligible: true,
 		FaultBody:     faultBody,
 	}

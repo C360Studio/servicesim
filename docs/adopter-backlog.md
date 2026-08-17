@@ -904,6 +904,114 @@ is theirs (D12); Servicesim does not unblock it.
     profile now calls instead of `internal/wire` directly (`provider/framework.go` — house rule 2's byte-fidelity
     guarantee, unchanged bytes everywhere else, proven by the full golden suite passing with no golden
     regenerated). See `provider/exa/render_test.go`'s `TestRender_OmitFieldsWinsOverExtraFields`.
+  - **Phase 10 unit 2: `provider.Profile`/`Set`, refusals by construction, the fault engine as a Set method, an
+    open SSE grammar.** `provider.Profile` (16 fields) + `Set`/`NewSet`/`MustSet`, each of the four in-tree
+    profiles gains `Profile()` and a typed `Name` (exa's and perplexity's are new); `<pkg>.New` becomes a
+    deprecated one-line wrapper over `Profile().Handler(d)`. Every framework-generated refusal (404, 405,
+    scenario-unknown, and now a handler **panic**) renders through the profile's own `ErrorBody` — house rule 3 by
+    construction — so `internal/server/listeners.go`'s `scenarioNotFoundBody` switch and its duplicated MCP
+    JSON-RPC envelope are deleted; a non-abort handler panic is now a `RefuseInternal` 500 with a `handler.panic`
+    ERROR finding, not a connection reset with no status and no body. The proposal names four `RefusalKind`s;
+    **a fifth, `RefuseRequest`, was added in this unit** for `Exchange.Reject(status, code, field, format, args
+    ...)`, the compiler-settled answer to "a rejection needs its own kind too" — recorded as a deviation from the
+    proposal, not a silent addition. `fault_exec.go`'s `Status < 400` guard (`Response.FaultBody` is now called
+    only when an attempt actually applies, matching its own doc comment) moves into the framework; the three
+    in-profile duplicates (`exa`, `tavily`, `perplexity`) are deleted, and MCP's own copy is left as a one-line
+    follow-up (not in the spec's named list, provably redundant, out of scope to touch silently). `Stream.Sentinel
+    []byte` + `SentinelPace time.Duration` replace `OmitDone`/`DonePace`: the `[DONE]` sentinel is now data a
+    profile sets (`provider.DoneSentinel`), never inferred from `Grammar == GrammarDelta` — perplexity's Sonar
+    renderer sets it, MCP's does not, and an empty `Grammar` is refused (`RefuseInternal` + `stream.grammar_missing`)
+    rather than silently defaulting to one dialect's framing. `Exchange.AuthPolicy()`/`EntryFor(kind)`/`Reject(...)`
+    close two nil traps (`Entry()` and `ProviderEntry.Auth` are both nilable) and give a rejection one shape;
+    `internal/server`'s `relaxAuth` is rewritten to consult each entry's OWNING PROFILE's `DefaultAuth` rather than
+    flattening every profile to one strict-auth behaviour — MCP's own optional default was already correct and is
+    now provably so under both `--strict-auth` settings, not by accident. `testkit.WithProfiles` (additive; required
+    in unit 4) and `testkit.NewJournal()` close AUDIT 1 gaps 7 and 8; `testkit.NewFaults` is deprecated, not yet
+    deleted. All four in-tree profiles still build and pass; a fifteen-line out-of-tree profile, registered with
+    `provider.NewSet` and served through `Profile.Handler`, proves the seam end to end with no import of
+    `servicesim/internal` in its own source (Go's own internal-visibility rule makes that structural, not merely
+    tested) — `scratchpad/u2-outoftree/` at unit-2 time, not carried into the repository.
+- **Phase 10 unit 2, review-and-fix round (post-implementation, same unit):** an out-of-tree-consumer review
+  (`provider.Profile`/`Set` served bare and via `testkit.Start(WithProfiles(...))`) and a house-rules review each
+  ran against the merged tree; the confirmed findings were fixed in place, tests added per fix, rather than left
+  for a follow-up unit, since every one of them was inside this unit's own surface. Worth naming because none of
+  it changed a wire byte (a stat-only `git diff` against `contracts/` stayed empty) — only construction-time
+  refusals, journal findings and one preserved requestId derivation:
+  - `Set` is now genuinely immutable end to end, not only at the top level: `NewSet` deep-clones a profile's
+    `Handlers`/`Validators` (`maps.Clone`) and `Routes`/`Hosts`/`DerivedIDs`/`StreamDerivedIDs`/`CredentialNames`
+    (`slices.Clone`) on the way IN, and `All`/`Lookup` clone again on the way OUT, so mutating anything either
+    returns — or mutating the caller's own `Profile` after `NewSet` — can no longer reach what the `Set` serves.
+    Previously only the top-level `[]Profile` slice was cloned; a returned `Profile`'s own `Routes`/`Handlers`
+    still aliased the `Set`'s internal copy.
+  - `Profile.Validate` now refuses a `Route` with no matching `Handlers` entry, and a `Handlers` entry with no
+    matching `Route` — closing a rule-3 hole where the first case reached `handle.go`'s `noHandler` at request
+    time (a 500 with an EMPTY body, bypassing `ErrorBody` entirely, `NewSet` having raised no error at
+    registration) and the second was a handler `NewMux` never wires up, silently unreachable.
+  - `Exchange.EntryFor(kind)` now resolves through the LISTENER's own `Name` when `kind` names the effective
+    `Kind` this Exchange's profile was installed under, rather than treating `kind` as a scenario entry name
+    literally in every case. Without this, a single-entry instance (`Kind != Name`, the shape `NewSet` already
+    accepts this unit — see the `Kind` field's own doc comment below) whose handler calls
+    `x.EntryFor(string(sharedKindLiteral))` — the ordinary way to write it, mirroring `Route.Entry`'s static
+    style — read the PRIMARY instance's scenario block on every listener, never its own. `Name == Kind` for all
+    four in-tree profiles, so this changes nothing for them.
+  - `Profile.Kind`'s doc comment now says plainly what was previously undocumented: two instances of one `Kind`
+    (accepted by `NewSet` this unit) still share one fault counter and one fault plan per `Route`, because
+    `Route.FaultKey` is not yet Kind-scoped. A scenario author who wants independent budgets per instance must
+    give each instance's `Routes` distinct `FaultKey`s until unit 8 threads `Kind` through the fault engine.
+    **Recorded here as a unit 8 follow-up, not fixed this unit** — threading `Kind` into fault-key scoping is
+    exactly unit 8's migration-table scope, and a per-`Route`-`FaultKey` `NewSet` refusal across profiles would
+    make ordinary instancing (which is SUPPOSED to share Routes/Handlers/Validators) impossible to register at
+    all.
+  - MCP's `RefuseInternal` refusal body now carries a fixed "Internal error" message, matching exa/tavily/
+    perplexity, instead of echoing the recorded finding verbatim — which, for the two callers that raise
+    `RefuseInternal` (a handler panic's `%v`, and `stream.grammar_missing`'s route/profile text), could put
+    arbitrary author-controlled text on the wire without having passed through `redact.String` the way a journal
+    entry has.
+  - `internal/server/listeners.go`'s `refusalHandler` now warns `provider.CodeRefusalEmptyBody` per request when
+    its (startup-computed) refusal body is empty, not only at the one `Profile.Refuse` call made at startup
+    (which never journals, since its `Refusal.X` is nil by design — no request exists yet). Unreachable with the
+    four in-tree `ErrorBody`s today; becomes reachable the moment unit 3 wires an arbitrary `Set` into the server.
+  - `exa`'s and `tavily`'s new `ErrorBody` functions, used only from their own `Profile()`, are unexported to
+    `refusalBody`, matching `mcp`/`perplexity` — nothing outside either package referenced the exported spelling
+    (rule 7).
+  - `exa`'s `/x/<unknown>` `requestId` (the one case `Refusal.X` may be nil for) now hashes the literal
+    `"scenario.unknown"`, not `RefusalKind`'s own spelling (`"scenario_unknown"`) — preserving the exact bytes
+    `internal/server`'s deleted `scenarioNotFoundBody` produced pre-unit-2, since nothing forced that value to
+    change and an adopter reading it as a stable identifier had no reason to expect otherwise.
+  - `provider.Exa`/`Tavily`/`Perplexity`/`MCP` (the four constants) now carry a `// Deprecated:` doc line, as the
+    spec's DoD for every deferred deletion requires; two profile doc comments that said a constant was
+    "now-deleted" are corrected to "now-deprecated" (it is not deleted — that is unit 3's work, once
+    `internal/config`/`internal/server` stop naming it).
+  - `MustSet`'s panic message no longer double-prefixes `"provider: "` (every `NewSet`/`Validate` error already
+    starts with it).
+  - `Exchange.Reject`'s `Response` now carries a `Label` (`"<provider>.error.<code>"`, the same convention every
+    in-tree profile's own `errorResponse` already follows) instead of leaving it empty — the one `Response` kind
+    that convention had skipped.
+  - `Exchange.refuse`'s `CodeRefusalEmptyBody` warning now distinguishes "no `ErrorBody` was installed on this
+    Exchange" from "the installed `ErrorBody` returned no bytes" — two different bugs in two different places
+    that one message previously described identically.
+  - `Stream`'s executed write now gates on `len(Sentinel) > 0`, matching `Stream.Bytes`'s own gate, rather than
+    `Sentinel != nil`: a non-nil, zero-length `Sentinel` previously still slept `SentinelPace` and wrote a
+    zero-byte frame. Harmless for the two in-tree renderers (always nil or `DoneSentinel`), but the two readings
+    of "has a sentinel" could disagree for an out-of-tree profile.
+  - **An undisclosed, pre-existing behaviour change this fix round confirmed rather than reverted:** a tavily
+    fault attempt carrying `error:` with no error status (`- error: "..."` or `- {status: 200, error: "..."}`)
+    used to serve tavily's error envelope at 200; it now serves the scenario's own body, because the
+    `Status < 400` guard (moved into `provider/fault_exec.go` this unit) runs BEFORE `faultBody` is ever called,
+    where tavily's own now-deleted duplicate ran its `a.Status < 400` check AFTER the `a.Error` check — the
+    opposite order from exa's and perplexity's own (pre-existing) guards, which already served the scenario body
+    in this case. All three profiles now agree, matching `docs/scenario-schema.md`'s "a status below 400 means
+    no fault" reading. Pinned by
+    `provider/tavily/handler_test.go`'s `TestFaultWithErrorButNoErrorStatusServesTheScenarioBody`.
+  - **Confirmed, not fixed, journal-only (no wire byte changed):** every listener's 404/405 `outcome.label`
+    changed from a vendor-specific spelling (`exa.error.NOT_FOUND`, `tavily.error.405`,
+    `perplexity.sonar.error.404`, `mcp.error.not_found`) to the framework's own `route.not_found`/
+    `route.method_not_allowed`, because `Profile.ErrorBody`'s signature (`func(Refusal) []byte`) has no path for
+    a per-vendor `Label` to travel back to `provider/mux.go`'s `notFound`/`methodNotAllowed`, which now build the
+    `Response` themselves. `docs/design/mcp-profile.md` §10 is corrected to say so; MCP's now-dead
+    `mcp.error.not_found`/`mcp.error.method_not_allowed` literals are left in place with a comment explaining why
+    they are unreachable, since removing them would mean restructuring `Profile.ErrorBody`'s signature to return
+    more than bytes — out of this unit's scope.
 - Two Go doc comments still say "three": `provider/exchange.go`'s `AcceptedPlacements` ("the one precedence rule
   the three provider packages share") and `internal/redact/redact.go`'s `substringCredentialFragments` ("checked
   against the three providers' documented field names"). Not wire facts, no guard depends on them, and unit 3's

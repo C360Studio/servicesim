@@ -123,7 +123,7 @@ func newHandler(t *testing.T, src string, ring *journal.Ring) http.Handler {
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
 
-	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{Name: Validator{}})
+	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{string(Name): Validator{}})
 	for _, f := range findings {
 		require.NotEqual(t, scenario.SeverityError, f.Severity, "the fixture must validate before it is served: %+v", f)
 	}

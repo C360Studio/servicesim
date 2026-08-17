@@ -72,7 +72,7 @@ func contentsFault(s *scenario.Scenario) *scenario.Fault {
 // directly.
 func handleContents(x *provider.Exchange) provider.Response {
 	entry := x.Entry()
-	authenticate(x, entry)
+	authenticate(x)
 	validateContentsRequest(x)
 	if x.Failed() {
 		return rejection(x)

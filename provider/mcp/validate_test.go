@@ -24,7 +24,7 @@ func mustParse(t *testing.T, src string) *scenario.Scenario {
 // findings.
 func findingsFor(t *testing.T, s *scenario.Scenario) []scenario.Finding {
 	t.Helper()
-	return Validator{}.ValidateProjections(s, s.Provider(Name))
+	return Validator{}.ValidateProjections(s, s.Provider(string(Name)))
 }
 
 func hasCode(findings []scenario.Finding, code string) bool {
@@ -230,7 +230,7 @@ providers:
       - when: {route: bogus}
         respond: {}
 `)
-	findings := provider.ValidateScenario(s, map[string]provider.Validator{Name: Validator{}})
+	findings := provider.ValidateScenario(s, map[string]provider.Validator{string(Name): Validator{}})
 	require.True(t, hasCode(findings, provider.CodeTurnRouteUnknown))
 }
 

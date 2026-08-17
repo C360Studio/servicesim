@@ -428,7 +428,7 @@ func renderSonarStream(x *provider.Exchange, p *PerplexityProjection, requestMod
 	// means "no override" rather than "an explicit zero gap"), falling back
 	// to the script's own default otherwise. It covers every chunk this
 	// stream writes: each delta, the terminal chunk, and (via
-	// Stream.DonePace below) the [DONE] sentinel, per
+	// Stream.SentinelPace below) the [DONE] sentinel, per
 	// docs/design/streaming.md §4.3.
 	pace := func(override scenario.Duration) time.Duration {
 		if override != 0 {
@@ -497,12 +497,13 @@ func renderSonarStream(x *provider.Exchange, p *PerplexityProjection, requestMod
 	events = append(events, provider.SSEEvent{Data: termData, Terminal: true, Pace: pace(terminalPaceOverride)})
 
 	stream := &provider.Stream{
-		Grammar:  provider.GrammarDelta,
-		Chunks:   provider.EncodeSSE(events),
-		DonePace: p.Stream.Pace.Duration(),
+		Grammar:      provider.GrammarDelta,
+		Chunks:       provider.EncodeSSE(events),
+		Sentinel:     provider.DoneSentinel,
+		SentinelPace: p.Stream.Pace.Duration(),
 	}
-	if terminal != nil {
-		stream.OmitDone = terminal.OmitDone
+	if terminal != nil && terminal.OmitDone {
+		stream.Sentinel = nil
 	}
 	if !omitUsage {
 		usageBytes, err := json.Marshal(usage)

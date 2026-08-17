@@ -55,7 +55,7 @@ func newSSESim(t *testing.T, src string) *sseSim {
 	loaded, report, err := scenario.Parse([]byte(src))
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
-	require.Empty(t, provider.ValidateScenario(loaded, map[string]provider.Validator{Name: Validator{}}))
+	require.Empty(t, provider.ValidateScenario(loaded, map[string]provider.Validator{string(Name): Validator{}}))
 
 	ring := journal.NewRing(64, 1<<16)
 	srv := httptest.NewServer(New(provider.Deps{
@@ -346,7 +346,7 @@ providers:
 	loaded, report, err := scenario.Parse([]byte(laterTurnDeclaresStream))
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
-	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{Name: Validator{}})
+	findings := provider.ValidateScenario(loaded, map[string]provider.Validator{string(Name): Validator{}})
 	require.Len(t, findings, 1, "exactly the policy-ignored warning: %v", findings)
 	require.Equal(t, scenario.CodeStreamPolicyIgnored, findings[0].Code)
 	require.Equal(t, scenario.SeverityWarning, findings[0].Severity)

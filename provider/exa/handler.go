@@ -10,7 +10,7 @@ import (
 
 // providerName is the scenario provider entry this listener serves, and the
 // second component of every derived identifier.
-const providerName = string(provider.Exa)
+const providerName = string(Name)
 
 // Route patterns, in registration order.
 const (
@@ -88,6 +88,20 @@ func answerFault(s *scenario.Scenario) *scenario.Fault {
 	return nil
 }
 
+// handlers maps every route this profile serves to its handler, shared by
+// Profile() and the deprecated New.
+func handlers() map[string]provider.Handler {
+	return map[string]provider.Handler{
+		patternSearch:      handleSearch,
+		patternAnswer:      handleAnswer,
+		patternContents:    handleContents,
+		patternFindSimilar: handleFindSimilar,
+		patternRunCreate:   handleAgentRunCreate,
+		patternRunPoll:     handleAgentRunPoll,
+		patternRunHead:     handleAgentRunHead,
+	}
+}
+
 // New returns the Exa handler, built with provider.NewMux over Routes(). The
 // zero Deps is usable: it serves well-shaped empty successes with no journal, no
 // faults and a real clock — except POST /contents, whose D-g NO_CONTENT_FOUND
@@ -99,21 +113,12 @@ func answerFault(s *scenario.Scenario) *scenario.Fault {
 // testkit.NewFaults(s) as Deps.Faults, or use testkit.Start, to get the
 // scenario's declared faults. Deps.Normalized logs deps.faults_ignored if you do
 // not.
+//
+// Deprecated: use Profile().Handler(deps). New is removed once
+// internal/server and testkit are rewired onto provider.Set (Phase 10 units
+// 3-4).
 func New(deps provider.Deps) http.Handler {
-	return provider.NewMux(deps, provider.Exa, provider.MuxSpec{
-		Routes: Routes(),
-		Handlers: map[string]provider.Handler{
-			patternSearch:      handleSearch,
-			patternAnswer:      handleAnswer,
-			patternContents:    handleContents,
-			patternFindSimilar: handleFindSimilar,
-			patternRunCreate:   handleAgentRunCreate,
-			patternRunPoll:     handleAgentRunPoll,
-			patternRunHead:     handleAgentRunHead,
-		},
-		NotFound:         handleNotFound,
-		MethodNotAllowed: func(_ []string) provider.Handler { return handleMethodNotAllowed },
-	})
+	return Profile().Handler(deps)
 }
 
 // handleSearch serves POST /search.
@@ -124,7 +129,7 @@ func New(deps provider.Deps) http.Handler {
 // attempt index.
 func handleSearch(x *provider.Exchange) provider.Response {
 	entry := x.Entry()
-	authenticate(x, entry)
+	authenticate(x)
 	validateSearch(x, streamPolicy(entry))
 	if x.Failed() {
 		return rejection(x)
@@ -155,7 +160,7 @@ func handleSearch(x *provider.Exchange) provider.Response {
 // and nothing else.
 func handleAnswer(x *provider.Exchange) provider.Response {
 	entry := x.Entry()
-	authenticate(x, entry)
+	authenticate(x)
 	validateAnswer(x, streamPolicy(entry))
 	if x.Failed() {
 		return rejection(x)
@@ -178,30 +183,6 @@ func handleAnswer(x *provider.Exchange) provider.Response {
 		Label:         "exa.answer.ok",
 		FaultEligible: true,
 		FaultBody:     func(a scenario.FaultAttempt) []byte { return faultBody(requestID, a) },
-	}
-}
-
-// handleNotFound answers an unknown path with Exa's own 404 envelope, so a
-// consumer's error decoder does not have to special-case the simulator.
-func handleNotFound(x *provider.Exchange) provider.Response {
-	return routingError(x, http.StatusNotFound, TagNotFound, messageNotFound)
-}
-
-// handleMethodNotAllowed answers a known path with an unsupported method. The
-// Allow header is added by provider.NewMux, which knows the method set.
-func handleMethodNotAllowed(x *provider.Exchange) provider.Response {
-	return routingError(x, http.StatusMethodNotAllowed, TagMethodNotAllowed, messageMethodNotAllowed)
-}
-
-// routingError builds a fail-closed response. It does not consult the findings,
-// because provider.NewMux records route.unmatched and route.method_not_allowed
-// *after* the handler returns: classifying here would read an empty finding list
-// and answer 400.
-func routingError(x *provider.Exchange, status int, tag, message string) provider.Response {
-	return provider.Response{
-		Status: status,
-		Body:   errorBody(unclaimedRequestID(x), message, tag, status),
-		Label:  "exa.error." + tag,
 	}
 }
 

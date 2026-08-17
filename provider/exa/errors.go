@@ -105,7 +105,9 @@ func errorBody(requestID, message, tag string, status int) []byte {
 //
 // It returns nil when the attempt's status is not an error at all, which is how
 // invalid_json and wrong_content_type mangle an otherwise successful response
-// without replacing it.
+// without replacing it. provider/fault_exec.go's faultBody only calls this at
+// all when a.Status is an error status or a.Body is set (Phase 10 unit 2), so
+// the a.Status < 400 guard this function used to carry itself is gone.
 func faultBody(requestID string, a scenario.FaultAttempt) []byte {
 	if len(a.Body) > 0 {
 		body, err := provider.Render(a.Body, nil, nil)
@@ -113,9 +115,6 @@ func faultBody(requestID string, a scenario.FaultAttempt) []byte {
 			return nil
 		}
 		return body
-	}
-	if a.Status < 400 {
-		return nil
 	}
 
 	message, tag := defaultsFor(a.Status)

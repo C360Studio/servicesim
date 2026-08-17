@@ -9,8 +9,6 @@ import (
 
 	"github.com/c360studio/servicesim/internal/admin"
 	"github.com/c360studio/servicesim/internal/config"
-	"github.com/c360studio/servicesim/internal/ids"
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/provider/exa"
 	"github.com/c360studio/servicesim/provider/mcp"
@@ -248,12 +246,33 @@ func (s *Server) refusalHandler(name provider.Name, reason string) http.Handler 
 		MaxJournalBodyBytes: s.cfg.MaxJournalBodyBytes,
 		MaxNamespaces:       s.cfg.MaxNamespaces,
 	}
-	body := scenarioNotFoundBody(name)
+
+	// The body comes from the profile itself, through Refuse, rather than
+	// from a per-vendor switch internal/server hand-maintains: house rule 3
+	// by construction. X is nil — the one documented case
+	// (provider.RefuseScenarioUnknown's doc comment) — because this refusal
+	// is raised before any request has resolved a scenario at all; Refuse
+	// still fills Status from Kind (404) and renders the vendor's own shape.
+	var body []byte
+	if p, ok := referenceProfiles().Lookup(name); ok {
+		body = p.Refuse(provider.Refusal{Kind: provider.RefuseScenarioUnknown})
+	}
 	served := strings.Join(s.ScenarioNames(), ", ")
 
 	return provider.Handle(deps, name, provider.Route{Pattern: unmatchedPattern},
 		func(x *provider.Exchange) provider.Response {
 			x.Fail(CodeScenarioUnknown, "scenario", "%s; loaded scenarios: %s", reason, served)
+			if len(body) == 0 {
+				// p.Refuse (above) journals CodeRefusalEmptyBody only when its
+				// own Refusal.X is non-nil — true by design here, since this
+				// body is rendered once at startup, before any request (and
+				// its Exchange) exists. That means an empty body from an
+				// out-of-tree ErrorBody would otherwise reach every /x/<unknown>
+				// request with no finding at all: warn per request instead,
+				// now that a real Exchange exists to carry it.
+				x.Warn(provider.CodeRefusalEmptyBody, "",
+					"profile %q's ErrorBody returned no bytes for refusal kind %q", name, provider.RefuseScenarioUnknown)
+			}
 			return provider.Response{
 				Status: http.StatusNotFound,
 				Body:   body,
@@ -262,98 +281,18 @@ func (s *Server) refusalHandler(name provider.Name, reason string) http.Handler 
 		})
 }
 
-// mcpCodeInvalidRequest is JSON-RPC's -32600 ("InvalidRequestError"), the
-// code contracts/mcp/README.md's decision 6 assigns to this refusal.
-const mcpCodeInvalidRequest = -32600
-
-// mcpErrorEnvelope and mcpRPCError mirror the JSON-RPC error shape
-// provider/mcp's own (unexported) errors.go builds, duplicated here rather
-// than exported from that package solely for this one call site: a scenario
-// refusal has no request to build a provider.Exchange for, so it cannot go
-// through mcp.New's own handler.
+// referenceProfiles builds the four in-tree profiles' registration record,
+// so refusalHandler can ask a Profile for its own refusal body instead of
+// internal/server hand-building one per vendor.
 //
-// There is deliberately no id member: schema.json's RequestId admits only a
-// string or an integer (never null) and JSONRPCErrorResponse.id is optional,
-// so an error that cannot be attributed to a request omits it — the same
-// rule every body provider/mcp itself builds follows (provider/mcp/doc.go,
-// decision 6).
-type mcpErrorEnvelope struct {
-	JSONRPC string      `json:"jsonrpc"`
-	Error   mcpRPCError `json:"error"`
-}
-
-// mcpRPCError is one JSON-RPC error object.
-type mcpRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-// scenarioNotFoundBody renders the body a refused request receives, in the shape
-// that provider's own 404 uses.
-//
-// It is provider-shaped and carries no simulator detail, exactly like the
-// routing 404 each provider package produces: a consumer decoding this response
-// runs the same error path it runs against the real vendor. Why the request was
-// refused is in the journal entry's findings and in the log, which is where a
-// person looks and a consumer's error decoder does not.
-func scenarioNotFoundBody(name provider.Name) []byte {
-	switch name {
-	case provider.Tavily:
-		body, err := wire.Render(tavily.ErrorResponse{
-			Detail: tavily.ErrorDetail{Error: tavily.MessageNotFound},
-		}, nil)
-		if err != nil {
-			return []byte(`{"detail":{"error":"Not Found"}}`)
-		}
-		return body
-
-	case provider.Perplexity:
-		// Sonar's shape: the /x/ prefix is stripped before route matching, so a
-		// refused request has not been resolved to the Sonar or the Agent surface
-		// and the documented Sonar envelope is the one both routes share a client
-		// for.
-		return perplexity.ErrorBody(perplexity.SurfaceSonar, http.StatusNotFound, "")
-
-	case provider.Exa:
-		body, err := wire.Render(exa.ErrorResponse{
-			// Derived, never random: the same refusal renders the same bytes on
-			// every run, which is what determinism means here (CLAUDE.md house
-			// rule 2). There is no scenario to seed it with, so the tuple is this
-			// surface and this refusal.
-			RequestID: ids.Hex32(string(name), CodeScenarioUnknown),
-			Error:     http.StatusText(http.StatusNotFound),
-			Tag:       exa.TagNotFound,
-		}, nil)
-		if err != nil {
-			return []byte(`{"requestId":"","error":"Not Found","tag":"NOT_FOUND"}`)
-		}
-		return body
-
-	case provider.MCP:
-		// mcp's own JSON-RPC error envelope type is unexported (provider/mcp
-		// builds it itself, per request, from the request's own id); this
-		// refusal has no request to read an id from, so it renders the same
-		// shape directly. No id (always null, the same as every other shape
-		// failure this profile answers — contracts/mcp/README.md decision 6),
-		// code -32600 InvalidRequestError, and the same generic message the
-		// other three vendors' bodies carry here rather than naming the
-		// scenario: the scenario name is in the journal and the log, which is
-		// where a person looks, not in a response a consumer's error decoder
-		// parses.
-		body, err := wire.Render(mcpErrorEnvelope{
-			JSONRPC: "2.0",
-			Error:   mcpRPCError{Code: mcpCodeInvalidRequest, Message: http.StatusText(http.StatusNotFound)},
-		}, nil)
-		if err != nil {
-			return []byte(`{"jsonrpc":"2.0","error":{"code":-32600,"message":"Not Found"}}`)
-		}
-		return body
-
-	default:
-		// Unreachable: newSurfaces builds a surface only for the four names
-		// above. An empty body beats inventing a vendor's error shape.
-		return nil
-	}
+// It is built fresh where it is used (newSurfaces calls it once per Server,
+// through refusalHandler, at startup — never per request) rather than held
+// in a package-level var: composing it from configuration instead of the
+// four names unconditionally is Phase 10 unit 3 territory, and this unit's
+// server change stays minimal by not introducing new process-lifetime state
+// ahead of that rewiring.
+func referenceProfiles() *provider.Set {
+	return provider.MustSet(exa.Profile(), tavily.Profile(), perplexity.Profile(), mcp.Profile())
 }
 
 // lanePrefixes reads the optional /x/<scenario> and /n/<namespace> path

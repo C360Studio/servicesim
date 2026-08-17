@@ -31,8 +31,8 @@ type progressParams struct {
 // notifications/progress frame per scripted delta — only when the request
 // carried _meta.progressToken — followed by the final JSON-RPC response
 // frame, which is finalBody (the exact bytes [handleToolsCall] already
-// built for the non-streaming Body). Framing is GrammarDelta with
-// OmitDone: true — unnamed "data:" frames, no [DONE] sentinel, matching
+// built for the non-streaming Body). Framing is GrammarDelta with no
+// Stream.Sentinel — unnamed "data:" frames, no [DONE] sentinel, matching
 // the specification's silence on SSE framing plus this profile's own
 // choice (decision 5).
 func renderProgressStream(pp parsedParams, p *Projection, finalBody []byte) (*provider.Stream, error) {
@@ -59,10 +59,10 @@ func renderProgressStream(pp parsedParams, p *Projection, finalBody []byte) (*pr
 	events = append(events, provider.SSEEvent{Data: finalBody, Terminal: true, Pace: terminalPace(p.Stream)})
 
 	return &provider.Stream{
-		Grammar:  provider.GrammarDelta,
-		Chunks:   provider.EncodeSSE(events),
-		OmitDone: true,
-		DonePace: 0, // never reached: OmitDone means the [DONE] sentinel is never written.
+		Grammar: provider.GrammarDelta,
+		Chunks:  provider.EncodeSSE(events),
+		// Sentinel stays nil: no [DONE] frame, per this profile's own
+		// choice (decision 5) — the framework never infers one from Grammar.
 	}, nil
 }
 

@@ -198,8 +198,7 @@ const researchIDPrefix = ""
 
 // handleResearchCreate serves POST /research.
 func handleResearchCreate(x *provider.Exchange) provider.Response {
-	entry := x.Entry()
-	checkAuth(x, entry)
+	checkAuth(x)
 	validateResearchCreate(x)
 	if x.Failed() {
 		return errorResponse(x)
@@ -232,7 +231,7 @@ func handleResearchCreate(x *provider.Exchange) provider.Response {
 	return provider.Response{
 		Status:        http.StatusCreated,
 		Body:          body,
-		Label:         Name + ".research.created",
+		Label:         string(Name) + ".research.created",
 		FaultEligible: true,
 		FaultBody:     faultBody,
 	}
@@ -241,7 +240,7 @@ func handleResearchCreate(x *provider.Exchange) provider.Response {
 // handleResearchPoll serves GET /research/{request_id}.
 func handleResearchPoll(x *provider.Exchange) provider.Response {
 	entry := x.Entry()
-	checkAuth(x, entry)
+	checkAuth(x)
 	if x.Failed() {
 		return errorResponse(x)
 	}
@@ -275,15 +274,14 @@ func handleResearchPoll(x *provider.Exchange) provider.Response {
 // handleResearchHead serves HEAD /research/{request_id}: existence only, no turn
 // selection, no attempt claimed, no cursor advanced.
 func handleResearchHead(x *provider.Exchange) provider.Response {
-	entry := x.Entry()
-	checkAuth(x, entry)
+	checkAuth(x)
 	if x.Failed() {
 		return errorResponse(x)
 	}
 	if !provider.ResolveJob(x, x.Request.PathValue("request_id")) {
-		return provider.Response{Status: http.StatusNotFound, Label: Name + ".research.head.missing"}
+		return provider.Response{Status: http.StatusNotFound, Label: string(Name) + ".research.head.missing"}
 	}
-	return provider.Response{Status: http.StatusOK, Label: Name + ".research.head.ok"}
+	return provider.Response{Status: http.StatusOK, Label: string(Name) + ".research.head.ok"}
 }
 
 // selectResearchProjection chooses the snapshot serving this poll. It claims the

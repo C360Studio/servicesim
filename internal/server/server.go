@@ -434,12 +434,12 @@ func validators(cfg config.Config) map[string]provider.Validator {
 			out[string(provider.Exa)] = exa.Validator{}
 			out[exa.NameAgentRuns] = exa.AgentRunValidator{}
 		case provider.Tavily:
-			out[tavily.Name] = tavily.Validator{}
+			out[string(tavily.Name)] = tavily.Validator{}
 			out[tavily.NameResearch] = tavily.ResearchValidator{}
 		case provider.Perplexity:
 			maps.Copy(out, perplexity.Validators())
 		case provider.MCP:
-			out[mcp.Name] = mcp.Validator{}
+			out[string(mcp.Name)] = mcp.Validator{}
 		}
 	}
 	return out
@@ -448,11 +448,19 @@ func validators(cfg config.Config) map[string]provider.Validator {
 // relaxAuth applies --strict-auth=false to the loaded scenario.
 //
 // Config documents StrictAuth as "a missing credential is a 401 when the
-// scenario does not say otherwise", and the provider packages implement the
-// strict half by defaulting an entry with no auth block to AuthRequired. The
-// permissive half has to be expressed somewhere, and the scenario entry is the
-// only seam the handlers read, so it is expressed here — on entries that declare
-// no policy of their own, and never on an entry that does.
+// scenario does not say otherwise", and each PROFILE declares that default
+// through Profile.DefaultAuth — required for the three research profiles,
+// optional for MCP (decision 3), never one flattened behaviour for all four.
+// The permissive half has to be expressed somewhere, and the scenario entry is
+// the only seam the handlers read, so it is expressed here — on an entry
+// whose OWNING profile defaults to AuthRequired and that declares no policy
+// of its own; never on an entry that declares one, and never on an entry
+// whose profile already defaults to AuthOptional (relaxing it would write an
+// explicit policy with the same meaning the profile's own default already
+// has, which is harmless but not what "consult the profile" means).
+// [Exchange.AuthPolicy] reads the same DefaultAuth for the same reason: an
+// entry this function leaves untouched still resolves to the right mode
+// there.
 //
 // It runs after validation so that a scenario is validated exactly as it was
 // written, and it mutates the in-memory scenario only: nothing is written back
@@ -462,13 +470,33 @@ func relaxAuth(cfg config.Config, s *scenario.Scenario) {
 	if cfg.StrictAuth || s == nil {
 		return
 	}
+	defaults := entryDefaultAuth(referenceProfiles())
 	for _, name := range s.Providers.Names() {
 		e := s.Providers.Get(name)
 		if e == nil || e.Auth != nil {
 			continue
 		}
+		if defaults[name] == scenario.AuthOptional {
+			continue
+		}
 		e.Auth = &scenario.AuthPolicy{Mode: scenario.AuthOptional}
 	}
+}
+
+// entryDefaultAuth maps every scenario entry kind any registered profile
+// declares a validator for to that profile's DefaultAuth, so relaxAuth can
+// consult the OWNING profile's default instead of flattening every profile
+// to one strict-auth behaviour. Phase 10 unit 3 territory: this reads the
+// same ad hoc referenceProfiles() build refusalHandler (listeners.go) does,
+// rather than the composed Set.
+func entryDefaultAuth(set *provider.Set) map[string]scenario.AuthMode {
+	out := make(map[string]scenario.AuthMode)
+	for _, p := range set.All() {
+		for entry := range p.Validators {
+			out[entry] = p.DefaultAuth
+		}
+	}
+	return out
 }
 
 // faultsFanout is the fault engine the admin surface resets: one Reset reaches

@@ -56,6 +56,23 @@ type Exchange struct {
 	// decision and claimed memoise the single attempt claim this request makes.
 	decision FaultDecision
 	claimed  bool
+
+	// errorBody, defaultAuth and kind are this Exchange's profile's
+	// ErrorBody, DefaultAuth and effective Kind (Profile.effectiveKind()),
+	// installed once per request by Profile.Handler (installProfile,
+	// profile.go) so Reject, AuthPolicy and EntryFor can reach them without
+	// Exchange holding a whole Profile — Handle's own signature (d Deps, p
+	// Name, route Route, h Handler) carries only the profile's Name. All
+	// three are the zero value on an Exchange Handle constructed directly
+	// outside Profile.Handler (internal/server's refusalHandler, until unit
+	// 3 rewires it, and a hand-built test Exchange): refuse then journals
+	// CodeRefusalEmptyBody instead of rendering a body, AuthPolicy falls
+	// back to scenario.AuthRequired — the same meaning DefaultAuth's own zero
+	// value documents — and EntryFor falls back to treating kind literally,
+	// which is what it always did before this field existed.
+	errorBody   func(Refusal) []byte
+	defaultAuth scenario.AuthMode
+	kind        string
 }
 
 // Lane returns the state lane this request was resolved into: its namespace, the
@@ -304,6 +321,133 @@ func (x *Exchange) Entry() *scenario.ProviderEntry {
 		return x.Deps.Scenario.Provider(x.Route.Entry)
 	}
 	return x.Deps.Scenario.Provider(string(x.Provider))
+}
+
+// EntryFor returns the scenario provider entry named kind, and whether one
+// was found — false rather than a nil *scenario.ProviderEntry, so a caller
+// need not nil-check the way [Exchange.Entry] requires. It exists for the two
+// consecutive nil traps a profile author meets writing a handler by hand:
+// Entry() returns a nilable entry, and ProviderEntry.Auth is a nilable
+// policy (framework-seam.md rule 5).
+//
+// kind resolves through THIS listener's own Name when it names the effective
+// Kind this Exchange's profile registered under (installed by Profile.Handler
+// — see the Exchange field's own doc comment): a scenario block is addressed
+// by Name, not by Kind (framework-seam.md, "Kind" — "A second instance is
+// openai_fallback: {kind: openai, ...} in the scenario"), so an instanced
+// listener (Kind != Name) must read its OWN block, not the primary
+// instance's, when a handler asks for the entry its own Kind names — exactly
+// what a handler written the ordinary way (x.EntryFor(string(Name)),
+// mirroring Route.Entry's static style) does. Any other kind — a secondary
+// entry on a multi-entry listener, such as Perplexity's NameAgent — names
+// that entry outright, unaffected by instancing, since Set.Validate refuses
+// instancing a multi-entry profile in v0.5.0. Name == Kind for all four
+// in-tree profiles, so this changes nothing for them: the branch below
+// always fires and resolves to the listener's own Provider(x.Provider),
+// which was already Provider(kind) since kind == string(x.Provider) there.
+// On an Exchange with no installed kind (x.kind == ""), the comparison never
+// matches and kind is resolved literally, exactly as before this field
+// existed.
+func (x *Exchange) EntryFor(kind string) (*scenario.ProviderEntry, bool) {
+	if x.kind != "" && kind == x.kind {
+		e := x.Deps.Scenario.Provider(string(x.Provider))
+		return e, e != nil
+	}
+	e := x.Deps.Scenario.Provider(kind)
+	return e, e != nil
+}
+
+// AuthPolicy returns the auth policy governing this request. It never
+// returns a nil-Auth ambiguity for a caller to trip on the way
+// [Exchange.Entry]'s ProviderEntry.Auth does: the request's own scenario
+// entry's policy when it declares one, else {Mode: x.defaultAuth} — this
+// profile's DefaultAuth (installed by Profile.Handler; see the Exchange
+// field's doc comment), with an empty Mode meaning scenario.AuthRequired,
+// exactly as scenario.AuthPolicy's own zero value already means.
+//
+// An entry that declares an auth: block but leaves mode unset is normalised
+// to this SAME default, not hard-coded to AuthRequired — the behaviour every
+// duplicated per-profile authPolicy(e) this method replaces already had
+// (exa, tavily and mcp each wrote it independently; only mcp's default
+// differs).
+//
+// --strict-auth=false is not consulted here. internal/server's relaxAuth
+// applies it earlier, at scenario-load time, by writing an explicit
+// AuthOptional policy onto every entry whose PROFILE defaults to
+// AuthRequired and that declares none of its own — so by the time a request
+// reaches this method, an entry with no policy of its own has already had
+// --strict-auth applied (or not) to it, and this method only ever supplies
+// the DEFAULT for a still-policy-less entry, which relaxAuth's own doc
+// comment explains is deliberately the same DefaultAuth this method reads.
+func (x *Exchange) AuthPolicy() scenario.AuthPolicy {
+	mode := x.defaultAuth
+	if mode == "" {
+		mode = scenario.AuthRequired
+	}
+	if e := x.Entry(); e != nil && e.Auth != nil {
+		policy := *e.Auth
+		if policy.Mode == "" {
+			policy.Mode = mode
+		}
+		return policy
+	}
+	return scenario.AuthPolicy{Mode: mode}
+}
+
+// refuse renders kind through this Exchange's installed ErrorBody, falling
+// back to an empty body and a CodeRefusalEmptyBody warning when none was
+// installed. It is the shared implementation behind [Exchange.Reject] and
+// Handle's own stream.grammar_missing refusal (handle.go), so both journal
+// the same way a Profile.Refuse would if it had a whole Profile to call
+// through, rather than each re-implementing the fallback.
+func (x *Exchange) refuse(kind RefusalKind, status int) []byte {
+	if x.errorBody == nil {
+		x.Warn(CodeRefusalEmptyBody, "", "no ErrorBody was installed on this Exchange for refusal kind %q", kind)
+		return nil
+	}
+	body := x.errorBody(Refusal{Kind: kind, Status: status, X: x})
+	if len(body) == 0 {
+		x.Warn(CodeRefusalEmptyBody, "",
+			"the installed ErrorBody returned no bytes for refusal kind %q", kind)
+	}
+	return body
+}
+
+// Reject gives a rejected request one shape (framework-seam.md rule 5): it
+// records the failure through Fail, so Handle's own "validation has the last
+// word" branch clears any fault attempt the handler already claimed, marks
+// the response fault-ineligible outright rather than relying on that branch
+// alone, and renders the profile's own validation-error envelope through
+// [Exchange.refuse] with [RefuseRequest] — the fifth RefusalKind, added in
+// this unit because a rejection needs one the way 404/405/internal already
+// have theirs (see RefuseRequest's own doc comment): the profile's ErrorBody
+// implementation builds the vendor's error body from r.X.Findings(), which is
+// exactly what each in-tree profile's own errorResponse(x) does today.
+//
+// status is always supplied by the caller — no single status is right for
+// every rejection, unlike the other four kinds, which is why
+// defaultRefusalStatus does not cover RefuseRequest.
+//
+// format/args build the finding's Message the same way Fail's own do, and
+// carry the same obligation Fail's doc comment does not (yet) spell out:
+// redact.String's heuristics catch a recognised credential SHAPE (a
+// Bearer-prefixed token, a vendor key prefix, a "name=value" pair) in the
+// rendered message, not an opaque value with none of those shapes, so args
+// must never include a raw [Credential.Value] — compare it, quote what was
+// WRONG about it, never the value itself.
+func (x *Exchange) Reject(status int, code, field, format string, args ...any) Response {
+	x.Fail(code, field, format, args...)
+	return Response{
+		Status: status,
+		Body:   x.refuse(RefuseRequest, status),
+		// Label follows every in-tree profile's own errorResponse
+		// convention (exa: "exa.error.INVALID_REQUEST_BODY", tavily:
+		// "tavily.error.400") so a journal reader can group rejections by
+		// provider and code without decoding Findings — an empty Label
+		// here would be the one Response kind that convention skipped.
+		Label:         string(x.Provider) + ".error." + code,
+		FaultEligible: false,
+	}
 }
 
 // policy returns the ValidationPolicy governing this request, or nil.
