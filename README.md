@@ -24,7 +24,8 @@ implement every field of every vendor — only the *consumed contract*.
 What is provider-neutral and what is not: the scenario schema and turn model, the fault engine and its catalogue,
 the redacted journal and admin surface, `testkit`, the built-in scenarios mechanism and the image are the
 framework — the same for every profile. A profile is one provider package (`profiles/exa`, `profiles/tavily`,
-`profiles/perplexity`, `profiles/mcp`) plus its verified contract under `contracts/`; that is where a vendor's
+`profiles/perplexity`, `profiles/mcp`) plus its own verified contract, embedded beside it
+(`profiles/<name>/contracts/`); that is where a vendor's
 routes, request validation and wire shapes live, and it is the part that grows when a profile is added. The fourth
 profile is a protocol, not a vendor — an MCP server whose contract is the specification and its machine-readable
 schema — and it needed no change to the scenario schema, the fault engine, the journal, the stream path or any
@@ -208,7 +209,7 @@ That is the body (one line on the wire, wrapped here for width), and it is byte-
 entry for it carries one warning — `mcp.meta.client_info_missing`, because the curl sent no `clientInfo` — which
 is the profile telling you the request was accepted but was not the request a careful client sends. Every wire
 field — the response shapes `tools[]`, `content[]`, `structuredContent`, `isError`, `ttlMs`/`cacheScope`
-included — is recorded in [`contracts/mcp/README.md`](contracts/mcp/README.md), and
+included — is recorded in [`profiles/mcp/contracts/README.md`](profiles/mcp/contracts/README.md), and
 [`examples/mcpclient.go`](examples/mcpclient.go) declares the consumed subset as Go types; every simulator-chosen
 default (what the specification left open) is numbered in `profiles/mcp/doc.go`.
 
@@ -601,7 +602,7 @@ authors ever need, and the multi-turn form for scripting an agentic loop.
 | [`examples/`](examples) | A worked consumer, compiled and run by CI. The best thing to copy. |
 | [`docs/scenario-schema.md`](docs/scenario-schema.md) | The scenario YAML reference: single-shot form, multi-turn form, faults. |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptom-first answers: an unexpected 401, 404, 405, tests interfering, counts that differ per run under more than one replica, a container that will not become ready, and the MCP `400`s a legacy or hand-rolled client draws. |
-| [`contracts/`](contracts/README.md) | Per provider, the subset of the vendor API that is simulated, with the documentation URL and date each field was verified from — plus the golden fixtures the handlers are tested against. [`contracts/mcp/README.md`](contracts/mcp/README.md) is the MCP one: what the 2026-07-28 specification says, and every simulator-chosen default beside it. |
+| [`contracts/`](contracts/README.md) | The index and the shared discipline (`contracts.Read`/`Goldens`/`Provenance`/`ProviderSpec`/`OldestVerified`/`Conform`). Each vendor's own bundle — the documentation URL and date each field was verified from, plus the golden fixtures the handlers are tested against — lives beside its profile: [`profiles/mcp/contracts/README.md`](profiles/mcp/contracts/README.md) is the MCP one, what the 2026-07-28 specification says and every simulator-chosen default beside it. |
 
 ### If you are *changing* Servicesim
 

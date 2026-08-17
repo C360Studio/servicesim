@@ -1,10 +1,10 @@
 package mcp
 
 import (
+	"embed"
 	"errors"
 	"io/fs"
 
-	"github.com/c360studio/servicesim/contracts"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -16,15 +16,29 @@ import (
 // instead of naming one.
 const defaultPort = 8084
 
+// contractsFS embeds this profile's own golden fixtures, provenance record
+// and README — exactly the bundle an out-of-tree profile embeds beside its
+// own package (Phase 10 unit 6: "theirs, embedded beside their package").
+// It used to be a sub-FS of the whole-repository contracts.FS(); genericising
+// contracts around fs.FS let the bundle move to profiles/mcp/contracts and
+// this package own its embedding, the way profiles/mcp/contracts/README.md's
+// verification record has always been MCP's own, not shared — MCP's own
+// contract was recorded here before this profile even registered (Phase 8
+// unit 1), which contracts/README.md "Keeping them honest" calls out as the
+// example of the pattern.
+//
+//go:embed contracts
+var contractsFS embed.FS
+
 // Profile returns the registration record MCP is served from: everything
 // New used to build by hand, plus the fields New never needed because
 // internal/config and internal/server supplied them from their own
 // four-vendor switches.
 func Profile() provider.Profile {
-	sub, err := fs.Sub(contracts.FS(), "mcp")
+	sub, err := fs.Sub(contractsFS, "contracts")
 	if err != nil {
-		// Unreachable: "mcp" is a fixed, valid fs.Sub pattern this package
-		// has embedded goldens under since before this profile existed.
+		// Unreachable: "contracts" is the fixed, valid fs.Sub pattern the
+		// //go:embed directive above always populates.
 		panic("profiles/mcp: contracts sub-FS: " + err.Error())
 	}
 

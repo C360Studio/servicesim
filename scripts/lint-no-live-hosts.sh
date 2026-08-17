@@ -10,8 +10,18 @@
 # .localhost, example.com).
 #
 # Documentation is exempt: docs/ must be able to cite the vendors' real doc
-# URLs, and the contracts/ goldens carry a provenance comment naming the
-# documentation page they were verified against.
+# URLs, and a profile's contracts/ bundle (profiles/<name>/contracts/ —
+# provenance.yaml and README.md) carries a provenance comment naming the
+# documentation page it was verified against. Before Phase 10 unit 6, every
+# profile's bundle lived under the repository-root contracts/ directory,
+# which this guard never walked at all (SEARCH_PATHS below never named it) —
+# an implicit exemption by omission. Genericising contracts moved each
+# bundle to profiles/<name>/contracts/, INSIDE profiles/, which this guard
+# DOES walk, so the exemption is now explicit and pattern-based below: any
+# directory literally named "contracts", wherever it appears under a scanned
+# path. Pattern-based, not a per-provider list, so a future profile's own
+# contracts/ bundle is exempt automatically, the same way an out-of-tree
+# adopter's would never be scanned by this in-tree script at all.
 #
 # Suppress a deliberate occurrence with a trailing `servicesim:allow-live-host`
 # comment on the same line.
@@ -35,8 +45,9 @@ cd "$(dirname "$0")/.."
 # gap that let MCP join with no host entry here for two Phase 8 releases).
 BASE_PATTERN='api\.exa\.ai|exa\.ai|api\.tavily\.com|tavily\.com|api\.perplexity\.ai|perplexity\.ai|api\.openai\.com'
 
-bin="$(mktemp -d)/servicesim"
-trap 'rm -rf "$(dirname "$bin")"' EXIT
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+bin="$tmp/servicesim"
 go build -o "$bin" ./cmd/servicesim
 
 registered_hosts=$("$bin" --print-hosts 2>/dev/null | sed 's/[.[\*^$]/\\&/g' | paste -sd '|' -)
@@ -60,19 +71,31 @@ shopt -u nullglob
 SEARCH_PATHS=(scenarios provider profiles scenario testkit internal cmd "${root_go_files[@]}")
 
 status=0
+scan_list="$tmp/scan_files"
 for path in "${SEARCH_PATHS[@]}"; do
   [ -e "$path" ] || continue
+
+  # Pattern-based exemption: any directory literally named "contracts" is
+  # pruned before grep ever sees it — a profile's own verified-contract
+  # bundle, in this repository or an out-of-tree one, not test data this
+  # guard is meant to police. find -prune, not grep --exclude-dir, because
+  # the latter is a GNU extension this repository cannot assume every CI
+  # and developer machine's grep provides.
+  find "$path" -type d -name contracts -prune -o -type f -print >"$scan_list"
 
   # -I skips binaries. Exclude Go doc comments is NOT desirable — a real
   # hostname in a code comment is still a footgun for the next reader who
   # copies it into a default.
-  while IFS= read -r line; do
-    case "$line" in
-      *servicesim:allow-live-host*) continue ;;
-    esac
-    echo "FAIL: real provider hostname in test data: $line"
-    status=1
-  done < <(grep -rInE "$PATTERN" "$path" || true)
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    while IFS= read -r line; do
+      case "$line" in
+        *servicesim:allow-live-host*) continue ;;
+      esac
+      echo "FAIL: real provider hostname in test data: $line"
+      status=1
+    done < <(grep -HInE "$PATTERN" "$file" 2>/dev/null || true)
+  done <"$scan_list"
 done
 
 if [ "$status" -ne 0 ]; then

@@ -22,7 +22,7 @@ the request in a journal — or say nothing about consumers at all and give the 
 "no verified vendor contract recorded yet", "the scenario model has no shape for this lifecycle", "on the
 backlog". A reason about Servicesim is checkable; a reason about somebody else's client is not.
 
-This is not hypothetical either. `contracts/exa/README.md` justified leaving Exa's `/agent/runs` unsimulated with
+This is not hypothetical either. `profiles/exa/contracts/README.md` justified leaving Exa's `/agent/runs` unsimulated with
 "no C360 consumer uses it". The first adopter's client calls it. The sentence sat in the directory that
 [outranks every other document here](#the-one-rule-that-matters-most), which is exactly what made a casual
 assumption read as a verified fact. An unevidenced claim about a consumer is worse than an omission, because it
@@ -56,14 +56,16 @@ ones you miss, but not all.
 - [ ] Fetch the authority: a vendor's OpenAPI document **or** a protocol's machine-readable schema. Prose pages
       describe; the spec decides. Where a rendered page and the schema disagree, record both and say which said
       what.
-- [ ] Write `contracts/<name>/README.md`: what is simulated and what consumers parse, each statement citing the
-      page it was read from, with the URLs and the date. List what is **not** simulated as a table rather than
-      omitting it. Every point where the specification is silent is a **simulator-chosen** decision — record it as
-      such, and once the handler ships, record what was chosen beside it.
-- [ ] Write `contracts/<name>/provenance.yaml` with a `spec:` block (`url`, `version`, `sha256`, `retrieved`) and a
-      provider-level `verified:` date. `TestEveryProviderHasSpecRecorded` will insist.
+- [ ] Write `profiles/<name>/contracts/README.md`: what is simulated and what consumers parse, each statement
+      citing the page it was read from, with the URLs and the date. List what is **not** simulated as a table
+      rather than omitting it. Every point where the specification is silent is a **simulator-chosen**
+      decision — record it as such, and once the handler ships, record what was chosen beside it.
+- [ ] Write `profiles/<name>/contracts/provenance.yaml` with a `spec:` block (`url`, `version`, `sha256`,
+      `retrieved`) and a provider-level `verified:` date. `testkit.ValidateProfile` (via `contracts.Conform`)
+      checks it is well-formed when present; add your own `TestHasASpecBlock` beside the other three reference
+      profiles' if the vendor publishes one, the way `profiles/exa/contract_test.go` does.
 - [ ] Add the provider's row to `contracts/README.md`'s index table — before a route exists, say so in the row
-      (`contracts/mcp/` is the example of a contract recorded before its provider registered; the docs guard checks
+      (`profiles/mcp/contracts/` is the example of a contract recorded before its provider registered; the docs guard checks
       that table against `Routes()` in both directions, so an unregistered route claim fails and a registered
       route with no row fails).
 
@@ -122,8 +124,8 @@ docs tables fail only in CI.
 | `internal/server/server.go` | `<name>.Routes()` in the routes concat; `<name>.Validator{}` in the entry-kind validators map |
 | `testkit/server.go` | nothing (Phase 10 unit 4): `testkit` derives routes, validators, the fault engine and every handler from the registered `*provider.Set` — pass your `Profile()` to `testkit.WithProfiles` and it is served through the one generic `testkit.Handler` |
 | `testkit/golden.go` | nothing: declare `Profile.DerivedIDs`/`StreamDerivedIDs` on your registration record and a caller prunes them with `testkit.GoldenDerivedIDs(sim.DerivedIDs()...)` |
-| `contracts/contracts.go` | the `//go:embed` line, the `Provider` constant, `Providers()`; plus the `byName` map in `contracts/provenance_internal_test.go` |
-| `contracts/<name>/` | goldens satisfying `TestEveryProviderHasHappyAndEmptyAndErrorGoldens` (a happy, an empty and an error case), each with a `provenance.yaml` entry (a golden with no provenance fails the build) — and a golden test in your package pinning each to the live handler |
+| `profiles/<name>/profile.go` | a `//go:embed contracts` line and `fs.Sub(contractsFS, "contracts")` into `Profile.Contracts` (Phase 10 unit 6: `contracts` no longer embeds anything itself, or knows which providers exist — each profile embeds its own bundle) |
+| `profiles/<name>/contracts/` | goldens satisfying `contracts.Conform`'s `EveryProviderHasHappyAndEmptyAndErrorGoldens` subtest (a happy, an empty and an error case), each with a `provenance.yaml` entry (a golden with no provenance fails the build) — and a golden test in your package pinning each to the live handler |
 | `scenarios/protocol/*.yaml` | a block in **every** built-in — `TestBuiltins_CoverEveryImplementedProvider` requires it — expressing that file's intent on your surface; `malicious-content` needs every hostile source projected with a marker-bearing field (`TestMaliciousContent_EveryHostileSourceCarriesAMarker`) |
 | `scenarios/scenarios_test.go` | `implementedProviders`; `documentedProjectionKeys` (your `respond:` keys, cross-checked with `docs/scenario-schema.md`) |
 | `scripts/image-smoke.sh` | a route check and the per-provider journal loop; `Dockerfile` `EXPOSE` (and the description label); `docker-compose.example.yml` port and `*_BASE_URL` |

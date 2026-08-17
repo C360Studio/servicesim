@@ -840,7 +840,7 @@ func derefAnswer(t *testing.T, resp searchResponseWire) string {
 func goldenBytes(t *testing.T, name string) string {
 	t.Helper()
 
-	data, err := contracts.Read(contracts.Tavily, name)
+	data, err := contracts.Read(Profile().Contracts, name)
 	require.NoError(t, err)
 
 	var compact bytes.Buffer

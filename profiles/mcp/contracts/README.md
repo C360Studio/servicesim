@@ -4,16 +4,17 @@ Verified against the live specification on **2026-08-16**.
 
 This file records only what Servicesim will simulate and what consumers parse. It is not a
 redistribution of the specification. Re-verify and update the date above on the sanctioned dated
-re-verification cadence (`contracts/README.md` "Keeping them honest" — there is no live contract
+re-verification cadence (the repository root's `contracts/README.md` "Keeping them honest" — there is no live contract
 canary).
 
 **Status: simulated (Phase 8 unit 2).** The handler is `profiles/mcp`; the listener is `mcp`, default
 port 8084; the one route is `POST /mcp`, JSON-RPC 2.0 dispatch on `body.method` to `server/discover`,
 `tools/list` and `tools/call` — modern era only (`2026-07-28`; see "Protocol eras" below). It registers
-as `contracts.MCP`, and this directory's goldens are embedded and enumerated by `contracts.Providers()`.
+as `mcp`, and this directory (`profiles/mcp/contracts`) is its own embedded contract bundle, read through
+`contracts.Read`/`contracts.Goldens`/`contracts.Provenance`.
 Everything below is still what the specification says; the "Simulation decisions" section records, next
 to each open question, the choice unit 2 actually shipped ("chosen: …") and where in
-`profiles/mcp/doc.go` and `contracts/mcp/provenance.yaml` that choice is recorded.
+`profiles/mcp/doc.go` and `profiles/mcp/contracts/provenance.yaml` that choice is recorded.
 
 ## Authority and revision
 
@@ -806,7 +807,7 @@ simulates request/response tools; `tools/list` `ttlMs` is the freshness signal a
 
 ## Not simulated / out of scope
 
-Listed rather than omitted (the `contracts/README.md` "NOT SIMULATED" discipline). No row asserts a
+Listed rather than omitted (the repository root's `contracts/README.md` "NOT SIMULATED" discipline). No row asserts a
 wire shape for what it names.
 
 | Surface | Status | Why / what the spec says |
@@ -994,7 +995,7 @@ Each item names the contract fact that constrains it and, where there is one, a 
 its reason. Nothing here is decided by this file. **Simulation decisions — recorded 2026-08-16 (unit
 2):** every item below now also carries a `chosen:` line naming what unit 2 actually shipped, and
 where — `profiles/mcp/doc.go`'s numbered "Recorded simulator-chosen defaults" list uses this same
-numbering, and `contracts/mcp/provenance.yaml` records the corresponding `note:` on the golden each
+numbering, and `profiles/mcp/contracts/provenance.yaml` records the corresponding `note:` on the golden each
 choice shapes.
 
 1. **Era(s) served — D11 (pending owner).** Fact: `2026-07-28` is `latest`; it is stateless; every
@@ -1012,9 +1013,9 @@ choice shapes.
    nothing — the era-specific header/`_meta` layer lives in its own file (`transport.go`) precisely
    so a legacy follow-on unit has one place to extend.
 2. **The endpoint path.** Fact: server-chosen; the specification's own example is `/mcp`. Choose in
-   unit 2; the docs guard will then require the `METHOD /path` row in `contracts/README.md`.
+   unit 2; the docs guard will then require the `METHOD /path` row in the repository root's `contracts/README.md`.
    chosen: `POST /mcp`, listener `mcp`, default port 8084 (`provider.MCP`, `profiles/mcp.PatternMCP`).
-   `contracts/README.md`'s index row now carries this route.
+   the repository root's `contracts/README.md`'s index row now carries this route.
 3. **Whether the profile requires an `Authorization: Bearer` credential** like the three research
    profiles. Fact: the spec says authentication SHOULD exist and leaves the scheme to the
    deployment (authorization is OPTIONAL; when used, Bearer in the `Authorization` header, never

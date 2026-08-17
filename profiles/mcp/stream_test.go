@@ -15,11 +15,11 @@ import (
 	"github.com/c360studio/servicesim/scenario"
 )
 
-// mcpGoldenBytes reads a golden fixture from contracts/mcp, failing t if
-// it cannot be read.
+// mcpGoldenBytes reads a golden fixture from this profile's own contract
+// bundle (profiles/mcp/contracts), failing t if it cannot be read.
 func mcpGoldenBytes(t *testing.T, name string) []byte {
 	t.Helper()
-	raw, err := contracts.Read(contracts.MCP, name)
+	raw, err := contracts.Read(Profile().Contracts, name)
 	require.NoError(t, err)
 	return raw
 }

@@ -106,7 +106,7 @@ func hasCode(findings []journal.Finding, code string) bool {
 // a struct, and the bug survives the test that was supposed to catch it.
 func goldenBytes(t *testing.T, name string) []byte {
 	t.Helper()
-	raw, err := contracts.Read(contracts.Perplexity, name)
+	raw, err := contracts.Read(Profile().Contracts, name)
 	require.NoError(t, err)
 	var buf bytes.Buffer
 	require.NoError(t, json.Compact(&buf, raw))

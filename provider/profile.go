@@ -168,9 +168,13 @@ type Profile struct {
 	Announce func(Deps)
 
 	// Contracts is this profile's golden fixtures, provenance record and
-	// README, as an fs.FS. The four reference profiles pass a sub-FS of
-	// contracts.FS() for now (Phase 10 unit 6 genericises contracts around
-	// this field).
+	// README, as an fs.FS (house rule 1: a profile ships its contract —
+	// testkit.ValidateProfile fails a nil Contracts, with no exception). The
+	// four reference profiles each embed their own bundle
+	// (profiles/<name>/contracts, //go:embed contracts) and pass a sub-FS
+	// rooted at it; an out-of-tree profile does the same beside its own
+	// package. contracts.Read/Goldens/Provenance/ProviderSpec/OldestVerified
+	// and contracts.Conform all take this field's value directly.
 	Contracts fs.FS
 
 	// Hosts are the vendor's real hostnames — never dialled, and what

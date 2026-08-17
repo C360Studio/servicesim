@@ -1185,6 +1185,46 @@ is theirs (D12); Servicesim does not unblock it.
   `GoldenDerivedIDs("acme_id")` golden test, proving the pruning really is caller-declared rather than
   testkit-assumed.
 
+- **Phase 10 unit 6 (2026-08-17): `contracts` genericised over `fs.FS`; `contracts.Conform`;
+  `testkit.ValidateProfile` with `AssertDeterministic` and `AssertRenderShape`.** `contracts.Read`/`Goldens`/
+  `Provenance`/`ProviderSpec`/`OldestVerified` all take an `fs.FS` now instead of a closed `Provider` enum; the
+  enum, `Providers()`, `FS()` and the global `VerifiedOn` constant are gone. Each reference profile's contract
+  bundle moved from `contracts/<name>` to `profiles/<name>/contracts` (`git mv`, wire bytes byte-identical: a
+  rename-only `git diff -M` against `main` shows every golden and `provenance.yaml` unchanged byte for byte) and
+  is embedded beside its own package, exactly the shape an out-of-tree profile uses. `contracts.Conform(tb,
+  fsys)` is the nine old `contracts_test.go` loops that iterated `Providers()` plus the two
+  `provenance_internal_test.go` checks as one call,
+  ten named subtests; the vendor-specific wire pins (Exa's no-`score` rule, Tavily's numeric `response_time`, and
+  the rest) moved to each profile's own `profiles/<name>/contract_test.go`, reading through
+  `contracts.Read(Profile().Contracts, name)`.
+  `testkit.ValidateProfile(tb, p)` is the conformance suite an adopter's own CI runs against their profile — the
+  same call each reference profile's new `profiles/<name>/conformance_test.go` makes. Its subtests: `provider.
+  NewSet(p)` succeeds; `p.Contracts` is non-nil (house rule 1, no exception) and conforms; every `RefusalKind`
+  renders a non-empty body through `p.Refuse`, with a request and without one; an unknown path answers 404 +
+  `route.unmatched`; a wrong method answers 405 + `Allow`; a wrong `Content-Type` on at least one POST route
+  records a finding naming it (not every route — Tavily's `/research` create checks neither JSON shape nor
+  content type, a real, pre-existing gap this unit surfaced rather than papered over); a missing credential
+  answers 401 when `DefaultAuth` is required, skipped and named (a real `t.Skip`, not a silent no-op) when it is
+  optional (MCP's own default); every `Route.FaultKey` resolves against the profile's own `Set`; a malformed-JSON
+  request never claims a fault attempt, and the first request afterward that IS accepted claims attempt 0.
+  `AssertDeterministic(tb, p, scenarioYAML, reqs...)` is a REQUIRED step — two independent, freshly started
+  `Sim`s, the same requests, byte-compared bodies and every profile-controlled header (all but `Date`) — the
+  mechanical defence against a `time.Now()` or `math/rand` on a response path, proven to actually catch one in
+  this unit's own tests. `AssertRenderShape(tb, bodies...)` is a documented heuristic, not a proof: it fails a
+  JSON body carrying a literal `<`/`>`/`&` escape sequence (default `json.Marshal`'s HTML
+  escaping — `provider.Render` turns it off) or a bare exponent-form numeral for what looks like an integral
+  value (a `float64` round trip's signature); a body that is not valid JSON is skipped, since neither divergence
+  is expressible outside one. `ValidateProfile` runs it over every JSON golden in `p.Contracts` and every
+  response its own conformance requests produced. Proven failing-then-passing, through a stub `testing.TB`, on
+  four deliberately broken fixtures (`testkit/conformance_test.go`): a contract bundle missing a provenance
+  record, a handler that reaches for `encoding/json.Marshal` directly on a value containing `&`, an `ErrorBody`
+  returning no bytes for one `RefusalKind`, and a handler that stamps `time.Now()` into its body — and passing on
+  all four reference profiles. The out-of-tree module from units 2/4 (`scratchpad/u2-outoftree/`) gained its own
+  embedded `contracts/` bundle (one happy, one empty, two error goldens, a `provenance.yaml` with a `spec:`
+  block) and the same fail-then-pass proof, independently: `go list -f '{{join .Imports "\n"}}' ./acme` still
+  names only `provider`, `scenario` and the standard library — no direct `internal/...` import, even with a real
+  contract bundle and a conformance test wired in.
+
 ### Phase 9 — The two doctrine-contradicting features
 
 > Phase 9 — The two doctrine-contradicting features: enforced rate limiting and the callback injector

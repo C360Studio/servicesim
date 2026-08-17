@@ -4,7 +4,7 @@ Verified against live vendor documentation on **2026-08-14**.
 
 This file records only what Servicesim simulates and what consumers parse. It is not a
 redistribution of the vendor's OpenAPI document. Re-verify and update the date above on the
-sanctioned dated re-verification cadence (`contracts/README.md` "Keeping them honest" — there
+sanctioned dated re-verification cadence (the repository root's `contracts/README.md` "Keeping them honest" — there
 is no live contract canary).
 
 ## Documentation sources
@@ -302,7 +302,7 @@ and tested; removing working simulated surface would cost more than keeping it.
 
 ### How /answer differs from /search
 
-Contracted against the recorded /search contract at `contracts/exa/README.md`. Same host (`https://api.exa.ai`), same auth headers, same error envelope family — but the request surface is drastically smaller and the response is a different document, not a variant of the /search one.
+Contracted against the recorded /search contract in this same file's "POST /search" section. Same host (`https://api.exa.ai`), same auth headers, same error envelope family — but the request surface is drastically smaller and the response is a different document, not a variant of the /search one.
 
 REQUEST — REMOVED (present on /search, absent from the /answer AnswerRequest schema, which has exactly four properties): type, numResults, category, moderation, compliance, includeDomains, excludeDomains, startPublishedDate, endPublishedDate, startCrawlDate, endCrawlDate, additionalQueries, contents (and its whole subtree: contents.text/highlights/summary/extras.links/extras.imageLinks/extras.codeBlocks/maxAgeHours/livecrawlTimeout/subpages/subpageTarget), useAutoprompt, livecrawl, context. Also absent from the schema though present on /search AND in the TS SDK's AnswerOptions: systemPrompt, userLocation — plus an SDK-only model:"exa". Those three are the only genuinely ambiguous request fields; everything else is a clean removal.
 REQUEST — SHARED: query (string, required), stream (boolean, default false), outputSchema (object).
@@ -466,7 +466,7 @@ prefer /search".
 
 This section previously carried a stronger claim — that none of the surface was simulated, and before that, that
 no consumer used it. Both were corrected in place rather than only struck, because the create/poll/HEAD routes
-have since shipped (see `contracts/README.md`'s index table, which check-docs.sh verifies against the registered
+have since shipped (see the repository root's `contracts/README.md`'s index table, which check-docs.sh verifies against the registered
 routes in both directions).
 
 A `POST /research` endpoint appears in third-party integration documentation but not in Exa's own docs index.
@@ -496,7 +496,7 @@ Sources:
 
 **Status: canonical, verified, simulated.** Implemented on `profiles/exa`, exercised by
 `profiles/exa/contents_test.go` and `profiles/exa/contents_golden_test.go`, with fixtures in this directory.
-`contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth for what the binary
+The repository root's `contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth for what the binary
 registers.
 
 ### Auth

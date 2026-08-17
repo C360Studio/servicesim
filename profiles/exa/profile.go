@@ -1,9 +1,9 @@
 package exa
 
 import (
+	"embed"
 	"io/fs"
 
-	"github.com/c360studio/servicesim/contracts"
 	"github.com/c360studio/servicesim/provider"
 )
 
@@ -13,6 +13,17 @@ import (
 // and internal/config derives every port flag's default from Profile.Port
 // instead of naming one.
 const defaultPort = 8081
+
+// contractsFS embeds this profile's own golden fixtures, provenance record
+// and README — exactly the bundle an out-of-tree profile embeds beside its
+// own package (Phase 10 unit 6: "theirs, embedded beside their package").
+// It used to be a sub-FS of the whole-repository contracts.FS(); genericising
+// contracts around fs.FS let the bundle move to profiles/exa/contracts and
+// this package own its embedding, the way profiles/exa/contracts/README.md's
+// verification record has always been Exa's own, not shared.
+//
+//go:embed contracts
+var contractsFS embed.FS
 
 // Name is this listener's identity in a provider.Set and the scenario
 // provider entry's key — the canonical spelling of what the deleted
@@ -25,10 +36,10 @@ const Name provider.Name = "exa"
 // because internal/config and internal/server supplied them from their own
 // four-vendor switches.
 func Profile() provider.Profile {
-	sub, err := fs.Sub(contracts.FS(), "exa")
+	sub, err := fs.Sub(contractsFS, "contracts")
 	if err != nil {
-		// Unreachable: "exa" is a fixed, valid fs.Sub pattern this package
-		// has embedded goldens under since before this profile existed.
+		// Unreachable: "contracts" is the fixed, valid fs.Sub pattern the
+		// //go:embed directive above always populates.
 		panic("profiles/exa: contracts sub-FS: " + err.Error())
 	}
 

@@ -33,7 +33,7 @@ import (
 func assertGoldenWire(t *testing.T, fixture string, got []byte) {
 	t.Helper()
 
-	raw, err := contracts.Read(contracts.Exa, fixture)
+	raw, err := contracts.Read(Profile().Contracts, fixture)
 	require.NoError(t, err)
 
 	var compact bytes.Buffer
@@ -58,7 +58,7 @@ func assertGoldenWire(t *testing.T, fixture string, got []byte) {
 func assertGoldenWireCanonical(t *testing.T, fixture string, got []byte) {
 	t.Helper()
 
-	raw, err := contracts.Read(contracts.Exa, fixture)
+	raw, err := contracts.Read(Profile().Contracts, fixture)
 	require.NoError(t, err)
 
 	want := canonicalJSON(t, raw)

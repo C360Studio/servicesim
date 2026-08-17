@@ -66,7 +66,7 @@ const streamGoldenRequest = `{"model":"sonar-deep-research","messages":[{"role":
 // pinned, and re-encoding through encoding/json would corrupt both.
 func sseGoldenBytes(t *testing.T, name string) []byte {
 	t.Helper()
-	raw, err := contracts.Read(contracts.Perplexity, name)
+	raw, err := contracts.Read(Profile().Contracts, name)
 	require.NoError(t, err)
 	return raw
 }

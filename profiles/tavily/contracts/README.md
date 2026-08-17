@@ -4,7 +4,7 @@ Verified against live vendor documentation on **2026-08-14**.
 
 This file records only what Servicesim simulates and what consumers parse. It is not a
 redistribution of the vendor's OpenAPI document. Re-verify and update the date above on the
-sanctioned dated re-verification cadence (`contracts/README.md` "Keeping them honest" — there
+sanctioned dated re-verification cadence (the repository root's `contracts/README.md` "Keeping them honest" — there
 is no live contract canary).
 
 ## Documentation sources
@@ -313,7 +313,7 @@ status uses its own fully-shown example rather than deferring to a shared refere
 
 **Status: canonical, verified, simulated.** Implemented on `profiles/tavily`, exercised by
 `profiles/tavily/extract_test.go` and `profiles/tavily/extract_golden_test.go`, with fixtures in this directory.
-`contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth for what the binary
+The repository root's `contracts/README.md`'s index table and `scripts/check-docs.sh` are the source of truth for what the binary
 registers.
 
 ### Auth
