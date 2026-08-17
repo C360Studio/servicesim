@@ -88,9 +88,10 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    checklist rewritten from the real diff, the troubleshooting MCP section, the small sweeps) are all done and
    merged. **Next: cut v0.5.0 — needs the owner's go-ahead** (a full tag note is drafted from the three unit
    commit bodies plus Phase 7's; the bullets are in the Phase 8 section; CONTRIBUTING "Releasing" order: tag,
-   publish, confirm one digest, then move the README/Compose pins and drop README's "ships in v0.5.0" sentence). **ODR is out per D12.** **D11 (era) is pending owner** —
-   modern-only shipped; a legacy 2025-11-25 follow-on only if the adopter's client is pinned below go-sdk `v1.7.0`
-   / TypeScript `2.0.0` / python-sdk `v2.0.0`. **D9 tier 2 (export the provider seam) is pending owner** — the
+   publish, confirm one digest, then move the README/Compose pins and drop README's "ships in v0.5.0" sentence).
+   **ODR is out per D12.** **D11 (era) is pending owner** — modern-only shipped; a legacy 2025-11-25 follow-on
+   only if the adopter's client is pinned below go-sdk `v1.7.0` / TypeScript `2.0.0` / python-sdk `v2.0.0`.
+   **D9 tier 2 (export the provider seam) is pending owner** — the
    evidence is written (`docs/design/mcp-profile.md` §12, the proposal's "Evidence from Phase 8"); it frames two
    options and their cost and recommends nothing.
 5. Tell the adopter v0.3.0 and v0.4.0 exist; their questions in the two contract READMEs are still open; their
