@@ -10,15 +10,12 @@ import (
 	"github.com/c360studio/servicesim/internal/admin"
 	"github.com/c360studio/servicesim/internal/config"
 	"github.com/c360studio/servicesim/provider"
-	"github.com/c360studio/servicesim/provider/exa"
-	"github.com/c360studio/servicesim/provider/mcp"
-	"github.com/c360studio/servicesim/provider/perplexity"
-	"github.com/c360studio/servicesim/provider/tavily"
 )
 
 // SurfaceAdmin is the name of the admin listener, as [Server.Addr] takes it.
-// The provider listeners are named by their provider.Name — "exa", "tavily",
-// "perplexity" — so one lookup covers every surface.
+// A provider listener is named by its registered [provider.Name] — the four
+// reference profiles' are "exa", "tavily", "perplexity" and "mcp" — so one
+// lookup (Server.Addr) covers every surface.
 const SurfaceAdmin = "admin"
 
 // CodeScenarioUnknown is the finding recorded for a request whose /x/<scenario>
@@ -94,17 +91,8 @@ func (s *Server) newSurfaces(adminDeps admin.Deps) []*surface {
 	out = append(out, s.newSurface(SurfaceAdmin, s.cfg.Admin, admin.Handler(adminDeps)))
 
 	for _, name := range s.cfg.Enabled() {
-		var listener config.Listener
-		switch name {
-		case provider.Exa:
-			listener = s.cfg.Exa
-		case provider.Tavily:
-			listener = s.cfg.Tavily
-		case provider.Perplexity:
-			listener = s.cfg.Perplexity
-		case provider.MCP:
-			listener = s.cfg.MCP
-		default:
+		listener, ok := s.cfg.Listener(name)
+		if !ok {
 			// Unreachable: config.Enabled only reports providers it has a
 			// listener for. Skipping beats binding a port with no handler.
 			continue
@@ -130,7 +118,7 @@ func (s *Server) providerHandler(name provider.Name) http.Handler {
 		undefaulted: s.refusalHandler(name, "this process serves no default scenario; select one with the /x/<scenario> path prefix"),
 	}
 	for _, ls := range s.scenarios {
-		h := newProviderHandler(name, ls.deps)
+		h := s.newProviderHandler(name, ls.deps)
 		r.byName[ls.name] = h
 		if ls == s.def {
 			r.def = h
@@ -139,30 +127,28 @@ func (s *Server) providerHandler(name provider.Name) http.Handler {
 	return r
 }
 
-// newProviderHandler constructs one provider's listener handler from the Deps of
-// one scenario.
+// newProviderHandler constructs one provider's listener handler from the Deps
+// of one scenario, through the registered Set: Lookup(name).Handler(deps) is
+// what internal/server/listeners.go's own four-vendor switch used to do by
+// hand, and it is what lets this package import no profile package at all
+// (Phase 10 unit 3).
 //
-// perplexity.New announces the Sonar sunset date once, here at construction,
-// through deps.Logger. It is a property of the simulated API rather than of any
-// request, so it belongs in the startup log and not in per-request noise. A
-// process serving several scenarios announces it once per scenario, each line
-// carrying that scenario's name, because each scenario is a distinct simulated
-// API and one line would be silent about the rest.
-func newProviderHandler(name provider.Name, deps provider.Deps) http.Handler {
-	switch name {
-	case provider.Exa:
-		return exa.New(deps)
-	case provider.Tavily:
-		return tavily.New(deps)
-	case provider.Perplexity:
-		return perplexity.New(deps)
-	case provider.MCP:
-		return mcp.New(deps)
-	default:
-		// Unreachable: newSurfaces builds a surface only for the four names
-		// above. A 404 beats a nil handler if that ever stops being true.
+// Handler's own Announce hook — perplexity's Sonar sunset date, in-tree — runs
+// once here, at construction, through deps.Logger. It is a property of the
+// simulated API rather than of any request, so it belongs in the startup log
+// and not in per-request noise. A process serving several scenarios announces
+// it once per scenario, each line carrying that scenario's name, because each
+// scenario is a distinct simulated API and one line would be silent about the
+// rest.
+func (s *Server) newProviderHandler(name provider.Name, deps provider.Deps) http.Handler {
+	p, ok := s.cfg.Set.Lookup(name)
+	if !ok {
+		// Unreachable: newSurfaces builds a surface only for names
+		// s.cfg.Listener resolves, which come from the same Set. A 404 beats
+		// a nil handler if that ever stops being true.
 		return http.NotFoundHandler()
 	}
+	return p.Handler(deps)
 }
 
 // scenarioRouter dispatches a request to the handler stack of the scenario its
@@ -254,7 +240,7 @@ func (s *Server) refusalHandler(name provider.Name, reason string) http.Handler 
 	// is raised before any request has resolved a scenario at all; Refuse
 	// still fills Status from Kind (404) and renders the vendor's own shape.
 	var body []byte
-	if p, ok := referenceProfiles().Lookup(name); ok {
+	if p, ok := s.cfg.Set.Lookup(name); ok {
 		body = p.Refuse(provider.Refusal{Kind: provider.RefuseScenarioUnknown})
 	}
 	served := strings.Join(s.ScenarioNames(), ", ")
@@ -279,20 +265,6 @@ func (s *Server) refusalHandler(name provider.Name, reason string) http.Handler 
 				Label:  string(name) + "." + CodeScenarioUnknown,
 			}
 		})
-}
-
-// referenceProfiles builds the four in-tree profiles' registration record,
-// so refusalHandler can ask a Profile for its own refusal body instead of
-// internal/server hand-building one per vendor.
-//
-// It is built fresh where it is used (newSurfaces calls it once per Server,
-// through refusalHandler, at startup — never per request) rather than held
-// in a package-level var: composing it from configuration instead of the
-// four names unconditionally is Phase 10 unit 3 territory, and this unit's
-// server change stays minimal by not introducing new process-lifetime state
-// ahead of that rewiring.
-func referenceProfiles() *provider.Set {
-	return provider.MustSet(exa.Profile(), tavily.Profile(), perplexity.Profile(), mcp.Profile())
 }
 
 // lanePrefixes reads the optional /x/<scenario> and /n/<namespace> path

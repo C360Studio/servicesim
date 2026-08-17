@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
@@ -128,7 +127,7 @@ func newHandler(t *testing.T, src string, ring *journal.Ring) http.Handler {
 		require.NotEqual(t, scenario.SeverityError, f.Severity, "the fixture must validate before it is served: %+v", f)
 	}
 
-	deps := provider.Deps{Scenario: loaded, Faults: faults.New(loaded, Routes())}
+	deps := provider.Deps{Scenario: loaded, Faults: provider.MustSet(Profile()).Faults(loaded)}
 	if ring != nil {
 		deps.Journal = ring
 	}

@@ -9,10 +9,11 @@
 // semantics and nothing else. Two responsibilities are here rather than where
 // they might first be looked for, and both placements are forced:
 //
-//   - Fault EXECUTION is here, in fault_exec.go, while fault SELECTION is in
-//     internal/faults. Handle is the only caller of execution and internal/faults
-//     imports this package, so an execution call edge out of provider would close
-//     an import cycle that does not compile. See §2.5 of the package design.
+//   - Fault EXECUTION (fault_exec.go) and fault SELECTION (fault_engine.go) are
+//     both here, as one engine, because selection needs the Set's own routes: an
+//     engine built from anything less could silently serve a clean 200 where the
+//     scenario scripted a fault for a route it did not know about. Handle is the
+//     only caller of execution. See §2.5 of the package design.
 //   - Mux construction is here, in mux.go, rather than being written once per
 //     provider package. The registration shape is load-bearing — a mux without a
 //     method-less pattern per known path answers GET /search with 404 instead of

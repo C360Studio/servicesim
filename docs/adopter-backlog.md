@@ -1016,6 +1016,101 @@ is theirs (D12); Servicesim does not unblock it.
   the three provider packages share") and `internal/redact/redact.go`'s `substringCredentialFragments` ("checked
   against the three providers' documented field names"). Not wire facts, no guard depends on them, and unit 3's
   sweep excluded Go outside `examples/` — a one-line tidy for the next unit that touches either file.
+- **Phase 10 unit 3: `internal/config`/`internal/server` derived from `*provider.Set`; the root `servicesim`
+  composition package; `cmd/servicesim` a thin wrapper.** `internal/config`'s ten hand-maintained enumeration
+  sites (AUDIT 2 #1–#10) collapsed to `Config.Listeners map[provider.Name]*Listener` + registration `order`,
+  one loop over `set.All()` registering each profile's own port flag (for example `-exa-port`) and its
+  `SERVICESIM_<NAME>_PORT` binding, and `Config.Listener(name)` as
+  the one fail-closed lookup; `internal/server`'s two four-arm switches (`newSurfaces`, `newProviderHandler`) are
+  `cfg.Listener(name)` and `set.Lookup(name).Handler(deps)`. `internal/config` and `internal/server` import no
+  `provider/{exa,tavily,perplexity,mcp}` package (`go list -f '{{.Imports}}'`, gated in CI). Three new mode
+  flags — `--print-routes`, `--print-ports`, `--print-hosts` — print from `Set.Routes()`/the resolved
+  `Listeners` map/`Set.LiveHosts()` and exit 0; they are what generates the Dockerfile's `EXPOSE` list,
+  `docker-compose.example.yml`'s port map, and what `scripts/check-docs.sh` §3/§6 and
+  `scripts/lint-no-live-hosts.sh` now read instead of a `provider/*/*.go` glob and a hand-edited hostname regex
+  (the union pattern still keeps a hand-kept base list — `api.openai.com` among them — so a vendor host is
+  guarded before any profile for it exists, per house rule 3's own reasoning in the proposal). The root package
+  `github.com/c360studio/servicesim` is new: `Build{Program, Version, Commit, BuiltAt}`, `Main(b, set) int`,
+  `Run(ctx, b, set, args, lookupEnv, stdout, stderr) int` — today's `cmd/servicesim.run`/`usage`/`versionText`/
+  `healthcheck`/`serve`/`usageExitCode` moved verbatim and parameterised by `Build` and `*provider.Set`, with
+  every literal `"servicesim"` in usage/help/error text replaced by `Build.Program` and the help banner built
+  from the set's own `Title`/`Summary` fields rather than naming a vendor. `Version`/`GitCommit`/`BuildTime` move
+  from `cmd/servicesim` to the root package; every build's `-X main.Version=…` linker flag in `Dockerfile`, `Taskfile.yml`
+  and `.github/workflows/ci.yml` becomes `-X github.com/c360studio/servicesim.Version=…` (`GitCommit`/`BuildTime`
+  likewise) — including the `image` CI job's `docker/build-push-action` step, which previously built with no
+  `VERSION`/`COMMIT_SHA` build-args at all and would otherwise have shipped `servicesim:ci` reporting the
+  unstamped `"dev"` default; `scripts/image-smoke.sh` now asserts `--version` does not report `dev` against the
+  running image, which is what surfaced that gap. `cmd/servicesim/main.go` is now nineteen lines: it registers
+  `exa.Profile()`, `tavily.Profile()`, `perplexity.Profile()`, `mcp.Profile()` into one `provider.MustSet(...)`
+  and calls `servicesim.Main`. `internal/faults` is deleted (unit 1b): `provider/fault_engine.go` — the copy
+  `(*Set).Faults` had to use in unit 2, since `internal/faults` imports `provider` — is now the only fault
+  engine; its 28 tests moved into `provider/fault_engine_test.go` with no drop in count, and
+  `testkit.NewFaults` becomes a wrapper over the four reference `Profile()`s and `set.Faults`. A new startup
+  finding, `scenario.profile.unscripted`, warns once per registered-and-enabled profile whose scenario declares
+  no block for any of its entry kinds, so a profile with nothing scripted answers with a diagnosed empty
+  response instead of a silent one. Proved end to end by an out-of-module consumer under `scratchpad/u3-consumer/`
+  (own `go.mod` + `replace`): a fifteen-line `acme` profile (a POST route at `/v1/answer`, port 8090,
+  `DefaultAuth: optional`) plus `exa.Profile()`/`tavily.Profile()` composed via `provider.MustSet` and served
+  through `servicesim.Main(servicesim.Build{Program: "acmesim"}, set)` — the help banner, `--print-routes` and
+  `--print-ports` all named `acmesim`/`acme` correctly, byte-identical 200s across `/`, `/n/<ns>/` and
+  `/x/<scenario>/n/<ns>/`, wrong path/method/scenario in acme's own shape, a scripted `429` then `200` with no
+  `fault.unknown_key`, a redacted bearer in `/__admin/requests`, and `go list -f '{{.Imports}}'` showing no
+  `servicesim/internal` — not carried into the repository. **After this unit a consumer composes their own
+  binary and image**; `testkit` still imports a profile package and `--print-routes`/`--print-ports` compose an
+  ad hoc `[]provider.Route`/`portRow` shape rather than reusing one type across the two, both unit 4's and later
+  units' territory, not regressions.
+- **Phase 10 unit 3, review-and-fix round (post-implementation, same unit):** an out-of-tree-consumer review
+  raised 20 findings; verified against the tree and fixed where in scope. Fixed: the config-error message for a
+  stray positional argument no longer names "servicesim" in its body (`internal/config/config.go`, was
+  `"...: servicesim takes flags only"`, now `"...: only flags are accepted"` — Run's prefix already used
+  `Build.Program`, only the body was a leftover literal); `serve`'s `server.starting` log now defaults an empty
+  `Build.Commit` to `"unknown"` the same way `--version` does (`servicesim.go`, new `stampedOrDefault` helper
+  shared by both), so the two no longer give different answers to "which build is this" from one `Build`; a
+  each profile's per-name port flag usage text now says "(0 for an ephemeral port)", matching the admin port
+  flag's existing wording; the print-routes/print-ports flags' usage text now says "every **registered**
+  route/listener" so
+  `--providers` not filtering their output is documented, not just implemented; `--print-ports`' usage text now
+  says it reports the *configured* port, not the bound one. `scripts/lint-no-live-hosts.sh`'s `SEARCH_PATHS`
+  never covered the repo-root Go package (`servicesim.go`, `doc.go`, `servicesim_test.go` — the exact file a
+  consumer's own `main.go` is written by reading) since it predated any Go source living at the repo root; fixed
+  by scanning `./*.go` alongside the existing directories (verified: planting a live host in `servicesim.go` now
+  fails the guard where it silently passed before; the fix required marking one pre-existing legitimate
+  `api.exa.ai` assertion in `TestPrintHostsListsEveryRegisteredHostSortedAndDeduplicated` with
+  `servicesim:allow-live-host`). Three `provider` package doc comments (`profile.go`, `doc.go`, `provider.go`)
+  still described fault selection as living in the now-deleted `internal/faults`, contradicting
+  `fault_engine.go`'s own (correct) doc comment in the same package; reworded to name `fault_engine.go`/
+  `newSetFaultEngine` as where selection now lives. Test-quality fixes (each was a mutation the existing suite did
+  not catch, verified in a throwaway rsync copy, not the working tree): `TestPrintRoutesListsEveryRegisteredRoute`
+  and `TestPrintPortsListsEveryRegisteredListenerAsJSON` moved from `require.Contains` spot checks to an exact
+  comparison against a golden built from `referenceSet(t)` — this is what pins registration order, the
+  within-profile pattern sort, no duplicate lines, and (for ports) the fallback where an empty
+  `Profile.DefaultAuth` resolves to `"required"`, which `docker-compose.example.yml`'s `<NAME>_API_KEY`
+  generation depends on; `testBuild()`'s
+  `Build.Program` changed from the literal `"servicesim"` to `"testsim"` (with `TestConfigurationErrorsExitTwo`
+  and `TestVersionReportsDefaultsForAnUnstampedBuild` now asserting the output actually starts with/contains that
+  name) because a test Build using the real product name cannot tell a correctly-parameterised `Program` from a
+  regression back to a hard-coded literal in `Run`'s error prefix, its help-flag hint, or `versionText`;
+  `TestBuildFilesInjectOnlyDeclaredVariables`'s `declared` map now holds pointers to the real `Version`/
+  `GitCommit`/`BuildTime` package vars instead of a hand-kept name list, so a future move of those vars out of
+  this package is a compile error in this test file rather than a silently-still-passing assertion (previously
+  only `scripts/image-smoke.sh`'s built-image `--version` check would have caught that regression, one release
+  stage later than necessary); `TestUnscriptedProfileIsWarnedOnce` (`internal/server/server_test.go`) gained
+  explicit `NotContains` assertions naming `providers.perplexity`/`providers.mcp`, so "the warning fires only for
+  a registered-and-*enabled* profile" is asserted directly rather than following incidentally from a bare
+  finding-count check. Not fixed, recorded for the owner: `--strict-auth=false` relaxes only scenario entries
+  already present in the loaded scenario (`relaxAuth` ranges `s.Providers.Names()`, the scenario's own entries) —
+  a profile with *no* block at all (the exact "unscripted" case this unit's new warning diagnoses) still 401s
+  under `--strict-auth=false`, because `Exchange.AuthPolicy`'s fallback to `Profile.DefaultAuth` never sees
+  `relaxAuth`'s effect. Verified pre-existing (the unit-3-built binary and a pre-Phase-10 build of `main` both
+  401 an unscripted `exa` under `--strict-auth=false`), not a regression, and a real design choice between two
+  readings of what `--strict-auth=false` promises — an architect/owner call, not this unit's to make silently.
+  Also not fixed, deferred to unit 9 per the review's own recommendation: no in-tree test composes a
+  non-reference-shaped profile (foreign port-0 listener, a `GET` route, `DefaultAuth: required` where the
+  reference profiles default to empty) through `servicesim.Main`/`Run`, so a regression specific to that shape is
+  provable only by the out-of-module `scratchpad/u3-consumer/` proof, which is not part of CI; and no test in
+  `internal/server` pins the max-namespaces flag's admission refusal in the profile's own error shape (today
+  covered only by `provider` package unit tests) — both optional follow-ups the review itself flagged as fine to
+  wait.
 - **Follow-up surfaced by unit 2's review (shared pipeline, not MCP-specific), closed by Phase 10 unit 0:**
   `provider/handle.go` used to read the memoised fault decision (`x.decision`) after the handler returns
   regardless of `Response.FaultEligible`, so "validation has the last word" held only by the convention that

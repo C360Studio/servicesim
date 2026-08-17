@@ -178,23 +178,16 @@ claim_count=$((claim_count + builtins_checked))
 # 3. Routes
 # ---------------------------------------------------------------------------
 #
-# Provider patterns are read from the handler files that define Routes(); admin
-# routes from the route(mux, ...) registrations. This is a grep for the literal,
-# not proof the handler is reachable — an integration test proves that.
-
-# Every non-test file of a provider package, not just handler.go: a provider
-# large enough to split its routes across files (exa's async surface lives in
-# agentrun_handler.go) would otherwise have those routes read as unregistered,
-# and the contracts check below would report a true row in the index table as a
-# false one. Test files are excluded because their fixture patterns are not
-# registrations.
+# Provider patterns come from the built binary's own --print-routes (Phase 10
+# unit 3, docs/proposals/framework-seam.md: "servicesim --print-routes driven
+# by set.Routes() — works against a consumer's binary too"), not a
+# provider/*/*.go glob: a route only counts once it is actually registered in
+# a provider.Set, which is what the binary composes and this check now reads
+# instead of re-deriving. Admin routes still come from the route(mux, ...)
+# registrations below. This is a grep for the literal, not proof the handler
+# is reachable — an integration test proves that.
 known_provider_routes="$tmp/known_provider_routes"
-{
-	for f in provider/*/*.go; do
-		case "$f" in *_test.go) continue ;; esac
-		grep -hoE '"(HEAD|GET|POST|PUT|PATCH|DELETE) /[^"]*"' "$f" 2>/dev/null || true
-	done
-} | tr -d '"' | sort -u >"$known_provider_routes"
+"$bin" --print-routes 2>/dev/null | sort -u >"$known_provider_routes"
 require_nonempty "$known_provider_routes" "registered provider routes"
 
 known_routes="$tmp/known_routes"

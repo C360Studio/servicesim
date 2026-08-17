@@ -48,9 +48,9 @@ ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
     -ldflags="-w -s \
-      -X main.Version=${VERSION} \
-      -X main.GitCommit=${COMMIT_SHA} \
-      -X main.BuildTime=${BUILD_DATE}" \
+      -X github.com/c360studio/servicesim.Version=${VERSION} \
+      -X github.com/c360studio/servicesim.GitCommit=${COMMIT_SHA} \
+      -X github.com/c360studio/servicesim.BuildTime=${BUILD_DATE}" \
     -o /build/servicesim \
     ./cmd/servicesim
 
@@ -77,6 +77,8 @@ COPY --from=builder /build/scenarios /scenarios
 USER 65532:65532
 
 # Admin (health, readiness, journal), then one listener per provider.
+# Values are static — regenerate by comparing against
+# `bin/servicesim --print-ports` (admin is always 8080; ours has not moved).
 EXPOSE 8080 8081 8082 8083 8084
 
 # The container binds all interfaces; local development defaults to loopback.

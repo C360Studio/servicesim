@@ -997,3 +997,48 @@ func findingMessage(t *testing.T, findings []journal.Finding, code string) strin
 	t.Fatalf("no finding with code %q", code)
 	return ""
 }
+
+// TestValidatorlessProfileClaimsItsOwnEntryKind pins the fix unit 3's review
+// asked for: the simplest foreign profile — no Validators at all — still owns
+// the scenario entry kind named after it, so a scripted block for it is
+// neither "unimplemented" (ValidateScenario) nor invisible to Set.Validators /
+// Set.EntryKinds, and a second profile of a DIFFERENT kind claiming that same
+// name is still refused at registration.
+func TestValidatorlessProfileClaimsItsOwnEntryKind(t *testing.T) {
+	t.Parallel()
+
+	set, err := NewSet(acmeProfile(okHandler(`{}`)))
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"acme"}, set.EntryKinds())
+	vs := set.Validators()
+	require.Contains(t, vs, "acme")
+	require.NotNil(t, vs["acme"], "the claim must be a real (no-op) validator: ValidateScenario treats nil as unimplemented")
+	require.Contains(t, set.Validators("acme"), "acme")
+
+	sc, report, err := scenario.Parse([]byte(`
+version: 1
+name: acme-scripted
+providers:
+  acme:
+    fault:
+      attempts:
+        - {status: 429}
+        - {}
+`))
+	require.NoError(t, err)
+	require.True(t, report.OK(), "%v", report.Findings)
+	for _, f := range ValidateScenario(sc, set.Validators()) {
+		require.NotEqual(t, CodeProviderUnimplemented, f.Code,
+			"a scripted acme block must not read as unimplemented: %v", f)
+	}
+
+	// The claim is a claim: another kind may not take the same entry name.
+	other := acmeProfile(okHandler(`{}`))
+	other.Name = "acme-two"
+	other.Port = 0
+	other.Validators = map[string]Validator{"acme": noopValidator{}}
+	_, err = NewSet(acmeProfile(okHandler(`{}`)), other)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `entry kind "acme"`)
+}

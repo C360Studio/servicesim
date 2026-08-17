@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/contracts"
-	"github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
@@ -314,7 +313,7 @@ providers:
 
 	handler := New(provider.Deps{
 		Scenario: loaded,
-		Faults:   faults.New(loaded, Routes()),
+		Faults:   provider.MustSet(Profile()).Faults(loaded),
 	})
 
 	for i := 0; i < 2; i++ {
@@ -359,7 +358,7 @@ providers:
 
 	handler := New(provider.Deps{
 		Scenario: loaded,
-		Faults:   faults.New(loaded, Routes()),
+		Faults:   provider.MustSet(Profile()).Faults(loaded),
 	})
 
 	first := post(t, handler, "/search", `{"query":"report a"}`, bearer)
@@ -373,7 +372,7 @@ providers:
 }
 
 // TestOversizedBodyFaultServesTheDocumentedEnvelope proves the real seam
-// (Parse → faults.New → Handle) that TestFaultBodyGoldenWire's unit-level
+// (Parse → Set.Faults → Handle) that TestFaultBodyGoldenWire's unit-level
 // call cannot: an oversized_body attempt with a status override pads this
 // surface's documented error envelope, not the scenario's search body. This
 // is the property that a stale `EffectiveKind() != FaultStatus` guard in
@@ -406,7 +405,7 @@ providers:
 
 	handler := New(provider.Deps{
 		Scenario: loaded,
-		Faults:   faults.New(loaded, Routes()),
+		Faults:   provider.MustSet(Profile()).Faults(loaded),
 	})
 
 	rec := post(t, handler, "/search", `{"query":"report a"}`, bearer)

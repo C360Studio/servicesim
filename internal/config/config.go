@@ -31,18 +31,6 @@ const (
 
 	// DefaultAdminPort is the admin surface: health, readiness and the journal.
 	DefaultAdminPort = 8080
-	// DefaultExaPort is the Exa listener.
-	DefaultExaPort = 8081
-	// DefaultTavilyPort is the Tavily listener.
-	DefaultTavilyPort = 8082
-	// DefaultPerplexityPort is the Perplexity listener.
-	DefaultPerplexityPort = 8083
-	// DefaultMCPPort is the MCP listener.
-	DefaultMCPPort = 8084
-
-	// DefaultProviders enables every simulated provider. The order is the stable
-	// order [Config.Enabled] reports.
-	DefaultProviders = "exa,tavily,perplexity,mcp"
 
 	// DefaultJournalCapacity bounds retained journal entries. Zero disables
 	// retention.
@@ -99,11 +87,28 @@ const (
 	LogFormatText = "text"
 )
 
-// allProviders lists every simulated provider in the order [Config.Enabled]
-// reports and the order listeners bind. It is a slice rather than a map because
-// a map range would make listener startup order — and any message that lists
-// providers — differ between runs.
-var allProviders = []provider.Name{provider.Exa, provider.Tavily, provider.Perplexity, provider.MCP}
+// defaultProvidersString joins set's registered names in registration order,
+// comma-separated: the --providers flag's default value, and what an unknown
+// name's error names as "this build simulates …". It is a function, not a
+// package-level slice, for the same reason [Config.order] is one: a Set is
+// the composition root's own value, never a package-level default the four
+// reference profiles would otherwise force on this package.
+func defaultProvidersString(set *provider.Set) string {
+	names := set.Names()
+	out := make([]string, len(names))
+	for i, name := range names {
+		out[i] = string(name)
+	}
+	return strings.Join(out, ",")
+}
+
+// portEnvName derives the SERVICESIM_<NAME>_PORT environment variable for a
+// registered profile name: upper-cased, with '-' folded to '_' since an
+// environment variable name may not contain a hyphen even though
+// [provider.Profile.Name] may (see validProfileName in provider/profile.go).
+func portEnvName(name provider.Name) string {
+	return "SERVICESIM_" + strings.ToUpper(strings.ReplaceAll(string(name), "-", "_")) + "_PORT"
+}
 
 // Listener is one bound HTTP surface.
 type Listener struct {
@@ -126,14 +131,28 @@ type Config struct {
 	// the journal are how a consumer observes the simulator.
 	Admin Listener
 
-	// Exa is the Exa listener.
-	Exa Listener
-	// Tavily is the Tavily listener.
-	Tavily Listener
-	// Perplexity is the Perplexity listener.
-	Perplexity Listener
-	// MCP is the MCP listener.
-	MCP Listener
+	// Set is the profile registry this Config was resolved against. It is
+	// never nil after a successful [Load]: internal/server derives every
+	// listener, handler, route and validator from it rather than importing a
+	// profile package itself (Phase 10 unit 3, "internal/config and
+	// internal/server import NO profile package").
+	Set *provider.Set
+
+	// Listeners holds one resolved [Listener] per profile in Set, keyed by
+	// name. It replaces the four Exa/Tavily/Perplexity/MCP struct fields this
+	// type used to carry by name: ten hand-maintained enumeration sites
+	// (docs/proposals/framework-seam.md, config #1-#10) collapse to one loop
+	// over Set.All() in [newFlagSet] and one lookup here. [Config.Listener]
+	// reports a miss as ok=false, which is the fail-closed hook
+	// [Config.enable] relies on too.
+	Listeners map[provider.Name]*Listener
+
+	// order is Set's registration order, captured once at [Load] so
+	// [Config.Enabled] and [Config.validate] never have to ask Set again —
+	// and never range over Listeners, which CLAUDE.md house rule 2 forbids:
+	// a map range would make listener startup order, and any message that
+	// lists providers, differ between runs.
+	order []provider.Name
 
 	// ScenarioPath is the scenario to load. A "builtin:" prefix selects an
 	// embedded protocol scenario, for example "builtin:happy". It is empty in
@@ -207,6 +226,28 @@ type Config struct {
 
 	// ShowVersion prints version information and exits.
 	ShowVersion bool
+
+	// PrintRoutes prints one "METHOD /path" per line, drawn from
+	// [provider.Set.Routes] in the set's own stable order (registration then
+	// pattern), and exits. It is a process mode, not configuration, and
+	// works against any composed Set — a consumer's own binary included —
+	// which is what lets scripts/check-docs.sh and image-smoke.sh query a
+	// binary instead of globbing provider/*/*.go.
+	PrintRoutes bool
+
+	// PrintPorts prints a JSON array of {name, port, default_auth} in
+	// registration order — one object per entry in [Config.Listeners],
+	// naming the RESOLVED port (after flags and environment, not the
+	// profile's own default) — and exits. It is what generates the
+	// Dockerfile's EXPOSE list and docker-compose.example.yml's port map
+	// and credential rows instead of hand-copying them.
+	PrintPorts bool
+
+	// PrintHosts prints one host per line, drawn from
+	// [provider.Set.LiveHosts] sorted and deduplicated, and exits. It is
+	// what scripts/lint-no-live-hosts.sh unions with its own hand-kept base
+	// list, so a profile's Hosts travel into the guard automatically.
+	PrintHosts bool
 }
 
 // binding pairs a flag name with the environment variable that supplies its
@@ -218,18 +259,17 @@ type binding struct {
 	env  string
 }
 
-// bindings is the flag-to-environment table. It is the single source of the
-// mapping documented in docs/design/package-design.md §2.7.
+// bindings is the flag-to-environment table for every flag whose name does
+// not depend on the registered Set. [portBindings] adds the one
+// per-profile binding — <name>-port / SERVICESIM_<NAME>_PORT — that this
+// table cannot list statically. It is the single source of the mapping
+// documented in docs/design/package-design.md §2.7.
 var bindings = []binding{
 	{"scenario", "SERVICESIM_SCENARIO"},
 	{"scenario-root", "SERVICESIM_SCENARIO_ROOT"},
 	{"scenario-dir", "SERVICESIM_SCENARIO_DIR"},
 	{"bind-address", "SERVICESIM_BIND_ADDRESS"},
 	{"admin-port", "SERVICESIM_ADMIN_PORT"},
-	{"exa-port", "SERVICESIM_EXA_PORT"},
-	{"tavily-port", "SERVICESIM_TAVILY_PORT"},
-	{"perplexity-port", "SERVICESIM_PERPLEXITY_PORT"},
-	{"mcp-port", "SERVICESIM_MCP_PORT"},
 	{"providers", "SERVICESIM_PROVIDERS"},
 	{"max-namespaces", "SERVICESIM_MAX_NAMESPACES"},
 	{"max-jobs", "SERVICESIM_MAX_JOBS"},
@@ -243,6 +283,19 @@ var bindings = []binding{
 	{"strict-auth", "SERVICESIM_STRICT_AUTH"},
 }
 
+// portBindings returns the <name>-port / SERVICESIM_<NAME>_PORT binding for
+// every profile in set, in registration order. It is a function rather than
+// a table entry per name because the name set is a runtime value (the
+// registered Set), not a compile-time list of four vendors.
+func portBindings(set *provider.Set) []binding {
+	names := set.Names()
+	out := make([]binding, len(names))
+	for i, name := range names {
+		out[i] = binding{flag: string(name) + "-port", env: portEnvName(name)}
+	}
+	return out
+}
+
 // raw holds the flag targets. Keeping them in one struct means register, parse
 // and assemble cannot drift apart into three lists that disagree.
 type raw struct {
@@ -251,10 +304,7 @@ type raw struct {
 	scenarioDir         string
 	bindAddress         string
 	adminPort           int
-	exaPort             int
-	tavilyPort          int
-	perplexityPort      int
-	mcpPort             int
+	ports               map[provider.Name]*int
 	providers           string
 	maxNamespaces       int
 	maxJobs             int
@@ -268,12 +318,22 @@ type raw struct {
 	strictAuth          bool
 	healthcheck         bool
 	showVersion         bool
+	printRoutes         bool
+	printPorts          bool
+	printHosts          bool
 }
 
 // newFlagSet registers every flag against r and returns the set. Output is
-// discarded rather than written to stderr so that [Load] is hermetic: the caller
-// decides what a parse failure looks like, and [Usage] supplies the help text.
-func newFlagSet(r *raw) *flag.FlagSet {
+// discarded rather than written to stderr so that [Load] is hermetic: the
+// caller decides what a parse failure looks like, and [Usage] supplies the
+// help text.
+//
+// The port flags are the one registration loop that cannot be written
+// statically: [set.All] supplies each profile's Name (the flag name and the
+// journal's "provider" field), Title (the usage string) and Port (the
+// default — zero asks the OS), in registration order — never a map range,
+// for the same reason [Config.order] exists.
+func newFlagSet(r *raw, set *provider.Set) *flag.FlagSet {
 	flags := flag.NewFlagSet("servicesim", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 
@@ -287,11 +347,16 @@ func newFlagSet(r *raw) *flag.FlagSet {
 		"interface every listener binds")
 	flags.IntVar(&r.adminPort, "admin-port", DefaultAdminPort,
 		"admin listener port: /healthz, /readyz, /__admin (0 for an ephemeral port)")
-	flags.IntVar(&r.exaPort, "exa-port", DefaultExaPort, "Exa listener port")
-	flags.IntVar(&r.tavilyPort, "tavily-port", DefaultTavilyPort, "Tavily listener port")
-	flags.IntVar(&r.perplexityPort, "perplexity-port", DefaultPerplexityPort, "Perplexity listener port")
-	flags.IntVar(&r.mcpPort, "mcp-port", DefaultMCPPort, "MCP listener port")
-	flags.StringVar(&r.providers, "providers", DefaultProviders,
+
+	profiles := set.All()
+	r.ports = make(map[provider.Name]*int, len(profiles))
+	for _, p := range profiles {
+		port := new(int)
+		r.ports[p.Name] = port
+		flags.IntVar(port, string(p.Name)+"-port", p.Port, p.Title+" listener port (0 for an ephemeral port)")
+	}
+
+	flags.StringVar(&r.providers, "providers", defaultProvidersString(set),
 		"comma-separated providers to serve")
 	flags.IntVar(&r.maxNamespaces, "max-namespaces", DefaultMaxNamespaces,
 		"maximum number of live namespaces")
@@ -314,25 +379,36 @@ func newFlagSet(r *raw) *flag.FlagSet {
 	flags.BoolVar(&r.healthcheck, "healthcheck", false,
 		"probe a running instance's admin health endpoint and exit")
 	flags.BoolVar(&r.showVersion, "version", false, "print version information and exit")
+	flags.BoolVar(&r.printRoutes, "print-routes", false,
+		"print every registered route (not only the --providers subset this invocation enabled), "+
+			"one \"METHOD /path\" per line, and exit")
+	flags.BoolVar(&r.printPorts, "print-ports", false,
+		"print every registered listener's configured port (not its bound port; 0 means the OS assigns one at "+
+			"bind time) as a JSON array of {name, port, default_auth}, and exit")
+	flags.BoolVar(&r.printHosts, "print-hosts", false,
+		"print every registered profile's live hostnames, one per line, and exit")
 
 	return flags
 }
 
-// Usage returns the flag help text. [Load] discards the flag package's own
-// output so that it writes nothing anywhere; cmd/servicesim prints this instead
-// when parsing returns [flag.ErrHelp].
-func Usage() string {
+// Usage returns the flag help text for set. [Load] discards the flag
+// package's own output so that it writes nothing anywhere; cmd/servicesim
+// prints this instead when parsing returns [flag.ErrHelp].
+func Usage(set *provider.Set) string {
 	var r raw
-	flags := newFlagSet(&r)
+	flags := newFlagSet(&r, set)
 	var b strings.Builder
 	flags.SetOutput(&b)
 	flags.PrintDefaults()
 	return b.String()
 }
 
-// Load resolves configuration from args and an environment lookup. lookupEnv is
-// injected rather than calling os.Getenv so config tests are hermetic and can run
-// in parallel without t.Setenv serialising them; cmd/servicesim passes
+// Load resolves configuration from a registered profile Set, args and an
+// environment lookup. set must not be nil: it is the ONLY source of which
+// providers this build knows how to serve, so every listener, port flag and
+// --providers name in the returned Config traces back to it. lookupEnv is
+// injected rather than calling os.Getenv so config tests are hermetic and can
+// run in parallel without t.Setenv serialising them; cmd/servicesim passes
 // os.LookupEnv. A nil lookupEnv reads no environment at all.
 //
 // Precedence is explicit flag > environment variable > built-in default. Because
@@ -356,13 +432,16 @@ func Usage() string {
 // rather than a precedence rule nobody would remember.
 //
 // A --help request returns [flag.ErrHelp] unwrapped, so errors.Is identifies it.
-func Load(args []string, lookupEnv func(string) (string, bool)) (Config, error) {
+func Load(set *provider.Set, args []string, lookupEnv func(string) (string, bool)) (Config, error) {
+	if set == nil {
+		return Config{}, errors.New("config: Load: set must not be nil")
+	}
 	if lookupEnv == nil {
 		lookupEnv = func(string) (string, bool) { return "", false }
 	}
 
 	var r raw
-	flags := newFlagSet(&r)
+	flags := newFlagSet(&r, set)
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -371,7 +450,7 @@ func Load(args []string, lookupEnv func(string) (string, bool)) (Config, error) 
 		return Config{}, fmt.Errorf("parsing flags: %w", err)
 	}
 	if flags.NArg() > 0 {
-		return Config{}, fmt.Errorf("unexpected argument %q: servicesim takes flags only", flags.Arg(0))
+		return Config{}, fmt.Errorf("unexpected argument %q: only flags are accepted", flags.Arg(0))
 	}
 
 	// provided records the names the operator supplied by either mechanism,
@@ -381,7 +460,8 @@ func Load(args []string, lookupEnv func(string) (string, bool)) (Config, error) 
 	provided := make(map[string]bool, flags.NFlag())
 	flags.Visit(func(f *flag.Flag) { provided[f.Name] = true })
 
-	for _, b := range bindings {
+	all := append(append([]binding{}, bindings...), portBindings(set)...)
+	for _, b := range all {
 		if provided[b.flag] {
 			continue
 		}
@@ -397,21 +477,26 @@ func Load(args []string, lookupEnv func(string) (string, bool)) (Config, error) 
 		provided[b.flag] = true
 	}
 
-	return assemble(r, provided)
+	return assemble(set, r, provided)
 }
 
 // assemble converts parsed values into a validated Config. It is separate from
 // [Load] so the flag plumbing and the semantics can be read one at a time.
 // provided names the flags the operator supplied, by flag or by environment
 // variable; it is empty for a caller that supplied nothing.
-func assemble(r raw, provided map[string]bool) (Config, error) {
+func assemble(set *provider.Set, r raw, provided map[string]bool) (Config, error) {
+	names := set.Names()
+	listeners := make(map[provider.Name]*Listener, len(names))
+	for _, name := range names {
+		listeners[name] = &Listener{Port: *r.ports[name]}
+	}
+
 	cfg := Config{
 		BindAddress:         strings.TrimSpace(r.bindAddress),
 		Admin:               Listener{Port: r.adminPort, Enabled: true},
-		Exa:                 Listener{Port: r.exaPort},
-		Tavily:              Listener{Port: r.tavilyPort},
-		Perplexity:          Listener{Port: r.perplexityPort},
-		MCP:                 Listener{Port: r.mcpPort},
+		Set:                 set,
+		Listeners:           listeners,
+		order:               names,
 		ScenarioPath:        strings.TrimSpace(r.scenario),
 		ScenarioRoot:        strings.TrimSpace(r.scenarioRoot),
 		ScenarioDir:         strings.TrimSpace(r.scenarioDir),
@@ -426,6 +511,9 @@ func assemble(r raw, provided map[string]bool) (Config, error) {
 		StrictAuth:          r.strictAuth,
 		Healthcheck:         r.healthcheck,
 		ShowVersion:         r.showVersion,
+		PrintRoutes:         r.printRoutes,
+		PrintPorts:          r.printPorts,
+		PrintHosts:          r.printHosts,
 	}
 
 	if err := cfg.enable(r.providers); err != nil {
@@ -463,10 +551,10 @@ func (c *Config) enable(spec string) error {
 		if name == "" {
 			continue
 		}
-		listener := c.listener(provider.Name(name))
-		if listener == nil {
+		listener, ok := c.Listeners[provider.Name(name)]
+		if !ok {
 			return fmt.Errorf("--providers: unknown provider %q; this build simulates %s",
-				name, DefaultProviders)
+				name, defaultProvidersString(c.Set))
 		}
 		listener.Enabled = true
 	}
@@ -535,24 +623,39 @@ func (c *Config) normalizeScenario() error {
 
 // validate rejects every value that would fail later as a panic, a silent
 // rejection of all traffic, or an exposure the operator did not ask for.
+//
+// Every listener's port is range-checked, enabled or not — an operator who
+// mistypes a disabled listener's port should not have to enable it first to
+// find out. Duplicate ports are checked only across the admin listener and
+// the ENABLED provider listeners, because those are the only ones that
+// actually bind: two disabled listeners sharing a port bind nothing and
+// collide with nothing, and port 0 (ask the OS for an ephemeral one) is
+// never a collision no matter how many listeners ask for it.
 func (c Config) validate() error {
 	if c.BindAddress == "" {
 		return errors.New("--bind-address: must not be empty; use 0.0.0.0 to bind every interface")
 	}
-	ports := []struct {
-		flag string
-		port int
-	}{
-		{"--admin-port", c.Admin.Port},
-		{"--exa-port", c.Exa.Port},
-		{"--tavily-port", c.Tavily.Port},
-		{"--perplexity-port", c.Perplexity.Port},
-		{"--mcp-port", c.MCP.Port},
+	if c.Admin.Port < 0 || c.Admin.Port > 65535 {
+		return fmt.Errorf("--admin-port: must be between 0 and 65535, got %d", c.Admin.Port)
 	}
-	for _, p := range ports {
-		if p.port < 0 || p.port > 65535 {
-			return fmt.Errorf("%s: must be between 0 and 65535, got %d", p.flag, p.port)
+
+	claimed := map[int]string{}
+	if c.Admin.Port != 0 {
+		claimed[c.Admin.Port] = "--admin-port"
+	}
+	for _, name := range c.order {
+		l := c.Listeners[name]
+		flagName := "--" + string(name) + "-port"
+		if l.Port < 0 || l.Port > 65535 {
+			return fmt.Errorf("%s: must be between 0 and 65535, got %d", flagName, l.Port)
 		}
+		if !l.Enabled || l.Port == 0 {
+			continue
+		}
+		if other, dup := claimed[l.Port]; dup {
+			return fmt.Errorf("%s and %s both bind port %d", other, flagName, l.Port)
+		}
+		claimed[l.Port] = flagName
 	}
 
 	// Zero is rejected rather than read as "unlimited" or "the default": every
@@ -590,28 +693,26 @@ func (c Config) validate() error {
 	return nil
 }
 
-// listener returns the listener a provider name binds, or nil when the name is
-// not one this build simulates.
-func (c *Config) listener(name provider.Name) *Listener {
-	switch name {
-	case provider.Exa:
-		return &c.Exa
-	case provider.Tavily:
-		return &c.Tavily
-	case provider.Perplexity:
-		return &c.Perplexity
-	case provider.MCP:
-		return &c.MCP
-	default:
-		return nil
+// Listener returns the listener a provider name binds, and whether name is
+// one this build simulates. It is the fail-closed hook every miss in this
+// package ultimately reduces to: a name absent from the registered Set gets
+// ok=false, never a zero-value Listener a caller could mistake for a real,
+// disabled one.
+func (c Config) Listener(name provider.Name) (Listener, bool) {
+	l, ok := c.Listeners[name]
+	if !ok {
+		return Listener{}, false
 	}
+	return *l, true
 }
 
-// Enabled returns the providers that have a listener enabled, in a stable order.
+// Enabled returns the providers that have a listener enabled, in registration
+// order — never a map range over Listeners, which would make listener
+// startup order, and any message that lists providers, differ between runs.
 func (c Config) Enabled() []provider.Name {
-	out := make([]provider.Name, 0, len(allProviders))
-	for _, name := range allProviders {
-		if listener := c.listener(name); listener != nil && listener.Enabled {
+	out := make([]provider.Name, 0, len(c.order))
+	for _, name := range c.order {
+		if l := c.Listeners[name]; l != nil && l.Enabled {
 			out = append(out, name)
 		}
 	}

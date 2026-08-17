@@ -290,6 +290,37 @@ func (p Profile) effectiveKind() string {
 	return string(p.Name)
 }
 
+// entryValidators is p.Validators, or — for a profile that registers none —
+// a single no-op validator under p's effective kind. A profile with no
+// projection validation of its own still OWNS its scenario entry kind: the
+// scenario block named after it is served by its handlers, so
+// ValidateScenario must not report that kind as unimplemented, the
+// unscripted-profile check must not report a scripted block as missing, and
+// NewSet's duplicate-kind refusal must still see the claim. The review of
+// unit 3 found the simplest possible foreign profile (fifteen lines, no
+// Validators) drawing scenario.provider.unimplemented AND
+// scenario.profile.unscripted for a block that demonstrably applied — this
+// is what closes that.
+func (p Profile) entryValidators() map[string]Validator {
+	if len(p.Validators) > 0 {
+		return p.Validators
+	}
+	return map[string]Validator{p.effectiveKind(): noopValidator{}}
+}
+
+// noopValidator is the validator a profile without projection validation
+// registers under its own entry kind: it decodes nothing and finds nothing,
+// so the kind reads as implemented (it is — the profile's handlers serve it)
+// while every check that needs a real projection decode is left to profiles
+// that declare one.
+type noopValidator struct{}
+
+// ValidateProjections reports nothing: this profile validates no projection
+// body of its own.
+func (noopValidator) ValidateProjections(*scenario.Scenario, *scenario.ProviderEntry) []scenario.Finding {
+	return nil
+}
+
 // Handler builds this profile's listener handler over d, through NewMux. It
 // is what every reference profile's <pkg>.New did before this unit; <pkg>.New
 // is now a deprecated one-line wrapper over Profile().Handler(d).
@@ -440,7 +471,7 @@ func NewSet(ps ...Profile) (*Set, error) {
 		}
 
 		kind := p.effectiveKind()
-		for ek := range p.Validators {
+		for ek := range p.entryValidators() {
 			if owner, claimed := kindOf[ek]; claimed && owner != kind {
 				return nil, fmt.Errorf(
 					"provider: NewSet: scenario entry kind %q is claimed by both profile kind %q and %q; "+
@@ -533,7 +564,7 @@ func (s *Set) Validators(only ...Name) map[string]Validator {
 	}
 	out := make(map[string]Validator)
 	for _, p := range profiles {
-		maps.Copy(out, p.Validators)
+		maps.Copy(out, p.entryValidators())
 	}
 	return out
 }
@@ -547,7 +578,7 @@ func (s *Set) Validators(only ...Name) map[string]Validator {
 func (s *Set) EntryKinds() []string {
 	seen := make(map[string]struct{})
 	for _, p := range s.profiles {
-		for k := range p.Validators {
+		for k := range p.entryValidators() {
 			seen[k] = struct{}{}
 		}
 	}
@@ -576,12 +607,13 @@ func (s *Set) LiveHosts() []string {
 
 // Faults builds a fault engine over sc, pre-registered against every route
 // in the Set — not just the routes of whichever listeners a consumer happens
-// to have enabled. It is the ONLY exported fault-engine constructor:
-// internal/faults.New stays unexported to the module, because a caller that
-// could build an engine from its own route slice could build one that does
-// not know an out-of-tree profile's route, and that engine would silently
-// serve a clean 200 where the scenario scripted a 429 (the quietest failure
-// class this framework has).
+// to have enabled. It is the ONLY exported fault-engine constructor: the
+// engine's own constructor (newSetFaultEngine, in fault_engine.go) stays
+// unexported to the package, because a caller that could build an engine
+// from its own route slice could build one that does not know an
+// out-of-tree profile's route, and that engine would silently serve a clean
+// 200 where the scenario scripted a 429 (the quietest failure class this
+// framework has).
 func (s *Set) Faults(sc *scenario.Scenario, opts ...FaultOption) Faults {
 	return newSetFaultEngine(sc, s.Routes(), opts...)
 }

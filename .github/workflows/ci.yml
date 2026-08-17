@@ -189,7 +189,7 @@ jobs:
       - name: Build binary
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-            -ldflags="-w -s -X main.Version=${{ github.sha }}" \
+            -ldflags="-w -s -X github.com/c360studio/servicesim.Version=${{ github.sha }}" \
             -o servicesim-linux-amd64 \
             ./cmd/servicesim
 
@@ -213,6 +213,14 @@ jobs:
           push: false
           load: true
           tags: servicesim:ci
+          # Without these, the Dockerfile's ARG VERSION=dev default ships
+          # unstamped, and scripts/image-smoke.sh's --version assertion
+          # (Phase 10 unit 3: the image must not silently report "dev")
+          # would fail here even though the binary and its ldflags are
+          # correct — the image build step just never named a version.
+          build-args: |
+            VERSION=${{ github.sha }}
+            COMMIT_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

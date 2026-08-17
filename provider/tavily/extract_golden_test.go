@@ -6,7 +6,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -161,7 +160,7 @@ func TestGolden_ExtractRateLimited(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, report.OK(), "%v", report.Findings)
 
-	h := New(provider.Deps{Scenario: loaded, Faults: faults.New(loaded, Routes())})
+	h := New(provider.Deps{Scenario: loaded, Faults: provider.MustSet(Profile()).Faults(loaded)})
 	rec := post(t, h, "/extract", `{"urls":"https://example.test/report-a"}`, bearer)
 
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)

@@ -581,7 +581,7 @@ func TestScenarioDirFromLoad(t *testing.T) {
 
 	base, dir := scenarioDir(t, "default.yaml", "roles.yaml")
 
-	cfg, err := Load([]string{"--scenario-dir", dir}, env(nil))
+	cfg, err := Load(referenceSet(t), []string{"--scenario-dir", dir}, env(nil))
 	require.NoError(t, err)
 	require.True(t, cfg.ScenarioDirMode())
 
@@ -664,7 +664,8 @@ func TestOpenScenarioFromLoad(t *testing.T) {
 
 	base, root := tree(t)
 
-	cfg, err := Load([]string{"--scenario", filepath.Join(root, "happy.yaml")}, env(nil))
+	set := referenceSet(t)
+	cfg, err := Load(set, []string{"--scenario", filepath.Join(root, "happy.yaml")}, env(nil))
 	require.NoError(t, err)
 	assert.Equal(t, root, cfg.ScenarioRoot)
 
@@ -674,7 +675,7 @@ func TestOpenScenarioFromLoad(t *testing.T) {
 	assert.Equal(t, "happy.yaml", name)
 	assert.Equal(t, insideBody, readAll(t, file))
 
-	escaping, err := Load([]string{
+	escaping, err := Load(set, []string{
 		"--scenario", filepath.Join(base, "secret.yaml"),
 		"--scenario-root", root,
 	}, env(nil))

@@ -5,17 +5,21 @@ import (
 	"io/fs"
 
 	"github.com/c360studio/servicesim/contracts"
-	"github.com/c360studio/servicesim/internal/config"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
 
+// defaultPort is MCP's default listener port. It lives here rather than in
+// internal/config (Phase 10 unit 3: "config no longer names a vendor") —
+// this profile is the one place that gets to know it binds 8084 by default,
+// and internal/config derives every port flag's default from Profile.Port
+// instead of naming one.
+const defaultPort = 8084
+
 // Profile returns the registration record MCP is served from: everything
 // New used to build by hand, plus the fields New never needed because
 // internal/config and internal/server supplied them from their own
-// four-vendor switches. Port's default is read from internal/config's own
-// constant "for now" — Phase 10 unit 3 begins deriving config's ports from
-// the registered Set instead.
+// four-vendor switches.
 func Profile() provider.Profile {
 	sub, err := fs.Sub(contracts.FS(), "mcp")
 	if err != nil {
@@ -28,7 +32,7 @@ func Profile() provider.Profile {
 		Name:    Name,
 		Title:   "MCP",
 		Summary: "a Model Context Protocol Streamable HTTP server",
-		Port:    config.DefaultMCPPort,
+		Port:    defaultPort,
 
 		Handlers: handlers(),
 		Routes:   Routes(),

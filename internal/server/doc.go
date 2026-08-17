@@ -1,10 +1,15 @@
 // Package server composes handlers, binds listeners and manages lifecycle.
 //
-// It is the one place in the module that can see every provider package at
-// once, which is why three things are wired here and nowhere else: the fault
-// engine's key set, the projection validator registry, and the shared journal.
-// Everything below this level is deliberately ignorant of which providers this
-// build ships.
+// It names no profile package (Phase 10 unit 3, docs/proposals/
+// framework-seam.md): everything it used to wire by importing provider/exa,
+// provider/tavily, provider/perplexity and provider/mcp by hand — the fault
+// engine's key set, the projection validator registry, every listener's
+// handler — it now derives from the single [provider.Set] its [config.Config]
+// carries, through [provider.Set.Faults], [provider.Set.Validators] and
+// [provider.Set.Lookup]. The shared journal is still wired here, because it
+// is process-wide rather than per profile. Everything below this level is
+// deliberately ignorant of which providers this build ships; so, now, is
+// this one.
 //
 // # Startup order is the acceptance criterion
 //

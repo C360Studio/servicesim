@@ -4,9 +4,15 @@ import (
 	"io/fs"
 
 	"github.com/c360studio/servicesim/contracts"
-	"github.com/c360studio/servicesim/internal/config"
 	"github.com/c360studio/servicesim/provider"
 )
+
+// defaultPort is Exa's default listener port. It lives here rather than in
+// internal/config (Phase 10 unit 3: "config no longer names a vendor") —
+// this profile is the one place that gets to know it binds 8081 by default,
+// and internal/config derives every port flag's default from Profile.Port
+// instead of naming one.
+const defaultPort = 8081
 
 // Name is this listener's identity in a provider.Set, the scenario provider
 // entry's key, and — since exa.Name has never had a typed spelling before
@@ -19,9 +25,7 @@ const Name provider.Name = "exa"
 // Profile returns the registration record Exa is served from: everything
 // New used to build by hand, plus the fields New never needed because
 // internal/config and internal/server supplied them from their own
-// four-vendor switches. Port's default is read from internal/config's own
-// constant "for now" — Phase 10 unit 3 begins deriving config's ports from
-// the registered Set instead.
+// four-vendor switches.
 func Profile() provider.Profile {
 	sub, err := fs.Sub(contracts.FS(), "exa")
 	if err != nil {
@@ -34,7 +38,7 @@ func Profile() provider.Profile {
 		Name:    Name,
 		Title:   "Exa",
 		Summary: "the Exa search and answer API",
-		Port:    config.DefaultExaPort,
+		Port:    defaultPort,
 
 		Handlers: handlers(),
 		Routes:   Routes(),

@@ -51,6 +51,8 @@ services:
       # still reaches them.
       - ./test/fixtures/research:/scenarios:ro
 
+    # Port values are static; regenerate by comparing against
+    # `bin/servicesim --print-ports` (admin is always 8080; ours have not moved).
     ports:
       - "8080:8080" # admin: /healthz, /readyz, /__admin/requests, /__admin/namespaces, /__admin/scenario,
                     # /__admin/jobs, /__admin/reset

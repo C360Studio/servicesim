@@ -122,8 +122,8 @@ type Route struct {
 	// func(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, "exa") }
 	// (nil-safe on every hop). It exists so the fault engine never has to know
 	// which scenario field a key maps to: the package that declares the key
-	// declares the mapping next to it, and internal/faults stays at level 4 with no
-	// knowledge of provider/exa, provider/tavily or provider/perplexity. A nil
-	// Fault means the route declares no plan.
+	// declares the mapping next to it, and the fault engine (fault_engine.go)
+	// stays at level 4 with no knowledge of provider/exa, provider/tavily or
+	// provider/perplexity. A nil Fault means the route declares no plan.
 	Fault func(*scenario.Scenario) *scenario.Fault
 }

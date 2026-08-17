@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/contracts"
-	"github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
@@ -264,7 +263,7 @@ func newSimDelaySkip(t *testing.T, s *scenario.Scenario) *sim {
 	srv := httptest.NewServer(New(provider.Deps{
 		Scenario:  s,
 		Journal:   ring,
-		Faults:    faults.New(s, Routes()),
+		Faults:    provider.MustSet(Profile()).Faults(s),
 		DelayMode: provider.DelaySkip,
 	}))
 	t.Cleanup(srv.Close)

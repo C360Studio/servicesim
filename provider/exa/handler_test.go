@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
@@ -75,7 +74,7 @@ func newSimWithJobs(t *testing.T, src string, store *jobs.Registry) *sim {
 	deps := provider.Deps{
 		Scenario:  s,
 		Journal:   ring,
-		Faults:    faults.New(s, Routes()),
+		Faults:    provider.MustSet(Profile()).Faults(s),
 		DelayMode: provider.DelaySkip,
 		Jobs:      store,
 	}

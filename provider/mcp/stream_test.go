@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/contracts"
-	"github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
@@ -59,7 +58,7 @@ func newSSESim(t *testing.T, src string) *sseSim {
 
 	ring := journal.NewRing(64, 1<<16)
 	srv := httptest.NewServer(New(provider.Deps{
-		Scenario: loaded, Journal: ring, Faults: faults.New(loaded, Routes()),
+		Scenario: loaded, Journal: ring, Faults: provider.MustSet(Profile()).Faults(loaded),
 	}))
 	t.Cleanup(srv.Close)
 	return &sseSim{server: srv, journal: ring}
@@ -353,7 +352,7 @@ providers:
 
 	ring := journal.NewRing(64, 1<<16)
 	srv := httptest.NewServer(New(provider.Deps{
-		Scenario: loaded, Journal: ring, Faults: faults.New(loaded, Routes()),
+		Scenario: loaded, Journal: ring, Faults: provider.MustSet(Profile()).Faults(loaded),
 	}))
 	t.Cleanup(srv.Close)
 	sim := &sseSim{server: srv, journal: ring}

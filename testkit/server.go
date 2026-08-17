@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
@@ -193,10 +192,10 @@ func validators() map[string]provider.Validator {
 }
 
 // NewFaults returns the fault engine for a scenario, wired to every route all
-// four provider packages declare. It exists because internal/faults is not
-// importable from another module, and without it a consumer building
-// provider.Deps by hand gets silently fault-free behaviour from a scenario that
-// declares faults:
+// four reference profiles declare. It exists because provider.Set.Faults is
+// the only exported fault-engine constructor, and without it a consumer
+// building provider.Deps by hand gets silently fault-free behaviour from a
+// scenario that declares faults:
 //
 //	s, _, _ := scenario.Parse(src)
 //	h := exa.New(provider.Deps{Scenario: s, Faults: testkit.NewFaults(s)})
@@ -209,7 +208,8 @@ func validators() map[string]provider.Validator {
 // provider.NewSet(ps...).Faults(s) instead, or pass [WithProfiles] to [Start]
 // and read faults off the returned [Sim]. Removed in Phase 10 unit 4.
 func NewFaults(s *scenario.Scenario) provider.Faults {
-	return faults.New(s, routes())
+	set := provider.MustSet(exa.Profile(), tavily.Profile(), perplexity.Profile(), mcp.Profile())
+	return set.Faults(s)
 }
 
 // NewJournal returns a fresh, unbounded-capacity in-process journal, wired the

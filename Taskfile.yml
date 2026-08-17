@@ -31,7 +31,7 @@ tasks:
       - mkdir -p bin
       - >-
         CGO_ENABLED=0 go build
-        -ldflags="-w -s -X main.Version={{.VERSION}} -X main.GitCommit={{.COMMIT_SHA}}"
+        -ldflags="-w -s -X github.com/c360studio/servicesim.Version={{.VERSION}} -X github.com/c360studio/servicesim.GitCommit={{.COMMIT_SHA}}"
         -o bin/{{.BINARY}} ./cmd/{{.BINARY}}
 
   run:

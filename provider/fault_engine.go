@@ -32,21 +32,31 @@ func WithMaxNamespaces(n int) FaultOption {
 	return func(c *faultConfig) { c.maxNamespaces = n }
 }
 
-// setFaultEngine is [(*Set).Faults]'s own implementation of the [Faults]
-// seam.
+// codeFaultNamespaceLimit is the log event a refused namespace raises. It is
+// an error rather than a warning because the request that triggers it is
+// served without the attempt budget its scenario declares, and the only
+// correct response is to raise --max-namespaces or to stop creating
+// namespaces.
 //
-// It is a deliberate, temporary duplicate of internal/faults.Engine's
-// mechanism rather than a call into it. internal/faults imports this
-// package — for Route, FaultDecision, NamespaceAdmitter,
-// DefaultMaxNamespaces, DefaultNamespace and SplitCursorKey, all needed to
-// satisfy provider.Faults — so provider cannot import internal/faults back
-// without a cycle. internal/server and testkit.NewFaults still build their
-// engine from internal/faults.New (Phase 10 units 3 and 4 territory,
-// deliberately out of scope here, matching how testkit.NewFaults itself is
-// only deprecated, not deleted, in this unit); once internal/server is
-// rewired onto (*Set).Faults, internal/faults loses its last caller and is
-// deleted, leaving this the only implementation. See this unit's report,
-// "chose differently", for the fuller reasoning.
+// It is unexported, unlike internal/faults.CodeNamespaceLimit, which this
+// type replaces: nothing outside this package constructed an engine
+// directly even when internal/faults existed (testkit.NewFaults and
+// internal/server both went through the package-level New), so there is no
+// caller to keep a name public for. It carries a different spelling from
+// the exported [CodeNamespaceLimit] in handle.go on purpose — that one is a
+// namespace ADMISSION refusal raised by [Handle] before a route runs, this
+// one is the engine's own log line when a LANE inside an admitted namespace
+// cannot get a counter; the two are different events; see [CodeNamespaceLimit].
+const codeFaultNamespaceLimit = "faults.namespace_limit"
+
+// setFaultEngine is [(*Set).Faults]'s own implementation of the [Faults]
+// seam, and — since Phase 10 unit 3 deleted internal/faults and rewired
+// internal/server and testkit.NewFaults onto (*Set).Faults — the module's
+// only fault engine. It carries over every behaviour internal/faults.Engine
+// pinned: per-lane counters, namespace admission bounded by maxNamespaces,
+// ResetIn's scoped release, the logger option, and Next's Unknown-key
+// fail-open (see internal/faults/engine_test.go's git history for the tests
+// this package's own fault_engine_test.go now owns).
 type setFaultEngine struct {
 	plans    map[string]faultPlan     // read-only after construction
 	counters map[string]*atomic.Int64 // read-only map, mutable values
@@ -173,7 +183,7 @@ func (e *setFaultEngine) laneCounter(key, namespace string) *atomic.Int64 {
 	e.mu.Unlock()
 
 	if !admitted {
-		e.logger.Error("faults.namespace_limit",
+		e.logger.Error(codeFaultNamespaceLimit,
 			slog.String("namespace", namespace),
 			slog.Int("max_namespaces", e.maxNamespaces),
 			slog.String("hint", "raise --max-namespaces; namespaces are never evicted, "+
@@ -219,7 +229,7 @@ func (e *setFaultEngine) AdmitNamespace(ns string) bool {
 	e.mu.Unlock()
 
 	if full {
-		e.logger.Error("faults.namespace_limit",
+		e.logger.Error(codeFaultNamespaceLimit,
 			slog.String("namespace", ns),
 			slog.Int("max_namespaces", e.maxNamespaces),
 			slog.String("hint", "raise --max-namespaces; namespaces are never evicted, "+

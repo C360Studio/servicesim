@@ -1,4 +1,4 @@
-package faults
+package provider
 
 import (
 	"bytes"
@@ -11,36 +11,35 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
 
 // discard is the logger for tests that exercise a refusal without asserting on
 // how it was reported, so a deliberate error never lands in the test output and
 // gets read as a failure.
-func discard() Option { return WithLogger(slog.New(slog.DiscardHandler)) }
+func discard() FaultOption { return WithFaultLogger(slog.New(slog.DiscardHandler)) }
 
 // capturing returns an option wiring the engine to buf. The buffer is written
 // only from the goroutine that calls Next, so the tests that use it are the
 // single-goroutine ones.
-func capturing(buf *bytes.Buffer) Option {
-	return WithLogger(slog.New(slog.NewTextHandler(buf, nil)))
+func capturing(buf *bytes.Buffer) FaultOption {
+	return WithFaultLogger(slog.New(slog.NewTextHandler(buf, nil)))
 }
 
 // fixed returns a route selector that always yields f, so a test can declare a
-// plan without going through YAML. The real selectors are provider.TurnFault
+// plan without going through YAML. The real selectors are TurnFault
 // closures; TestNewFromScenario exercises that path.
 func fixed(f *scenario.Fault) func(*scenario.Scenario) *scenario.Fault {
 	return func(*scenario.Scenario) *scenario.Fault { return f }
 }
 
-func route(pattern, key string, f *scenario.Fault) provider.Route {
-	return provider.Route{Pattern: pattern, FaultKey: key, Fault: fixed(f)}
+func route(pattern, key string, f *scenario.Fault) Route {
+	return Route{Pattern: pattern, FaultKey: key, Fault: fixed(f)}
 }
 
 // statuses drains n attempts from key and reports the status each received, with
 // 0 standing for "no fault, serve the scenario response".
-func statuses(e *Engine, key string, n int) []int {
+func statuses(e *setFaultEngine, key string, n int) []int {
 	got := make([]int, 0, n)
 	for range n {
 		dec := e.Next(key)
@@ -111,7 +110,7 @@ func TestNextSelectsPerAttempt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			e := New(nil, []provider.Route{route("POST /search", "exa:search", tc.fault)})
+			e := newSetFaultEngine(nil, []Route{route("POST /search", "exa:search", tc.fault)})
 			assert.Equal(t, tc.want, statuses(e, "exa:search", len(tc.want)))
 		})
 	}
@@ -123,7 +122,7 @@ func TestNextSelectsPerAttempt(t *testing.T) {
 func TestNextDistinguishesDeclaredSuccessFromExhaustion(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{route("POST /search", "exa:search", &scenario.Fault{
+	e := newSetFaultEngine(nil, []Route{route("POST /search", "exa:search", &scenario.Fault{
 		Attempts: []scenario.FaultAttempt{{Status: 429}, {Status: 200}},
 	})})
 
@@ -142,7 +141,7 @@ func TestNextDistinguishesDeclaredSuccessFromExhaustion(t *testing.T) {
 func TestNextReportsIndexAndPlanned(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /search", "exa:search", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429}},
 		}),
@@ -169,10 +168,10 @@ func TestNextReportsIndexAndPlanned(t *testing.T) {
 func TestNextUnknownKey(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{route("POST /search", "exa:search", nil)})
+	e := newSetFaultEngine(nil, []Route{route("POST /search", "exa:search", nil)})
 
 	dec := e.Next("tavily:search")
-	assert.Equal(t, provider.FaultDecision{Index: -1, Key: "tavily:search", Unknown: true}, dec,
+	assert.Equal(t, FaultDecision{Index: -1, Key: "tavily:search", Unknown: true}, dec,
 		"an unregistered key yields Unknown rather than a silent no-op")
 	assert.False(t, dec.Faulted())
 
@@ -186,7 +185,7 @@ func TestNewSharesOneBudgetPerKey(t *testing.T) {
 	t.Parallel()
 
 	budget := &scenario.Fault{Attempts: []scenario.FaultAttempt{{Status: 429, Repeat: 2}}}
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /v1/sonar", "perplexity:completions", budget),
 		route("POST /chat/completions", "perplexity:completions", budget),
 		route("POST /search", "exa:search", budget),
@@ -207,7 +206,7 @@ func TestNewSharesOneBudgetPerKey(t *testing.T) {
 func TestNewKeepsTheFirstPlanForADuplicateKey(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /v1/sonar", "perplexity:completions", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429}},
 		}),
@@ -222,12 +221,12 @@ func TestNewKeepsTheFirstPlanForADuplicateKey(t *testing.T) {
 func TestNewToleratesNilSelectorsAndNoRoutes(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{{Pattern: "POST /search", FaultKey: "exa:search"}})
+	e := newSetFaultEngine(nil, []Route{{Pattern: "POST /search", FaultKey: "exa:search"}})
 	dec := e.Next("exa:search")
 	assert.False(t, dec.Unknown, "a route with a nil selector is registered, just unfaulted")
 	assert.Nil(t, dec.Attempt)
 
-	empty := New(nil, nil)
+	empty := newSetFaultEngine(nil, nil)
 	assert.True(t, empty.Next("exa:search").Unknown)
 	assert.NotPanics(t, empty.Reset)
 }
@@ -235,7 +234,7 @@ func TestNewToleratesNilSelectorsAndNoRoutes(t *testing.T) {
 func TestReset(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /search", "exa:search", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429, Repeat: 2}},
 		}),
@@ -262,7 +261,7 @@ func TestNextConcurrentClaimsAreUnique(t *testing.T) {
 
 	const goroutines = 64
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /search", "exa:search", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429, Repeat: goroutines / 2}},
 		}),
@@ -306,7 +305,7 @@ func TestNextConcurrentClaimsAreUnique(t *testing.T) {
 	assert.Equal(t, goroutines, e.Next("tavily:search").Index, "an unfaulted key counts arrivals too")
 }
 
-// The route selectors the server actually passes are provider.TurnFault closures
+// The route selectors the server actually passes are TurnFault closures
 // over a loaded scenario. Exercising one end to end is what proves the engine is
 // wired to the YAML rather than only to a hand-built Fault.
 func TestNewFromScenario(t *testing.T) {
@@ -334,17 +333,17 @@ providers:
 	s, report, err := scenario.Parse([]byte(src))
 	require.NoError(t, err, "report: %v", report)
 
-	tavily := func(sc *scenario.Scenario) *scenario.Fault { return provider.TurnFault(sc, "tavily") }
-	e := New(s, []provider.Route{
+	tavily := func(sc *scenario.Scenario) *scenario.Fault { return TurnFault(sc, "tavily") }
+	e := newSetFaultEngine(s, []Route{
 		{Pattern: "POST /search", FaultKey: "tavily:search", Fault: tavily},
 		{Pattern: "POST /search", FaultKey: "exa:search", Fault: func(sc *scenario.Scenario) *scenario.Fault {
-			return provider.TurnFault(sc, "exa")
+			return TurnFault(sc, "exa")
 		}},
 	})
 
 	assert.Equal(t, []int{429, 429, 200, 0}, statuses(e, "tavily:search", 4))
 
-	first := New(s, []provider.Route{{Pattern: "POST /search", FaultKey: "tavily:search", Fault: tavily}}).
+	first := newSetFaultEngine(s, []Route{{Pattern: "POST /search", FaultKey: "tavily:search", Fault: tavily}}).
 		Next("tavily:search")
 	require.NotNil(t, first.Attempt)
 	require.NotNil(t, first.Attempt.RetryAfter, "the whole attempt travels, not just its status")
@@ -354,15 +353,15 @@ providers:
 }
 
 // TestNextIsolatesNamespaces is the regression test for the integration break
-// between lane keying and this engine. provider.Handle claims attempts on
-// provider.Lane.CursorKey, which embeds the namespace, while a plan is still
+// between lane keying and this engine. Handle claims attempts on
+// Lane.CursorKey, which embeds the namespace, while a plan is still
 // registered per Route.FaultKey. An engine that only knows route keys answers
 // every namespaced request with Unknown, so a scenario's declared 429 never
 // fires inside a namespace and the turn cursor sticks at -1.
 func TestNextIsolatesNamespaces(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /search", "exa:search", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429}},
 		}),
@@ -393,7 +392,7 @@ func TestNextIsolatesNamespaces(t *testing.T) {
 func TestNextIsolatesTurnLanes(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /chat/completions", "perplexity:completions", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429}},
 		}),
@@ -418,7 +417,7 @@ func TestNextIsolatesTurnLanes(t *testing.T) {
 func TestNextLaneWithNoRouteComponentStaysUnknown(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{route("POST /search", "exa:search", nil)})
+	e := newSetFaultEngine(nil, []Route{route("POST /search", "exa:search", nil)})
 
 	dec := e.Next("t-42/body_json:model=sonar")
 	assert.True(t, dec.Unknown)
@@ -431,7 +430,7 @@ func TestNextLaneWithNoRouteComponentStaysUnknown(t *testing.T) {
 func TestResetZeroesLaneCounters(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /search", "exa:search", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429}},
 		}),
@@ -449,7 +448,7 @@ func TestResetZeroesLaneCounters(t *testing.T) {
 func TestNextLaneCountersAreRaceFree(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{route("POST /search", "exa:search", nil)})
+	e := newSetFaultEngine(nil, []Route{route("POST /search", "exa:search", nil)})
 
 	const n = 64
 	indices := make([]int, n)
@@ -485,7 +484,7 @@ func TestNextConcurrentNamespacesEachGetTheirOwnSequence(t *testing.T) {
 		faulted    = 2 // attempts 0 and 1 of every namespace's own sequence
 	)
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /search", "exa:search", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429, Repeat: faulted}},
 		}),
@@ -541,7 +540,7 @@ func TestNextRefusesNamespacesBeyondTheBound(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /search", "exa:search", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429}},
 		}),
@@ -554,7 +553,7 @@ func TestNextRefusesNamespacesBeyondTheBound(t *testing.T) {
 	assert.True(t, over.Unknown, "a refused namespace is answered, loudly, with no budget at all")
 	assert.Equal(t, -1, over.Index)
 	assert.Nil(t, over.Attempt)
-	assert.Contains(t, buf.String(), CodeNamespaceLimit)
+	assert.Contains(t, buf.String(), codeFaultNamespaceLimit)
 	assert.Contains(t, buf.String(), "namespace=t-3")
 
 	// The refusal must not have displaced anything: eviction is the failure this
@@ -573,7 +572,7 @@ func TestNextRefusesNamespacesBeyondTheBound(t *testing.T) {
 func TestNextBoundDoesNotCountTheDefaultNamespace(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /chat/completions", "perplexity:completions", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429}},
 		}),
@@ -594,7 +593,7 @@ func TestNextBoundDoesNotCountTheDefaultNamespace(t *testing.T) {
 func TestNextBoundCountsANamespaceOnce(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /chat/completions", "perplexity:completions", nil),
 	}, WithMaxNamespaces(2), discard())
 
@@ -614,7 +613,7 @@ func TestNextBoundCountsANamespaceOnce(t *testing.T) {
 func TestResetDoesNotReleaseAdmission(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{route("POST /search", "exa:search", nil)},
+	e := newSetFaultEngine(nil, []Route{route("POST /search", "exa:search", nil)},
 		WithMaxNamespaces(1), discard())
 
 	require.Equal(t, 0, e.Next("t-1/exa:search").Index)
@@ -632,14 +631,14 @@ func TestResetDoesNotReleaseAdmission(t *testing.T) {
 func TestNewDefaultsTheBoundAndLogger(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, nil)
-	assert.Equal(t, provider.DefaultMaxNamespaces, e.maxNamespaces)
+	e := newSetFaultEngine(nil, nil)
+	assert.Equal(t, DefaultMaxNamespaces, e.maxNamespaces)
 	assert.NotNil(t, e.logger)
 
-	assert.Equal(t, provider.DefaultMaxNamespaces, New(nil, nil, WithMaxNamespaces(0)).maxNamespaces,
+	assert.Equal(t, DefaultMaxNamespaces, newSetFaultEngine(nil, nil, WithMaxNamespaces(0)).maxNamespaces,
 		"a zero bound is unset, not a bound of zero")
-	assert.Equal(t, 7, New(nil, nil, WithMaxNamespaces(7)).maxNamespaces)
-	assert.NotNil(t, New(nil, nil, WithLogger(nil)).logger, "a nil logger falls back rather than panicking")
+	assert.Equal(t, 7, newSetFaultEngine(nil, nil, WithMaxNamespaces(7)).maxNamespaces)
+	assert.NotNil(t, newSetFaultEngine(nil, nil, WithFaultLogger(nil)).logger, "a nil logger falls back rather than panicking")
 }
 
 // TestNextAdmissionIsRaceFree drives more concurrent namespaces than the bound
@@ -653,7 +652,7 @@ func TestNextAdmissionIsRaceFree(t *testing.T) {
 		bound    = 8
 	)
 
-	e := New(nil, []provider.Route{route("POST /search", "exa:search", nil)},
+	e := newSetFaultEngine(nil, []Route{route("POST /search", "exa:search", nil)},
 		WithMaxNamespaces(bound), discard())
 
 	admitted := make([]bool, attempts)
@@ -689,7 +688,7 @@ func TestNextAdmissionIsRaceFree(t *testing.T) {
 func TestResetInScopesToOneNamespace(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /search", "exa:search", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429}},
 		}),
@@ -716,7 +715,7 @@ func TestResetInScopesToOneNamespace(t *testing.T) {
 func TestResetInReachesEveryLaneOfTheNamespace(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{
+	e := newSetFaultEngine(nil, []Route{
 		route("POST /chat/completions", "perplexity:completions", &scenario.Fault{
 			Attempts: []scenario.FaultAttempt{{Status: 429}},
 		}),
@@ -745,11 +744,11 @@ func TestResetInReachesEveryLaneOfTheNamespace(t *testing.T) {
 func TestResetInDefaultNamespace(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{provider.DefaultNamespace, ""} {
+	for _, name := range []string{DefaultNamespace, ""} {
 		t.Run("namespace="+name, func(t *testing.T) {
 			t.Parallel()
 
-			e := New(nil, []provider.Route{
+			e := newSetFaultEngine(nil, []Route{
 				route("POST /search", "exa:search", &scenario.Fault{
 					Attempts: []scenario.FaultAttempt{{Status: 429}},
 				}),
@@ -786,7 +785,7 @@ func TestResetInDefaultNamespace(t *testing.T) {
 func TestResetInReturnsTheNamespaceToTheBudget(t *testing.T) {
 	t.Parallel()
 
-	e := New(nil, []provider.Route{route("POST /search", "exa:search", nil)},
+	e := newSetFaultEngine(nil, []Route{route("POST /search", "exa:search", nil)},
 		WithMaxNamespaces(1), discard())
 
 	require.Equal(t, 0, e.Next("t-1/exa:search").Index)
@@ -814,7 +813,7 @@ func TestResetInIsRaceFree(t *testing.T) {
 		calls      = 40
 	)
 
-	e := New(nil, []provider.Route{route("POST /search", "exa:search", nil)},
+	e := newSetFaultEngine(nil, []Route{route("POST /search", "exa:search", nil)},
 		WithMaxNamespaces(namespaces+1), discard())
 
 	var (
@@ -866,7 +865,7 @@ func TestResetInIsRaceFree(t *testing.T) {
 
 // TestEngineDeclaresTheScopedResetCapability keeps the seam honest. The admin
 // surface and internal/server both assert for this method rather than requiring
-// it on provider.Faults — an exported interface consumers implement — so a
+// it on Faults — an exported interface consumers implement — so a
 // silent signature drift here would not fail their builds. It would instead make
 // POST /__admin/reset?namespace=<name> answer 501 in the shipped binary, which
 // no existing test would notice.
@@ -874,9 +873,9 @@ func TestEngineDeclaresTheScopedResetCapability(t *testing.T) {
 	t.Parallel()
 
 	var scoped interface {
-		provider.Faults
+		Faults
 		ResetIn(namespace string)
-	} = New(nil, nil)
+	} = newSetFaultEngine(nil, nil)
 
 	scoped.ResetIn("t-1") // a namespace that holds no state is not an error
 }
