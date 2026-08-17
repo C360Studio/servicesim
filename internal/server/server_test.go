@@ -69,6 +69,7 @@ func testConfig(t *testing.T, args ...string) config.Config {
 		"--exa-port", "0",
 		"--tavily-port", "0",
 		"--perplexity-port", "0",
+		"--mcp-port", "0",
 		"--shutdown-grace", "10s",
 	}
 	cfg, err := config.Load(append(base, args...), nil)

@@ -89,3 +89,22 @@ providers:
         respond: {status: pending}
       - respond:
           status: failed
+
+  # This file's failure story is about the two async surfaces; mcp stays in
+  # the ordinary happy shape, exactly as the other four synchronous surfaces
+  # above do.
+  mcp:
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a

@@ -1,4 +1,4 @@
-# A provider this build has no handler for, declared alongside four it does.
+# A provider this build has no handler for, declared alongside five it does.
 #
 # Loading and validating this file MUST succeed. The `openai` block yields a
 # warning naming the unimplemented provider and is otherwise ignored, while the
@@ -84,6 +84,25 @@ providers:
     content: Report A states the finding.
     sources:
       - source-a
+
+  # This file is about an unrecognised provider name; mcp is a fifth
+  # implemented provider, served exactly like the four synchronous ones
+  # above and single-shot like every block in this file.
+  mcp:
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a
 
   # No handler in this build. The body is never decoded — the scenario package
   # leaves every projection undecoded, and no provider package claims this name.

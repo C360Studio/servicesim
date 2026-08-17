@@ -216,3 +216,34 @@ providers:
           content: Report A states the finding.
           sources:
             - source-a
+
+  # One route, one budget — unlike Exa and Tavily above, POST /mcp needs only
+  # one fault plan, not one per sub-route.
+  mcp:
+    fault:
+      attempts:
+        - delay: 50ms
+        - delay: 100ms
+        - delay: 200ms
+        - delay: 400ms
+        - status: 503
+          retry_after: 1
+          error: Service temporarily unavailable.
+        - status: 503
+          retry_after: 1
+          error: Service temporarily unavailable.
+      after: success
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a

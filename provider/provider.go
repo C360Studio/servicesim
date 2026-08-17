@@ -14,6 +14,7 @@ const (
 	Exa        Name = "exa"
 	Tavily     Name = "tavily"
 	Perplexity Name = "perplexity"
+	MCP        Name = "mcp"
 )
 
 // Credential placements. This is the vocabulary that Route.Credentials and a

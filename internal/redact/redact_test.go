@@ -414,6 +414,65 @@ func TestIsCredentialHeader_VendorPrefixedVariants(t *testing.T) {
 	}
 }
 
+// TestIsCredentialHeader_MCPMirroredHeaders proves the MCP profile's own
+// Mcp-Param-{name} and Mcp-Session-Id headers, which mirror a value under
+// a different name (contracts/mcp/README.md, "Request-metadata headers"
+// and "Legacy traffic at a modern-only server"), are judged by the
+// credential name they carry or mirror — not merely by their own literal
+// spelling, which normalises to nothing IsCredentialKey/IsCredentialHeader
+// already recognised before this test's fix.
+func TestIsCredentialHeader_MCPMirroredHeaders(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"Mcp-Param-Token", true},
+		{"Mcp-Param-Secret", true},
+		{"Mcp-Param-Authorization", true},
+		{"Mcp-Param-Api-Key", true},
+		{"Mcp-Param-Password", true},
+		{"mcp-param-token", true},
+		{"Mcp-Session-Id", true},
+		{"mcp-session-id", true},
+		{"MCP-Session-Id", true},
+
+		// The other MCP-specific headers must stay unmasked: none of them
+		// mirrors a credential-shaped name, and the fix must not overreach.
+		{"Mcp-Method", false},
+		{"Mcp-Name", false},
+		{"MCP-Protocol-Version", false},
+		{"Mcp-Param-Query", false},
+		{"Mcp-Param-Region", false},
+		{"Last-Event-ID", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redact.IsCredentialHeader(tt.name); got != tt.want {
+				t.Fatalf("IsCredentialHeader(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHeaderValue_MasksMCPMirroredHeaders proves the mask actually applies
+// through HeaderValue/Headers, not merely through the name predicate.
+func TestHeaderValue_MasksMCPMirroredHeaders(t *testing.T) {
+	tests := []struct{ name, value string }{
+		{"Mcp-Param-Token", "sekret-token-value"},
+		{"Mcp-Param-Secret", "sekret-value"},
+		{"Mcp-Session-Id", "sess-abc123"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := redact.HeaderValue(tt.name, tt.value)
+			if got != redact.Mask {
+				t.Fatalf("HeaderValue(%q, %q) = %q, want %q", tt.name, tt.value, got, redact.Mask)
+			}
+		})
+	}
+}
+
 // TestHeaderValue_PreservesAuthorizationScheme keeps the evidence an adapter
 // contract test asserts on: placement, not value.
 func TestHeaderValue_PreservesAuthorizationScheme(t *testing.T) {

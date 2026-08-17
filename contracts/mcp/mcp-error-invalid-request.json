@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": -32600,
+    "message": "request body is not a JSON-RPC request or notification"
+  },
+  "jsonrpc": "2.0"
+}

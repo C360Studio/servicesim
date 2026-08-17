@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": -32600,
+    "message": "the MCP endpoint accepts POST only"
+  },
+  "jsonrpc": "2.0"
+}

@@ -13,6 +13,7 @@ import (
 //go:embed exa/*.json exa/provenance.yaml
 //go:embed tavily/*.json tavily/provenance.yaml
 //go:embed perplexity/*.json perplexity/*.sse perplexity/provenance.yaml
+//go:embed mcp/*.json mcp/*.sse mcp/provenance.yaml
 var files embed.FS
 
 // VerifiedOn is the OLDEST per-entry `verified:` date across every provider's
@@ -46,6 +47,8 @@ const (
 	Tavily Provider = "tavily"
 	// Perplexity is the Perplexity Sonar and Agent APIs.
 	Perplexity Provider = "perplexity"
+	// MCP is the Model Context Protocol Streamable HTTP server.
+	MCP Provider = "mcp"
 )
 
 // Kind records where a golden's shape came from. It is the difference between
@@ -180,7 +183,7 @@ type provenanceFile struct {
 // function rather than a package-level slice so no caller can reorder or
 // truncate the set for everyone else.
 func Providers() []Provider {
-	return []Provider{Exa, Tavily, Perplexity}
+	return []Provider{Exa, Tavily, Perplexity, MCP}
 }
 
 // FS returns a read-only file system over the goldens and the provenance

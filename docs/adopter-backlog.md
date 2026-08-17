@@ -7,8 +7,8 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 ## Where this stands — read this first
 
 Recorded 2026-08-16 (evening), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6) plus
-Phase 7 merged on top, unreleased, and Phase 8 unit 1 (the MCP contract, `contracts/mcp/`) on the `phase-8`
-branch cut from `main` at `b1a64da`.
+Phase 7 merged on top, unreleased, and Phase 8 unit 1 (the MCP contract, `contracts/mcp/`) and unit 2 (the MCP
+profile, `provider/mcp/`) on the `phase-8` branch cut from `main` at `b1a64da`.
 
 | Phase | State |
 |---|---|
@@ -20,7 +20,7 @@ branch cut from `main` at `b1a64da`.
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
 | 6 — G-3 depth: hostile content, oversized bodies, hangs after headers, resilience built-ins, pacing evidence | **shipped** in v0.4.0 — units 1–6, the closing docs sweep, D9 tier 1; the adopter's own guardrail vectors are still an append to `malicious-content` when they arrive |
 | 7 — packaging, deployment and the contract-fidelity process | **DONE (rescoped) and merged to `main` (`6a43316`, PR #3), unreleased** — items 1–2 (the Gitea mirror, the Kubernetes manifest) dropped 2026-08-16 (owner; D3 reworded: no replicas by design); item 3 shipped 2026-08-15; items 4 and 5b shipped: a `spec:` block (url/version/sha256/retrieved) for every vendor's OpenAPI document, `contracts.Spec`/`ProviderSpec`, `Record.APIVersion`, and the no-canary refresh procedure (D10) |
-| 8 onward | open — **Phase 8 (the MCP profile, in-tree per D6) is in progress and is the last feature phase**: unit 1 (contract verification, `contracts/mcp/`) is DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile) is next; ODR is out of Phase 8 per D12 (owner, 2026-08-16); D11 (which protocol era the profile serves) is pending owner with a modern-first recommendation; D9 tier 2 (the seam export) is decided after Phase 8; the adopter's own guardrail vectors when they arrive |
+| 8 onward | open — **Phase 8 (the MCP profile, in-tree per D6) is in progress and is the last feature phase**: unit 1 (contract verification, `contracts/mcp/`) is DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp`, listener `mcp` on `POST /mcp` port 8084) is DONE 2026-08-16; unit 3 (the docs sweep, design record, README onboarding example, `examples/`) is next; ODR is out of Phase 8 per D12 (owner, 2026-08-16); D11 (which protocol era the profile serves) is pending owner — unit 2 shipped modern-only per the recommendation; D9 tier 2 (the seam export) is decided after Phase 8; the adopter's own guardrail vectors when they arrive |
 
 **v0.4.0** is the last tag (2026-08-16, `b788f00`): Phase 6 end to end — `completed_at` observing every scripted
 hang, the `malicious-content`, `oversized-body`, `timeout`, `brownout`, `hang-then-abort` and `credential-rotation`
@@ -74,16 +74,16 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
 4. **Phase 8 — the MCP profile** is in progress and is the last feature phase. **Unit 1 (contract verification)
    is DONE 2026-08-16**: `contracts/mcp/README.md` + `provenance.yaml` record what the 2026-07-28 specification
    actually says (spec sha256 `ef70b61f…`, the D11 era question and the SDK evidence, every point where the
-   specification is silent). **Unit 2 — the modern (2026-07-28) MCP profile — is next**: read the Phase 8 section
-   below and the contract file before starting; the section lists what is free (tools/call vs tools/list is
-   `body_json` dispatch; schema drift between calls is the turn model; oversized and injection-bearing output are
-   projection bytes — `oversized_body` and the `malicious-content` corpus now exist) and the composition-layer
-   sites a new profile touches (`internal/config`, `internal/server/listeners.go`, `testkit/server.go`,
-   `contracts`, the image and docs). **ODR is out of Phase 8 per D12** (owner, 2026-08-16) — it is the adopter's
-   problem for now, not blocking anything. **D11 (which protocol era the profile serves) is pending owner**; the
-   recommendation on record is modern first, legacy 2025-11-25 as a follow-on only if the adopter's client is
-   pinned to a pre-2026-07-28 SDK. After Phase 8, decide **D9 tier 2** (export the provider seam) on what MCP
-   actually needed — `docs/proposals/d9-framework-framing.md` has the shape.
+   specification is silent). **Unit 2 (the modern 2026-07-28 MCP profile) is DONE 2026-08-16**: `provider/mcp`,
+   listener `mcp` on `POST /mcp` port 8084, `server/discover`/`tools/list`/`tools/call`, JSON and per-request SSE
+   answers, strict request validation, 18 goldens registered under `contracts.MCP`, every built-in scenario's own
+   `mcp:` block, and the composition-layer/image/docs edits the section below enumerates. **Unit 3 (the docs
+   sweep, design record, README onboarding example, `examples/`, the CONTRIBUTING checklist) is next** — read the
+   Phase 8 section below and `provider/mcp/doc.go` before starting. **ODR is out of Phase 8 per D12** (owner,
+   2026-08-16) — it is the adopter's problem for now, not blocking anything. **D11 (which protocol era the profile
+   serves) is pending owner**; unit 2 shipped modern-only per the recommendation on record, legacy 2025-11-25 as a
+   follow-on only if the adopter's client is pinned to a pre-2026-07-28 SDK. After unit 3, decide **D9 tier 2**
+   (export the provider seam) on what MCP actually needed — `docs/proposals/d9-framework-framing.md` has the shape.
 5. Tell the adopter v0.3.0 and v0.4.0 exist; their questions in the two contract READMEs are still open; their
    own guardrail-classifier vectors are an append to `malicious-content` (add any new prefix to
    `hostileSourcePrefixes` in `scenarios/scenarios_test.go`).
@@ -171,7 +171,7 @@ These are settled. Re-open one only with new evidence, and record why.
 |  D8 | What should the adopter do about stream:true fixtures in the window before SSE ships (Phase 5)? | Tell the adopter **not to record `stream:true` fixtures** yet, and ship a `stream: reject` policy so their path fails loudly. **Reversed 2026-08-15: Phase 5 has shipped.** `stream: {when_requested: stream, deltas: [...]}` now serves a real, golden-tested SSE sequence on both Perplexity surfaces — the adopter can record `stream:true` fixtures today, against `testkit.AssertGoldenSSE`. `stream: reject` remains available for a suite that wants a hard failure instead. |
 |  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Decided 2026-08-16: tier 1 adopted** — README and CLAUDE.md now lead with "a deterministic service-simulator framework shipping three research-API profiles", the non-goals hold for any profile, README says what is provider-neutral versus profile-specific. **Tier 2 (export the seam, re-opening D6) is deferred until Phase 8's MCP/ODR have exercised the seam in-tree; tier 3 (positioning) stays open.** (ODR dropped from Phase 8 by D12, 2026-08-16 — tier 2 waits on the MCP profile alone.) The proposal, with the reasoning and the tier 2 shape, is [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md). |
 |  D10 | How is contract drift detected without a canary? | **Dated, manual re-verification**, never a live canary — none is built or planned. Every provider's contract is generated with a machine-readable spec behind it — Exa's `exa-spec.yaml`, Tavily's `openapi.json` and Perplexity's `openapi.json`, each covering every route this repository simulates for that vendor — and each carries a RECORDED spec version and SHA-256 (`contracts.Spec`, `contracts/<provider>/provenance.yaml`'s `spec:` block) that a fresh fetch is compared against as the first, cheap step. That hash comparison is a drift SIGNAL, not a substitute for reading: most entries in every provider are still verified against the vendor's rendered prose pages (each entry's own `documentation_url`), which have no stable byte hash of their own — a page's bytes change with every site deploy independent of the content that matters — so a changed spec hash means a person re-reads the consumed fields against both the cited pages and the spec, never a hash of the prose itself. Only entries whose `documentation_url` IS the spec (all of Perplexity's, and Exa's three `/findSimilar` entries) were read from the spec directly and carry `api_version`; every other entry was read from prose and carries none. Reason for no canary: a canary is outbound infrastructure and a scheduled dependency on vendor availability, for a test simulator whose value is determinism; the recorded hash or the cited page gives a reviewer the same answer ("did the vendor change or did we?") on demand, without the outbound dependency. `contracts/README.md` "Keeping them honest" is the sanctioned procedure; ADR 0002 carries an "Amended 2026-08-16" section recording the same change. Owner, 2026-08-16.  |
-|  D11 | Which MCP protocol era(s) does the Phase 8 profile serve — **modern** (2026-07-28 only: stateless, per-request `_meta`, `server/discover`, no session, no handshake), **legacy** (2025-11-25 only: `initialize`/`notifications/initialized`, `MCP-Session-Id`, optional GET stream and `Last-Event-ID` resumability), or **dual-era** (both, selected per request by how the client opens)? The terms are the specification's own (`basic/versioning`, "Terminology"). | **Pending owner (recorded 2026-08-16).** Recommendation on record, from `contracts/mcp/README.md` "Protocol eras": **modern first** — 2026-07-28 is `latest` and the verified authority; it is stateless, which is exactly Servicesim's request/response model (nothing to hold between calls); and it is what every official SDK now sends by default (evidence via `gh api`, 2026-08-16: go-sdk `v1.7.0` 2026-07-28 — "full support for protocol version 2026-07-28", "enabled by default for new clients", Streamable HTTP serves 2026-07-28 only with `Stateless = true`; typescript-sdk `@modelcontextprotocol/server@2.0.0` 2026-07-27 — "Align the 2026-07-28 wire with the final revision" (note: `1.30.0` the same day is a v1.x maintenance release whose notes do not mention 2026-07-28); python-sdk `v2.0.0` 2026-07-28 — "supports the 2026-07-28 revision … and serves every earlier revision"). Every one of those clients falls back to `initialize` only when the server's answer to its first modern request (go-sdk: `server/discover`, per `mcp/client.go` on `main`) is not a recognised modern error, so a modern-only simulator is reachable from all of them. Build the **legacy 2025-11-25 path as a follow-on unit only if the adopter's mcp-adapter is pinned below** go-sdk `v1.7.0` / the TypeScript `2.0.0` packages / python-sdk `v2.0.0` — ask them (contract file, "Open questions for the adopter", Q1). A dual-era server is a superset and re-introduces the session state the profile would otherwise never hold. The legacy surface is recorded in the contract file's "Legacy revision 2025-11-25" subsection so the decision is made from a record, not a rebuild. |
+|  D11 | Which MCP protocol era(s) does the Phase 8 profile serve — **modern** (2026-07-28 only: stateless, per-request `_meta`, `server/discover`, no session, no handshake), **legacy** (2025-11-25 only: `initialize`/`notifications/initialized`, `MCP-Session-Id`, optional GET stream and `Last-Event-ID` resumability), or **dual-era** (both, selected per request by how the client opens)? The terms are the specification's own (`basic/versioning`, "Terminology"). | **Pending owner (recorded 2026-08-16).** Recommendation on record, from `contracts/mcp/README.md` "Protocol eras": **modern first** — 2026-07-28 is `latest` and the verified authority; it is stateless, which is exactly Servicesim's request/response model (nothing to hold between calls); and it is what every official SDK now sends by default (evidence via `gh api`, 2026-08-16: go-sdk `v1.7.0` 2026-07-28 — "full support for protocol version 2026-07-28", "enabled by default for new clients", Streamable HTTP serves 2026-07-28 only with `Stateless = true`; typescript-sdk `@modelcontextprotocol/server@2.0.0` 2026-07-27 — "Align the 2026-07-28 wire with the final revision" (note: `1.30.0` the same day is a v1.x maintenance release whose notes do not mention 2026-07-28); python-sdk `v2.0.0` 2026-07-28 — "supports the 2026-07-28 revision … and serves every earlier revision"). Every one of those clients falls back to `initialize` only when the server's answer to its first modern request (go-sdk: `server/discover`, per `mcp/client.go` on `main`) is not a recognised modern error, so a modern-only simulator is reachable from all of them. Build the **legacy 2025-11-25 path as a follow-on unit only if the adopter's mcp-adapter is pinned below** go-sdk `v1.7.0` / the TypeScript `2.0.0` packages / python-sdk `v2.0.0` — ask them (contract file, "Open questions for the adopter", Q1). A dual-era server is a superset and re-introduces the session state the profile would otherwise never hold. The legacy surface is recorded in the contract file's "Legacy revision 2025-11-25" subsection so the decision is made from a record, not a rebuild. **Unit 2 shipped modern-only per the recommendation; legacy is a follow-on if the owner decides dual-era.** |
 |  D12 | Is the ODR — "open-deep-research" — provider profile part of Phase 8? | **Owner, 2026-08-16: no.** "Let's not worry about Open Deep Research for P8 — we can make that an adopter problem for now." Phase 8 is the MCP profile alone; ODR is not built here and is not blocking anything. Recorded beside it, the reason it could not have been built from this tree anyway: the repository has no verifiable identity or wire surface for "open-deep-research" — the name matches several open-source projects with different or no HTTP APIs — and house rule 1 forbids writing a wire field from memory. If the adopter later wants it, the first step is theirs: name the project and its API documentation, and the contract-verification unit runs the way MCP's did before any handler. The audit table's ODR row below is the adopter's historical status and is left as written. |
 
 Two of these reversed a recommendation, and the reasoning is worth keeping. On D6 the owner chose in-tree because the
@@ -832,15 +832,34 @@ is theirs (D12); Servicesim does not unblock it.
   correct simulator behaviour is a JSON-RPC-shaped 400 (the specification assigns no status or code to an array
   body, so the exact shape is simulator-chosen), which is a unit-2 handler detail, not a pre-fix. The item was
   written against 2025-03-26 and is refuted by the current contract.
-- **Unit 2 — the MCP profile itself (next)**: the listener with its single POST endpoint (path is a unit-2 choice;
-  the specification's own example is `/mcp`), `server/discover`, `tools/list`, `tools/call`, JSON-object answers
-  and — for scripted outcomes — SSE answers over Phase 5's stream path with `notifications/progress`; strict request
-  validation (`Accept`, the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers checked against the body,
-  `400` `-32020` on mismatch, `400` `-32022` on an unsupported version, `404` `-32601` on an unknown method, `405`
-  on GET/DELETE, `202` no body for a notification); the era per D11 (recommendation: modern 2026-07-28 only). It
-  registers `contracts.MCP`, embeds `contracts/mcp/`, adds goldens and provenance entries, and must satisfy every
-  guard in `contracts_test.go`. The simulator-chosen points are listed in the contract file's "Simulation
-  decisions" section and each needs an owner call or a recorded default before the handler lands.
+- **Unit 2 — the MCP profile itself — DONE 2026-08-16**: `provider/mcp` (modern 2026-07-28 only, per the D11
+  recommendation), listener `mcp` on `POST /mcp`, default port 8084. `server/discover`, `tools/list`, `tools/call`;
+  JSON-object answers and, for a `tools/call` turn whose stream policy is `stream`, a per-request SSE answer over
+  Phase 5's stream path carrying `notifications/progress` frames when the request supplied `_meta.progressToken`;
+  strict request validation (`Accept` listing both media types, request `Content-Type`, the `MCP-Protocol-Version`
+  / `Mcp-Method` / `Mcp-Name` headers checked against the body including the Base64 sentinel decode, `400`
+  `-32020` on mismatch, `400` `-32022` on an unsupported version, `404` `-32601` on an unknown method or wrong
+  path, `405` on every method but POST, `202` no body for a notification, `200` — not `400` — for every ordinary
+  method-level JSON-RPC error so the spec's client era-detection signal stays reserved). Registers `contracts.MCP`
+  with 18 golden fixtures and a provenance entry each; every simulator-chosen point in the contract's "Simulation
+  decisions" section is recorded, with a matching `chosen:` line, in `provider/mcp/doc.go` and as a `note:` on the
+  golden it shapes. The composition-layer edits below, all 20 built-in scenarios' `mcp:` blocks, the image, and the
+  docs the guards force all shipped with it; `x-mcp-header`, `Origin` validation, resources, prompts, completion,
+  `subscriptions/listen`, MRTR and the legacy 2025-11-25 era are NOT SIMULATED — unit 3 (docs/design record,
+  README onboarding example, `examples/`, CONTRIBUTING checklist, D9 tier 2 evidence) and any legacy follow-on are
+  what remains.
+- **Follow-up surfaced by unit 2's review (shared pipeline, not MCP-specific):** `provider/handle.go` reads the
+  memoised fault decision (`x.decision`) after the handler returns regardless of `Response.FaultEligible`, so
+  "validation has the last word" holds only by the convention that every handler validates before it claims an
+  attempt (`SelectTurnFor`/`CallIndex`). Every shipped handler follows the convention — MCP's method-level checks
+  were moved ahead of `selectProjection` for exactly this reason — but the gate itself does not gate an
+  already-claimed decision. Latent, not reachable today; worth a small hardening unit with its own test
+  (a handler that claims then fails must not have the claimed attempt applied to its rejection response), because
+  the next profile's author will not know the convention.
+- Two nits left as recorded, not fixed: the `202` for a notification carries a `Content-Type: application/json`
+  header on an empty body (the contract only says "no body"); `extra-fields.yaml`'s `mcp:` block has envelope-level
+  extras only — per-tool and per-content-block `extra_fields` would be a new projection field (unit 3 may add it
+  if a consumer needs to prove tolerance at that level).
 - The hostile-behaviour pack for their mcp-adapter defence kit: tool-schema drift between calls (turn model, free),
   oversized results and injection-bearing output (projection bytes, free), **per-request version and header
   mismatches** (a `400` `-32022` with `data.supported`/`data.requested`, a `400` `-32020` header/body mismatch —

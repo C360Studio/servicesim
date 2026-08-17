@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": -32600,
+    "message": "authorization required"
+  },
+  "jsonrpc": "2.0"
+}

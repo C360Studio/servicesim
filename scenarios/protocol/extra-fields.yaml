@@ -126,3 +126,31 @@ providers:
     extra_fields:
       experimental_relevance: 0.77
       service_tier: default
+
+  # extra_fields here is merged into every result this profile renders —
+  # server/discover, tools/list and tools/call alike (render.go's own doc
+  # comment on Projection.ExtraFields) — so one block proves tolerance across
+  # all three methods at once, unlike the other providers above, which need a
+  # dedicated extra_fields per route. This is envelope-level only: neither
+  # ToolProjection nor ContentBlock has an extra_fields field of its own, so
+  # this file's "two levels" property (envelope AND per-entry) is not
+  # expressible on MCP in this unit — a gap, not a choice, recorded here
+  # rather than silently matched by adding an unrequested field.
+  mcp:
+    extra_fields:
+      experimentalRanking: b
+      serviceTier: default
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a

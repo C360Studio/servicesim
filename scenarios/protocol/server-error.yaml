@@ -123,3 +123,26 @@ providers:
     content: Report A states the finding.
     sources:
       - source-a
+
+  # One route, one permanent budget — no create/poll split, unlike the async
+  # surfaces above.
+  mcp:
+    fault:
+      after: repeat_last
+      attempts:
+        - status: 500
+          error: Internal server error.
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a

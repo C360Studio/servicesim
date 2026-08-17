@@ -1,0 +1,6 @@
+data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"tok-1","progress":1,"total":2,"message":"searching…"}}
+
+data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"tok-1","progress":2,"total":2,"message":"ranking results…"}}
+
+data: {"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":[{"type":"text","text":"Deterministic simulators remove flakiness from adapter test suites."}],"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"servicesim","version":"1"}}}}
+

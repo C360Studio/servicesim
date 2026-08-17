@@ -20,6 +20,7 @@ import (
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/provider/exa"
+	"github.com/c360studio/servicesim/provider/mcp"
 	"github.com/c360studio/servicesim/provider/perplexity"
 	"github.com/c360studio/servicesim/provider/tavily"
 	"github.com/c360studio/servicesim/scenario"
@@ -154,7 +155,7 @@ type Server struct {
 // plan belongs to the scenario that declares it — because this is the lowest
 // level that can see all three provider packages:
 //
-//	routes := slices.Concat(exa.Routes(), tavily.Routes(), perplexity.Routes())
+//	routes := slices.Concat(exa.Routes(), tavily.Routes(), perplexity.Routes(), mcp.Routes())
 //	engine := faults.New(s, routes)
 //
 // A scenario's engine is wired into every handler serving that scenario, and the
@@ -222,7 +223,7 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Server, error
 // names every broken scenario rather than the first one the directory listing
 // happened to reach.
 func (s *Server) loadRegistry(sources []scenarioSource) error {
-	routes := slices.Concat(exa.Routes(), tavily.Routes(), perplexity.Routes())
+	routes := slices.Concat(exa.Routes(), tavily.Routes(), perplexity.Routes(), mcp.Routes())
 	handlers := validators(s.cfg)
 
 	var failures []error
@@ -437,6 +438,8 @@ func validators(cfg config.Config) map[string]provider.Validator {
 			out[tavily.NameResearch] = tavily.ResearchValidator{}
 		case provider.Perplexity:
 			maps.Copy(out, perplexity.Validators())
+		case provider.MCP:
+			out[mcp.Name] = mcp.Validator{}
 		}
 	}
 	return out

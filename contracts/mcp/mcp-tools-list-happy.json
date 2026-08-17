@@ -1,0 +1,67 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "result": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "servicesim",
+        "version": "1"
+      }
+    },
+    "cacheScope": "private",
+    "resultType": "complete",
+    "tools": [
+      {
+        "annotations": {
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "description": "Search the test corpus for relevant pages.",
+        "inputSchema": {
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        "name": "web_search",
+        "title": "Web search"
+      },
+      {
+        "annotations": {
+          "readOnlyHint": true
+        },
+        "description": "Fetch a single page by URL.",
+        "inputSchema": {
+          "properties": {
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "type": "object"
+        },
+        "name": "fetch_page",
+        "outputSchema": {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "title": "Fetch page"
+      }
+    ],
+    "ttlMs": 60000
+  }
+}

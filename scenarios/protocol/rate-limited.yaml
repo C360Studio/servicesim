@@ -165,3 +165,27 @@ providers:
     content: Report A states the finding.
     sources:
       - source-a
+
+  # One route, one budget: unlike the two async surfaces above, POST /mcp has
+  # no separate create route, so a single plan covers it.
+  mcp:
+    fault:
+      attempts:
+        - status: 429
+          retry_after: 1
+          error: Rate limit exceeded.
+        - status: 200
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a

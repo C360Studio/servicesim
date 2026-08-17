@@ -13,6 +13,7 @@ import (
 	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/provider/exa"
+	"github.com/c360studio/servicesim/provider/mcp"
 	"github.com/c360studio/servicesim/provider/perplexity"
 	"github.com/c360studio/servicesim/provider/tavily"
 )
@@ -103,6 +104,8 @@ func (s *Server) newSurfaces(adminDeps admin.Deps) []*surface {
 			listener = s.cfg.Tavily
 		case provider.Perplexity:
 			listener = s.cfg.Perplexity
+		case provider.MCP:
+			listener = s.cfg.MCP
 		default:
 			// Unreachable: config.Enabled only reports providers it has a
 			// listener for. Skipping beats binding a port with no handler.
@@ -155,8 +158,10 @@ func newProviderHandler(name provider.Name, deps provider.Deps) http.Handler {
 		return tavily.New(deps)
 	case provider.Perplexity:
 		return perplexity.New(deps)
+	case provider.MCP:
+		return mcp.New(deps)
 	default:
-		// Unreachable: newSurfaces builds a surface only for the three names
+		// Unreachable: newSurfaces builds a surface only for the four names
 		// above. A 404 beats a nil handler if that ever stops being true.
 		return http.NotFoundHandler()
 	}
@@ -257,6 +262,27 @@ func (s *Server) refusalHandler(name provider.Name, reason string) http.Handler 
 		})
 }
 
+// mcpCodeInvalidRequest is JSON-RPC's -32600 ("InvalidRequestError"), the
+// code contracts/mcp/README.md's decision 6 assigns to this refusal.
+const mcpCodeInvalidRequest = -32600
+
+// mcpErrorEnvelope and mcpRPCError mirror the JSON-RPC error shape
+// provider/mcp's own (unexported) errors.go builds, duplicated here rather
+// than exported from that package solely for this one call site: a scenario
+// refusal has no request to build a provider.Exchange for, so it cannot go
+// through mcp.New's own handler.
+type mcpErrorEnvelope struct {
+	JSONRPC string      `json:"jsonrpc"`
+	ID      any         `json:"id"`
+	Error   mcpRPCError `json:"error"`
+}
+
+// mcpRPCError is one JSON-RPC error object.
+type mcpRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
 // scenarioNotFoundBody renders the body a refused request receives, in the shape
 // that provider's own 404 uses.
 //
@@ -298,8 +324,29 @@ func scenarioNotFoundBody(name provider.Name) []byte {
 		}
 		return body
 
+	case provider.MCP:
+		// mcp's own JSON-RPC error envelope type is unexported (provider/mcp
+		// builds it itself, per request, from the request's own id); this
+		// refusal has no request to read an id from, so it renders the same
+		// shape directly. No id (always null, the same as every other shape
+		// failure this profile answers — contracts/mcp/README.md decision 6),
+		// code -32600 InvalidRequestError, and the same generic message the
+		// other three vendors' bodies carry here rather than naming the
+		// scenario: the scenario name is in the journal and the log, which is
+		// where a person looks, not in a response a consumer's error decoder
+		// parses.
+		body, err := wire.Render(mcpErrorEnvelope{
+			JSONRPC: "2.0",
+			ID:      nil,
+			Error:   mcpRPCError{Code: mcpCodeInvalidRequest, Message: http.StatusText(http.StatusNotFound)},
+		}, nil)
+		if err != nil {
+			return []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Not Found"}}`)
+		}
+		return body
+
 	default:
-		// Unreachable: newSurfaces builds a surface only for the three names
+		// Unreachable: newSurfaces builds a surface only for the four names
 		// above. An empty body beats inventing a vendor's error shape.
 		return nil
 	}

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": -32700,
+    "message": "Parse error: invalid JSON"
+  },
+  "jsonrpc": "2.0"
+}

@@ -30,7 +30,7 @@ validation and wire shapes live, and it is the part that grows when a fourth ven
 No account, no credentials, no configuration, and nothing to clone:
 
 ```bash
-docker run --rm -p 8080-8083:8080-8083 ghcr.io/c360studio/servicesim:v0.4.0
+docker run --rm -p 8080-8084:8080-8084 ghcr.io/c360studio/servicesim:v0.4.0
 ```
 
 The image is public and multi-architecture (`linux/amd64`, `linux/arm64`). Tags are published in both spellings
@@ -89,6 +89,7 @@ preserving each vendor's real path requires a separate port per provider.
 | exa | `8081` | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
 | tavily | `8082` | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
 | perplexity | `8083` | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
+| mcp | `8084` | `POST /mcp` |
 
 `/agent/runs` and `/research` are the asynchronous create-then-poll surfaces — Exa agent runs and Tavily research
 — covered in [the testkit section below](#in-a-go-test-with-no-container-at-all); their `HEAD` route answers an
@@ -103,10 +104,13 @@ Both Perplexity surfaces can also serve `text/event-stream`: a scenario turn scr
 stream, deltas: [...]}` and a request that sets `"stream": true` gets the real SSE dialect back — unnamed
 `data:` chunks closed by `data: [DONE]` on Sonar, named `event:` frames on the Agent API — instead of the
 default `warn` (an ordinary JSON body plus a journal finding) or an opt-in `reject` (a provider-shaped 4xx). Exa
-and Tavily do not stream. See [`docs/scenario-schema.md`](docs/scenario-schema.md#streaming-stream) for the
-scripting grammar and the built-in `streaming` scenario for a worked example.
+and Tavily do not stream. MCP's `tools/call` streams too, unconditionally under a `stream: {when_requested:
+stream}` script — there is no request-side field that asks for it, unlike Perplexity's `"stream": true` — with
+`notifications/progress` frames sent only when the request itself carried `_meta.progressToken`. See
+[`docs/scenario-schema.md`](docs/scenario-schema.md#streaming-stream) for the scripting grammar and the built-in
+`streaming` scenario for a worked example.
 
-Every port is configurable (`-exa-port`, `-tavily-port`, `-perplexity-port`, `-admin-port`), and `-providers`
+Every port is configurable (`-exa-port`, `-tavily-port`, `-perplexity-port`, `-mcp-port`, `-admin-port`), and `-providers`
 limits which listeners bind. Run `servicesim -h` for the full flag list. Go's `flag` package treats a single dash
 and a double dash the same, so `-scenario` and `--scenario` are identical; this document uses whichever spelling
 reads better in context.
@@ -121,15 +125,19 @@ inside the test, which is where the bugs live:
 | `EXA_BASE_URL` | Exa listener | `http://servicesim:8081` |
 | `TAVILY_BASE_URL` | Tavily listener | `http://servicesim:8082` |
 | `PERPLEXITY_BASE_URL` | Perplexity listener | `http://servicesim:8083` |
+| `MCP_BASE_URL` | MCP listener | `http://servicesim:8084` |
 
-Credentials are still required by default — the point is to prove your client *sends* one, in the right place. Any
-fake value works. Servicesim never stores it; the journal keeps only a fingerprint.
+Credentials are required by default on the three research surfaces — the point is to prove your client *sends*
+one, in the right place. MCP's default is the opposite (the specification leaves authentication to the
+deployment): no credential is required unless the scenario opts in with `auth: {mode: required}`. Any fake value
+works. Servicesim never stores it; the journal keeps only a fingerprint.
 
 | Provider | Accepted credential placement |
 |---|---|
 | Exa | `x-api-key`, or `Authorization: Bearer` |
 | Tavily | `Authorization: Bearer` |
 | Perplexity | `Authorization: Bearer` |
+| MCP | `Authorization: Bearer` — optional by default; a scenario's `auth: {mode: required}` makes it mandatory |
 
 Tavily's `POST /search` and `POST /research` also authenticate a body `api_key` property — real client code sends
 it — and on both routes that draws the same warning-severity finding, `tavily.api_key.in_body`, rather than an
@@ -409,7 +417,7 @@ entirely and much later:
 ## Built-in protocol scenarios
 
 Twenty scenarios ship inside the binary. Select one with `--scenario builtin:<name>` — for example,
-`docker run --rm -p 8080-8083:8080-8083 ghcr.io/c360studio/servicesim:v0.4.0 --scenario builtin:rate-limited` — or
+`docker run --rm -p 8080-8084:8080-8084 ghcr.io/c360studio/servicesim:v0.4.0 --scenario builtin:rate-limited` — or
 `testkit.WithBuiltin("<name>")`. They cover *protocol* behaviour, which is the same for every consumer;
 product-specific corpora belong in your own repository.
 

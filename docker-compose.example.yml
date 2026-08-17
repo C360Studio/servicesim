@@ -57,6 +57,7 @@ services:
       - "8081:8081" # exa:        POST /search, POST /answer
       - "8082:8082" # tavily:     POST /search
       - "8083:8083" # perplexity: POST /v1/sonar, /chat/completions, /v1/agent, /v1/responses
+      - "8084:8084" # mcp:        POST /mcp
 
     healthcheck:
       # The image is `scratch` — no shell, no curl, no wget. The binary answers
@@ -80,6 +81,11 @@ services:
       EXA_BASE_URL: http://servicesim:8081
       TAVILY_BASE_URL: http://servicesim:8082
       PERPLEXITY_BASE_URL: http://servicesim:8083
+      # No MCP_API_KEY: the MCP profile's credential is OPTIONAL by default
+      # (contracts/mcp/README.md decision 3, the opposite default from the
+      # three research profiles above) — set one only if your scenario opts
+      # into `auth: {mode: required}`.
+      MCP_BASE_URL: http://servicesim:8084
 
       # --- The namespaced form --------------------------------------------
       # Two optional path prefixes, stripped before route matching, so a

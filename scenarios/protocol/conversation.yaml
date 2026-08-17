@@ -140,3 +140,62 @@ providers:
           content: Report A states the finding.
           sources:
             - source-a
+
+  # This file's script is about the Perplexity Agent's multi-turn form; mcp
+  # stays in the ordinary single-shot happy shape.
+  mcp:
+    # A turn IS a server state (contracts/mcp/README.md's own framing;
+    # docs/scenario-schema.md "### mcp"): unlike the single-shot blocks
+    # elsewhere in this file, this one scripts tool-catalogue drift between
+    # calls as turn N vs turn N+1, the worked example the docs otherwise
+    # only describe. `turn_key` is left at its default of ["route"].
+    turns:
+      # Call 0: the catalogue before the server picks up a second tool —
+      # `search` only.
+      - when:
+          call_index: 0
+        respond:
+          instructions: Search the evaluation corpus for relevant reports.
+          tools:
+            - name: search
+              description: Search the evaluation corpus for relevant reports.
+              input_schema:
+                type: object
+                properties:
+                  query: {type: string}
+                required: [query]
+          results:
+            search:
+              content:
+                - type: text
+                  source: source-a
+
+      # Call 1 onward: the server now also advertises search_deep. A client
+      # that cached tools/list from call 0 and never re-requested it would
+      # not see this — exactly the staleness ttlMs (decision 9) bounds.
+      - respond:
+          instructions: Search the evaluation corpus for relevant reports.
+          tools:
+            - name: search
+              description: Search the evaluation corpus for relevant reports.
+              input_schema:
+                type: object
+                properties:
+                  query: {type: string}
+                required: [query]
+            - name: search_deep
+              description: A deeper search added after the server's first response.
+              input_schema:
+                type: object
+                properties:
+                  query: {type: string}
+                required: [query]
+          results:
+            search:
+              content:
+                - type: text
+                  source: source-a
+            search_deep:
+              content:
+                - type: text
+                  source: source-a

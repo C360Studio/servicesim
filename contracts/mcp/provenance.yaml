@@ -1,39 +1,43 @@
 # Provenance for the MCP consumed contract.
 #
-# THIS PROVIDER IS NOT YET REGISTERED. contracts/contracts.go's Providers()
-# does not return it, nothing embeds this directory, and there are no goldens
-# here yet: the contract (README.md beside this file) was recorded ahead of the
-# handler, in Phase 8 unit 1, so that the handler is written from a dated
-# record and not from memory. The provider is registered — and gains its
-# goldens and their entries below — in the unit that ships the handler (Phase 8
-# unit 2), which must then satisfy every guard in contracts/contracts_test.go
-# (TestEveryProviderHasSpecRecorded, TestSpecBlockFieldsAreComplete,
-# TestProviderVerifiedMatchesReadmeIndexTable, and the rest — note that the
-# last of these keys the index table by display name through a hard-coded
-# byName map in contracts/provenance_internal_test.go, so registering mcp also
-# means adding "MCP" to that map or the test fatals with "index table has no
-# dated row for mcp"). Until then this
-# file exists so the spec block, the provider-level verified: date and the
-# drift-signal explanation are recorded beside the README the way every other
-# provider's are.
+# Registered in Phase 8 unit 2: contracts.MCP now appears in Providers(), this
+# directory is embedded, and the goldens below back it. The contract
+# (README.md beside this file) was recorded ahead of the handler, in Phase 8
+# unit 1, so that the handler was written from a dated record and not from
+# memory; unit 2 is what makes README.md's "Simulation decisions" list
+# operative, and each `note:` below says which decision (by number) shaped
+# that golden — cross-reference provider/mcp/doc.go's numbered list, which
+# uses the same numbering.
 #
 # verified: (below) is when THIS PROVIDER'S CONTRACT AS A WHOLE was last
 # verified against the specification, and must match contracts/README.md's
-# index-table Verified column for MCP. Once goldens exist, each entry carries
-# its own verified: date as the other providers' do (see contracts/tavily/
-# provenance.yaml for how the two relate).
+# index-table Verified column for MCP. Each entry below carries its own
+# verified: date, exactly as Exa/Tavily/Perplexity's entries do (see
+# contracts/tavily/provenance.yaml for how the two relate).
 #
-# kind: (per entry, once entries exist)
-#   vendor-documented  the shape AND the values come from the specification's
-#                      pages or schema.json, quoted or directly derived.
+# kind: (per entry)
+#   vendor-documented  the SHAPE (field names, types, required-ness) comes
+#                      from the specification's pages or schema.json, even
+#                      where this fixture's specific content (an instructions
+#                      string, a tool catalogue) is Servicesim's own test
+#                      data — the same convention Perplexity's
+#                      "*-happy.json" entries use.
 #   simulator-chosen   Servicesim picked this shape or these values because
-#                      the specification does not say (README.md lists every
-#                      such point). A dated re-verification (contracts/
-#                      README.md "Keeping them honest") may correct it — there
-#                      is no live contract canary.
+#                      the specification does not say (README.md's
+#                      "Simulation decisions" section lists every such
+#                      point). A dated re-verification (contracts/README.md
+#                      "Keeping them honest") may correct it — there is no
+#                      live contract canary.
 #
 # The field names in every future golden are governed by README.md in this
 # directory, which is the authority and must not be edited by fixture work.
+#
+# api_version: every entry below carries "2026-07-28" — the protocol
+# revision — even though most entries' documentation_url is a prose page
+# rather than spec.url itself: unlike a REST vendor with a versioned
+# OpenAPI document per endpoint, this profile has exactly one version
+# string, the schema directory name, and it applies uniformly to every
+# shape this contract records, prose page or schema.json alike.
 #
 # spec: records the machine-readable specification the Model Context Protocol
 # publishes for revision 2026-07-28: schema/2026-07-28/schema.json in the
@@ -83,4 +87,295 @@ spec:
   sha256: ef70b61f99b6d2e5e3b46863822eab08dff6a45bedc7a08914e0e5b133f40203
   retrieved: 2026-08-16
 
-goldens: []
+goldens:
+  - golden: mcp-discover-happy.json
+    endpoint: POST /mcp (server/discover)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/server/discover
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      DiscoverResult's field set (resultType, supportedVersions, capabilities,
+      instructions, ttlMs, cacheScope, _meta) is the schema's. Decision 9:
+      supportedVersions is exactly ["2026-07-28"]; capabilities is exactly
+      {"tools":{}} (no listChanged, no resources); ttlMs/cacheScope are the
+      documented defaults (60000/"private") since this fixture's turn
+      declares no override; _meta.io.modelcontextprotocol/serverInfo is the
+      package's own {name, version} constants, identical across builds.
+
+  - golden: mcp-tools-list-happy.json
+    endpoint: POST /mcp (tools/list)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      ListToolsResult and Tool's field sets are the schema's. Decision 8:
+      tools/list order is declaration order (web_search, then fetch_page);
+      annotations carries only the hints the fixture declared (readOnlyHint,
+      openWorldHint on web_search; readOnlyHint on fetch_page — the schema's
+      per-hint defaults are never filled in on the wire). fetch_page's
+      output_schema is present with no matching structured_content in this
+      fixture, so mcp.tool.output_schema_unchecked does not apply here.
+
+  - golden: mcp-tools-list-empty.json
+    endpoint: POST /mcp (tools/list)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      A scenario with no "mcp" block at all (the zero-configuration case):
+      tools is the empty array, never null — ListToolsResult.tools is
+      required — and ttlMs/cacheScope still carry their documented defaults.
+
+  - golden: mcp-tools-call-happy.json
+    endpoint: POST /mcp (tools/call)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      CallToolResult and ContentBlock's field sets are the schema's: a text
+      block (here, a source: reference resolved to its source's text —
+      decision 8's content source-reference rule, provider/mcp/doc.go) and a
+      resource_link block with mimeType. isError is omitted (assumed false
+      per the schema when absent, decision "not set").
+
+  - golden: mcp-tools-call-empty.json
+    endpoint: POST /mcp (tools/call)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      A tool scripted with content: [] — the schema places no minItems on
+      content, and the specification does not say whether an empty array is
+      meaningful; this fixture proves a consumer tolerates it either way.
+
+  - golden: mcp-tools-call-tool-error.json
+    endpoint: POST /mcp (tools/call)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      A Tool Execution Error (README.md "Protocol error versus tool execution
+      error"): isError: true with one text content block, resultType still
+      "complete" — the call succeeded at the protocol level, the TOOL failed.
+      HTTP status stays 200, same as any other tools/call success.
+
+  - golden: mcp-tools-call-structured.json
+    endpoint: POST /mcp (tools/call)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      structuredContent alongside a text block carrying the same information
+      serialised — the specification's own "for backwards compatibility, a
+      tool that returns structured content SHOULD also return the serialized
+      JSON in a TextContent block" (README.md, "tools/call"). This profile
+      does not validate structuredContent against outputSchema (decision 8;
+      no JSON Schema validator in stdlib).
+
+  - golden: mcp-error-header-mismatch.json
+    endpoint: POST /mcp, any method
+    status: 400
+    kind: vendor-documented
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      HeaderMismatchError (-32020) and its 400 status are both spec-assigned
+      ("Server Validation": "servers MUST return HTTP status 400 Bad Request
+      and MUST include a JSON-RPC error response using... -32020"). The
+      message wording follows the specification's own worked example
+      ("Header mismatch: <Header> header value '...' does not match body
+      value '...'") but is Servicesim's rendering of it — this fixture is
+      Mcp-Method disagreeing with body.method, one of the four failure
+      conditions the page lists. id is echoed (the envelope had already
+      parsed enough to read one).
+
+  - golden: mcp-error-unsupported-version.json
+    endpoint: POST /mcp, any method
+    status: 400
+    kind: vendor-documented
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      Decision 1: UnsupportedProtocolVersionError (-32022), 400, and the
+      data.supported/data.requested shape are the specification's own worked
+      example ("versioning", also reproduced on the "schema" page). This
+      profile's data.supported carries exactly ["2026-07-28"] — modern-only,
+      decision 1 — where the specification's own example (written for a
+      hypothetical dual-era server) lists two.
+
+  - golden: mcp-error-method-not-found.json
+    endpoint: POST /mcp, an unimplemented method
+    status: 404
+    kind: vendor-documented
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      MethodNotFoundError (-32601) at 404 is spec-assigned ("Protocol Version
+      Header": "The JSON-RPC error body distinguishes this case from a 404
+      returned by a legacy HTTP+SSE server"). This fixture calls
+      resources/list, a real MCP method this profile does not implement
+      (README.md, "Not simulated / out of scope"); the message text itself is
+      Servicesim's.
+
+  - golden: mcp-error-unknown-tool.json
+    endpoint: POST /mcp (tools/call)
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      Decision 6: the JSON-RPC code (-32602) and message text ("Unknown tool:
+      <name>") are the specification's own worked example almost verbatim
+      ("tools" "Error Handling"); the HTTP status (200, an ordinary JSON-RPC
+      error over the JSON-RPC-over-HTTP convention) is Servicesim's choice —
+      the specification never assigns -32602 a status, and 400 stays reserved
+      for the four spec-assigned shape failures because a 400 body is the
+      client-side era-detection signal (README.md, "Legacy traffic at a
+      modern-only server"). Finding mcp.tool.unknown is a WARNING, not an
+      error, per decision 8: a consumer testing its unknown-tool path must
+      not see one.
+
+  - golden: mcp-error-invalid-request.json
+    endpoint: POST /mcp, any method
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      A top-level JSON array — batching, removed in revision 2025-06-18. The
+      specification names no status or code for this case at all (README.md,
+      "Bodies that are not a single JSON-RPC request or notification");
+      Servicesim answers InvalidRequestError (-32600) at 400, the nearest
+      defined code, with the id member OMITTED (an array carries no single
+      id to echo, and schema.json's RequestId admits no null variant, so a
+      JSON null would itself be schema-invalid).
+
+  - golden: mcp-error-parse.json
+    endpoint: POST /mcp, any method
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      Unparseable JSON. ParseError (-32700) is schema-defined; the
+      specification never assigns it an HTTP status. Servicesim answers 400
+      with the id member OMITTED (schema.json's RequestId admits no null
+      variant). This build also renders an EMPTY body the same way — nothing
+      valid was ever there to parse — which the specification does not
+      address at all (decision 6).
+
+  - golden: mcp-401.json
+    endpoint: POST /mcp, any method, auth mode required
+    status: 401
+    kind: simulator-chosen
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      Decision 3: the whole shape is Servicesim's. Authorization is OPTIONAL
+      for MCP and left to the deployment; a scenario opting into auth: {mode:
+      required} gets this fixed body — the id member OMITTED (never
+      attributed to the request's own id, and never rendered as a JSON null:
+      schema.json's RequestId admits no null variant), code -32600, message
+      exactly "authorization required", no WWW-Authenticate header, because
+      a static bearer check is
+      a "custom authentication strategy" (basic/index, MAY) and not the OAuth
+      framework the specification's authorization page binds a server that
+      "supports" it to (RFC 9728 metadata, audience validation, a
+      WWW-Authenticate challenge) — half-implementing that framework would be
+      a worse lie than not implementing it.
+
+  - golden: mcp-405.json
+    endpoint: any method but POST on /mcp
+    status: 405
+    kind: simulator-chosen
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      405 itself is spec-assigned for GET/DELETE (SHOULD, "Backward
+      Compatibility"); this profile fails closed the same way for every other
+      method too (PUT/PATCH/HEAD/OPTIONS), which the specification is silent
+      on (decision 6). The body — id member omitted, code -32600, "the MCP
+      endpoint accepts POST only" — is entirely Servicesim's; the specification names
+      neither a body nor an Allow header for this case. Allow: POST is set by
+      provider.NewMux's shared 405 wrapper, the same seam every other
+      provider package uses.
+
+  - golden: mcp-fault-503.json
+    endpoint: POST /mcp, any method, a scripted fault
+    status: 503
+    kind: simulator-chosen
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      Decision 6's fault envelope: every scripted-fault error status renders
+      {"jsonrpc":"2.0","id":<echoed>,"error":{"code":-32603,"message":
+      "servicesim scripted fault: <kind>"}} unless the attempt supplies its
+      own body, which wins outright — see mcp-tools-call-stream-disconnect
+      .sse's sibling non-streaming case for the arbitrary-status-and-body
+      path (fault: {status: 403, body: {...}}), proven in
+      provider/mcp/stream_test.go rather than as a separate golden. The
+      specification assigns no JSON-RPC code to a transport-level 429/503;
+      -32603 (InternalError) is the nearest defined server-side code.
+
+  - golden: mcp-tools-call-stream.sse
+    endpoint: "POST /mcp (tools/call), stream: stream"
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/progress
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      Decision 5: notifications/progress's field set (progressToken,
+      progress, total, message) is the schema's; progress increases by 1 per
+      frame and total is len(deltas), matching the page's own example
+      shape. The FRAMING (unnamed "data:" frames, no [DONE], one blank line
+      between frames) is simulator-chosen — the specification gives no SSE
+      frame example at all (README.md, "SSE response streams"). Two progress
+      frames (one per scripted delta) precede the final JSON-RPC response
+      frame, present because this request carried _meta.progressToken;
+      without one, only the response frame is sent (the specification's
+      MUST NOT). Headers: Content-Type: text/event-stream, Cache-Control:
+      no-cache (provider.StreamHeader, shared across every streaming
+      provider) plus X-Accel-Buffering: no, which the specification SHOULDs
+      for this profile specifically (unlike Perplexity's streaming headers).
+
+  - golden: mcp-tools-call-stream-disconnect.sse
+    endpoint: "POST /mcp (tools/call), stream: stream, fault stream_disconnect"
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+    api_version: "2026-07-28"
+    verified: 2026-08-16
+    note: >-
+      A stream_disconnect fault at after_chunk: 1: the first progress frame
+      is delivered whole, the connection then dies before the second — a
+      clean frame boundary, not a malformed one (provider/stream.go's
+      streamPlan.disconnectAt). The specification's own cancellation model
+      ("Cancellation": closing the stream is itself the cancellation signal)
+      is the closest documented behaviour, but the abort MECHANISM (which
+      chunk, RST vs FIN) is Servicesim's fault-injection surface, shared with
+      every other streaming provider and unrelated to any wire fact this
+      contract records.

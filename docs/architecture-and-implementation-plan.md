@@ -35,6 +35,7 @@ providers' real URL paths, including the `POST /search` collision between Exa an
 | `8081` | Exa-compatible API |
 | `8082` | Tavily-compatible API |
 | `8083` | Perplexity-compatible API |
+| `8084` | MCP-compatible server (Streamable HTTP, modern era) |
 
 The same image can run all providers together or a selected subset. Consumers inject provider base URLs rather than
 overriding DNS or installing test certificate authorities.
@@ -43,6 +44,7 @@ overriding DNS or installing test certificate authorities.
 EXA_BASE_URL=http://servicesim:8081
 TAVILY_BASE_URL=http://servicesim:8082
 PERPLEXITY_BASE_URL=http://servicesim:8083
+MCP_BASE_URL=http://servicesim:8084
 ```
 
 ## Context

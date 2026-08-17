@@ -1,8 +1,8 @@
 # Servicesim Project Context
 
 A deterministic service-simulator framework: one binary, one image, one listener per provider profile. It ships
-three research-API profiles today — Exa, Tavily and Perplexity — so that consuming repositories can test their
-research adapters fast, offline, and without spending money on paid APIs.
+four profiles today — Exa, Tavily, Perplexity and MCP — so that consuming repositories can test their research
+and tool adapters fast, offline, and without spending money on paid APIs.
 
 ## Tech Stack
 
@@ -28,7 +28,8 @@ scenario YAML ──► canonical sources ──► per-provider projection ─�
                                              │
                                              ├─► exa      listener :8081  POST /search
                                              ├─► tavily   listener :8082  POST /search
-                                             └─► perplexity listener :8083  POST /v1/sonar, /chat/completions
+                                             ├─► perplexity listener :8083  POST /v1/sonar, /chat/completions
+                                             └─► mcp      listener :8084  POST /mcp
 
      admin listener :8080  /healthz  /readyz  /__admin/requests  /__admin/namespaces  /__admin/scenario
                             /__admin/jobs  /__admin/reset

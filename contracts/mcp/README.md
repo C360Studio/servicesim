@@ -7,11 +7,13 @@ redistribution of the specification. Re-verify and update the date above on the 
 re-verification cadence (`contracts/README.md` "Keeping them honest" — there is no live contract
 canary).
 
-**Status: not yet simulated.** This contract was recorded ahead of the handler (Phase 8 unit 1). No
-route, listener, `contracts.Provider` constant or golden exists for MCP yet; those arrive with the
-handler unit (unit 2), which registers the provider. Until then `contracts.Providers()` does not
-return `mcp` and nothing embeds this directory. Everything below is what the specification says, so
-that the handler is written from a record and not from memory.
+**Status: simulated (Phase 8 unit 2).** The handler is `provider/mcp`; the listener is `mcp`, default
+port 8084; the one route is `POST /mcp`, JSON-RPC 2.0 dispatch on `body.method` to `server/discover`,
+`tools/list` and `tools/call` — modern era only (`2026-07-28`; see "Protocol eras" below). It registers
+as `contracts.MCP`, and this directory's goldens are embedded and enumerated by `contracts.Providers()`.
+Everything below is still what the specification says; the "Simulation decisions" section records, next
+to each open question, the choice unit 2 actually shipped ("chosen: …") and where in
+`provider/mcp/doc.go` and `contracts/mcp/provenance.yaml` that choice is recorded.
 
 ## Authority and revision
 
@@ -988,7 +990,11 @@ the 2026-07-28 `schema.json`.
 ## Simulation decisions the profile needs before a handler is written (OWNER / unit 2)
 
 Each item names the contract fact that constrains it and, where there is one, a recommendation with
-its reason. Nothing here is decided by this file.
+its reason. Nothing here is decided by this file. **Simulation decisions — recorded 2026-08-16 (unit
+2):** every item below now also carries a `chosen:` line naming what unit 2 actually shipped, and
+where — `provider/mcp/doc.go`'s numbered "Recorded simulator-chosen defaults" list uses this same
+numbering, and `contracts/mcp/provenance.yaml` records the corresponding `note:` on the golden each
+choice shapes.
 
 1. **Era(s) served — D11 (pending owner).** Fact: `2026-07-28` is `latest`; it is stateless; every
    official SDK's current client sends it by default and only falls back to `initialize` on a
@@ -1000,8 +1006,14 @@ its reason. Nothing here is decided by this file.
    `@modelcontextprotocol/*@2.0.0` packages, or python-sdk `v2.0.0`. A dual-era server is a
    superset of both and is not free: it re-introduces the session state the profile would otherwise
    never hold.
+   chosen: modern only, per the recommendation. `SupportedVersions = ["2026-07-28"]`
+   (`provider/mcp/doc.go`). D11 itself stays pending owner; unit 2 shipping modern-only precludes
+   nothing — the era-specific header/`_meta` layer lives in its own file (`transport.go`) precisely
+   so a legacy follow-on unit has one place to extend.
 2. **The endpoint path.** Fact: server-chosen; the specification's own example is `/mcp`. Choose in
    unit 2; the docs guard will then require the `METHOD /path` row in `contracts/README.md`.
+   chosen: `POST /mcp`, listener `mcp`, default port 8084 (`provider.MCP`, `provider/mcp.PatternMCP`).
+   `contracts/README.md`'s index row now carries this route.
 3. **Whether the profile requires an `Authorization: Bearer` credential** like the three research
    profiles. Fact: the spec says authentication SHOULD exist and leaves the scheme to the
    deployment (authorization is OPTIONAL; when used, Bearer in the `Authorization` header, never
@@ -1015,11 +1027,22 @@ its reason. Nothing here is decided by this file.
    `provenance.yaml`. Fact bearing on the choice: house rule 4 —
    whatever is accepted is redacted; and consumers' contract tests want to prove they sent the
    credential.
+   chosen: OPTIONAL by default (`scenario.AuthOptional`, the profile's own default — the opposite
+   default from the three research profiles), `Authorization` the only accepted placement. A
+   scenario opting into `auth: {mode: required}` turns a missing/mismatched credential into `401`
+   with the `id` member OMITTED (never the request's own id, and never rendered as a JSON `null`:
+   `schema.json`'s `RequestId` admits only `string | integer`, no null variant), code `-32600`,
+   message exactly `"authorization required"`, no `WWW-Authenticate` — never a half-implemented
+   OAuth challenge. See `mcp-401.json`.
 4. **Whether `x-mcp-header` is honoured.** Fact: optional for servers, but "clients **MUST** support
    this feature", and a conforming client will send `Mcp-Param-{name}` for any annotated argument.
    If the profile's fixture tools carry no `x-mcp-header`, no `Mcp-Param-*` header is ever expected;
    if any does, the server MUST validate it (`400` + `-32020` on mismatch). **The specification does
    not say** what a terminal server does with an unrecognised `Mcp-Param-*` header (see above).
+   chosen: not honoured. unit 2: not honoured, load-rejected — `Validator` rejects, at load, any
+   fixture tool whose `inputSchema` contains an `x-mcp-header` key anywhere (finding
+   `mcp.tool.x_mcp_header_unsupported`, ERROR); any `Mcp-Param-*` request header is ignored with
+   WARNING `mcp.header.param_ignored`.
 5. **Whether the profile ever answers with an SSE stream, and for which scripted outcomes.** Fact:
    the server chooses per request; a stream may carry only request-scoped `notifications/progress`
    (opt-in by `progressToken`) and `notifications/message` (opt-in by `logLevel`; the feature is
@@ -1027,27 +1050,60 @@ its reason. Nothing here is decided by this file.
    cancellation; `X-Accel-Buffering: no` SHOULD. Also **the specification does not say** the SSE
    framing (event names, `data:` layout), so a scripted stream's frame shape is simulator-chosen and
    must be recorded.
+   chosen: `tools/call` only, when the entry's stream policy is `stream` (`notifications/message`
+   / `logLevel` not simulated). Unnamed `data:`-only frames, no `event:`, no `id:`, no `[DONE]`
+   (`GrammarDelta` with `OmitDone: true`); one `notifications/progress` frame per delta only when
+   the request carried `_meta.progressToken`, then the final response frame. `reject` is a load
+   ERROR (`mcp.stream.reject_meaningless`): the client has no field that asks to stream. Headers:
+   `provider.StreamHeader()` plus `X-Accel-Buffering: no`. See `mcp-tools-call-stream.sse`.
 6. **The HTTP status carrying an ordinary JSON-RPC error** (`-32602` unknown tool / invalid cursor,
    `-32603`, `-32700`, `-32600`, an array body). Fact: only `-32020`/`-32021`/`-32022`/missing-`_meta`
    `-32602` are assigned `400`, `-32601` is assigned `404`; a JSON-object answer is otherwise
    described only by `Content-Type`, with `200 OK` in the sequence diagram. Simulator-chosen; record
    the choice as `kind: simulator-chosen` on the golden.
+   chosen: `200` for every method-level JSON-RPC error (unknown tool, invalid params, invalid
+   cursor `-32602`; internal `-32603`) — the JSON-RPC-over-HTTP convention, and `400` stays reserved
+   for the spec-assigned shape failures because a `400` body is the client's era-detection signal.
+   Every scripted-fault error status renders the fixed `{"jsonrpc":"2.0","id":<echoed, or the
+   member omitted when the id is unknown>,"error":{"code":-32603,"message":"servicesim scripted
+   fault: <kind>"}}`, with two overrides an attempt may supply, in this order: its own `body:`
+   replaces the whole envelope outright, and its own `error:` replaces only the message text
+   (the shared `scenario.FaultAttempt` grammar every other provider package already honours —
+   how the rate-limited/brownout/server-error built-ins put a human-readable message on the wire).
+   See `mcp-error-unknown-tool.json`, `mcp-fault-503.json`.
 7. **The `Origin` policy.** Fact: present-and-invalid → `403` MUST; absent → **the specification does
    not say**. What "invalid" means for a localhost test simulator is a simulator choice.
+   chosen: not validated in this unit. Absent: nothing. Present: accepted and journaled as an
+   ordinary header, no finding. A scenario that wants to prove a client's `403` handling scripts it
+   through `fault: {status: 403, body: {...}}`, which this profile's `faultBody` already supports
+   (an attempt's own `body:` wins outright).
 8. **The tool catalogue.** A scenario concern — the tools are fixture data. Contract facts that
    bind fixture authors: names SHOULD be header-safe (`A-Z a-z 0-9 _ - .`, 1–128 chars, unique);
    `inputSchema` is JSON Schema 2020-12 with `type: "object"` at the root; `outputSchema` optional;
    `structuredContent` MUST conform to `outputSchema` when one is declared, and SHOULD also appear
    serialised in a `text` block; `tools/list` order SHOULD be deterministic; `ttlMs >= 0` and
    `cacheScope` are required on every `tools/list` page.
+   chosen: `Validator` enforces uniqueness (ERROR on duplicate) and the header-safe pattern
+   (WARNING otherwise); `input_schema` must be a JSON object with `type: "object"` at the root
+   (ERROR otherwise, `output_schema` optional); `structuredContent` is never validated against
+   `output_schema` (no JSON Schema validator in stdlib) — WARNING `mcp.tool.output_schema_unchecked`
+   once per such tool; `tools/list` order is declaration order.
 9. **`server/discover` values.** `supportedVersions` (`["2026-07-28"]` for a modern-only profile),
    `capabilities` (`tools: {}` at minimum; `logging: {}` only if `notifications/message` is emitted),
    `instructions`, `ttlMs`, `cacheScope`, and whether `_meta.io.modelcontextprotocol/serverInfo` is
    stamped (SHOULD). All fixture or profile constants.
+   chosen: `supportedVersions: ["2026-07-28"]`; `capabilities: {"tools":{}}` exactly (no
+   `listChanged`, no `logging`); `_meta.io.modelcontextprotocol/serverInfo: {name: "servicesim",
+   version: "1"}` on every result (`server/discover`, `tools/list` and `tools/call` alike, both Go
+   constants); `instructions` from the projection when set; `ttlMs`/`cacheScope` default to `60000`
+   / `"private"`. See `mcp-discover-happy.json`.
 10. **`Accept` and request `Content-Type` strictness.** Fact: the client MUST send `Accept` listing
     both types; **the specification does not say** the server's reaction to a violation, and says
     nothing normative about the request `Content-Type`. Whether the profile rejects (house rule 5,
     "strict about requests") is simulator-chosen.
+    chosen: strict, for every request (never for a notification, whose header requirements the
+    specification leaves undefined). A missing/incomplete `Accept` or a `Content-Type` other than
+    `application/json` is `400` + `-32600` naming the header.
 
 ## Open questions for the adopter
 

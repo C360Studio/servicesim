@@ -161,3 +161,25 @@ providers:
           content: Report A states the finding.
           sources:
             - source-a
+
+  # One route, one budget — the same 30s hang as the synchronous routes
+  # above, on POST /mcp's single attempt budget.
+  mcp:
+    fault:
+      attempts:
+        - delay: 30s
+      after: success
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a

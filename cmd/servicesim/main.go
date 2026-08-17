@@ -214,8 +214,8 @@ func versionText() string {
 // this file cannot describe a flag set that differs from the one config.Load
 // parses.
 func usage() string {
-	return "servicesim simulates the Exa, Tavily and Perplexity research APIs deterministically,\n" +
-		"offline, and without credentials.\n\n" +
+	return "servicesim simulates the Exa, Tavily and Perplexity research APIs and an MCP server\n" +
+		"deterministically, offline, and without credentials.\n\n" +
 		"Usage:\n" +
 		"  servicesim [flags]              serve until SIGINT or SIGTERM\n" +
 		"  servicesim --version            print build information and exit\n" +

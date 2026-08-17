@@ -1,0 +1,16 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "result": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "servicesim",
+        "version": "1"
+      }
+    },
+    "cacheScope": "private",
+    "resultType": "complete",
+    "tools": [],
+    "ttlMs": 60000
+  }
+}

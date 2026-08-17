@@ -37,6 +37,7 @@ func TestLoadDefaults(t *testing.T) {
 		Exa:                 Listener{Port: 8081, Enabled: true},
 		Tavily:              Listener{Port: 8082, Enabled: true},
 		Perplexity:          Listener{Port: 8083, Enabled: true},
+		MCP:                 Listener{Port: 8084, Enabled: true},
 		ScenarioPath:        "builtin:happy",
 		ScenarioRoot:        "",
 		ScenarioDir:         "",
@@ -123,6 +124,7 @@ func TestLoadEnvironmentAppliesToEveryBinding(t *testing.T) {
 		"SERVICESIM_EXA_PORT":               "9081",
 		"SERVICESIM_TAVILY_PORT":            "9082",
 		"SERVICESIM_PERPLEXITY_PORT":        "9083",
+		"SERVICESIM_MCP_PORT":               "9084",
 		"SERVICESIM_PROVIDERS":              "exa",
 		"SERVICESIM_MAX_NAMESPACES":         "64",
 		"SERVICESIM_MAX_JOBS":               "32",
@@ -155,6 +157,7 @@ func TestLoadEnvironmentAppliesToEveryBinding(t *testing.T) {
 		Exa:                 Listener{Port: 9081, Enabled: true},
 		Tavily:              Listener{Port: 9082},
 		Perplexity:          Listener{Port: 9083},
+		MCP:                 Listener{Port: 9084},
 		ScenarioPath:        "/scenarios/custom.yaml",
 		ScenarioRoot:        "/scenarios",
 		MaxNamespaces:       64,
@@ -530,7 +533,7 @@ func TestLoadProviders(t *testing.T) {
 	}{
 		{
 			name: "default enables every provider in a stable order",
-			want: []provider.Name{provider.Exa, provider.Tavily, provider.Perplexity},
+			want: []provider.Name{provider.Exa, provider.Tavily, provider.Perplexity, provider.MCP},
 		},
 		{
 			name: "a subset enables only those listeners",

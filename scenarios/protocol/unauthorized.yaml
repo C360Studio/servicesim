@@ -84,3 +84,25 @@ providers:
     content: Report A states the finding.
     sources:
       - source-a
+
+  # mode: reject is explicit, so it overrides mcp's own optional-by-default
+  # AuthPolicy exactly as it overrides the other five providers' default —
+  # every credential is rejected with the fixed 401 shape (contracts/mcp/
+  # README.md decision 3), never the ordinary 200 below.
+  mcp:
+    auth:
+      mode: reject
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a
