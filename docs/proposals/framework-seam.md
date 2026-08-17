@@ -547,12 +547,19 @@ mechanisms rely on handler convention today and become construction:
   unconditionally, so an attempt claimed before validation failed is still applied — the rejection wears a
   scripted 429 and the consumer cannot prove it sent a wrong request. Fix, spiked, six lines: if the response is
   not fault-eligible and a decision was claimed, zero the decision (`Index: -1`), keep the handler's status, and
-  record `fault.attempt_on_rejection`. All existing tests pass with it (confirming "latent, not reachable
-  today"); an out-of-tree test proves the pre-fix code served the 429. **This ships first, as unit 0, before any
-  seam work.** The retry *budget* half — the claimed index is still spent — is warn-only in unit 0; a CAS release
-  of the claimed lane is an implementation choice that touches the lane counter under concurrency and belongs
-  behind a `-race` spike with two concurrent requests, so it waits until a real out-of-tree profile trips the
-  warning. An engineering call, recorded here, not an owner question.
+  record `fault.attempt_on_rejection`. All existing tests pass with it, which was read at spike time as
+  "latent, not reachable today" — that reading was wrong: `SelectTurnFor` claims via `CallIndex` and then fails
+  `scenario.no_matching_turn`, and `MintJob` claims unconditionally and then fails `job.limit_reached`, so every
+  shipped handler that uses either one takes this exact path on an ordinary unmatched-turn or over-limit request;
+  the existing suite simply had no test exercising it. An out-of-tree test proves the pre-fix code served the 429.
+  **This ships first, as unit 0, before any seam work.** Unit 0's actual implementation keeps `Index` and `Key` as
+  claimed rather than zeroing them (`Attempt` alone is cleared), because testkit's namespace-isolation and
+  attempt-budget assertions read the journal's `Outcome.FaultKey`/`Outcome.AttemptIndex` and a zeroed, unnamespaced
+  `Index: -1` misreports which lane and which counter slot were actually drawn on. The retry *budget* half — the
+  claimed index is still spent — is warn-only in unit 0; a CAS release of the claimed lane is an implementation
+  choice that touches the lane counter under concurrency and belongs behind a `-race` spike with two concurrent
+  requests, so it waits until a real out-of-tree profile trips the warning. An engineering call, recorded here,
+  not an owner question.
 - *`Response.FaultBody` is called for a no-op attempt.* Verified: `provider/fault_exec.go:307` calls
   `resp.FaultBody(*a)` for any executing attempt, and `exa/errors.go:119`, `tavily/errors.go:193` and
   `perplexity/errors.go:104` each re-implement `if a.Status < 400 { return nil }` — three profiles independently
@@ -593,7 +600,7 @@ Each unit is independently green (`task check`) and independently revertible.
 
 | # | Scope | Definition of done |
 |---|---|---|
-| **0** | The memoised-fault gate: `provider/handle.go` (six lines), `CodeAttemptOnRejection`, a table test that a handler which claims then rejects gets its own status, `AttemptIndex -1` and the finding | New test fails on `main`, passes after; every existing test unchanged. **Independent of every other decision — merge today.** |
+| **0** | The memoised-fault gate: `provider/handle.go`, `CodeAttemptOnRejection`, a table test that a handler which claims then rejects (or opts out of faults) gets its own status and body, the journal keeps the claimed index and namespaced key truthfully (only the attempt is cleared — the counter really was drawn on), and the finding is recorded | New test fails on `main`, passes after; every existing test unchanged. **Independent of every other decision — merged first (`phase-10`).** Review showed the gap is not latent: `SelectTurnFor` and `MintJob` claim before they can know the request will be rejected, so every profile reached it via `scenario.no_matching_turn`. |
 | **1** | `provider`: `Render`, `Hex32`, `UUIDv5`, `FloatIn`, `ContentTypeJSON`, `Credential`, `Severity`, `Finding`; `Exchange.Credentials`/`ObserveCredential`/`HasJSONContentType`/`AuthPolicy`/`EntryFor`/`Reject`; `Findings()` → `[]Finding`; unexport `Exchange.Auth`; `MintJob` → `(string, bool)`, `ResolveJob` → `bool`; the four profiles rewritten off `internal/{wire,ids,httpx,journal}`; exa's extra/omit order fixed to what `docs/scenario-schema.md:452-454` documents | **No non-test file under the four profiles imports `servicesim/internal/…`** (`go list -deps`), and — **the full test suite compiles and passes**. The winning spike ran vet excluding in-tree `_test.go`; this unit's DoD is the measurement that spike skipped. A test that a key both omitted and re-added by `extra_fields` is absent from exa's body, release-noted. |
 | **2** | `Profile` (incl. `DefaultAuth`, `Kind` stored but not yet threaded), `Refusal`, `RefusalKind`, `Set`, `NewSet`, `MustSet`, `Validate`, `Handler`, `Refuse(Refusal)`, `(*Set).Faults` + `FaultOption`/`WithFaultLogger`/`WithMaxNamespaces`; `MuxSpec` loses `NotFound`/`MethodNotAllowed`; each profile gains `Profile()` and a typed `Name` (exa and perplexity add theirs) and loses `New`; the four `provider.Exa…` constants deleted; refusal bodies move out of `internal/server`, the duplicated envelope deleted; `Status < 400` guard into `fault_exec.go`; panic → `RefuseInternal` 500; `Stream.Sentinel`/`SentinelPace` replace `OmitDone`/`DonePace`, empty `Grammar` refused, perplexity's renderer sets `DoneSentinel`; `relaxAuth` consults `DefaultAuth` | **An out-of-tree profile compiles, is registered and serves** — this is the unit at which `provider/mcp` builds against exported packages only, proven by all three spikes (`go list -deps ./provider/mcp` → no `internal/` for the minimal-export shape). `NewSet` refuses missing `ErrorBody`, duplicate names and ports, an unknown `DefaultAuth`, one entry kind from two `Kind`s, and instancing of a multi-entry profile, each with a test. A `- {}` attempt serves the scenario body at 200. A `Stream{Grammar: "tool_call_delta"}` with no `Sentinel` streams its chunks and nothing after; with `Grammar: ""` it is refused. MCP's no-`auth:` entry is still optional under `--strict-auth` (default), and `--strict-auth=false` still relaxes exa. |
 | **3** | `internal/config` + `internal/server` derived from `*Set`; root `servicesim` package with `Main`/`Run`/`Build`; `cmd/servicesim` a wrapper; ldflags paths in `Dockerfile`, `Taskfile.yml`, CI; `--print-routes --print-ports --print-hosts`; `scenario.profile.unscripted` | `internal/{config,server}` import no profile package; `--help` derives from the set; `image-smoke.sh` passes and asserts `--version`; an out-of-module `main.go` composing one foreign profile plus two of ours builds and serves (all three spikes). **After this unit a consumer composes their own binary and image.** |

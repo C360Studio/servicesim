@@ -63,7 +63,11 @@ func SelectTurn(e *scenario.ProviderEntry, callIndex int, route string, body []b
 // two derivations are two chances to disagree about which call this is.
 //
 // Call it only once the request has passed validation: it claims an attempt, and
-// a rejected request must not consume one (§4.4).
+// a rejected request must not consume one (§4.4). When this is called on a
+// request that turns out to have no matching turn, Handle will not apply the
+// claimed attempt to the resulting rejection (fault.attempt_on_rejection), but
+// the index is already spent — validating first, before this runs, is still
+// what keeps a lane's attempt budget matching the calls it actually served.
 func SelectTurnFor(x *Exchange, e *scenario.ProviderEntry) (*scenario.Turn, int) {
 	index := x.CallIndex()
 	turn, at, err := SelectTurn(e, index, x.Route.FaultKey, x.Raw)

@@ -898,14 +898,17 @@ is theirs (D12); Servicesim does not unblock it.
   the three provider packages share") and `internal/redact/redact.go`'s `substringCredentialFragments` ("checked
   against the three providers' documented field names"). Not wire facts, no guard depends on them, and unit 3's
   sweep excluded Go outside `examples/` — a one-line tidy for the next unit that touches either file.
-- **Follow-up surfaced by unit 2's review (shared pipeline, not MCP-specific):** `provider/handle.go` reads the
-  memoised fault decision (`x.decision`) after the handler returns regardless of `Response.FaultEligible`, so
-  "validation has the last word" holds only by the convention that every handler validates before it claims an
-  attempt (`SelectTurnFor`/`CallIndex`). Every shipped handler follows the convention — MCP's method-level checks
-  were moved ahead of `selectProjection` for exactly this reason — but the gate itself does not gate an
-  already-claimed decision. Latent, not reachable today; worth a small hardening unit with its own test
-  (a handler that claims then fails must not have the claimed attempt applied to its rejection response), because
-  the next profile's author will not know the convention.
+- **Follow-up surfaced by unit 2's review (shared pipeline, not MCP-specific), closed by Phase 10 unit 0:**
+  `provider/handle.go` used to read the memoised fault decision (`x.decision`) after the handler returns
+  regardless of `Response.FaultEligible`, so "validation has the last word" held only by the convention that
+  every handler validates before it claims an attempt (`SelectTurnFor`/`CallIndex`). That was recorded here as
+  "latent, not reachable today" — wrongly: `SelectTurnFor` itself claims via `CallIndex` and then fails
+  `scenario.no_matching_turn`, and `MintJob` claims unconditionally and then fails `job.limit_reached`, so every
+  shipped handler that uses either one already followed this exact claim-then-reject shape. Unit 0 adds the gate
+  (`provider/handle.go`, `CodeAttemptOnRejection`/`fault.attempt_on_rejection`): a claimed attempt is never applied
+  to a rejection's wire response, while the journal keeps reporting the real claimed index and (namespaced) key,
+  because the counter genuinely advanced. The claimed index still is not released back to the counter — that half
+  is deliberately deferred, per the proposal (`docs/proposals/framework-seam.md` rule 5).
 - Two nits left as recorded, not fixed: the `202` for a notification carries a `Content-Type: application/json`
   header on an empty body (the contract only says "no body"); `extra-fields.yaml`'s `mcp:` block has envelope-level
   extras only — per-tool and per-content-block `extra_fields` would be a new projection field (unit 3 did not add

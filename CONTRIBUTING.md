@@ -88,7 +88,10 @@ provider/<name>/
       on the turn `provider.SelectTurnFor` chose. That is what keeps `scenario` from importing provider packages.
 - [ ] **Validate before you claim.** `SelectTurnFor` claims a fault attempt; every request-side check that needs
       nothing from the projection — auth, headers, method shape, params shape — runs before it, or a rejected
-      request spends a scripted fault's budget (and, because the decision is memoised, wears its status).
+      request spends a scripted fault's budget. `Handle` refuses to let the claimed attempt reach the wire on a
+      rejection (`fault.attempt_on_rejection` in the journal), so the rejection no longer wears the fault's
+      status — but the claimed index stays spent regardless, so validating first is still what keeps a lane's
+      attempt budget matching the calls it actually served.
 - [ ] **Implement `provider.Validator`** (and `provider.RouteLister` if your entries use `when.route`) so
       projections are decoded and checked at startup. A bad fixture must fail at boot, not on the first request.
 - [ ] **One route, many methods?** `provider.NewMux` keys handlers by pattern, so two routes sharing one pattern
