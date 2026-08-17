@@ -168,10 +168,10 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 			appended = true
 			entry.CompletedAt = d.Clock.Now()
 			entry.Namespace = x.lane.Namespace
-			entry.Findings = x.Findings()
+			entry.Findings = x.journalFindings()
 			entry.Headers = r.Header
 			entry.Body = json.RawMessage(x.Raw)
-			entry.Auth = x.Auth
+			entry.Auth = x.auth
 
 			// Redact BEFORE the logger sees it. Append redacts too, but Append takes
 			// Entry by value, so the local entry would still hold the raw
@@ -245,7 +245,7 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 		// misconfiguration, and a journal that showed only one of them could not
 		// be used to prove which placements an adapter actually sends.
 		if creds := httpx.ExtractCredentials(r); len(creds) > 0 {
-			x.Auth = httpx.ObserveAll(creds)
+			x.auth = httpx.ObserveAll(creds)
 		}
 
 		// One resolution, here, after the body is readable and before the handler

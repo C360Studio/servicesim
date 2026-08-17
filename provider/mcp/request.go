@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/c360studio/servicesim/internal/httpx"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -199,9 +198,9 @@ func acceptedPlacements(x *provider.Exchange, policy scenario.AuthPolicy) []stri
 // accepted by this route's policy — there is only one recognised
 // placement (Authorization), so today that can only be an
 // AcceptedPlacements narrowed by a scenario's own auth.headers.
-func presentedCredentials(x *provider.Exchange, accepted []string) []httpx.Credential {
-	var presented []httpx.Credential
-	for _, cred := range httpx.ExtractCredentials(x.Request) {
+func presentedCredentials(x *provider.Exchange, accepted []string) []provider.Credential {
+	var presented []provider.Credential
+	for _, cred := range x.Credentials() {
 		if slices.Contains(accepted, cred.Header) {
 			presented = append(presented, cred)
 		}
@@ -234,7 +233,7 @@ func checkAuth(x *provider.Exchange, entry *scenario.ProviderEntry) {
 				"Authorization does not carry the documented Bearer scheme")
 		}
 	}
-	if policy.ExpectKey != "" && !slices.ContainsFunc(presented, func(c httpx.Credential) bool {
+	if policy.ExpectKey != "" && !slices.ContainsFunc(presented, func(c provider.Credential) bool {
 		return c.Value == policy.ExpectKey
 	}) {
 		x.Fail(CodeAuthMismatch, "authorization", "the presented credential is not the expected key")

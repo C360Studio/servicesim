@@ -7,7 +7,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -292,7 +291,7 @@ func renderSearch(x *provider.Exchange, p *Projection, requestID string) ([]byte
 	if p.Output != nil && x.Has("outputSchema") {
 		resp.Output = renderOutput(p.Output)
 	}
-	return wire.Render(resp, p.ExtraFields)
+	return provider.Render(resp, p.ExtraFields, nil)
 }
 
 // renderFindSimilar projects the scenario into a /findSimilar response body.
@@ -322,7 +321,7 @@ func renderFindSimilar(x *provider.Exchange, p *Projection, requestID string) ([
 		Results:     results,
 		CostDollars: renderCost(fs.CostDollars),
 	}
-	return wire.Render(resp, fs.ExtraFields)
+	return provider.Render(resp, fs.ExtraFields, nil)
 }
 
 // renderAnswer projects the scenario into an /answer response body.
@@ -369,7 +368,7 @@ func renderAnswer(x *provider.Exchange, p *Projection, requestID string) ([]byte
 		Citations:   citations,
 		CostDollars: renderCost(a.CostDollars),
 	}
-	return wire.Render(resp, a.ExtraFields)
+	return provider.Render(resp, a.ExtraFields, nil)
 }
 
 // renderResult projects one canonical source into an Exa result.

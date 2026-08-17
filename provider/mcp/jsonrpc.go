@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -255,11 +254,11 @@ type rpcError struct {
 // buildError renders a JSON-RPC error envelope. id is echoed verbatim
 // (pass nullID for every case decision 3/6 require a null id).
 func buildError(id json.RawMessage, code int, message string, data any) []byte {
-	body, err := wire.Render(errorEnvelope{
+	body, err := provider.Render(errorEnvelope{
 		JSONRPC: "2.0",
 		ID:      id,
 		Error:   rpcError{Code: code, Message: message, Data: data},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		// errorEnvelope is fully concrete; marshalling it cannot fail.
 		return []byte(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal error"}}`)
@@ -279,7 +278,7 @@ type resultEnvelope struct {
 // buildResult renders a JSON-RPC success envelope around an already-
 // rendered result body.
 func buildResult(id json.RawMessage, resultBody []byte) ([]byte, error) {
-	return wire.Render(resultEnvelope{JSONRPC: "2.0", ID: id, Result: resultBody}, nil)
+	return provider.Render(resultEnvelope{JSONRPC: "2.0", ID: id, Result: resultBody}, nil, nil)
 }
 
 // errAt is the shape of a shape-failure this package's checks build

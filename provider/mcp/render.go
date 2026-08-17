@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/c360studio/servicesim/internal/wire"
+	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -242,7 +242,7 @@ func renderDiscover(p *Projection) ([]byte, error) {
 		CacheScope:        cacheScopeOf(p),
 		Meta:              serverInfoMeta(),
 	}
-	return wire.Render(body, p.ExtraFields)
+	return provider.Render(body, p.ExtraFields, nil)
 }
 
 // wireTool is Tool.
@@ -311,7 +311,7 @@ func renderToolsList(p *Projection) ([]byte, error) {
 		CacheScope: cacheScopeOf(p),
 		Meta:       serverInfoMeta(),
 	}
-	return wire.Render(body, p.ExtraFields)
+	return provider.Render(body, p.ExtraFields, nil)
 }
 
 // wireContent is ContentBlock. One struct for all five wire shapes: their
@@ -448,5 +448,5 @@ func renderCallResult(rp *ResultProjection, extra scenario.ExtraFields) ([]byte,
 		IsError:           rp.IsError,
 		Meta:              serverInfoMeta(),
 	}
-	return wire.Render(body, extra)
+	return provider.Render(body, extra, nil)
 }

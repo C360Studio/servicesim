@@ -467,3 +467,45 @@ providers:
 		"the default is the source URL, never a slug like source-1")
 	assert.Equal(t, "an-explicit-override", got.Results[1].ID)
 }
+
+// TestRender_OmitFieldsWinsOverExtraFields pins the fix to exa's response
+// ordering bug (Phase 10 unit 1, docs/adopter-backlog.md's Phase 10 section):
+// provider.Render merges extra_fields into the body FIRST and drops
+// omit_fields SECOND, matching docs/scenario-schema.md's documented order
+// ("the merge happens first and the omission second, so omit_fields can
+// remove a key extra_fields added") and every other provider package.
+//
+// Before the fix, exa's Result.MarshalJSON applied the two in the opposite
+// order, so a key named by both omit_fields and extra_fields survived —
+// "reinstated" by the extra field, in the old doc comment's own words. This
+// test asserts the field is ABSENT: omit_fields wins.
+func TestRender_OmitFieldsWinsOverExtraFields(t *testing.T) {
+	t.Parallel()
+
+	s := newSim(t, `
+version: 1
+name: exa-omit-vs-extra
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa:
+    results:
+      - source: source-a
+        omit_fields: [title]
+        extra_fields:
+          title: "reinstated by extra_fields"
+`)
+	body := s.search(`{"query":"report a"}`).Body.String()
+
+	var got struct {
+		Results []map[string]any `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &got))
+	require.Len(t, got.Results, 1)
+
+	_, present := got.Results[0]["title"]
+	assert.False(t, present,
+		"omit_fields must win over extra_fields for the same key; title must not reach the wire, got body: %s", body)
+}

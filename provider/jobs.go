@@ -180,7 +180,7 @@ func deliversBody(dec FaultDecision) bool {
 }
 
 // MintJob claims this request's call index and records a job derived from it,
-// returning the job and whether the request may proceed.
+// returning the identifier and whether the request may proceed.
 //
 // False means the request was refused and a finding says why; the caller renders
 // its own provider-shaped error. True means the handler should render normally —
@@ -210,7 +210,7 @@ func deliversBody(dec FaultDecision) bool {
 // receives nothing, yet the record is committed — the decision said this attempt
 // would serve, and that was true when it was made. No predicate evaluated before
 // the write can know otherwise.
-func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (jobs.Job, bool) {
+func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (id string, ok bool) {
 	lane := x.Lane()
 	index := x.CallIndex()
 
@@ -239,14 +239,14 @@ func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (
 		x.Fail(CodeJobIDInvalid, "",
 			"provider %q derived the job identifier %q, which is not a valid identifier; a poll could never resolve it",
 			entry, job.ID)
-		return jobs.Job{}, false
+		return "", false
 	}
 
 	if !deliversBody(x.Fault()) {
 		// The claim stands, the record does not. The handler still renders a body
 		// so the response has a shape; Handle replaces it with the fault before
 		// any of it reaches the client.
-		return job, true
+		return job.ID, true
 	}
 
 	store := x.Deps.Jobs
@@ -254,7 +254,7 @@ func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (
 		// A zero Deps serves without job state at all, matching how a nil Faults
 		// serves without faults. The identifier is still derived and returned, so
 		// a create answers normally; only the poll that follows cannot resolve it.
-		return job, true
+		return job.ID, true
 	}
 
 	stats, err := store.Create(job)
@@ -263,17 +263,17 @@ func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (
 		x.Fail(CodeJobIDCollision, "",
 			"job %q is already live in namespace %q; the usual cause is a reset that dropped the fault cursors without dropping the job records, so this create re-minted an identifier it had already used",
 			job.ID, job.Namespace)
-		return jobs.Job{}, false
+		return "", false
 
 	case errors.Is(err, jobs.ErrLimit):
 		x.Fail(CodeJobLimitReached, "",
 			"namespace %q holds its maximum of %d jobs; reset it with POST /__admin/reset, give each test its own namespace, or raise the bound",
 			job.Namespace, stats.Bound)
-		return jobs.Job{}, false
+		return "", false
 
 	case err != nil:
 		x.Fail(CodeJobLimitReached, "", "recording the job failed: %v", err)
-		return jobs.Job{}, false
+		return "", false
 	}
 
 	if stats.Near() {
@@ -281,10 +281,10 @@ func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (
 			"namespace %q holds %d of %d jobs; creates still succeed, but reset it or use per-test namespaces before it fills",
 			job.Namespace, stats.Count, stats.Bound)
 	}
-	return job, true
+	return job.ID, true
 }
 
-// ResolveJob returns the job an identifier names in this request's namespace.
+// ResolveJob reports whether an identifier names a live job in this request's namespace.
 //
 // It CLAIMS NO ATTEMPT and advances no cursor, which is what makes it usable
 // from a request that must not consume a poll — a HEAD asking only whether a run
@@ -298,15 +298,14 @@ func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (
 // identifier is never this process's own, and a miss in a namespace that has
 // minted nothing is a typo, not a divergence. Whether the 404 itself carries
 // anything beyond this is the provider's decision, and the vendors differ.
-func ResolveJob(x *Exchange, id string) (jobs.Job, bool) {
+func ResolveJob(x *Exchange, id string) bool {
 	if x.Deps.Jobs == nil || !ValidJobID(id) {
-		return jobs.Job{}, false
+		return false
 	}
 
 	namespace := x.Lane().Namespace
-	job, found := x.Deps.Jobs.Lookup(namespace, id)
-	if found {
-		return job, true
+	if _, found := x.Deps.Jobs.Lookup(namespace, id); found {
+		return true
 	}
 
 	if stats := x.Deps.Jobs.StatsIn(namespace); stats.Count > 0 {
@@ -317,5 +316,5 @@ func ResolveJob(x *Exchange, id string) (jobs.Job, bool) {
 			slog.String("id", id))
 	}
 
-	return jobs.Job{}, false
+	return false
 }

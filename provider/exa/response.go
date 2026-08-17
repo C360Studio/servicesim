@@ -1,7 +1,7 @@
 package exa
 
 import (
-	"github.com/c360studio/servicesim/internal/wire"
+	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -70,27 +70,20 @@ type Result struct {
 	omit  []string
 }
 
-// MarshalJSON renders the result, drops the scenario's omit_fields and merges
-// its extra_fields.
-//
-// The order is deliberate: omission applies to the fields this simulator
-// projects, and extra fields are additive and therefore applied last, so an
-// extra field can reinstate a key that was omitted rather than being silently
-// deleted by it.
+// MarshalJSON renders the result, merges its extra_fields and then drops its
+// omit_fields — the order docs/scenario-schema.md documents ("the merge
+// happens first and the omission second, so omit_fields can remove a key
+// extra_fields added"), matching every other provider package. Earlier
+// versions of this method applied the two in the opposite order ("so an
+// extra field can reinstate a key that was omitted"); that was a documented
+// divergence from the schema, fixed here — see the exa response ordering
+// test.
 func (r Result) MarshalJSON() ([]byte, error) {
 	// A defined-type copy drops this method, so the marshal below cannot re-enter
 	// it. Forgetting that is an infinite recursion, not a compile error.
 	type wireResult Result
 
-	body, err := wire.Render(wireResult(r), nil)
-	if err != nil {
-		return nil, err
-	}
-	body, err = wire.Omit(body, r.omit)
-	if err != nil {
-		return nil, err
-	}
-	return wire.MergeJSON(body, r.extra)
+	return provider.Render(wireResult(r), r.extra, r.omit)
 }
 
 // CostDollars is the per-request cost breakdown.

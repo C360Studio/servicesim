@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/c360studio/servicesim/internal/httpx"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -118,8 +117,8 @@ func authenticate(x *provider.Exchange, e *scenario.ProviderEntry) {
 
 	accepted := x.AcceptedPlacements(policy, authHeaders)
 
-	presented := httpx.ExtractCredentials(x.Request)
-	var match *httpx.Credential
+	presented := x.Credentials()
+	var match *provider.Credential
 	for i := range presented {
 		if slices.Contains(accepted, presented[i].Header) {
 			match = &presented[i]
@@ -165,7 +164,7 @@ func authPolicy(e *scenario.ProviderEntry) scenario.AuthPolicy {
 // warning by default because none of the simulated vendors documents a 415;
 // a scenario that wants the strict behaviour promotes the code.
 func validateContentType(x *provider.Exchange) {
-	if !httpx.IsJSONContentType(x.Request.Header.Get("Content-Type")) {
+	if !x.HasJSONContentType() {
 		x.Warn(codeContentType, "", "Content-Type %q is not a JSON media type",
 			x.Request.Header.Get("Content-Type"))
 	}

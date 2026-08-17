@@ -258,6 +258,44 @@ providers:
 		"two different sources must not derive the same id prefix")
 }
 
+// TestDerivedScoreAndResponseTimeArePinned closes a gap
+// TestDerivedValuesAreStableAndWellShaped leaves open: that test only checks
+// the derived score falls in [scoreFloor, scoreCeiling), which a broken
+// derivation (e.g. one that always returns scoreFloor) would still satisfy.
+// Pinning the exact literal, the way exa's AgentRun goldens pin run_ ids,
+// makes a regression in provider.FloatIn's derivation — or in the parts
+// tavily feeds it — fail here rather than only in a byte-diff against a
+// golden file nobody is looking at when it changes.
+func TestDerivedScoreAndResponseTimeArePinned(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+version: 1
+name: derived
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+  - id: source-b
+    url: https://example.test/report-b
+    title: Report B
+providers:
+  tavily:
+    results:
+      - source: source-a
+      - source: source-b
+`
+	first := render(t, src, `{"query":"a"}`)
+
+	var decoded SearchResponse
+	require.NoError(t, json.Unmarshal(first, &decoded))
+
+	require.Equal(t, 1.52, decoded.ResponseTime)
+	require.Len(t, decoded.Results, 2)
+	require.Equal(t, 0.94, decoded.Results[0].Score)
+	require.Equal(t, 0.97, decoded.Results[1].Score)
+}
+
 // TestMaxResultsTruncatesInDeclarationOrder proves the documented default is
 // applied and that truncation never sorts.
 func TestMaxResultsTruncatesInDeclarationOrder(t *testing.T) {

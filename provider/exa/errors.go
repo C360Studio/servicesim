@@ -3,8 +3,6 @@ package exa
 import (
 	"net/http"
 
-	"github.com/c360studio/servicesim/internal/journal"
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -88,10 +86,10 @@ const (
 // writing nothing.
 func errorBody(requestID, message, tag string, status int) []byte {
 	if status == http.StatusTooManyRequests {
-		body, _ := wire.Render(RateLimitResponse{Error: message}, nil)
+		body, _ := provider.Render(RateLimitResponse{Error: message}, nil, nil)
 		return body
 	}
-	body, _ := wire.Render(ErrorResponse{RequestID: requestID, Error: message, Tag: tag}, nil)
+	body, _ := provider.Render(ErrorResponse{RequestID: requestID, Error: message, Tag: tag}, nil, nil)
 	return body
 }
 
@@ -110,7 +108,7 @@ func errorBody(requestID, message, tag string, status int) []byte {
 // without replacing it.
 func faultBody(requestID string, a scenario.FaultAttempt) []byte {
 	if len(a.Body) > 0 {
-		body, err := wire.Render(a.Body, nil)
+		body, err := provider.Render(a.Body, nil, nil)
 		if err != nil {
 			return nil
 		}
@@ -168,7 +166,7 @@ func defaultsFor(status int) (message, tag string) {
 // from Go's map iteration and a golden over the body would flake.
 func classify(x *provider.Exchange) (status int, tag, message string) {
 	for _, f := range x.Findings() {
-		if f.Severity != journal.SeverityError {
+		if f.Severity != provider.SeverityError {
 			continue
 		}
 		return classifyCode(f.Code, f.Message)

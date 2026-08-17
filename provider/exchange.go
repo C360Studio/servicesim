@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/c360studio/servicesim/internal/journal"
+	"github.com/c360studio/servicesim/internal/redact"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -36,9 +37,14 @@ type Exchange struct {
 	// or unparseable; findings say which.
 	Body map[string]any
 
-	// Auth is what was observed about credentials, produced by httpx.Observe over
-	// httpx.ExtractCredentials. Never holds a credential value.
-	Auth journal.AuthObservation
+	// auth is what was observed about credentials, produced by httpx.Observe
+	// over httpx.ExtractCredentials. Never holds a credential value.
+	//
+	// It is unexported: ObserveCredential (framework.go) is the only write
+	// path into it, so a profile can add a placement it discovered itself
+	// (Tavily's body-placed api_key, for instance) without being able to
+	// replace the observation outright.
+	auth journal.AuthObservation
 
 	findings []journal.Finding
 
@@ -160,7 +166,31 @@ func (x *Exchange) HasFinding(code string) bool {
 // would differ too, making a golden for a two-error request flake. Handlers must
 // additionally walk body keys through slices.Sorted(maps.Keys(...)) so the
 // *messages* are generated in a stable order as well; see §3.3.
-func (x *Exchange) Findings() []journal.Finding {
+func (x *Exchange) Findings() []Finding {
+	in := x.journalFindings()
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Finding, len(in))
+	for i, f := range in {
+		out[i] = Finding{Severity: Severity(f.Severity), Code: f.Code, Field: f.Field, Message: f.Message}
+	}
+	return out
+}
+
+// journalFindings is Findings in the journal's own type, for Handle: the
+// journal entry's Findings field stays journal.Finding, since journal must
+// not import provider (journal.doc.go).
+//
+// Message is passed through redact.String here, at the one place both
+// Findings() and the journal entry's Findings field are built from, so
+// "redacted before it is stored, logged or served" (Finding's doc comment)
+// is true of the served path too: a handler that renders Findings() into a
+// 4xx body (exa's classify, tavily's errorFindings, perplexity's
+// validationErrorBody) does so before Handle's own record() ever runs
+// journal.Redact over the entry. redact.String is identity on ordinary
+// finding text, so this changes no existing wire body.
+func (x *Exchange) journalFindings() []journal.Finding {
 	if len(x.findings) == 0 {
 		return nil
 	}
@@ -168,6 +198,7 @@ func (x *Exchange) Findings() []journal.Finding {
 	out := make([]journal.Finding, len(x.findings))
 	for i, f := range x.findings {
 		f.Severity = effectiveSeverity(policy, f)
+		f.Message = redact.String(f.Message)
 		out[i] = f
 	}
 	slices.SortStableFunc(out, func(a, b journal.Finding) int {

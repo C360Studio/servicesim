@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/c360studio/servicesim/internal/ids"
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -207,7 +205,7 @@ func handleResearchCreate(x *provider.Exchange) provider.Response {
 		return errorResponse(x)
 	}
 
-	job, ok := provider.MintJob(x, NameResearch, researchIDPrefix, ids.UUIDv5)
+	id, ok := provider.MintJob(x, NameResearch, researchIDPrefix, provider.UUIDv5)
 	if !ok {
 		return errorResponse(x)
 	}
@@ -218,14 +216,14 @@ func handleResearchCreate(x *provider.Exchange) provider.Response {
 		model = "auto"
 	}
 
-	body, err := wire.Render(researchCreatedWire{
-		RequestID:    job.ID,
+	body, err := provider.Render(researchCreatedWire{
+		RequestID:    id,
 		CreatedAt:    x.Deps.Scenario.BaseTime().UTC().Format(scenario.PublishedAtLayout),
 		Status:       StatusPending,
 		Input:        input,
 		Model:        model,
 		ResponseTime: 0,
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		x.Fail(CodeProjectionInvalid, "", "the research create response could not be rendered: %v", err)
 		return errorResponse(x)
@@ -249,7 +247,7 @@ func handleResearchPoll(x *provider.Exchange) provider.Response {
 	}
 
 	id := x.Request.PathValue("request_id")
-	if _, found := provider.ResolveJob(x, id); !found {
+	if !provider.ResolveJob(x, id) {
 		x.Warn(CodeResearchNotFound, "request_id", "no research task %q exists in this namespace", id)
 		return staticResponse(http.StatusNotFound, MessageNotFound)
 	}
@@ -282,7 +280,7 @@ func handleResearchHead(x *provider.Exchange) provider.Response {
 	if x.Failed() {
 		return errorResponse(x)
 	}
-	if _, found := provider.ResolveJob(x, x.Request.PathValue("request_id")); !found {
+	if !provider.ResolveJob(x, x.Request.PathValue("request_id")) {
 		return provider.Response{Status: http.StatusNotFound, Label: Name + ".research.head.missing"}
 	}
 	return provider.Response{Status: http.StatusOK, Label: Name + ".research.head.ok"}
@@ -376,7 +374,7 @@ func renderResearchSnapshot(x *provider.Exchange, p *ResearchProjection, id stri
 			})
 		}
 	}
-	return wire.Render(out, p.ExtraFields)
+	return provider.Render(out, p.ExtraFields, nil)
 }
 
 // researchCreatedWire is the 201 body. All six fields are documented as

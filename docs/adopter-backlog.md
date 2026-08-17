@@ -894,6 +894,16 @@ is theirs (D12); Servicesim does not unblock it.
     `docs/design/mcp-profile.md`, the D9 tier-2 evidence, the CONTRIBUTING checklist, troubleshooting's MCP section.
   - Phase 7 (unreleased since v0.4.0): `contracts.Spec`/`ProviderSpec`, `Record.APIVersion`, the `spec:` block per
     vendor, the D10 no-canary refresh procedure — from `df1eb64`'s body.
+  - **Phase 10 unit 1: exa's `omit_fields` now wins over `extra_fields`, as documented and as the other profiles
+    always did.** `provider/exa/response.go`'s `Result.MarshalJSON` used to apply omission before the merge ("so
+    an extra field can reinstate a key that was omitted"), the opposite of `docs/scenario-schema.md`'s documented
+    order ("the merge happens first and the omission second, so `omit_fields` can remove a key `extra_fields`
+    added") and of tavily's and perplexity's own renderers. A search result whose fixture both omits a key and
+    re-adds it via `extra_fields` now correctly drops it from the wire body; before this release the key survived.
+    Fixed by routing exa's per-result render through the new `provider.Render(v, extra, omit)`, which every
+    profile now calls instead of `internal/wire` directly (`provider/framework.go` — house rule 2's byte-fidelity
+    guarantee, unchanged bytes everywhere else, proven by the full golden suite passing with no golden
+    regenerated). See `provider/exa/render_test.go`'s `TestRender_OmitFieldsWinsOverExtraFields`.
 - Two Go doc comments still say "three": `provider/exchange.go`'s `AcceptedPlacements` ("the one precedence rule
   the three provider packages share") and `internal/redact/redact.go`'s `substringCredentialFragments` ("checked
   against the three providers' documented field names"). Not wire facts, no guard depends on them, and unit 3's

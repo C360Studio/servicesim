@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/c360studio/servicesim/internal/journal"
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -72,13 +70,13 @@ func ErrorBody(surface Surface, status int, message string) []byte {
 		if pair, ok := agentErrorCode[status]; ok {
 			info.Code, info.Type = pair[0], pair[1]
 		}
-		body, err := wire.Render(AgentErrorResponse{Error: info}, nil)
+		body, err := provider.Render(AgentErrorResponse{Error: info}, nil, nil)
 		if err != nil {
 			return []byte(`{"error":{"message":"Internal Server Error"}}`)
 		}
 		return body
 	}
-	body, err := wire.Render(MessageErrorResponse{Detail: text}, nil)
+	body, err := provider.Render(MessageErrorResponse{Detail: text}, nil, nil)
 	if err != nil {
 		return []byte(`{"detail":"Internal Server Error"}`)
 	}
@@ -150,7 +148,7 @@ var validationErrorMessage = map[string][2]string{
 // findings arriving here are already totally ordered by Exchange.Findings; this
 // re-sort makes the array read the way the vendor's own schema reads, and both
 // orderings are deterministic, which is what a golden needs.
-func validationErrorBody(findings []journal.Finding, order []string) []byte {
+func validationErrorBody(findings []provider.Finding, order []string) []byte {
 	rank := make(map[string]int, len(order))
 	for i, name := range order {
 		rank[name] = i
@@ -159,7 +157,7 @@ func validationErrorBody(findings []journal.Finding, order []string) []byte {
 	entries := make([]ValidationError, 0, len(findings))
 	fields := make([]string, 0, len(findings))
 	for _, f := range findings {
-		if f.Severity != journal.SeverityError {
+		if f.Severity != provider.SeverityError {
 			continue
 		}
 		entries = append(entries, validationError(f))
@@ -185,7 +183,7 @@ func validationErrorBody(findings []journal.Finding, order []string) []byte {
 		sorted[i] = entries[at]
 	}
 
-	body, err := wire.Render(ValidationErrorResponse{Detail: sorted}, nil)
+	body, err := provider.Render(ValidationErrorResponse{Detail: sorted}, nil, nil)
 	if err != nil {
 		return []byte(`{"detail":[]}`)
 	}
@@ -210,7 +208,7 @@ func fieldRank(rank map[string]int, field string) int {
 // validationError converts one finding into a FastAPI 422 entry. A code with no
 // table entry falls back to the finding's own message, which keeps a promoted
 // warning representable instead of rendering an empty msg.
-func validationError(f journal.Finding) ValidationError {
+func validationError(f provider.Finding) ValidationError {
 	entry := ValidationError{Loc: locOf(f.Field), Msg: f.Message, Type: "value_error"}
 	if pair, ok := validationErrorMessage[f.Code]; ok {
 		entry.Msg, entry.Type = pair[0], pair[1]

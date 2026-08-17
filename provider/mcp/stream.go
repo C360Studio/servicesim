@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -43,13 +42,13 @@ func renderProgressStream(pp parsedParams, p *Projection, finalBody []byte) (*pr
 		deltas := p.Stream.Deltas
 		total := len(deltas)
 		for i, d := range deltas {
-			data, err := wire.Render(progressNotification{
+			data, err := provider.Render(progressNotification{
 				JSONRPC: "2.0",
 				Method:  "notifications/progress",
 				Params: progressParams{
 					ProgressToken: token, Progress: i + 1, Total: total, Message: d.Text,
 				},
-			}, nil)
+			}, nil, nil)
 			if err != nil {
 				return nil, err
 			}

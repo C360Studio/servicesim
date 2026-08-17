@@ -8,8 +8,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/c360studio/servicesim/internal/ids"
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -229,7 +227,7 @@ func idParts(x *provider.Exchange, callIndex int, extra ...string) []string {
 func renderSonarIdentity(x *provider.Exchange, p *PerplexityProjection, requestModel string, callIndex int) (id, model, finish string) {
 	id = p.CompletionID
 	if id == "" {
-		id = ids.UUIDv5(idParts(x, callIndex)...)
+		id = provider.UUIDv5(idParts(x, callIndex)...)
 	}
 	model = firstNonEmpty(p.Model, requestModel, Models[0])
 	finish = p.FinishReason
@@ -270,7 +268,7 @@ func renderSonar(x *provider.Exchange, p *PerplexityProjection, requestModel str
 		Images:           renderImages(p.Images),
 		RelatedQuestions: p.RelatedQuestions,
 	}
-	return wire.Render(resp, p.ExtraFields)
+	return provider.Render(resp, p.ExtraFields, nil)
 }
 
 // renderSonarResults projects the scenario's search results in declaration
@@ -453,7 +451,7 @@ func renderSonarStream(x *provider.Exchange, p *PerplexityProjection, requestMod
 			}},
 			SearchResults: searchResults,
 		}
-		data, err := wire.Render(chunk, nil)
+		data, err := provider.Render(chunk, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -488,7 +486,7 @@ func renderSonarStream(x *provider.Exchange, p *PerplexityProjection, requestMod
 	// alphabetised. Deterministic either way, and the same divergence the
 	// non-streaming body already has; noted here only so a captured
 	// transcript's mixed ordering does not read as a bug later.
-	termData, err := wire.Render(termChunk, p.ExtraFields)
+	termData, err := provider.Render(termChunk, p.ExtraFields, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -6,7 +6,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -244,7 +243,7 @@ func TestSelectTurnForRecordsAFindingWhenNothingMatches(t *testing.T) {
 	require.Equal(t, -1, index)
 	require.True(t, x.Failed())
 	require.Equal(t, CodeNoMatchingTurn, x.Findings()[0].Code)
-	require.Equal(t, journal.SeverityError, x.Findings()[0].Severity)
+	require.Equal(t, SeverityError, x.Findings()[0].Severity)
 }
 
 func TestTurnFault(t *testing.T) {

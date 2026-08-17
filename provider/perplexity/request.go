@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/c360studio/servicesim/internal/httpx"
-	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -179,8 +177,9 @@ func checkContentType(x *provider.Exchange) {
 	if len(x.Raw) == 0 {
 		return
 	}
-	if ct := x.Request.Header.Get("Content-Type"); !httpx.IsJSONContentType(ct) {
-		x.Warn(CodeContentType, "", "content type %q is not JSON; this API reads application/json", ct)
+	if !x.HasJSONContentType() {
+		x.Warn(CodeContentType, "", "content type %q is not JSON; this API reads application/json",
+			x.Request.Header.Get("Content-Type"))
 	}
 }
 
@@ -210,8 +209,8 @@ func checkAuth(x *provider.Exchange, e *scenario.ProviderEntry) {
 		return
 	}
 
-	creds := httpx.ExtractCredentials(x.Request)
-	var accepted *httpx.Credential
+	creds := x.Credentials()
+	var accepted *provider.Credential
 	for i := range creds {
 		if slices.Contains(allowed, creds[i].Header) {
 			accepted = &creds[i]
@@ -423,12 +422,12 @@ func validateNullableEnum(x *provider.Exchange, key, code string, members []stri
 // errorStatus maps a request's error findings onto the status the surface
 // answers with. Authentication outranks validation: a request that presented no
 // credential has not earned a field-by-field critique of its body.
-func errorStatus(findings []journal.Finding) int {
+func errorStatus(findings []provider.Finding) int {
 	authFailed := false
 	tooLarge := false
 	namespaceRefused := false
 	for _, f := range findings {
-		if f.Severity != journal.SeverityError {
+		if f.Severity != provider.SeverityError {
 			continue
 		}
 		switch f.Code {

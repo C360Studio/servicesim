@@ -7,8 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/c360studio/servicesim/internal/ids"
-	"github.com/c360studio/servicesim/internal/wire"
+	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -232,7 +231,7 @@ func renderSearch(p *Projection, req *searchRequest, keys renderKeys) ([]byte, e
 	}
 	body.Results = results
 
-	return wire.Render(body, p.ExtraFields)
+	return provider.Render(body, p.ExtraFields, nil)
 }
 
 // renderAnswer gates the answer on the request. The key is always present; the
@@ -316,13 +315,9 @@ func renderResults(p *Projection, req *searchRequest, keys renderKeys) ([]json.R
 // omitted ones, in that order, so that omit_fields can also remove a key
 // extra_fields added.
 func renderResultBody(result Result, projected *ResultProjection) (json.RawMessage, error) {
-	encoded, err := wire.Render(result, projected.ExtraFields)
+	encoded, err := provider.Render(result, projected.ExtraFields, projected.OmitFields)
 	if err != nil {
 		return nil, fmt.Errorf("tavily: rendering result %q: %w", projected.Ref, err)
-	}
-	encoded, err = wire.Omit(encoded, projected.OmitFields)
-	if err != nil {
-		return nil, fmt.Errorf("tavily: omitting fields of result %q: %w", projected.Ref, err)
 	}
 	return encoded, nil
 }
@@ -345,7 +340,7 @@ func renderScore(projected *ResultProjection, src scenario.RenderedSource, keys 
 	if projected.Score != 0 {
 		return projected.Score
 	}
-	return round2(ids.Float(scoreFloor, scoreCeiling, keys.Seed, Name, "score", resultKey(projected, src)))
+	return round2(provider.FloatIn(scoreFloor, scoreCeiling, keys.Seed, Name, "score", resultKey(projected, src)))
 }
 
 // renderRawContent gates raw content on include_raw_content. The key is always
@@ -375,7 +370,7 @@ func renderResultID(projected *ResultProjection, src scenario.RenderedSource, ke
 	if projected.ID != "" {
 		return projected.ID
 	}
-	digest := ids.Hex32(keys.Seed, Name, resultKey(projected, src))
+	digest := provider.Hex32(keys.Seed, Name, resultKey(projected, src))
 	return fmt.Sprintf("%s-%02d", digest[:derivedIDPrefixLen], index+1)
 }
 
@@ -396,7 +391,7 @@ func renderResponseTime(p *Projection, keys renderKeys) float64 {
 		return p.ResponseTime
 	}
 	parts := append(append([]string{}, keys.ID...), "response_time")
-	return round2(ids.Float(responseTimeFloor, responseTimeCeiling, parts...))
+	return round2(provider.FloatIn(responseTimeFloor, responseTimeCeiling, parts...))
 }
 
 // renderRequestID returns the scenario's override or a version 5 UUID derived
@@ -410,7 +405,7 @@ func renderRequestID(p *Projection, keys renderKeys) string {
 	if p.RequestID != "" {
 		return p.RequestID
 	}
-	return ids.UUIDv5(keys.Call...)
+	return provider.UUIDv5(keys.Call...)
 }
 
 // renderUsage emits the credit object only when the request asked for it,

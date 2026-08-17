@@ -9,8 +9,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/c360studio/servicesim/internal/ids"
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -361,11 +359,11 @@ func validateAgentModel(x *provider.Exchange) string {
 func renderAgentIdentity(x *provider.Exchange, p *PerplexityAgent, callIndex int) (id, messageID string, created int64, status AgentStatus) {
 	id = p.ResponseID
 	if id == "" {
-		id = "resp_" + ids.Hex32(idParts(x, callIndex, "agent")...)
+		id = "resp_" + provider.Hex32(idParts(x, callIndex, "agent")...)
 	}
 	messageID = p.MessageID
 	if messageID == "" {
-		messageID = "msg_" + ids.Hex32(idParts(x, callIndex, "agent", "message")...)
+		messageID = "msg_" + provider.Hex32(idParts(x, callIndex, "agent", "message")...)
 	}
 	created = p.CreatedAt
 	if created == 0 {
@@ -412,7 +410,7 @@ func renderAgent(x *provider.Exchange, p *PerplexityAgent, requestModel string) 
 	model := firstNonEmpty(p.Model, requestModel)
 	output := renderAgentOutput(p, messageID, status)
 	resp := agentResponse(p, id, created, model, status, output)
-	return wire.Render(resp, p.ExtraFields)
+	return provider.Render(resp, p.ExtraFields, nil)
 }
 
 // renderAgentStream projects p into the GrammarTyped SSE sequence for the
@@ -485,13 +483,13 @@ func renderAgentStream(x *provider.Exchange, p *PerplexityAgent, requestModel st
 		ID: id, Object: ObjectResponse, Model: model, CreatedAt: created,
 		Status: string(StatusInProgress), Output: []OutputItem{}, Usage: renderAgentUsage(nil),
 	}
-	initialBytes, err := wire.Render(initial, nil)
+	initialBytes, err := provider.Render(initial, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	createdData, err := wire.Render(ResponseCreatedEvent{
+	createdData, err := provider.Render(ResponseCreatedEvent{
 		Type: EventResponseCreated, SequenceNumber: nextSeq(), Response: json.RawMessage(initialBytes),
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -499,14 +497,14 @@ func renderAgentStream(x *provider.Exchange, p *PerplexityAgent, requestModel st
 
 	var aggregate strings.Builder
 	if outputIndex >= 0 {
-		addedData, err := wire.Render(OutputItemAddedEvent{
+		addedData, err := provider.Render(OutputItemAddedEvent{
 			Type: EventOutputItemAdded, SequenceNumber: nextSeq(),
 			Item: MessageOutput{
 				Type: OutputTypeMessage, ID: messageID, Role: RoleAssistant,
 				Status: string(StatusInProgress), Content: []ContentPart{},
 			},
 			OutputIndex: outputIndex,
-		}, nil)
+		}, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -514,28 +512,28 @@ func renderAgentStream(x *provider.Exchange, p *PerplexityAgent, requestModel st
 
 		for _, d := range p.Stream.Deltas {
 			aggregate.WriteString(d.Text)
-			data, err := wire.Render(TextDeltaEvent{
+			data, err := provider.Render(TextDeltaEvent{
 				Type: EventOutputTextDelta, SequenceNumber: nextSeq(),
 				ItemID: messageID, OutputIndex: outputIndex, ContentIndex: 0, Delta: d.Text,
-			}, nil)
+			}, nil, nil)
 			if err != nil {
 				return nil, err
 			}
 			events = append(events, provider.SSEEvent{Name: EventOutputTextDelta, Data: data, Pace: pace(d.Pace)})
 		}
 
-		textDoneData, err := wire.Render(TextDoneEvent{
+		textDoneData, err := provider.Render(TextDoneEvent{
 			Type: EventOutputTextDone, SequenceNumber: nextSeq(),
 			ItemID: messageID, OutputIndex: outputIndex, ContentIndex: 0, Text: aggregate.String(),
-		}, nil)
+		}, nil, nil)
 		if err != nil {
 			return nil, err
 		}
 		events = append(events, provider.SSEEvent{Name: EventOutputTextDone, Data: textDoneData})
 
-		itemDoneData, err := wire.Render(OutputItemDoneEvent{
+		itemDoneData, err := provider.Render(OutputItemDoneEvent{
 			Type: EventOutputItemDone, SequenceNumber: nextSeq(), Item: msgItem, OutputIndex: outputIndex,
-		}, nil)
+		}, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -543,34 +541,32 @@ func renderAgentStream(x *provider.Exchange, p *PerplexityAgent, requestModel st
 	}
 
 	final := agentResponse(p, id, created, model, status, output)
-	finalBytes, err := wire.Render(final, p.ExtraFields)
-	if err != nil {
-		return nil, err
-	}
 	// terminal.omit_usage nils usage inside response.completed's response
-	// object (P5U3 spec item 3). wire.Omit, not a pointer field on
+	// object (P5U3 spec item 3), by omission rather than a pointer field on
 	// ResponsesResponse: see ResponseCompletedEvent's doc comment for why.
 	omitUsage := p.Stream.Terminal != nil && p.Stream.Terminal.OmitUsage
+	var omit []string
 	if omitUsage {
-		// wire.Omit always round-trips through a map (internal/wire/render.go),
-		// so the response object comes out with alphabetised keys at every
-		// nesting level when this fires — every OTHER response.completed
-		// frame stays in struct order. Deterministic either way, and the same
-		// divergence renderSonarStream documents for an extra-fields terminal
-		// frame; noted here only so a captured transcript's mixed ordering
-		// does not read as a bug later.
-		finalBytes, err = wire.Omit(finalBytes, []string{"usage"})
-		if err != nil {
-			return nil, err
-		}
+		// provider.Render's omit path always round-trips through a map, so the
+		// response object comes out with alphabetised keys at every nesting
+		// level when this fires — every OTHER response.completed frame stays
+		// in struct order. Deterministic either way, and the same divergence
+		// renderSonarStream documents for an extra-fields terminal frame;
+		// noted here only so a captured transcript's mixed ordering does not
+		// read as a bug later.
+		omit = []string{"usage"}
+	}
+	finalBytes, err := provider.Render(final, p.ExtraFields, omit)
+	if err != nil {
+		return nil, err
 	}
 	var terminalPaceOverride scenario.Duration
 	if p.Stream.Terminal != nil {
 		terminalPaceOverride = p.Stream.Terminal.Pace
 	}
-	completedData, err := wire.Render(ResponseCompletedEvent{
+	completedData, err := provider.Render(ResponseCompletedEvent{
 		Type: EventResponseCompleted, SequenceNumber: nextSeq(), Response: json.RawMessage(finalBytes),
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		return nil, err
 	}

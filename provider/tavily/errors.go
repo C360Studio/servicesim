@@ -6,8 +6,6 @@ import (
 	"slices"
 	"strconv"
 
-	"github.com/c360studio/servicesim/internal/journal"
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -80,7 +78,7 @@ var authCodes = []string{CodeAuthMissing, CodeAuthMismatch}
 // they have not read the contract, and no consumer decoder written against the
 // real API would parse it.
 func errorBody(message string) []byte {
-	body, err := wire.Render(ErrorResponse{Detail: ErrorDetail{Error: message}}, nil)
+	body, err := provider.Render(ErrorResponse{Detail: ErrorDetail{Error: message}}, nil, nil)
 	if err != nil {
 		// ErrorResponse is two strings; marshalling it cannot fail. Returning a
 		// hand-written body rather than panicking keeps a bug here from taking
@@ -147,10 +145,10 @@ func label(status int) string {
 
 // errorFindings returns the error-severity findings in Findings order, after
 // the scenario's validation policy has promoted or demoted them.
-func errorFindings(x *provider.Exchange) []journal.Finding {
-	var errs []journal.Finding
+func errorFindings(x *provider.Exchange) []provider.Finding {
+	var errs []provider.Finding
 	for _, f := range x.Findings() {
-		if f.Severity == journal.SeverityError {
+		if f.Severity == provider.SeverityError {
 			errs = append(errs, f)
 		}
 	}
@@ -158,7 +156,7 @@ func errorFindings(x *provider.Exchange) []journal.Finding {
 }
 
 // containsAny reports whether any finding carries one of the codes.
-func containsAny(findings []journal.Finding, codes []string) bool {
+func containsAny(findings []provider.Finding, codes []string) bool {
 	for _, f := range findings {
 		if slices.Contains(codes, f.Code) {
 			return true

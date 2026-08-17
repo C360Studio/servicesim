@@ -5,7 +5,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -81,11 +80,11 @@ func TestExchangeFindingsTotalOrder(t *testing.T) {
 
 	// Perplexity's 422 body is built straight from this slice, so array order is
 	// semantic and an unsorted list makes the body itself differ run to run.
-	want := []journal.Finding{
-		{Severity: journal.SeverityError, Code: "b.code", Field: "alpha", Message: "1"},
-		{Severity: journal.SeverityError, Code: "a.code", Field: "beta", Message: "2"},
-		{Severity: journal.SeverityWarning, Code: "z.code", Field: "alpha", Message: "3"},
-		{Severity: journal.SeverityWarning, Code: "y.code", Field: "zeta", Message: "4"},
+	want := []Finding{
+		{Severity: SeverityError, Code: "b.code", Field: "alpha", Message: "1"},
+		{Severity: SeverityError, Code: "a.code", Field: "beta", Message: "2"},
+		{Severity: SeverityWarning, Code: "z.code", Field: "alpha", Message: "3"},
+		{Severity: SeverityWarning, Code: "y.code", Field: "zeta", Message: "4"},
 	}
 
 	for range 20 {
@@ -139,43 +138,43 @@ providers:
 	tests := []struct {
 		name       string
 		yaml       string
-		wantWarnAs journal.Severity
-		wantFailAs journal.Severity
+		wantWarnAs Severity
+		wantFailAs Severity
 		wantFailed bool
 	}{
 		{
 			name:       "no policy leaves severities alone",
 			yaml:       "",
-			wantWarnAs: journal.SeverityWarning,
-			wantFailAs: journal.SeverityError,
+			wantWarnAs: SeverityWarning,
+			wantFailAs: SeverityError,
 			wantFailed: true,
 		},
 		{
 			name:       "strict promotes every warning",
 			yaml:       strict,
-			wantWarnAs: journal.SeverityError,
-			wantFailAs: journal.SeverityError,
+			wantWarnAs: SeverityError,
+			wantFailAs: SeverityError,
 			wantFailed: true,
 		},
 		{
 			name:       "promote lifts one code",
 			yaml:       promote,
-			wantWarnAs: journal.SeverityError,
-			wantFailAs: journal.SeverityError,
+			wantWarnAs: SeverityError,
+			wantFailAs: SeverityError,
 			wantFailed: true,
 		},
 		{
 			name:       "demote lowers one code",
 			yaml:       demote,
-			wantWarnAs: journal.SeverityWarning,
-			wantFailAs: journal.SeverityWarning,
+			wantWarnAs: SeverityWarning,
+			wantFailAs: SeverityWarning,
 			wantFailed: false,
 		},
 		{
 			name:       "demote beats strict",
 			yaml:       both,
-			wantWarnAs: journal.SeverityWarning,
-			wantFailAs: journal.SeverityError,
+			wantWarnAs: SeverityWarning,
+			wantFailAs: SeverityError,
 			wantFailed: true,
 		},
 	}
@@ -191,7 +190,7 @@ providers:
 			got := x.Findings()
 			require.Len(t, got, 2)
 
-			bySeverity := map[string]journal.Severity{}
+			bySeverity := map[string]Severity{}
 			for _, f := range got {
 				bySeverity[f.Code] = f.Severity
 			}

@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/c360studio/servicesim/internal/ids"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -296,7 +295,7 @@ func renderedRequestID(x *provider.Exchange, override string) string {
 	if override != "" {
 		return override
 	}
-	return ids.Hex32(callParts(x)...)
+	return provider.Hex32(callParts(x)...)
 }
 
 // unclaimedRequestID returns the requestId an error body carries. It never
@@ -310,7 +309,7 @@ func renderedRequestID(x *provider.Exchange, override string) string {
 // rejected request is still distinguishable from the served ones — its tuple is
 // the one with no call index at all.
 func unclaimedRequestID(x *provider.Exchange) string {
-	return ids.Hex32(identityParts(x)...)
+	return provider.Hex32(identityParts(x)...)
 }
 
 // identityParts is the part of the tuple that does not depend on which call this

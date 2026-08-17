@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -187,7 +186,7 @@ func errorResponse(surface Surface, status int, message string) provider.Respons
 
 // validationResponse builds the FastAPI 422 body, or the surface's own envelope
 // for the statuses that are not field validation failures.
-func validationResponse(surface Surface, findings []journal.Finding, order []string) provider.Response {
+func validationResponse(surface Surface, findings []provider.Finding, order []string) provider.Response {
 	status := errorStatus(findings)
 	if status != http.StatusUnprocessableEntity {
 		return errorResponse(surface, status, "")

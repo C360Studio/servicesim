@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/c360studio/servicesim/internal/wire"
+	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -114,11 +114,7 @@ func (r SearchResult) MarshalJSON() ([]byte, error) {
 	// render below cannot re-enter it. Forgetting that is infinite recursion,
 	// not a compile error.
 	type plain SearchResult
-	base, err := wire.Render(plain(r), nil)
-	if err != nil {
-		return nil, err
-	}
-	return wire.Omit(base, r.omit)
+	return provider.Render(plain(r), nil, r.omit)
 }
 
 // Usage is the Sonar token and cost accounting.

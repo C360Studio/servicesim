@@ -450,7 +450,7 @@ func resolveLane(x *Exchange, p lanePrefix) {
 // fixed string, two different inputs practically never fingerprint the same)
 // and correlatability with the journal's own auth.fingerprint. For
 // header:authorization and header:x-api-key specifically, the lane reuses the
-// exact AuthPlacement.Fingerprint httpx.ObserveAll already computed for x.Auth
+// exact AuthPlacement.Fingerprint httpx.ObserveAll already computed for x.auth
 // (looked up by authPlacementFingerprint), so the two are byte-identical for
 // the same request — httpx trims the header and, for Authorization, strips the
 // scheme before fingerprinting, and reusing its answer is what makes the lane
@@ -671,7 +671,7 @@ func laneValueLooksLikeCredential(value string) bool {
 //
 // For authorization and x-api-key — the two placements httpx.ExtractCredentials
 // recognises — it reuses the exact fingerprint httpx.ObserveAll already
-// computed onto x.Auth, via authPlacementFingerprint, so the lane component and
+// computed onto x.auth, via authPlacementFingerprint, so the lane component and
 // journal.Entry.Auth.Fingerprint are byte-identical for the same request rather
 // than merely both derived from it. Any other credential-named header
 // (x-exa-api-key and the like, no recognised placement) falls back to
@@ -699,11 +699,11 @@ func fingerprintHeaderLaneValue(x *Exchange, name, value string) string {
 // authPlacementFingerprint looks up the fingerprint httpx.ObserveAll already
 // computed for a credential header placement, so a lane key's component and
 // entry.Auth.Fingerprint agree byte-for-byte for authorization and x-api-key.
-// x.Auth is populated before resolveLane runs (provider/handle.go), so the
+// x.auth is populated before resolveLane runs (provider/handle.go), so the
 // placement is already there by the time turnLaneKey asks for it.
 func authPlacementFingerprint(x *Exchange, name string) (string, bool) {
 	lower := strings.ToLower(name)
-	for _, p := range x.Auth.Placements {
+	for _, p := range x.auth.Placements {
 		if p.Header == lower {
 			return p.Fingerprint, true
 		}

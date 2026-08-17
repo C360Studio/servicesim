@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/c360studio/servicesim/internal/httpx"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -279,7 +278,7 @@ func checkContentType(x *provider.Exchange) {
 	if len(x.Raw) == 0 {
 		return
 	}
-	if ct := x.Request.Header.Get("Content-Type"); !httpx.IsJSONContentType(ct) {
+	if !x.HasJSONContentType() {
 		x.Warn(CodeContentType, "content-type",
 			"Content-Type is not application/json")
 	}
@@ -537,7 +536,7 @@ func checkAuth(x *provider.Exchange, entry *scenario.ProviderEntry) {
 	// Any accepted placement carrying the expected key authenticates the
 	// request. A consumer that sends the key in both places has presented the
 	// right credential once, not the wrong one once.
-	if policy.ExpectKey != "" && !slices.ContainsFunc(presented, func(c httpx.Credential) bool {
+	if policy.ExpectKey != "" && !slices.ContainsFunc(presented, func(c provider.Credential) bool {
 		return c.Value == policy.ExpectKey
 	}) {
 		// The value is never quoted; the journal holds a fingerprint of it.
@@ -556,9 +555,9 @@ func checkAuth(x *provider.Exchange, entry *scenario.ProviderEntry) {
 // A header credential that was already observed keeps the slot — it is the
 // documented placement — and the body placement stays visible as its own
 // finding, so a request carrying both records both.
-func presentedCredentials(x *provider.Exchange, accepted []string) []httpx.Credential {
-	var presented []httpx.Credential
-	for _, cred := range httpx.ExtractCredentials(x.Request) {
+func presentedCredentials(x *provider.Exchange, accepted []string) []provider.Credential {
+	var presented []provider.Credential
+	for _, cred := range x.Credentials() {
 		if slices.Contains(accepted, cred.Header) {
 			presented = append(presented, cred)
 			continue
@@ -578,7 +577,7 @@ func presentedCredentials(x *provider.Exchange, accepted []string) []httpx.Crede
 	// sending BOTH a Bearer header and a body api_key would record only the
 	// header — and "my client sends exactly one credential" is the assertion
 	// that needs both to be visible.
-	x.Auth = httpx.AddPlacement(x.Auth, body)
+	x.ObserveCredential(body)
 	if slices.Contains(accepted, PlacementBodyAPIKey) {
 		presented = append(presented, body)
 	}
@@ -592,15 +591,15 @@ func presentedCredentials(x *provider.Exchange, accepted []string) []httpx.Crede
 // matches httpx.ExtractCredentials, where a placement with no value after it is
 // absent rather than empty: counting `"api_key": ""` as presented would put
 // auth.missing out of reach for a request that sent nothing.
-func bodyCredential(x *provider.Exchange) (httpx.Credential, bool) {
+func bodyCredential(x *provider.Exchange) (provider.Credential, bool) {
 	value, ok := x.String("api_key")
 	if !ok {
-		return httpx.Credential{}, false
+		return provider.Credential{}, false
 	}
 	if value = strings.TrimSpace(value); value == "" {
-		return httpx.Credential{}, false
+		return provider.Credential{}, false
 	}
-	return httpx.Credential{Header: PlacementBodyAPIKey, Value: value}, true
+	return provider.Credential{Header: PlacementBodyAPIKey, Value: value}, true
 }
 
 // authPolicy returns the entry's policy, or the documented default.

@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"net/http"
 
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -367,5 +366,5 @@ func renderContentsBody(resolutions []contentsResolution, cp *ContentsProjection
 		Statuses:    statuses,
 		CostDollars: renderCost(cost),
 	}
-	return wire.Render(resp, extra)
+	return provider.Render(resp, extra, nil)
 }

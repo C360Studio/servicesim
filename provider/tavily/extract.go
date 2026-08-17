@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -421,7 +420,7 @@ func renderExtract(x *provider.Exchange, p *Projection, req *extractRequest, key
 		Usage:         renderExtractUsage(p, req),
 		RequestID:     renderRequestID(p, keys),
 	}
-	return wire.Render(body, extractExtraFields(p))
+	return provider.Render(body, extractExtraFields(p), nil)
 }
 
 // extractExtraFields returns the /extract envelope's own extra_fields, which
@@ -584,13 +583,9 @@ func renderExtractedResult(r extractResolution, req *extractRequest) (json.RawMe
 		result.Images = r.Images
 	}
 
-	encoded, err := wire.Render(result, r.Extra)
+	encoded, err := provider.Render(result, r.Extra, r.Omit)
 	if err != nil {
 		return nil, fmt.Errorf("tavily: rendering extract result %q: %w", r.URL, err)
-	}
-	encoded, err = wire.Omit(encoded, r.Omit)
-	if err != nil {
-		return nil, fmt.Errorf("tavily: omitting fields of extract result %q: %w", r.URL, err)
 	}
 	return encoded, nil
 }

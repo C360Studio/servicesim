@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/c360studio/servicesim/internal/ids"
-	"github.com/c360studio/servicesim/internal/wire"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -105,12 +103,12 @@ func handleAgentRunCreate(x *provider.Exchange) provider.Response {
 		return rejection(x)
 	}
 
-	job, ok := provider.MintJob(x, NameAgentRuns, runIDPrefix, ids.Hex32)
+	id, ok := provider.MintJob(x, NameAgentRuns, runIDPrefix, provider.Hex32)
 	if !ok {
 		return rejection(x)
 	}
 
-	body, err := renderRunCreated(x, job.ID)
+	body, err := renderRunCreated(x, id)
 	if err != nil {
 		x.Fail(codeRenderFailed, "", "rendering the Exa agent run failed: %v", err)
 		return rejection(x)
@@ -120,7 +118,7 @@ func handleAgentRunCreate(x *provider.Exchange) provider.Response {
 		Body:          body,
 		Label:         "exa.agent_runs.created",
 		FaultEligible: true,
-		FaultBody:     func(a scenario.FaultAttempt) []byte { return faultBody(job.ID, a) },
+		FaultBody:     func(a scenario.FaultAttempt) []byte { return faultBody(id, a) },
 	}
 }
 
@@ -136,7 +134,7 @@ func handleAgentRunPoll(x *provider.Exchange) provider.Response {
 	}
 
 	id := x.Request.PathValue("id")
-	if _, found := provider.ResolveJob(x, id); !found {
+	if !provider.ResolveJob(x, id) {
 		return runNotFound(x, id)
 	}
 
@@ -177,7 +175,7 @@ func handleAgentRunHead(x *provider.Exchange) provider.Response {
 		return rejection(x)
 	}
 
-	if _, found := provider.ResolveJob(x, x.Request.PathValue("id")); !found {
+	if !provider.ResolveJob(x, x.Request.PathValue("id")) {
 		return provider.Response{Status: http.StatusNotFound, Label: "exa.agent_runs.head.missing"}
 	}
 	return provider.Response{Status: http.StatusOK, Label: "exa.agent_runs.head.ok"}
@@ -277,11 +275,11 @@ func knownEffort(v string) bool {
 // renderRunCreated renders the create response: the identifier and the initial
 // status, and nothing else.
 func renderRunCreated(x *provider.Exchange, id string) ([]byte, error) {
-	return wire.Render(runWire{
+	return provider.Render(runWire{
 		ID:        id,
 		Status:    StatusQueued,
 		CreatedAt: x.Deps.Scenario.BaseTime().UTC().Format(scenario.PublishedAtLayout),
-	}, nil)
+	}, nil, nil)
 }
 
 // renderRunSnapshot renders one poll snapshot.
@@ -332,7 +330,7 @@ func renderRunSnapshot(x *provider.Exchange, p *AgentRunProjection, id string) (
 		out.CostDollars = cost
 	}
 
-	return wire.Render(out, p.ExtraFields)
+	return provider.Render(out, p.ExtraFields, nil)
 }
 
 // runWire is the wire shape of an agent run, verified 2026-08-15 —
