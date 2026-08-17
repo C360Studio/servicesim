@@ -6,12 +6,13 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-16 (late evening), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6)
-plus Phase 7 merged on top, unreleased, and **Phase 8 complete on the `phase-8` branch** (cut from `main` at
-`b1a64da`): unit 1 (the MCP contract, `contracts/mcp/`), unit 2 (the MCP profile, `provider/mcp/`, `39d5809`) and
+Recorded 2026-08-17 (early), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6) plus,
+unreleased on `main`: Phase 7 (`6a43316`) and **Phase 8, merged to `main` at `16c4688` (PR #4, merge commit)** —
+unit 1 (the MCP contract, `contracts/mcp/`, `f5dd08e`), unit 2 (the MCP profile, `provider/mcp/`, `39d5809`) and
 unit 3 (the docs sweep — README onboarding, `examples/mcpclient.go` + `examples/mcp_test.go`,
-`docs/design/mcp-profile.md`, the D9 tier-2 evidence, the CONTRIBUTING checklist, troubleshooting) — **pending
-merge to `main`, then the v0.5.0 release**.
+`docs/design/mcp-profile.md`, the D9 tier-2 evidence, the CONTRIBUTING checklist, troubleshooting, `02a0917`).
+The `phase-8` branch is merged and deleted. **What is left needs the owner: the v0.5.0 release (note drafted —
+"Start here" item 4), D11 (era) and D9 tier 2 (evidence written); the last feature phase is done.**
 
 | Phase | State |
 |---|---|
@@ -23,7 +24,7 @@ merge to `main`, then the v0.5.0 release**.
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
 | 6 — G-3 depth: hostile content, oversized bodies, hangs after headers, resilience built-ins, pacing evidence | **shipped** in v0.4.0 — units 1–6, the closing docs sweep, D9 tier 1; the adopter's own guardrail vectors are still an append to `malicious-content` when they arrive |
 | 7 — packaging, deployment and the contract-fidelity process | **DONE (rescoped) and merged to `main` (`6a43316`, PR #3), unreleased** — items 1–2 (the Gitea mirror, the Kubernetes manifest) dropped 2026-08-16 (owner; D3 reworded: no replicas by design); item 3 shipped 2026-08-15; items 4 and 5b shipped: a `spec:` block (url/version/sha256/retrieved) for every vendor's OpenAPI document, `contracts.Spec`/`ProviderSpec`, `Record.APIVersion`, and the no-canary refresh procedure (D10) |
-| 8 — the MCP profile (in-tree per D6) | **COMPLETE on `phase-8`, pending merge and release (v0.5.0)** — the last feature phase: unit 1 (contract verification, `contracts/mcp/`) DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp`, listener `mcp` on `POST /mcp` port 8084) DONE 2026-08-16; unit 3 (the docs sweep: README, `examples/` MCP client and tests, `docs/design/mcp-profile.md`, D9 tier-2 evidence, CONTRIBUTING, troubleshooting) DONE 2026-08-16. ODR is out per D12; D11 (era) pending owner — modern-only shipped, legacy only if needed; D9 tier 2 pending owner with the evidence now written |
+| 8 — the MCP profile (in-tree per D6) | **COMPLETE — merged to `main` (`16c4688`, PR #4), unreleased; v0.5.0 is the release** — the last feature phase: unit 1 (contract verification, `contracts/mcp/`) DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp`, listener `mcp` on `POST /mcp` port 8084) DONE 2026-08-16; unit 3 (the docs sweep: README, `examples/` MCP client and tests, `docs/design/mcp-profile.md`, D9 tier-2 evidence, CONTRIBUTING, troubleshooting) DONE 2026-08-16. ODR is out per D12; D11 (era) pending owner — modern-only shipped, legacy only if needed; D9 tier 2 pending owner with the evidence now written |
 | 9 onward | open — the two doctrine-contradicting features (Phase 9), the shared-pipeline hardening follow-up from unit 2's review, the adopter's own guardrail vectors when they arrive |
 
 **v0.4.0** is the last tag (2026-08-16, `b788f00`): Phase 6 end to end — `completed_at` observing every scripted
@@ -76,7 +77,7 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    `contracts/README.md` "Keeping them honest" rewritten around **D10** — no live contract canary; drift detection is
    a dated, manual re-verification whose first step is the hash comparison. ADR 0002 carries an "Amended 2026-08-16"
    section.
-4. ~~**Phase 8 — the MCP profile**~~ **COMPLETE on `phase-8` 2026-08-16, pending merge.** Unit 1 (contract
+4. ~~**Phase 8 — the MCP profile**~~ **COMPLETE — merged to `main` 2026-08-17 (`16c4688`, PR #4).** Unit 1 (contract
    verification: `contracts/mcp/README.md` + `provenance.yaml`, spec sha256 `ef70b61f…`, the D11 evidence), unit 2
    (the modern 2026-07-28 profile: `provider/mcp`, listener `mcp` on `POST /mcp` port 8084,
    `server/discover`/`tools/list`/`tools/call`, JSON and per-request SSE answers, strict request validation, 18
@@ -84,9 +85,10 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    onboarding with a real `curl` and a real test excerpt, `examples/mcpclient.go` + `examples/mcp_test.go` — nine
    tests, compiled and run by CI —, `docs/design/mcp-profile.md` the design record incl. the D9 tier-2 seam
    evidence, `docs/proposals/d9-framework-framing.md` "Evidence from Phase 8", the CONTRIBUTING "Adding a provider"
-   checklist rewritten from the real diff, the troubleshooting MCP section, the small sweeps) are all done. **Next:
-   merge `phase-8` to `main`, then cut v0.5.0** (tag-note bullets drafted in the Phase 8 section; CONTRIBUTING
-   "Releasing" order: tag, publish, then move the pins). **ODR is out per D12.** **D11 (era) is pending owner** —
+   checklist rewritten from the real diff, the troubleshooting MCP section, the small sweeps) are all done and
+   merged. **Next: cut v0.5.0 — needs the owner's go-ahead** (a full tag note is drafted from the three unit
+   commit bodies plus Phase 7's; the bullets are in the Phase 8 section; CONTRIBUTING "Releasing" order: tag,
+   publish, confirm one digest, then move the README/Compose pins and drop README's "ships in v0.5.0" sentence). **ODR is out per D12.** **D11 (era) is pending owner** —
    modern-only shipped; a legacy 2025-11-25 follow-on only if the adopter's client is pinned below go-sdk `v1.7.0`
    / TypeScript `2.0.0` / python-sdk `v2.0.0`. **D9 tier 2 (export the provider seam) is pending owner** — the
    evidence is written (`docs/design/mcp-profile.md` §12, the proposal's "Evidence from Phase 8"); it frames two
