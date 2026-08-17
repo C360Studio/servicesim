@@ -9,10 +9,12 @@ derived from and the date the shape was verified.
 | Exa | [`exa/README.md`](exa/README.md) | 2026-08-15 | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
 | Tavily | [`tavily/README.md`](tavily/README.md) | 2026-08-15 | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
 | Perplexity | [`perplexity/README.md`](perplexity/README.md) | 2026-08-15 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
+| MCP | [`mcp/README.md`](mcp/README.md) | 2026-08-16 | not yet simulated — the contract is recorded ahead of the handler (Phase 8 unit 2); no `METHOD /path` claim until a route registers |
 
 Every route in that column has golden fixtures in this directory, except the two `HEAD` routes: `HEAD` carries no
-body, so it has no fixture to pin — its behaviour is covered by the provider tests instead. Treat the column as the
-complete list of what is simulated, not as a summary of the interesting parts.
+body, so it has no fixture to pin — its behaviour is covered by the provider tests instead. The MCP row claims no
+route yet, so no golden is owed for it until unit 2 registers one. Treat the column as the complete list of what is
+simulated, not as a summary of the interesting parts.
 
 **`scripts/check-docs.sh` now proves that column against the routes the binary actually registers, in both
 directions**, so the table cannot claim a route that does not exist *or* omit one that does. Both failures had
@@ -57,7 +59,9 @@ scheduled dependency on vendor availability, for a test simulator whose entire v
 kind of moving part for a repository that dials outward on its own schedule for nothing else. Drift detection
 instead is a **dated, manual re-verification**, and its first, cheap step is the same for every provider: Exa,
 Tavily and Perplexity each publish a machine-readable OpenAPI document — `exa-spec.yaml`, `openapi.json` and
-`openapi.json` respectively — covering every route this repository simulates for that vendor, and each provider's
+`openapi.json` respectively — covering every route this repository simulates for that vendor, and the Model Context
+Protocol publishes a machine-readable `schema.json` per revision (a JSON Schema of every message shape, not an
+OpenAPI document — MCP is JSON-RPC over one POST endpoint, so there are no paths to describe); each provider's
 `contracts/<provider>/provenance.yaml` records that document's URL, version and `sha256` in a `spec:` block.
 Comparing a fresh fetch's hash against the recorded one is mechanical and answers "did the vendor's machine-readable
 surface move at all?" in seconds. It does **not** by itself answer "did anything we consume change?": a provider's
@@ -78,8 +82,11 @@ whole-contract verification cannot be older than a fixture that was individually
 any `provenance.yaml` for how the two relate. Every provider's `provenance.yaml` also carries a `spec:` block —
 `url`, `version`, `sha256`, `retrieved` — recording the bytes its consumed contract's machine-readable source was
 generated from, readable from Go via `contracts.ProviderSpec(p)`; `contracts/contracts_test.go`'s
-`TestEveryProviderHasSpecRecorded` fails the build if a provider drops one, so a future fourth profile must record
-its own too.
+`TestEveryProviderHasSpecRecorded` fails the build if a provider drops one. The fourth profile is doing exactly
+this ahead of its handler: [`mcp/provenance.yaml`](mcp/provenance.yaml) records the `spec:` block and the
+provider-level `verified:` date for a provider that is not yet registered (its header says why), so that when unit 2
+registers `mcp` the guards find the record already in place rather than an empty directory. It is the example of a
+contract recorded before its provider registers, and any later profile should start the same way.
 
 ### The sanctioned refresh procedure
 

@@ -1,0 +1,86 @@
+# Provenance for the MCP consumed contract.
+#
+# THIS PROVIDER IS NOT YET REGISTERED. contracts/contracts.go's Providers()
+# does not return it, nothing embeds this directory, and there are no goldens
+# here yet: the contract (README.md beside this file) was recorded ahead of the
+# handler, in Phase 8 unit 1, so that the handler is written from a dated
+# record and not from memory. The provider is registered — and gains its
+# goldens and their entries below — in the unit that ships the handler (Phase 8
+# unit 2), which must then satisfy every guard in contracts/contracts_test.go
+# (TestEveryProviderHasSpecRecorded, TestSpecBlockFieldsAreComplete,
+# TestProviderVerifiedMatchesReadmeIndexTable, and the rest — note that the
+# last of these keys the index table by display name through a hard-coded
+# byName map in contracts/provenance_internal_test.go, so registering mcp also
+# means adding "MCP" to that map or the test fatals with "index table has no
+# dated row for mcp"). Until then this
+# file exists so the spec block, the provider-level verified: date and the
+# drift-signal explanation are recorded beside the README the way every other
+# provider's are.
+#
+# verified: (below) is when THIS PROVIDER'S CONTRACT AS A WHOLE was last
+# verified against the specification, and must match contracts/README.md's
+# index-table Verified column for MCP. Once goldens exist, each entry carries
+# its own verified: date as the other providers' do (see contracts/tavily/
+# provenance.yaml for how the two relate).
+#
+# kind: (per entry, once entries exist)
+#   vendor-documented  the shape AND the values come from the specification's
+#                      pages or schema.json, quoted or directly derived.
+#   simulator-chosen   Servicesim picked this shape or these values because
+#                      the specification does not say (README.md lists every
+#                      such point). A dated re-verification (contracts/
+#                      README.md "Keeping them honest") may correct it — there
+#                      is no live contract canary.
+#
+# The field names in every future golden are governed by README.md in this
+# directory, which is the authority and must not be edited by fixture work.
+#
+# spec: records the machine-readable specification the Model Context Protocol
+# publishes for revision 2026-07-28: schema/2026-07-28/schema.json in the
+# modelcontextprotocol/modelcontextprotocol repository, a JSON Schema
+# (draft 2020-12), NOT an OpenAPI document — the protocol is JSON-RPC over
+# Streamable HTTP, so there is no paths/ section to hash; the schema covers
+# every message shape the profile will simulate (server/discover, tools/list,
+# tools/call, the error definitions, the _meta objects). Fetched and hashed
+# 2026-08-16.
+#
+#   version:  the PROTOCOL REVISION, which is the schema's directory name.
+#             The schema has no info.version, no $id and no title — its top
+#             level is only $schema and $defs — so the revision is the only
+#             version string it has.
+#   url:      is on `main`, which moves. The last commit on main touching
+#             schema/2026-07-28/schema.json when these bytes were fetched is
+#             recorded in README.md's "Provenance" section
+#             (271ecc9accafdd9b83a3c869fa67c22953b2af80, 2026-07-28T16:42:34Z),
+#             so a refresh that finds a different hash can tell which bytes
+#             this contract was read against.
+#   sha256:   the DRIFT SIGNAL for this provider, exactly as for Exa, Tavily
+#             and Perplexity: an unchanged hash on a fresh fetch means the
+#             machine-readable surface did not move; a changed one means
+#             re-read the consumed fields against BOTH the specification pages
+#             README.md cites and the schema itself (contracts/README.md
+#             "Keeping them honest"), then update whatever changed. A changed
+#             hash is not itself a diff of what this contract consumes — the
+#             schema also covers resources, prompts, completion, MRTR,
+#             subscriptions and elicitation, none of them simulated — and the
+#             transport rules (headers, status codes, SSE) live on prose pages
+#             the hash never sees, so re-verification is a person re-reading
+#             those pages, not a re-hash. Note the specification's own
+#             statement that schema.ts is the source of truth and schema.json
+#             is generated from it: a hash change in schema.json is downstream
+#             of a schema.ts change, and the rendered pages may lag either.
+#
+# The legacy revision 2025-11-25's schema.json is NOT recorded here (it is not
+# the authority); README.md's "Protocol eras" section carries its hash for the
+# D11 record.
+
+provider: mcp
+verified: 2026-08-16
+
+spec:
+  url: https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/2026-07-28/schema.json
+  version: "2026-07-28"
+  sha256: ef70b61f99b6d2e5e3b46863822eab08dff6a45bedc7a08914e0e5b133f40203
+  retrieved: 2026-08-16
+
+goldens: []
