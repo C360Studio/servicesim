@@ -26,6 +26,7 @@ Servicesim validates credential **placement**, not value. Any fake value works; 
 | Exa | `x-api-key`, or `Authorization: Bearer` |
 | Tavily | `Authorization: Bearer`, or a body `api_key` property (warns `tavily.api_key.in_body`) |
 | Perplexity | `Authorization: Bearer` only |
+| MCP | `Authorization: Bearer` — and **optional by default**: a missing credential is a 401 only when the scenario's `mcp` block sets `auth: {mode: required}` (or `reject`) — see [MCP: I got a 401](#mcp-i-got-a-401-and-i-thought-credentials-were-optional) |
 
 Sending Tavily an `x-api-key` header is a 401 on purpose: Tavily's REST contract is Bearer, and an adapter that
 gets this wrong against Servicesim would get it wrong against production too. The journal names it:
@@ -67,6 +68,7 @@ single port cannot disambiguate them.
 | 8081 | exa | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
 | 8082 | tavily | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
 | 8083 | perplexity | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
+| 8084 | mcp | `POST /mcp` |
 
 Sending Tavily's request to port 8081 reaches Exa's handler, which will reject it as a malformed Exa request. Check
 the `provider` field on the journal entry — it tells you which listener actually received the call.
@@ -560,6 +562,151 @@ exported symbol, a missing package comment in `doc.go`, an initialism that shoul
 
 Note that revive exits 0 even when it fails to *load* a package, so a clean revive run is not by itself proof the
 package was linted. `go build ./...` and `go vet ./...` do catch that case, which is why `task lint` runs all three.
+
+## MCP: `400` with `-32020` "required headers were not sent"
+
+The MCP listener speaks the modern, stateless protocol revision `2026-07-28` only. This body is what a **legacy
+client** gets — one that opens with `initialize` and no per-request headers, which is any SDK below go-sdk
+`v1.7.0`, the TypeScript `@modelcontextprotocol/*@2.0.0` packages, or python-sdk `v2.0.0`:
+
+```json
+{"jsonrpc":"2.0","id":1,"error":{"code":-32020,
+ "message":"Header mismatch: this server speaks protocol version(s) [2026-07-28] only; required headers were not sent"}}
+```
+
+The journal carries `mcp.header.required` (error) and `mcp.legacy.initialize` (warning). Upgrade the client — every
+current official SDK sends `2026-07-28` by default — or ask for the legacy `2025-11-25` era as a follow-on unit
+(decision D11 in [`docs/adopter-backlog.md`](adopter-backlog.md)); this build does not serve it. A **hand-rolled**
+client that simply forgot a header gets the same code with the header named:
+
+```json
+{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"required header(s) missing: Mcp-Method"}}
+```
+
+Every request needs `MCP-Protocol-Version: 2026-07-28` and `Mcp-Method: <the body's method>`; `tools/call` also
+needs `Mcp-Name: <params.name>`. `-32020` is also what a header that *disagrees* with the body draws
+(`mcp.header.mismatch`) — `Mcp-Method` is compared case-sensitively against `method`, and `Mcp-Name` is decoded
+through the Base64 sentinel before being compared against `params.name`.
+
+## MCP: `400` with `-32022` "Unsupported protocol version"
+
+The header and the body agree on a version, and it is not one this build speaks. The body says what to send:
+
+```json
+{"jsonrpc":"2.0","id":1,"error":{"code":-32022,"message":"Unsupported protocol version",
+ "data":{"requested":"2025-11-25","supported":["2026-07-28"]}}}
+```
+
+Send `2026-07-28` in both `MCP-Protocol-Version` and `_meta["io.modelcontextprotocol/protocolVersion"]`. Finding:
+`mcp.version.unsupported`.
+
+## MCP: `405` on a `GET` (or `DELETE`) to `/mcp`
+
+```text
+HTTP/1.1 405 Method Not Allowed
+Allow: POST
+
+{"jsonrpc":"2.0","error":{"code":-32600,"message":"the MCP endpoint accepts POST only"}}
+```
+
+Your client is opening the deprecated HTTP+SSE transport (a `GET` first, expecting an `endpoint` event) or a
+legacy standalone GET stream, or terminating a session with `DELETE`. None of those exists in `2026-07-28`; the
+specification SHOULDs exactly this `405`. Every message is its own `POST`.
+
+## MCP: `202` and an empty body
+
+You sent a **notification** — a JSON-RPC message with no `id` member. The server accepts it and, as the
+specification requires, answers `202 Accepted` with no body; nothing about the notification's own method is
+checked, because the modern core defines no client-to-server notification over HTTP. Journal label:
+`mcp.notification.accepted`. If you meant to send a request, add an `id` (a string or an integer — `null` is a
+`400` `-32600`, since MCP forbids it).
+
+## MCP: `200` with `-32602` "Unknown tool: …"
+
+```json
+{"jsonrpc":"2.0","id":7,"error":{"code":-32602,"message":"Unknown tool: nope"}}
+```
+
+The request was well-formed — that is why it is a `200`, not a `400` — and the tool is not in the scenario's
+`mcp` block: neither declared under `tools:` nor scripted under `results:`. Call `tools/list` and use a name it
+returns; if you are writing the scenario, script the outcome under `results:` (a tool declared under `tools:` but
+not scripted answers `isError: true` with one text block saying so, and warns `mcp.tool.unscripted`). Do **not**
+retry a `-32602`: it will not change. Finding: `mcp.tool.unknown` (warning — the request itself was fine).
+
+The same code at `400` means something else: a missing required `_meta` field —
+
+```json
+{"jsonrpc":"2.0","id":1,"error":{"code":-32602,
+ "message":"missing required _meta field(s): io.modelcontextprotocol/protocolVersion, io.modelcontextprotocol/clientCapabilities"}}
+```
+
+Every request's `params._meta` must carry `io.modelcontextprotocol/protocolVersion` and
+`io.modelcontextprotocol/clientCapabilities` (an empty object is fine). Finding: `mcp.meta.required`.
+`io.modelcontextprotocol/clientInfo` is only a SHOULD, but leaving it out draws the warning
+`mcp.meta.client_info_missing`, which `testkit.AssertNoFindings` will report — send it.
+
+## MCP: I got a `401`, and I thought credentials were optional
+
+They are, by default — the specification leaves authentication to the deployment, so a scenario with no `auth:`
+on its `mcp` block accepts a request with no credential at all. This body means the scenario opted in:
+
+```json
+{"jsonrpc":"2.0","error":{"code":-32600,"message":"authorization required"}}
+```
+
+Either `auth: {mode: required}` (send `Authorization: Bearer <anything>`; with `expect_key` it must be that key —
+the `credential-rotation` built-in does this) or `auth: {mode: reject}` (every credential is refused; the
+`unauthorized` built-in). No `id` member, no `WWW-Authenticate` challenge — this profile does not half-implement
+OAuth. Findings: `mcp.auth.missing` or `mcp.auth.mismatch`.
+
+## MCP: my `tools/call` answer came back as `text/event-stream`
+
+That is the scenario's decision, not the client's. When the entry's `mcp` block scripts a stream —
+`stream: {when_requested: stream, deltas: [...]}`, or just `deltas:` — every `tools/call` is answered as SSE
+(`server/discover` and `tools/list` never are), because MCP has no request-side field that asks for a stream;
+the server decides. What you receive:
+
+```text
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Accel-Buffering: no
+
+data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"p1","progress":1,"total":2,"message":"searching…"}}
+
+data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"p1","progress":2,"total":2,"message":"ranking…"}}
+
+data: {"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","content":[{"type":"text","text":"Full source text of Report A."}],"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"servicesim","version":"1"}}}}
+```
+
+Unnamed `data:` frames, no `event:`, no `id:`, no `[DONE]`; the last frame *is* the JSON-RPC response, byte for
+byte what the non-streaming answer would have been. The `notifications/progress` frames appear only when your
+request carried `_meta.progressToken` — without one, the stream is the response frame alone. A conformant client
+handles both content types on every `POST` (the specification's MUST); if yours does not yet, run against a
+scenario whose `mcp` block does not script a stream (`builtin:happy`), or read the built-in `streaming` scenario's
+`mcp:` block for the shape to parse.
+
+## MCP: the journal warns `mcp.header.param_ignored`
+
+You sent an `Mcp-Param-<name>` header. The `x-mcp-header` extension that would make a server expect one is not
+honoured in this build: any `Mcp-Param-*` header is ignored with this warning, and a scenario tool whose
+`input_schema` declares `x-mcp-header` is rejected at load (`mcp.tool.x_mcp_header_unsupported`), so no scenario
+can believe it is validated. The request is otherwise served normally. If the header carried a credential-shaped
+name (`Mcp-Param-Token`), the journal masks its value as it would the bare `Token` header.
+
+## MCP: `400` with `-32600` and the body was one JSON-RPC request
+
+Two causes, both header-side. The `Accept` header must list **both** `application/json` and `text/event-stream`
+(the specification's MUST — the server, not the client, chooses which one answers), and the request
+`Content-Type` must be `application/json`:
+
+```json
+{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"the Accept header must list both application/json and text/event-stream"}}
+```
+
+Findings: `mcp.request.accept_invalid`, `mcp.request.content_type_invalid`. The same code with no `id` and
+"request body is not a JSON-RPC request or notification" means the body was not a single JSON-RPC object — a
+top-level array is the usual cause: JSON-RPC batching was removed from MCP in `2025-06-18`, and every message is
+its own `POST`.
 
 ## Something else
 

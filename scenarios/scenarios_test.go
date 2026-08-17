@@ -55,7 +55,7 @@ var builtins = []string{
 // that one --scenario flag configures every listener coherently instead of
 // leaving one of them serving something unrelated.
 var implementedProviders = []string{
-	"exa", "tavily", "perplexity", "perplexity_agent", "exa_agent_runs", "tavily_research",
+	"exa", "tavily", "perplexity", "perplexity_agent", "exa_agent_runs", "tavily_research", "mcp",
 }
 
 // documentedProjectionKeys is the projection body key set docs/scenario-schema.md
@@ -74,6 +74,7 @@ var documentedProjectionKeys = map[string]map[string]bool{
 		"search_results", "annotations", "error", "usage", "stream", "extra_fields"),
 	"exa_agent_runs":  keySet("status", "stop_reason", "output", "error", "cost_dollars", "usage", "extra_fields"),
 	"tavily_research": keySet("status", "content", "sources", "response_time", "extra_fields"),
+	"mcp":             keySet("instructions", "ttl_ms", "cache_scope", "tools", "results", "stream", "extra_fields"),
 }
 
 // refListKeys are the projection keys whose list elements may be the scalar
@@ -1820,7 +1821,7 @@ func TestUnknownProvider_LoadsWithTheImplementedProvidersIntact(t *testing.T) {
 			"%s must still carry a projection body", provider)
 	}
 	assert.Equal(t,
-		[]string{"exa", "tavily", "perplexity", "perplexity_agent", "exa_agent_runs", "tavily_research", "openai"},
+		[]string{"exa", "tavily", "perplexity", "perplexity_agent", "exa_agent_runs", "tavily_research", "mcp", "openai"},
 		s.Providers.Names(), "declaration order is preserved")
 }
 

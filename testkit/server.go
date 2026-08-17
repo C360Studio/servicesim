@@ -18,6 +18,7 @@ import (
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/provider/exa"
+	"github.com/c360studio/servicesim/provider/mcp"
 	"github.com/c360studio/servicesim/provider/perplexity"
 	"github.com/c360studio/servicesim/provider/tavily"
 	"github.com/c360studio/servicesim/scenario"
@@ -166,15 +167,15 @@ const awaitPoll = 250 * time.Microsecond
 // It is a function rather than a package-level slice so no consumer can mutate
 // the order a package it merely imported serves in.
 func allProviders() []provider.Name {
-	return []provider.Name{provider.Exa, provider.Tavily, provider.Perplexity}
+	return []provider.Name{provider.Exa, provider.Tavily, provider.Perplexity, provider.MCP}
 }
 
-// routes returns every route all three provider packages declare. The fault
+// routes returns every route all four provider packages declare. The fault
 // engine registers all of them regardless of which listeners a Sim starts, so a
 // key set never depends on the subset under test: a missing key would make its
 // route report fault.unknown_key instead of serving the scenario's fault.
 func routes() []provider.Route {
-	return slices.Concat(exa.Routes(), tavily.Routes(), perplexity.Routes())
+	return slices.Concat(exa.Routes(), tavily.Routes(), perplexity.Routes(), mcp.Routes())
 }
 
 // validators returns the projection validators for every provider kind this
@@ -185,13 +186,14 @@ func validators() map[string]provider.Validator {
 		exa.NameAgentRuns:    exa.AgentRunValidator{},
 		tavily.Name:          tavily.Validator{},
 		tavily.NameResearch:  tavily.ResearchValidator{},
+		mcp.Name:             mcp.Validator{},
 	}
 	maps.Copy(out, perplexity.Validators())
 	return out
 }
 
 // NewFaults returns the fault engine for a scenario, wired to every route all
-// three provider packages declare. It exists because internal/faults is not
+// four provider packages declare. It exists because internal/faults is not
 // importable from another module, and without it a consumer building
 // provider.Deps by hand gets silently fault-free behaviour from a scenario that
 // declares faults:
@@ -381,6 +383,13 @@ func PerplexityHandler(tb testing.TB, opts ...Option) (http.Handler, *Sim) {
 	return handlerOnly(tb, provider.Perplexity, opts)
 }
 
+// MCPHandler returns the MCP handler and its Sim, on the same terms as
+// [ExaHandler].
+func MCPHandler(tb testing.TB, opts ...Option) (http.Handler, *Sim) {
+	tb.Helper()
+	return handlerOnly(tb, provider.MCP, opts)
+}
+
 // handlerOnly builds a Sim serving exactly one provider and starts nothing.
 //
 // The provider set is forced rather than taken from WithProviders: a caller that
@@ -445,6 +454,8 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 			s.handlers[name] = tavily.New(deps)
 		case provider.Perplexity:
 			s.handlers[name] = perplexity.New(deps)
+		case provider.MCP:
+			s.handlers[name] = mcp.New(deps)
 		}
 	}
 
@@ -524,7 +535,8 @@ func (s *Sim) URL(p provider.Name) string {
 }
 
 // BaseURLs returns the environment-variable-shaped base URLs, keyed
-// EXA_BASE_URL, TAVILY_BASE_URL and PERPLEXITY_BASE_URL, so a test can configure
+// EXA_BASE_URL, TAVILY_BASE_URL, PERPLEXITY_BASE_URL and MCP_BASE_URL, so a
+// test can configure
 // a consumer exactly as Compose would. Only running servers appear.
 func (s *Sim) BaseURLs() map[string]string {
 	out := make(map[string]string, len(s.servers))

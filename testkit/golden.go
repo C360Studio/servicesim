@@ -61,6 +61,14 @@ func GoldenExactIDs() GoldenOption {
 // fault plan varies them per attempt by design, because the attempt index is
 // part of the identifier tuple, so comparing them would make a retry test fail
 // for the one reason it should not.
+//
+// MCP mints no identifier of its own — the top-level "id" in an MCP response
+// envelope is the JSON-RPC id the CLIENT sent, echoed back verbatim, never
+// derived from the attempt index — but "id" is already in this list for
+// Perplexity's sake, and pruning a client-echoed id by default is harmless:
+// it is not attempt-varying, so nothing about it needed a fault-aware ignore
+// rule, and [GoldenExactIDs] restores it for a test that wants to assert the
+// exact echo.
 var derivedIDPaths = []string{"requestId", "request_id", "id"}
 
 // streamDerivedIDPaths are additional derived-identifier paths AssertGoldenSSE

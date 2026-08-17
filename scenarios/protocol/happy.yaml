@@ -170,3 +170,40 @@ providers:
           sources:
             - source-a
             - source-b
+
+  # The MCP profile (Phase 8 unit 2). A two-tool catalogue — search returns
+  # both canonical sources, fetch returns one by URL — so a consumer's
+  # tools/list and tools/call decoders are both exercised end to end, the
+  # same property this scenario proves for the other four surfaces.
+  mcp:
+    instructions: Search the evaluation corpus, or fetch one report by URL.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+      - name: fetch
+        description: Fetch one report's full text by URL.
+        input_schema:
+          type: object
+          properties:
+            url: {type: string}
+          required: [url]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a
+          - type: resource_link
+            uri: https://example.test/report-b
+            name: source-b
+            title: Report B
+        structured_content:
+          answer: Report A and Report B agree on the finding.
+      fetch:
+        content:
+          - type: text
+            source: source-b

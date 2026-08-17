@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": -32020,
+    "message": "Header mismatch: Mcp-Method header value \"tools/list\" does not match body value \"server/discover\""
+  },
+  "id": 1,
+  "jsonrpc": "2.0"
+}

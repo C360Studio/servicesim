@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": -32603,
+    "message": "servicesim scripted fault: status"
+  },
+  "id": 1,
+  "jsonrpc": "2.0"
+}

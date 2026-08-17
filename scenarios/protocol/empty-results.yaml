@@ -87,3 +87,12 @@ providers:
   tavily_research:
     status: completed
     content: ""
+
+  # An empty tool catalogue: tools/list answers well-formed and empty, and
+  # there is nothing to call — the same "zero results inside a well-shaped
+  # envelope" property every surface above proves, expressed here as a
+  # server with no tools rather than a search with no hits.
+  mcp:
+    instructions: No tools are available for this evaluation corpus.
+    tools: []
+    results: {}

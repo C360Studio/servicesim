@@ -57,6 +57,7 @@ services:
       - "8081:8081" # exa:        POST /search, POST /answer
       - "8082:8082" # tavily:     POST /search
       - "8083:8083" # perplexity: POST /v1/sonar, /chat/completions, /v1/agent, /v1/responses
+      - "8084:8084" # mcp:        POST /mcp
 
     healthcheck:
       # The image is `scratch` — no shell, no curl, no wget. The binary answers
@@ -80,6 +81,11 @@ services:
       EXA_BASE_URL: http://servicesim:8081
       TAVILY_BASE_URL: http://servicesim:8082
       PERPLEXITY_BASE_URL: http://servicesim:8083
+      # No MCP_API_KEY: the MCP profile's credential is OPTIONAL by default
+      # (contracts/mcp/README.md decision 3, the opposite default from the
+      # three research profiles above) — set one only if your scenario opts
+      # into `auth: {mode: required}`.
+      MCP_BASE_URL: http://servicesim:8084
 
       # --- The namespaced form --------------------------------------------
       # Two optional path prefixes, stripped before route matching, so a
@@ -96,6 +102,7 @@ services:
       # EXA_BASE_URL: http://servicesim:8081/n/${TEST_ID}
       # TAVILY_BASE_URL: http://servicesim:8082/n/${TEST_ID}
       # PERPLEXITY_BASE_URL: http://servicesim:8083/n/${TEST_ID}
+      # MCP_BASE_URL: http://servicesim:8084/n/${TEST_ID}
       #
       # Both prefixes together, scenario first — same behaviour, independent
       # state, which is the case a scenario-only mechanism cannot express:
@@ -103,8 +110,10 @@ services:
       # EXA_BASE_URL: http://servicesim:8081/x/fusion-overlap/n/${TEST_ID}
       # TAVILY_BASE_URL: http://servicesim:8082/x/fusion-overlap/n/${TEST_ID}
       # PERPLEXITY_BASE_URL: http://servicesim:8083/x/fusion-overlap/n/${TEST_ID}
+      # MCP_BASE_URL: http://servicesim:8084/x/fusion-overlap/n/${TEST_ID}
 
-      # Credentials are still required by default — the point is to prove the
+      # Credentials are still required by default on the three research
+      # profiles (MCP's is optional, see above) — the point is to prove the
       # adapter sends one, in the right placement. Any fake value works;
       # Servicesim retains only a fingerprint, never the value.
       EXA_API_KEY: test-exa-key

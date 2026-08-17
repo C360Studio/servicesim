@@ -69,6 +69,7 @@ func testConfig(t *testing.T, args ...string) config.Config {
 		"--exa-port", "0",
 		"--tavily-port", "0",
 		"--perplexity-port", "0",
+		"--mcp-port", "0",
 		"--shutdown-grace", "10s",
 	}
 	cfg, err := config.Load(append(base, args...), nil)
@@ -500,6 +501,14 @@ func TestUnknownScenarioFailsClosed(t *testing.T) {
 			name: "perplexity", surface: string(provider.Perplexity),
 			path: "/x/nope/v1/sonar", body: `{"model":"sonar","messages":[{"role":"user","content":"q"}]}`,
 			want: `{"detail":"Not Found"}`,
+		},
+		{
+			// The JSON-RPC-shaped refusal omits the id member: schema.json's
+			// RequestId admits no null, and JSONRPCErrorResponse.id is optional
+			// (provider/mcp/doc.go, decision 6). Pinned by exact bytes.
+			name: "mcp", surface: string(provider.MCP),
+			path: "/x/nope/mcp", body: `{"jsonrpc":"2.0","id":1,"method":"server/discover"}`,
+			want: `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Not Found"}}`,
 		},
 		{
 			name:    "an invalid name is refused, not sanitised into a lookup",

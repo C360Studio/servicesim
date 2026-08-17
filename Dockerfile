@@ -77,7 +77,7 @@ COPY --from=builder /build/scenarios /scenarios
 USER 65532:65532
 
 # Admin (health, readiness, journal), then one listener per provider.
-EXPOSE 8080 8081 8082 8083
+EXPOSE 8080 8081 8082 8083 8084
 
 # The container binds all interfaces; local development defaults to loopback.
 ENV SERVICESIM_BIND_ADDRESS=0.0.0.0
@@ -92,7 +92,7 @@ ARG VERSION
 ARG COMMIT_SHA
 ARG BUILD_DATE
 LABEL org.opencontainers.image.title="Servicesim" \
-      org.opencontainers.image.description="Deterministic HTTP simulator for the Exa, Tavily and Perplexity research APIs" \
+      org.opencontainers.image.description="Deterministic HTTP simulator for the Exa, Tavily and Perplexity research APIs, and an MCP server" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT_SHA}" \
       org.opencontainers.image.created="${BUILD_DATE}" \

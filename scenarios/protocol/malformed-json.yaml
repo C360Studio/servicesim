@@ -127,3 +127,26 @@ providers:
     content: Report A states the finding.
     sources:
       - source-a
+
+  # One route, one always-on truncated body, on its own budget.
+  mcp:
+    fault:
+      after: repeat_last
+      attempts:
+        - kind: invalid_json
+          status: 200
+          raw_body: '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":[{"type":"text",'
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a

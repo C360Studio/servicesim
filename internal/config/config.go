@@ -37,10 +37,12 @@ const (
 	DefaultTavilyPort = 8082
 	// DefaultPerplexityPort is the Perplexity listener.
 	DefaultPerplexityPort = 8083
+	// DefaultMCPPort is the MCP listener.
+	DefaultMCPPort = 8084
 
 	// DefaultProviders enables every simulated provider. The order is the stable
 	// order [Config.Enabled] reports.
-	DefaultProviders = "exa,tavily,perplexity"
+	DefaultProviders = "exa,tavily,perplexity,mcp"
 
 	// DefaultJournalCapacity bounds retained journal entries. Zero disables
 	// retention.
@@ -101,7 +103,7 @@ const (
 // reports and the order listeners bind. It is a slice rather than a map because
 // a map range would make listener startup order — and any message that lists
 // providers — differ between runs.
-var allProviders = []provider.Name{provider.Exa, provider.Tavily, provider.Perplexity}
+var allProviders = []provider.Name{provider.Exa, provider.Tavily, provider.Perplexity, provider.MCP}
 
 // Listener is one bound HTTP surface.
 type Listener struct {
@@ -130,6 +132,8 @@ type Config struct {
 	Tavily Listener
 	// Perplexity is the Perplexity listener.
 	Perplexity Listener
+	// MCP is the MCP listener.
+	MCP Listener
 
 	// ScenarioPath is the scenario to load. A "builtin:" prefix selects an
 	// embedded protocol scenario, for example "builtin:happy". It is empty in
@@ -225,6 +229,7 @@ var bindings = []binding{
 	{"exa-port", "SERVICESIM_EXA_PORT"},
 	{"tavily-port", "SERVICESIM_TAVILY_PORT"},
 	{"perplexity-port", "SERVICESIM_PERPLEXITY_PORT"},
+	{"mcp-port", "SERVICESIM_MCP_PORT"},
 	{"providers", "SERVICESIM_PROVIDERS"},
 	{"max-namespaces", "SERVICESIM_MAX_NAMESPACES"},
 	{"max-jobs", "SERVICESIM_MAX_JOBS"},
@@ -249,6 +254,7 @@ type raw struct {
 	exaPort             int
 	tavilyPort          int
 	perplexityPort      int
+	mcpPort             int
 	providers           string
 	maxNamespaces       int
 	maxJobs             int
@@ -284,6 +290,7 @@ func newFlagSet(r *raw) *flag.FlagSet {
 	flags.IntVar(&r.exaPort, "exa-port", DefaultExaPort, "Exa listener port")
 	flags.IntVar(&r.tavilyPort, "tavily-port", DefaultTavilyPort, "Tavily listener port")
 	flags.IntVar(&r.perplexityPort, "perplexity-port", DefaultPerplexityPort, "Perplexity listener port")
+	flags.IntVar(&r.mcpPort, "mcp-port", DefaultMCPPort, "MCP listener port")
 	flags.StringVar(&r.providers, "providers", DefaultProviders,
 		"comma-separated providers to serve")
 	flags.IntVar(&r.maxNamespaces, "max-namespaces", DefaultMaxNamespaces,
@@ -404,6 +411,7 @@ func assemble(r raw, provided map[string]bool) (Config, error) {
 		Exa:                 Listener{Port: r.exaPort},
 		Tavily:              Listener{Port: r.tavilyPort},
 		Perplexity:          Listener{Port: r.perplexityPort},
+		MCP:                 Listener{Port: r.mcpPort},
 		ScenarioPath:        strings.TrimSpace(r.scenario),
 		ScenarioRoot:        strings.TrimSpace(r.scenarioRoot),
 		ScenarioDir:         strings.TrimSpace(r.scenarioDir),
@@ -539,6 +547,7 @@ func (c Config) validate() error {
 		{"--exa-port", c.Exa.Port},
 		{"--tavily-port", c.Tavily.Port},
 		{"--perplexity-port", c.Perplexity.Port},
+		{"--mcp-port", c.MCP.Port},
 	}
 	for _, p := range ports {
 		if p.port < 0 || p.port > 65535 {
@@ -591,6 +600,8 @@ func (c *Config) listener(name provider.Name) *Listener {
 		return &c.Tavily
 	case provider.Perplexity:
 		return &c.Perplexity
+	case provider.MCP:
+		return &c.MCP
 	default:
 		return nil
 	}

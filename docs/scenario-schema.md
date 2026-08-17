@@ -99,10 +99,11 @@ mistake.
 Servicesim never changes this schema, and a scenario written today keeps working when new providers arrive.
 
 The names this build has handlers for are `exa`, `tavily`, `perplexity` (Sonar), `perplexity_agent` (the Agent
-API), `exa_agent_runs` (Exa's create-then-poll Agent surface) and `tavily_research` (Tavily's create-then-poll
-Research surface). Each async entry is independent of its sync sibling deliberately: a scenario can rate-limit
-one and leave the other healthy, which is how a consumer's migration fallback gets tested. See
-[The async surfaces](#the-async-surfaces-exa_agent_runs-and-tavily_research).
+API), `exa_agent_runs` (Exa's create-then-poll Agent surface), `tavily_research` (Tavily's create-then-poll
+Research surface) and `mcp` (a Model Context Protocol Streamable HTTP server, modern era only). Each async entry
+is independent of its sync sibling deliberately: a scenario can rate-limit one and leave the other healthy, which
+is how a consumer's migration fallback gets tested. See
+[The async surfaces](#the-async-surfaces-exa_agent_runs-and-tavily_research) and [`mcp`](#mcp).
 
 ### Reserved envelope keys
 
@@ -388,7 +389,7 @@ error, `scenario.source.unknown`, naming the normalised YAML path — for exampl
 
 | Key | Type | Effect |
 |---|---|---|
-| `mode` | `required` \| `optional` \| `reject` | `required` is the default. `reject` always answers 401, which is what the `unauthorized` built-in uses. Any other value is a load error. |
+| `mode` | `required` \| `optional` \| `reject` | `required` is the default — except for `mcp`, whose default is `optional` (the specification leaves authentication to the deployment; see [`mcp`](#mcp)). `reject` always answers 401, which is what the `unauthorized` built-in uses. Any other value is a load error. |
 | `expect_key` | string | The presented credential must match exactly. Use a fake value; only a fingerprint is ever retained. |
 | `headers` | list of string | Overrides the accepted credential placements outright, for example `[authorization]` to reject an `x-api-key` that Exa would otherwise allow. Despite the name it takes placements, not only header names — see below. |
 
@@ -410,6 +411,7 @@ Defaults are **per route**, because the real vendors vary placement per route:
 | Tavily | `POST /search`, `POST /research` | `authorization`, `body:api_key` — decision D2, a v0.1.1 owner decision on client-level evidence. |
 | Tavily | `POST /extract` | `authorization` only — the vendor's `/extract` page documents Bearer only, and D2 is not extended to routes verified after it. See `contracts/tavily/README.md`'s "POST /extract" § "Auth". |
 | Perplexity | all six routes | `authorization` |
+| MCP | `POST /mcp` | `authorization` — **optional** by default, unlike every route above; a scenario opts into `required` explicitly. |
 
 (The two Exa agent-run routes and Tavily's `GET /research/{request_id}` poll are omitted from this table as a
 pre-existing gap — see their own route godoc for credentials.)
@@ -825,6 +827,72 @@ is fixed — `search_results` first, then `message` — and a scenario cannot re
 | `stream` | `{when_requested, deltas, terminal, pace}` | Scripts the `responses` SSE grammar instead of the ordinary JSON body. See [Streaming](#streaming-stream). |
 | `extra_fields` | map | Merged into the top-level response object. |
 
+### `mcp`
+
+A Model Context Protocol Streamable HTTP server, modern era only (protocol revision `2026-07-28`), served on
+`POST /mcp`. One projection serves every JSON-RPC method this profile dispatches — `server/discover`,
+`tools/list` and `tools/call` — because a turn IS a server state: tool-catalogue drift between calls is turn N
+vs turn N+1, not three projections that could disagree about what the server currently believes its own
+catalogue is. `TestBuiltins_ProjectionKeysAreDocumented` cross-checks this table's keys against every built-in's
+`mcp:` block.
+
+| Key | Type | Renders to |
+|---|---|---|
+| `instructions` | string | `server/discover`'s `instructions`. Optional. |
+| `ttl_ms` | integer | `ttlMs` on `server/discover` and `tools/list`. Defaults to `60000`. |
+| `cache_scope` | `public` \| `private` | `cacheScope` on `server/discover` and `tools/list`. Defaults to `private`. |
+| `tools` | list of ToolProjection | `tools/list`'s `tools[]`, in declaration order — the order this profile always answers in. |
+| `results` | map of tool name to ResultProjection | `tools/call`'s scripted outcomes, keyed by tool name. A key naming no declared `tools` entry is legal (a hidden tool); a `tools` entry with no matching `results` key renders `isError: true` with one text block saying so and warns `mcp.tool.unscripted`, never silently; a name in neither is the `-32602` unknown-tool error (`mcp.tool.unknown`). |
+| `stream` | `{when_requested, deltas, terminal, pace}` | Scripts an SSE answer to `tools/call` only — `server/discover` and `tools/list` never stream, regardless of policy. See [Streaming](#streaming-stream); the shared grammar applies, with MCP's own framing (below). |
+| `extra_fields` | map | Merged into **every** result this projection renders — `server/discover`, `tools/list` and `tools/call` alike, unlike every other provider's `extra_fields`, which is per-route. Envelope-level only: neither `ToolProjection` nor `ContentBlock` has an `extra_fields` field of its own, unlike Exa/Tavily's per-result-entry `extra_fields` below. |
+
+ToolProjection:
+
+| Key | Type | Renders to |
+|---|---|---|
+| `name` | string | `name`. SHOULD match `^[A-Za-z0-9_.-]{1,128}$` and be unique; a non-matching name is a load WARNING, a duplicate is a load ERROR. |
+| `title` | string | `title`. Optional. |
+| `description` | string | `description`. Optional. |
+| `input_schema` | JSON Schema object | `inputSchema`. Must be an object with `type: "object"` at the root (load ERROR otherwise); absent renders the schema's own no-parameter default, `{"type":"object"}`. Any `x-mcp-header` key anywhere in the tree is a load ERROR — this build does not honour it. |
+| `output_schema` | JSON Schema object | `outputSchema`. Optional; never validated against a scripted result's `structured_content` (no JSON Schema validator in stdlib) — declaring both raises a load WARNING saying so, once per tool. |
+| `annotations` | ToolAnnotations | `annotations`. Optional. |
+
+ToolAnnotations: `title` (string), `read_only_hint`, `destructive_hint`, `idempotent_hint`, `open_world_hint`
+(booleans, all optional — a fixture that leaves one unset emits nothing for it, never a substituted default).
+
+ResultProjection:
+
+| Key | Type | Renders to |
+|---|---|---|
+| `content` | list of ContentBlock | `content[]`, in order. May be empty. |
+| `structured_content` | any JSON value | `structuredContent`. Optional; not validated against `output_schema` — see above. |
+| `is_error` | boolean | `isError`. Defaults to `false` (omitted on the wire). |
+
+ContentBlock, keyed by `type` (`text` \| `image` \| `audio` \| `resource_link` \| `resource`):
+
+| Key | Type | Applies to | Renders to |
+|---|---|---|---|
+| `type` | string | every block | `type`. |
+| `text` | string | `text` | `text`. Mutually exclusive with `source` below (a fixture setting both has `text` ignored). |
+| `source` | source reference | `text` | Resolves to the referenced source's own text, falling back to its title when the source has no text — never the other way, since a hostile fixture's malicious-content markers live in `text`. |
+| `data`, `mime_type` | string, string | `image`, `audio` | `data`, `mimeType`. |
+| `uri`, `name`, `title`, `description`, `mime_type` | string ×5 | `resource_link` | `uri`, `name`, `title`, `description`, `mimeType`. `uri` and `name` are required by the schema. |
+| `resource` | ResourceBlock | `resource` | `resource`. |
+
+ResourceBlock: `uri` (required), `mime_type`, `text`, `blob` — exactly one of `text`/`blob` on a well-formed
+fixture (`TextResourceContents` or `BlobResourceContents`); nothing downstream rejects a fixture that sets both.
+
+**Simulator-chosen defaults**, recorded in full in `provider/mcp/doc.go` and `contracts/mcp/README.md`'s
+"Simulation decisions": credentials are OPTIONAL by default (the opposite default from every other provider — a
+scenario needs an explicit `auth: {mode: required}` to reject a missing credential, `expect_key` alone is not
+enough); every JSON-RPC method-level error (unknown tool, invalid params, an internal render failure) answers
+`200`, never `400`, because a `400` body is the specification's own client era-detection signal; SSE framing is
+unnamed `data:` frames only, with no `event:`, no `id:` and no `[DONE]` sentinel, carrying one
+`notifications/progress` frame per delta only when the request itself carried `_meta.progressToken`, followed by
+the final JSON-RPC response frame. `x-mcp-header`, `Origin` validation, resources, prompts, completion,
+`subscriptions/listen`, MRTR and the legacy `2025-11-25` era are all NOT SIMULATED by this profile — see
+`contracts/mcp/README.md`'s "Not simulated / out of scope" table.
+
 ### Streaming (`stream:`)
 
 `perplexity` (Sonar — `POST /v1/sonar` and its aliases) and `perplexity_agent` (the Agent API) can each serve a
@@ -832,6 +900,14 @@ scripted Server-Sent Events sequence instead of the ordinary JSON body. Sonar re
 `chat_completions` dialect: unnamed `data:` frames closed by `data: [DONE]`. The Agent API renders the `responses`
 dialect: every frame carries an `event: <type>` line and no `[DONE]` sentinel. Exa and Tavily do not stream —
 `exa`'s own `stream` key (above) stays the plain `warn` \| `reject` policy it always was.
+
+`mcp` is the third streaming surface, and its shape differs from the two above in every way `when_requested`
+otherwise assumes: only `tools/call` can stream (`server/discover` and `tools/list` never do, regardless of
+policy); the client has no request-side field that asks for a stream — `when_requested: stream` answers every
+`tools/call` as SSE unconditionally, so `reject` is meaningless there and is a load ERROR
+(`mcp.stream.reject_meaningless`); and its framing is its own (unnamed `data:` frames, no `[DONE]`, one
+`notifications/progress` frame per delta sent only when the request's own `_meta.progressToken` was present —
+see [`mcp`](#mcp) above for the full grammar).
 
 `stream:` lives inside `respond:`, alongside the rest of the projection — `scenario` never decodes it, the
 provider package does, through the same `Turn.DecodeProjection` every other key uses. A bare scalar still parses,

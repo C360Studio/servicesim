@@ -142,8 +142,38 @@ func IsCredentialKey(name string) bool {
 // X-Api-Key-2 all normalise into the substring tier. Applying a weaker rule to
 // headers than to JSON properties would leak exactly the adapter mistake the
 // journal exists to surface.
+//
+// It also judges the plain name a wrapper header mirrors, via
+// stripMirrorPrefix, so a header that carries a credential UNDER another
+// name is masked exactly as that name's own header would be — the same
+// "no weaker rule for headers" doctrine applied one layer deeper, for a
+// header family that wraps rather than states its content's name
+// directly (contracts/mcp/README.md, "Request-metadata headers" and
+// "Legacy traffic at a modern-only server").
 func IsCredentialHeader(name string) bool {
-	return isCredentialName(name)
+	return isCredentialName(name) || isCredentialName(stripMirrorPrefix(name))
+}
+
+// stripMirrorPrefix strips the wrapper prefix off a header name that
+// mirrors another value under a different name, returning the mirrored
+// name for IsCredentialHeader to judge on its own merits. Mcp-Param-{name}
+// mirrors a tool argument at {name} (the MCP specification, "Custom
+// Headers from Tool Parameters"); Mcp-Session-Id carries a legacy
+// bearer-ish session token (contracts/mcp/README.md, "Legacy traffic at a
+// modern-only server"). Every other Mcp-* header this repository sends or
+// reads (Mcp-Method, Mcp-Name, MCP-Protocol-Version, Last-Event-ID)
+// normalises to a name none of these branches touch, so this cannot mask
+// a header a scenario author expects to see in the journal.
+func stripMirrorPrefix(name string) string {
+	n := normalizeName(name)
+	switch {
+	case n == "mcpsessionid":
+		return "sessionid"
+	case strings.HasPrefix(n, "mcpparam") && len(n) > len("mcpparam"):
+		return n[len("mcpparam"):]
+	default:
+		return n
+	}
 }
 
 // Headers returns a copy of h with credential-bearing values masked. For

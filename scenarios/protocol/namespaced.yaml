@@ -190,3 +190,25 @@ providers:
           sources:
             - source-a
             - source-b
+
+  # This file's lane story is about turn_key on the Sonar route; mcp stays in
+  # the ordinary single-shot happy shape, exactly as the Agent surface above.
+  # The /n/<namespace> boundary that gives two concurrent callers independent
+  # state applies to this listener too, with nothing to declare here for it.
+  mcp:
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a
+          - type: text
+            source: source-b

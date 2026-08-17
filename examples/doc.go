@@ -36,4 +36,8 @@
 //     and classifying a 429 as retryable.
 //   - namespace_test.go — parallel subtests sharing one simulator, each in its
 //     own state lane.
+//   - mcpclient.go and mcp_test.go — a minimal Streamable HTTP MCP client: the
+//     fourth profile is a protocol, not a vendor, so its worked example covers
+//     the JSON-RPC envelope, an SSE tools/call answer, catalogue drift across
+//     turns, and the malicious-content corpus on MCP's own content shapes.
 package examples

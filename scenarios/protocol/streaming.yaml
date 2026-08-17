@@ -174,3 +174,34 @@ providers:
     content: Report A confirms the finding.
     sources:
       - source-a
+
+  # The MCP profile's own SSE path (contracts/mcp/README.md decision 5):
+  # tools/call ONLY streams — server/discover and tools/list never stream,
+  # regardless of this policy. The request's `_meta.progressToken` gates
+  # only the `notifications/progress` FRAMES, not the stream itself: a
+  # tools/call under `when_requested: stream` answers SSE either way, with
+  # no progress frames (only the response frame) when no token was sent.
+  # Unlike Perplexity's stream above, there is no per-call fault ladder
+  # here: one turn is enough to exercise the shape, and the transport
+  # faults this profile shares with every other provider are already
+  # proved by `hang-then-abort` and `brownout`.
+  mcp:
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    stream:
+      when_requested: stream
+      deltas:
+        - "searching…"
+        - "ranking…"
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a

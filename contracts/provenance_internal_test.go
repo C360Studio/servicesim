@@ -138,6 +138,7 @@ func readmeVerifiedDates(t *testing.T) map[Provider]string {
 		"Exa":        Exa,
 		"Tavily":     Tavily,
 		"Perplexity": Perplexity,
+		"MCP":        MCP,
 	}
 
 	dates := make(map[Provider]string, len(byName))

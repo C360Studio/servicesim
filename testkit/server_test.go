@@ -144,6 +144,29 @@ func newRequest(ctx context.Context, tb testing.TB, url string, p provider.Name,
 	return req
 }
 
+// mcpDiscoverBody is a well-formed server/discover request body, carrying
+// the two _meta fields the profile requires on every request (decision
+// 13, contracts/mcp/README.md).
+const mcpDiscoverBody = `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":` +
+	`{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`
+
+// newMCPDiscoverRequest builds a server/discover request against url,
+// carrying the standard request-metadata headers the profile validates
+// (MCP-Protocol-Version, Mcp-Method) and the Accept pair the transport
+// requires — a shape unrelated to the three research vendors' simple
+// path-plus-auth-header requests, so it does not reuse newRequest.
+func newMCPDiscoverRequest(ctx context.Context, tb testing.TB, url string) *http.Request {
+	tb.Helper()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(mcpDiscoverBody))
+	require.NoError(tb, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("MCP-Protocol-Version", "2026-07-28")
+	req.Header.Set("Mcp-Method", "server/discover")
+	return req
+}
+
 // TestStartIsThreeLines is the consumer's test, written the way a consumer would
 // write it: start, call, assert the vendor request was correct.
 func TestStartIsThreeLines(t *testing.T) {
@@ -185,6 +208,19 @@ func TestStartServesEveryProvider(t *testing.T) {
 			assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 		})
 	}
+
+	t.Run("mcp server/discover", func(t *testing.T) {
+		resp, err := sim.Client().Do(newMCPDiscoverRequest(context.Background(), t, sim.URL(provider.MCP)+"/mcp"))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = resp.Body.Close() })
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), `"supportedVersions"`)
+	})
 }
 
 func TestBaseURLsAreEnvironmentShaped(t *testing.T) {
@@ -197,7 +233,22 @@ func TestBaseURLsAreEnvironmentShaped(t *testing.T) {
 	assert.Equal(t, sim.URL(provider.Exa), urls["EXA_BASE_URL"])
 	assert.Equal(t, sim.URL(provider.Tavily), urls["TAVILY_BASE_URL"])
 	assert.NotContains(t, urls, "PERPLEXITY_BASE_URL", "WithProviders excluded Perplexity")
+	assert.NotContains(t, urls, "MCP_BASE_URL", "WithProviders excluded MCP")
 	assert.Empty(t, sim.URL(provider.Perplexity))
+	assert.Empty(t, sim.URL(provider.MCP))
+}
+
+// TestBaseURLsIncludesMCP proves MCP_BASE_URL appears once the MCP
+// listener is actually started — the fourth provider testkit.Start now
+// wires up alongside Exa, Tavily and Perplexity.
+func TestBaseURLsIncludesMCP(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+
+	urls := sim.BaseURLs()
+	assert.Equal(t, sim.URL(provider.MCP), urls["MCP_BASE_URL"])
+	assert.NotEmpty(t, urls["MCP_BASE_URL"])
 }
 
 // TestAssertOverlapped is plan acceptance criterion 9's mechanism: it must pass
@@ -458,6 +509,19 @@ func TestHandlerConstructorsCoverEveryProvider(t *testing.T) {
 			testkit.AssertRequestCount(t, sim, tc.wanted, 1)
 		})
 	}
+
+	t.Run("mcp", func(t *testing.T) {
+		handler, sim := testkit.MCPHandler(t, testkit.WithBuiltin("happy"))
+		require.NotNil(t, handler)
+
+		req := newMCPDiscoverRequest(context.Background(), t, "http://sim.test/mcp")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, handler, sim.Handler(provider.MCP))
+		testkit.AssertRequestCount(t, sim, provider.MCP, 1)
+	})
 }
 
 func TestScenarioSelectionOptions(t *testing.T) {

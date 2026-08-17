@@ -175,3 +175,41 @@ providers:
           sources:
             - source-a
             - source-b
+
+  # This file's overlap arrangement is about dedup/corroboration across the
+  # research surfaces above; mcp adds a fifth surface returning the same
+  # canonical document (the variant, exactly as Tavily's results do, so a
+  # consumer canonicalising across every surface — not only the four
+  # research ones — still lands on one document) plus the independent
+  # corroborating source.
+  mcp:
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a-variant
+          - type: text
+            source: source-b
+          # resource_link blocks, alongside the text blocks above, so the
+          # canonical-URL dedup property this file exists to test is
+          # exercisable on MCP too: source-a-variant's URI carries the
+          # same utm/fragment variant as its text counterpart, so a
+          # consumer canonicalising across BOTH content types still lands
+          # on one document.
+          - type: resource_link
+            uri: "https://example.test/report-a?utm_source=newsletter&utm_medium=email#summary"
+            name: report-a-variant
+            title: Report A
+          - type: resource_link
+            uri: "https://example.test/report-b"
+            name: report-b
+            title: Report B

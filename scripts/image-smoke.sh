@@ -27,6 +27,7 @@ ADMIN_PORT=$(( 20000 + RANDOM % 20000 ))
 EXA_PORT=$(( ADMIN_PORT + 1 ))
 TAVILY_PORT=$(( ADMIN_PORT + 2 ))
 PERPLEXITY_PORT=$(( ADMIN_PORT + 3 ))
+MCP_PORT=$(( ADMIN_PORT + 4 ))
 
 failures=0
 
@@ -57,6 +58,7 @@ docker run -d --name "${NAME}" \
   -p "${EXA_PORT}:8081" \
   -p "${TAVILY_PORT}:8082" \
   -p "${PERPLEXITY_PORT}:8083" \
+  -p "${MCP_PORT}:8084" \
   "${IMAGE}" >/dev/null
 
 # Wait for readiness rather than sleeping a fixed interval. Readiness only
@@ -178,6 +180,30 @@ check "POST :8083/v1/responses (perplexity, agent SDK alias)" \
   "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${PERPLEXITY_PORT}/v1/responses" \
       -H 'content-type: application/json' -H 'authorization: Bearer smoke-test-key' -d "${agent_body}")" "200"
 
+echo "==> criterion 2: the MCP listener answers server/discover on its own path"
+mcp_discover_body='{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+mcp_headers=$(mktemp)
+mcp_body_out=$(mktemp)
+curl -s -D "${mcp_headers}" -o "${mcp_body_out}" -X POST "http://127.0.0.1:${MCP_PORT}/mcp" \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -H 'mcp-protocol-version: 2026-07-28' \
+  -H 'mcp-method: server/discover' \
+  -d "${mcp_discover_body}"
+
+mcp_status=$(head -1 "${mcp_headers}" | tr -d '\r' | awk '{print $2}')
+check "POST :8084/mcp (server/discover) status" "${mcp_status}" "200"
+
+mcp_content_type=$(grep -i '^content-type:' "${mcp_headers}" | tr -d '\r' | awk '{print $2}')
+check "POST :8084/mcp (server/discover) content-type" "${mcp_content_type}" "application/json"
+
+if grep -q 'supportedVersions' "${mcp_body_out}"; then
+  pass "server/discover body carries supportedVersions"
+else
+  fail "server/discover body is missing supportedVersions"
+fi
+rm -f "${mcp_headers}" "${mcp_body_out}"
+
 echo "==> SSE streaming: a second container on the built-in streaming scenario"
 # The default image scenario (happy) declares no `stream:` policy for
 # Perplexity, so `stream: true` against it only warns and serves ordinary
@@ -247,7 +273,7 @@ else
   pass "journal contains no credential value"
 fi
 
-for provider in exa tavily perplexity; do
+for provider in exa tavily perplexity mcp; do
   if printf '%s' "${journal}" | grep -q "\"provider\":\"${provider}\""; then
     pass "journal recorded a ${provider} request"
   else

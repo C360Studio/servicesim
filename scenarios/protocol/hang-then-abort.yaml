@@ -222,3 +222,32 @@ providers:
           content: Report A states the finding.
           sources:
             - source-a
+
+  # One route, one budget — the same three abort shapes as the synchronous
+  # routes above, on POST /mcp's single attempt budget.
+  mcp:
+    fault:
+      attempts:
+        - delay: 700ms
+          kind: close_before_headers
+        - delay: 700ms
+          kind: truncate_body
+          reset: true
+        - kind: truncate_body
+          delay_after_headers: 700ms
+          reset: true
+      after: success
+    instructions: Search the evaluation corpus for relevant reports.
+    tools:
+      - name: search
+        description: Search the evaluation corpus for relevant reports.
+        input_schema:
+          type: object
+          properties:
+            query: {type: string}
+          required: [query]
+    results:
+      search:
+        content:
+          - type: text
+            source: source-a

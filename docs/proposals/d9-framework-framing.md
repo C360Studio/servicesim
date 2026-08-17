@@ -3,12 +3,13 @@
 ## Status
 
 **Decided 2026-08-16: tier 1 adopted and applied (README and CLAUDE.md leads, the non-goals, the Documentation
-table); tier 2 deferred until Phase 8's MCP/ODR have exercised the seam; tier 3 open.** The text below is the
-proposal as the owner read it, kept for the reasoning and for tier 2's shape. It was written to make decision D9 in
-[`docs/adopter-backlog.md`](../adopter-backlog.md) concrete enough to decide in one sitting: what the observation
-means literally, what the code already is, three independently choosable tiers of what could change, and a
-recommendation. The backlog's D9 row points here. Written during the Phase 6 closing docs sweep (2026-08-16), on
-branch `phase-6`.
+table); tier 2 deferred until Phase 8's MCP/ODR have exercised the seam; tier 3 open. Evidence recorded 2026-08-16
+(Phase 8, the MCP profile in-tree — see "Evidence from Phase 8" at the end); tier 2 awaits the owner.** The text
+below is the proposal as the owner read it, kept for the reasoning and for tier 2's shape. It was written to make
+decision D9 in [`docs/adopter-backlog.md`](../adopter-backlog.md) concrete enough to decide in one sitting: what
+the observation means literally, what the code already is, three independently choosable tiers of what could
+change, and a recommendation. The backlog's D9 row points here. Written during the Phase 6 closing docs sweep
+(2026-08-16), on branch `phase-6`.
 
 ## The observation
 
@@ -159,8 +160,8 @@ because it was scoped for MCP/ODR regardless of D9:
   table, so a fourth profile's env var falls out for free once it is registered (backlog, Phase 8).
 
 `internal/faults.New(s *scenario.Scenario, routes []provider.Route, ...)` already takes a route set — that part
-exists today. `testkit.NewFaults(s)` merely calls it with the three profiles' own `routes()` hardcoded, so the
-export this tier actually needs is a signature on `testkit.NewFaults` (or a new `provider`-level constructor)
+exists today. `testkit.NewFaults(s)` merely calls it with the three profiles' own `routes()` [four since Phase 8]
+hardcoded, so the export this tier actually needs is a signature on `testkit.NewFaults` (or a new `provider`-level constructor)
 that accepts a caller's route set instead of assuming the three. The compatibility cost below, not the
 implementation effort, is what makes this tier a decision rather than an afternoon's work.
 
@@ -220,3 +221,68 @@ is a question for the owner, not a proposed change.
 **Nothing above is applied by this sweep.** The backlog's D9 row points at this file and is marked open; Tier 1's
 paragraphs are drafted so that adopting them, if the owner agrees, is a direct paste rather than a second drafting
 pass.
+
+## Evidence from Phase 8 (2026-08-16)
+
+Recorded after Phase 8 unit 2 shipped the MCP profile in-tree (`39d5809`) and unit 3 wrote it up. The full,
+file-by-file list is [`docs/design/mcp-profile.md`](../design/mcp-profile.md), §12 "Seam observations for D9 tier
+2"; this section is the summary the tier-2 decision reads. ODR is out (D12), so this is the evidence from one
+profile, not two — but it is the profile least like the first three (a protocol, not a vendor; one route with
+in-handler JSON-RPC dispatch; a server-decided SSE answer; credentials optional by default), which is what makes it
+a fair test of the seam.
+
+**What the fourth profile needed from the seam: nothing new.** `provider.Handle`, `Exchange`, `NewMux`,
+`SelectTurnFor`, `TurnFault`, `Response.FaultBody`, the SSE `Stream`/`EncodeSSE`/`GrammarDelta` transport, the
+scenario package's open `providers:` registry, `when.body_json` nested paths, `turn_key: body_json:<path>`,
+`StreamScript`, `ExtraFields`, `AuthPolicy`, the fault engine, the journal, `internal/httpx`, `internal/wire`,
+`internal/admin`, and every `testkit` assertion were reused as-is (the job store, `internal/jobs`, is untouched —
+MCP does not use it). `MCP_BASE_URL` fell out of
+`Sim.BaseURLs` with no mapping table. Catalogue drift, per-method cursors, JSON-vs-SSE, scripted 429/503 with a
+JSON-RPC fault body — all expressible in the existing grammar with zero schema work.
+
+**The one framework change:** `internal/redact` now judges the plain name a wrapper header mirrors
+(`Mcp-Param-Token` masks as `Token`, `Mcp-Session-Id` as a session id) — a house-rule-4 hardening every profile's
+journal benefits from, found by the review lens told to break house rule 4, not an MCP feature.
+
+**What a fourth in-tree profile touched by hand: 41 enumeration sites in 12 code/script/image files** —
+`provider/provider.go` (1), `internal/config/config.go` (10), `internal/server/listeners.go` (4, including the
+vendor-shaped `/x/<unknown>` body), `internal/server/server.go` (3), `testkit/server.go` (7, one of them a new
+exported constructor, `MCPHandler`), `contracts/contracts.go` (3), `contracts/provenance_internal_test.go` (1),
+`scenarios/scenarios_test.go` (3), `Dockerfile` (2), `docker-compose.example.yml` (2), `scripts/image-smoke.sh`
+(4), `cmd/servicesim/main.go` (1) — plus an `mcp:` block in all 20 built-in YAML files (two guards force it), four
+test-expectation files, and seven documents updated by hand (`check-docs` verifies that what they name exists —
+flags, routes, symbols — and that the contracts index matches both ways; it does not force a document to mention
+a new listener or to agree on its port).
+Every one of those sites is a switch or a list keyed on the provider name; none required a design decision, and
+every guard that fired (`TestEveryProviderHasHappyAndEmptyAndErrorGoldens`, `TestEveryProviderHasSpecRecorded`,
+check-docs' both-direction contracts index, `TestBuiltins_CoverEveryImplementedProvider`) was right to. The one
+structural constraint met: `NewMux` keys handlers by pattern, so a many-method profile dispatches in-handler —
+which is also what the MCP specification's single endpoint wants, so it cost nothing here.
+
+**What an out-of-tree profile would need exported that is not today:** a `provider.Faults` constructor taking a
+route set (`internal/faults.New(s, routes, …)` already takes one; `testkit.NewFaults(s)` hardcodes the four
+in-tree `Routes()`; without it an out-of-tree provider's routes register in no plan and every request is served
+fault-free with only a `fault.unknown_key` warning — the silent-wrong-behaviour class); the `internal/faults`,
+`internal/journal`, `internal/jobs` aliases testkit already re-exports would need to stay; and the composition
+switches above — all in `internal/` or in testkit's unexported plumbing — would need an exported registration
+shape, or the out-of-tree profile stays an in-process `provider.Deps` + own-listener affair with no image, no
+`--providers` flag and no `testkit.Start` listener (the shape tier 2 already described). The `scenario` package,
+the `provider` seam and the assertions are exported and, on this evidence, sufficient.
+
+**The tier-2 question, crisply.** Two options; the decision is the owner's.
+
+- **Keep the seam internal (status quo).** A fifth profile is a Servicesim PR touching those ~41 sites, reviewed
+  here, released here, shipped in the image. Cost: every new profile waits on this repository; nobody outside it
+  can prototype one against the chassis. Benefit: no new compatibility obligation; the composition sites stay
+  free to change; a profile is a verified contract plus goldens plus built-ins by construction, because the guards
+  force it (CLAUDE.md, "not a generic mock server").
+- **Export the seam (re-open D6).** Ship a route-set-taking `provider.Faults` constructor and an exported
+  registration shape for the composition sites — or, at minimum, the constructor alone for the in-process path.
+  Cost under house rule 7: those signatures become pinned public API the moment they ship, carried indefinitely,
+  and an out-of-tree profile is not held to the contract-and-goldens discipline the in-tree guards enforce.
+  Benefit: a consumer builds a partner-API or internal-service profile in their own repository, on their own
+  schedule, against the shared journal/faults/redaction/testkit — the capability the "framework" word promises.
+
+The evidence says the chassis is already provider-neutral in fact (nothing was added to it for MCP) and that the
+remaining cost of a new profile is the 41 mechanical sites plus the discipline the guards impose. Whether that
+discipline is a feature to keep in-tree or a friction to export around is not a question the code can answer.
