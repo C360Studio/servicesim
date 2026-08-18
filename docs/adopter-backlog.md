@@ -6,19 +6,13 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-17 (late), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6) plus,
-unreleased: Phase 7 (`6a43316`) and **Phase 8, merged to `main` at `16c4688` (PR #4, merge commit)** —
-unit 1 (the MCP contract, `contracts/mcp/`, `f5dd08e`), unit 2 (the MCP profile, `provider/mcp/`
-(now `profiles/mcp/`), `39d5809`) and unit 3 (the docs sweep — README onboarding, `examples/mcpclient.go` +
-`examples/mcp_test.go`,
-`docs/design/mcp-profile.md`, the D9 tier-2 evidence, the CONTRIBUTING checklist, troubleshooting, `02a0917`).
-The `phase-8` branch is merged and deleted. **Owner decisions on 2026-08-17: D11 — "modern only is a fine
-start"; D9 tier 2 — YES, Servicesim is a framework and the four profiles are reference examples (the quote is in
-the D9 row).**
+Recorded 2026-08-18, against **v0.5.0** — the framework release, tagged from `main` at `5ac0a35`, digest
+`sha256:8c23f154…`, every spelling resolving to it. It carries **Phase 10** (the framework seam, merged at
+`ae437c7`, PR #5), **Phase 8** (the MCP profile, `16c4688`, PR #4) and **Phase 7** (contract fidelity,
+`6a43316`, PR #3), which had been unreleased since v0.4.0. `main` is clean; `phase-8` and `phase-10` are merged
+and deleted.
 
-**Phase 10 — the framework seam — is COMPLETE on branch `phase-10`, unmerged.** Units 0–9 shipped in nine commits
-(`4d10178`..`71a9a5e`; units 7 and 8 landed together) and unit 10, the documentation sweep, is the commit this
-paragraph is part of. What it did, in one sentence: `provider.Profile`/`Set` is the registration record, the root
+**What Phase 10 did, in one sentence:** `provider.Profile`/`Set` is the registration record, the root
 `servicesim` package is the composition entry point a consumer's own `main.go` calls, the four profiles moved to
 `profiles/<name>` as reference examples with their contract bundles beside them, `contracts` and `testkit` are
 generic over a set rather than four vendors, and the in-tree guards are library calls (`testkit.ValidateProfile`,
@@ -26,15 +20,24 @@ generic over a set rather than four vendors, and the in-tree guards are library 
 CI. [ADR 0003](adr/0003-framework-seam.md) is the record, [`proposals/framework-seam.md`](proposals/framework-seam.md)
 the design history (with its "Where it landed differently" list), and
 [`building-a-profile.md`](building-a-profile.md) + [`examples/profile/`](../examples/profile) the guide and the
-compiled proof.
+compiled proof — a fifth profile in its own module that CI builds and tests on every push.
 
-**The one step left is the release.** Merge `phase-10` and cut **v0.5.0** — the whole API break, Phase 8 and Phase
-7 in one tag. The note is drafted (Phase 10 section below, and the tag-message file the release commit lifts) and
-needs the owner's go-ahead; the procedure is `CONTRIBUTING.md` "Releasing": tag with the annotated note, publish,
-confirm both spellings resolve to one digest from the registry, then a follow-up commit moves the README/Compose
-pins to `v0.5.0` and its digest and drops README's interim "not tagged yet" paragraph (the one under the
-`servicesim:dev` note, which lists what `v0.4.0` lacks)
-(the docs guard fails on a pin that does not resolve, which is why publish comes first).
+**Owner decisions on 2026-08-17:** D11 — "modern only is a fine start"; D9 tier 2 — YES, Servicesim is a
+framework and the four profiles are reference examples (the quote is in the D9 row); all eleven design decisions
+D-1..D-11 taken as recommended ("ok on all"); and the tag approved once the docs were done and CI green.
+
+**One thing the release itself taught, worth not rediscovering:** the first v0.5.0 tag push failed at the
+pre-publish smoke test and published nothing — `.github/workflows/image.yml`'s pre-publish build passed no
+`VERSION`/`COMMIT_SHA`, so the image it smoke-tested reported the unstamped `dev` version that Phase 10 unit 3
+had just taught the smoke test to refuse. The gate was right; the workflow was wrong. Fixed in `5ac0a35`
+(reproduced both ways locally first), the unpublished tag deleted, and v0.5.0 re-cut at the fix.
+
+**What is left, and it needs the owner:** nothing in this repository is blocking. Open work, in the order it
+matters: tell the adopter v0.5.0 exists and what the migration table below says; Phase 9 (the two
+doctrine-contradicting features — enforced rate limiting and the callback injector's outbound half), still
+recommended as "ship the cheap half only"; the sem\* `chat/completions` profile out of tree (D-11) once
+semstreams v1 lands, which is also what the 1.0 trigger waits on; and the follow-ups each Phase 10 unit
+recorded in its section below.
 
 | Phase | State |
 |---|---|
@@ -46,8 +49,8 @@ pins to `v0.5.0` and its digest and drops README's interim "not tagged yet" para
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
 | 6 — G-3 depth: hostile content, oversized bodies, hangs after headers, resilience built-ins, pacing evidence | **shipped** in v0.4.0 — units 1–6, the closing docs sweep, D9 tier 1; the adopter's own guardrail vectors are still an append to `malicious-content` when they arrive |
 | 7 — packaging, deployment and the contract-fidelity process | **DONE (rescoped) and merged to `main` (`6a43316`, PR #3), unreleased** — items 1–2 (the Gitea mirror, the Kubernetes manifest) dropped 2026-08-16 (owner; D3 reworded: no replicas by design); item 3 shipped 2026-08-15; items 4 and 5b shipped: a `spec:` block (url/version/sha256/retrieved) for every vendor's OpenAPI document, `contracts.Spec`/`ProviderSpec`, `Record.APIVersion`, and the no-canary refresh procedure (D10) |
-| 8 — the MCP profile (in-tree per D6) | **COMPLETE — merged to `main` (`16c4688`, PR #4), unreleased; v0.5.0 is the release** — the last feature phase: unit 1 (contract verification, `contracts/mcp/`) DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp` (now `profiles/mcp`), listener `mcp` on `POST /mcp` port 8084) DONE 2026-08-16; unit 3 (the docs sweep: README, `examples/` MCP client and tests, `docs/design/mcp-profile.md`, D9 tier-2 evidence, CONTRIBUTING, troubleshooting) DONE 2026-08-16. ODR is out per D12; D11 (era) pending owner — modern-only shipped, legacy only if needed; D9 tier 2 pending owner with the evidence now written |
-| 10 — the framework seam (D9 tier 2) | **COMPLETE on `phase-10`, pending merge and the v0.5.0 release** — units 0–9 in nine commits (`4d10178`..`71a9a5e`) plus unit 10, the docs; unit 11 is the release itself. `provider.Profile`/`Set`, the root `servicesim` composition package, `profiles/<name>` as reference examples, `contracts`/`testkit` generic over a set, the guards as library calls, and `examples/profile/` as an out-of-tree profile CI builds |
+| 8 — the MCP profile (in-tree per D6) | **SHIPPED in v0.5.0** (merged to `main` at `16c4688`, PR #4) — the last feature phase: unit 1 (contract verification, `contracts/mcp/`) DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp` (now `profiles/mcp`), listener `mcp` on `POST /mcp` port 8084) DONE 2026-08-16; unit 3 (the docs sweep: README, `examples/` MCP client and tests, `docs/design/mcp-profile.md`, D9 tier-2 evidence, CONTRIBUTING, troubleshooting) DONE 2026-08-16. ODR is out per D12; D11 (era) pending owner — modern-only shipped, legacy only if needed; D9 tier 2 pending owner with the evidence now written |
+| 10 — the framework seam (D9 tier 2) | **SHIPPED in v0.5.0** (merged to `main` at `ae437c7`, PR #5) — units 0–9 in nine commits (`4d10178`..`71a9a5e`), unit 10 the docs (`ec8652f`), and the release itself (tag `v0.5.0` at `5ac0a35`, digest `sha256:8c23f154…`). `provider.Profile`/`Set`, the root `servicesim` composition package, `profiles/<name>` as reference examples, `contracts`/`testkit` generic over a set, the guards as library calls, and `examples/profile/` as an out-of-tree profile CI builds |
 | 9 onward | Phase 9 (the two doctrine-contradicting features) and the adopter's own guardrail vectors when they arrive. The shared-pipeline hardening follow-up from Phase 8 unit 2's review was folded into Phase 10 and closed by its unit 0 |
 
 **v0.4.0** is the last tag (2026-08-16, `b788f00`): Phase 6 end to end — `completed_at` observing every scripted
@@ -1554,7 +1557,8 @@ repository's CI — the guide's code blocks are excerpts of it, kept honest by a
 | 6 | The contract discipline as a library: `contracts` over `fs.FS`, `Conform` as ten named subtests, `OldestVerified`, the closed `Provider` enum deleted, the four bundles moved to `profiles/<name>/contracts/`, and `testkit.ValidateProfile` with `AssertDeterministic` and `AssertRenderShape` | `cfc5e19` |
 | 7+8 | Guards as libraries (`testkit.AssertNoLiveHosts` with the paid-host base list in Go; `Profile.CredentialNames` threaded into redaction as data) and `Profile.Kind` threaded — one handler shape, many listeners, with the lane cursor and fault key namespaced by listener name; `Validator.ProjectionKeys()` | `7261093` |
 | 9 | `examples/profile/` — an out-of-tree profile CI builds and tests as its own module, with its own `Dockerfile`, `main.go` and `imports_test.go` — and `docs/building-a-profile.md`, whose 23 code blocks are excerpts of that module | `71a9a5e` |
-| 10 | The docs: ADR 0001 amended, ADR 0003 written, CONTRIBUTING split in two, `CLAUDE.md` line 132 re-earned, README's composition section and the 1.0 trigger, the design records annotated, the proposal and D9 closed, this section | this commit |
+| 10 | The docs: ADR 0001 amended, ADR 0003 written, CONTRIBUTING split in two, `CLAUDE.md` line 132 re-earned, README's composition section and the 1.0 trigger, the design records annotated, the proposal and D9 closed, this section | `ec8652f` |
+| 11 | The release: `v0.5.0` at `5ac0a35`, published as `sha256:8c23f154…` after `image.yml`'s pre-publish build was fixed to stamp the version it smoke-tests; README and Compose pins moved | `5ac0a35`, `dd6bf92` |
 | 11 | The v0.5.0 release — tag, publish, confirm the digest, move the pins | not started |
 
 Each unit was implemented test-first, reviewed by three or four independent lenses (including one told to break a
