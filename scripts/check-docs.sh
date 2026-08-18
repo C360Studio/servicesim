@@ -53,8 +53,11 @@ trap 'rm -rf "$tmp"' EXIT
 # Documents in scope. docs/design/ is deliberately excluded: it is the design of
 # record, written ahead of the code, so it legitimately names things that do not
 # exist yet. contracts/ is excluded because it documents the *vendors'* APIs,
-# not this binary's surface.
-DOC_GLOBS="README.md CONTRIBUTING.md docs/*.md docs/adr/*.md"
+# not this binary's surface. examples/*/README.md IS in scope: those files make
+# specific claims about this repository's machinery — which Taskfile tasks and
+# CI jobs run the nested module — and a renamed task should fail here rather
+# than leave a README quietly wrong.
+DOC_GLOBS="README.md CONTRIBUTING.md docs/*.md docs/adr/*.md examples/*/README.md"
 
 # Flags that appear in the docs but belong to other programs (go, docker, task,
 # curl). They are counted and reported as ignored rather than silently dropped,

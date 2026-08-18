@@ -1,0 +1,81 @@
+# Acme is a fictional vendor invented for Servicesim's own out-of-tree
+# migration proof (Phase 10 unit 9) and for docs/building-a-profile.md's
+# worked example. There is no real Acme API, so this file cannot record a
+# genuine verification the way contracts/exa/provenance.yaml or
+# contracts/tavily/provenance.yaml do — see contracts/README.md, "Keeping
+# them honest", in the repository root for what those look like.
+#
+# What follows is still a REAL provenance record in the sense contracts.Conform
+# checks: every field it requires is present and well-formed. The spec: block
+# below is the one deliberately honest fiction in it — its sha256 is the hash
+# of the literal string "acme placeholder spec", not of any fetched document,
+# because there is nothing to fetch. A real profile's spec: block records the
+# vendor's actual machine-readable specification: its real URL, the version
+# string the document itself carries, and the SHA-256 of its bytes exactly as
+# fetched — see profiles/tavily/contracts/provenance.yaml for what that looks
+# like against a real OpenAPI document.
+provider: acme
+verified: "2026-08-17"
+spec:
+  url: https://docs.acme.test/openapi.json
+  version: "1.0.0"
+  sha256: b2a108cd05c4142d2596a4df053af89716c594c0cd06064f1c56d81b1f2d0e16 # sha256("acme placeholder spec") -- not a fetched document
+  retrieved: "2026-08-17"
+goldens:
+  - golden: acme-answer-happy.json
+    endpoint: POST /v1/answer
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.acme.test/v1/answer
+    verified: "2026-08-17"
+    note: >
+      Acme is fictional; this fixture exists to prove contracts.Conform and testkit.ValidateProfile
+      run against an out-of-tree profile's own bundle, the way docs/proposals/framework-seam.md
+      describes.
+  - golden: acme-answer-empty.json
+    endpoint: POST /v1/answer
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.acme.test/v1/answer
+    verified: "2026-08-17"
+    note: the empty-result case ValidateProfile's EveryProviderHasHappyAndEmptyAndErrorGoldens subtest requires.
+  - golden: acme-status-happy.json
+    endpoint: GET /v1/status
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.acme.test/v1/status
+    verified: "2026-08-17"
+    note: GET /v1/status's own success shape, independent of POST /v1/answer's.
+  - golden: acme-error-401.json
+    endpoint: request.unauthorized
+    status: 401
+    kind: simulator-chosen
+    documentation_url: https://docs.acme.test/errors
+    verified: "2026-08-17"
+    note: the shape both routes answer with when Authorization is missing or does not match (DefaultAuth required).
+  - golden: acme-error-404.json
+    endpoint: route.not_found
+    status: 404
+    kind: simulator-chosen
+    documentation_url: https://docs.acme.test/errors
+    verified: "2026-08-17"
+    note: acme's fail-closed 404 shape, ErrorBody's RefuseNotFound branch — the same envelope every refusal kind uses.
+  - golden: acme-error-405.json
+    endpoint: route.method_not_allowed
+    status: 405
+    kind: simulator-chosen
+    documentation_url: https://docs.acme.test/errors
+    verified: "2026-08-17"
+    note: >
+      ErrorBody's RefuseMethodNotAllowed branch — a known path reached with the wrong method, which is a
+      different refusal from an unmatched path and therefore its own golden (profiles/exa's bundle keeps
+      both for the same reason).
+  - golden: acme-error-400.json
+    endpoint: POST /v1/answer
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://docs.acme.test/errors
+    verified: "2026-08-17"
+    note: >
+      the request-validation refusal: errorResponse quotes the first error finding's own message, so this
+      fixture is what pins that the wire text and the journal cannot drift apart.

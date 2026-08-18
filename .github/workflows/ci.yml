@@ -35,6 +35,12 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      - name: Run go vet — examples/profile
+        # examples/profile is a separate Go module (Phase 10 unit 9): its own
+        # go.mod means `go vet ./...` above never sees it, the same reason
+        # Taskfile.yml's lint:vet task names it as a second step.
+        run: cd examples/profile && go vet ./...
+
       - name: Check formatting
         run: |
           fmt_output=$(gofmt -l .)
@@ -63,6 +69,17 @@ jobs:
 
       - name: Run revive (warnings fail)
         run: go tool revive -config revive.toml -formatter friendly ./...
+
+      - name: Run revive — examples/profile
+        # examples/profile is a separate module with no `tool` directive of
+        # its own (adding one would put revive in every consumer's build
+        # graph for no reason) — build the root module's pinned revive
+        # binary once and point it at the nested module explicitly, the same
+        # way Taskfile.yml's lint:revive:profile task does.
+        run: |
+          mkdir -p bin
+          go build -o bin/revive-examples-profile github.com/mgechev/revive
+          cd examples/profile && ../../bin/revive-examples-profile -config ../../revive.toml -formatter friendly ./...
 
       - name: Guard — no real provider hostnames in fixtures or scenarios
         # Servicesim must never be one typo away from sending a test's traffic
@@ -106,6 +123,36 @@ jobs:
           mv go.mod.bak go.mod && mv go.sum.bak go.sum
           [ "${rc}" -eq 0 ] || exit 1
           echo "OK: go.mod is tidy and go.sum covers it"
+
+      - name: Check examples/profile's go.mod and go.sum are tidy
+        # examples/profile is a SEPARATE module, so the root check above stops
+        # at its go.mod. Its dependency budget test parses `require` lines and
+        # would not notice an untidy-but-in-budget go.mod or a drifted go.sum,
+        # and it is the module an adopter copies — the one place a stale
+        # go.mod teaches the wrong thing. Same asymmetry as above: go.mod
+        # exact, go.sum a superset.
+        working-directory: examples/profile
+        run: |
+          cp go.mod go.mod.bak && cp go.sum go.sum.bak
+          go mod tidy
+          rc=0
+
+          if ! diff -q go.mod go.mod.bak >/dev/null; then
+            echo "FAIL: examples/profile/go.mod is not tidy:"
+            diff go.mod.bak go.mod || true
+            rc=1
+          fi
+
+          missing=$(comm -13 <(sort go.sum.bak) <(sort go.sum))
+          if [ -n "${missing}" ]; then
+            echo "FAIL: examples/profile/go.sum is missing entries 'go mod tidy' requires:"
+            echo "${missing}"
+            rc=1
+          fi
+
+          mv go.mod.bak go.mod && mv go.sum.bak go.sum
+          [ "${rc}" -eq 0 ] || exit 1
+          echo "OK: examples/profile's go.mod is tidy and go.sum covers it"
 
       - name: Guard — documented names exist
         # This repository carries more documentation than code, and docs drift
@@ -160,6 +207,14 @@ jobs:
       - name: Run unit tests with race detector
         run: go test -race -count=1 ./...
 
+      - name: Run examples/profile's own tests
+        # examples/profile is a separate Go module (Phase 10 unit 9): its own
+        # go.mod means it is invisible to `./...` above, the same reason
+        # Taskfile.yml's test:profile task exists. go build and go vet run
+        # here too, not only in the lint job, so a change that only breaks
+        # this module's compilation still fails CI's Test job on its own.
+        run: cd examples/profile && go build ./... && go vet ./... && go test -race -count=1 ./...
+
       - name: Check coverage floor
         # The floor guards against silent erosion, not against a number. It is
         # set below the current figure so an honest refactor that trades a few
@@ -195,6 +250,15 @@ jobs:
 
       - name: Verify binary reports its version
         run: ./servicesim-linux-amd64 --version
+
+      - name: Build examples/profile
+        # Proves Phase 10 unit 9's claim mechanically: "a fifth profile is
+        # buildable out-of-tree" — a separate Go module, built here rather
+        # than merely asserted in a doc. Not part of the published image
+        # (that job builds only servicesim's own binary from ./cmd/servicesim);
+        # this is examples/profile's own go build ./... gate, run a second
+        # time under the Build job's own Go toolchain setup.
+        run: cd examples/profile && go build ./...
 
   image:
     name: Image

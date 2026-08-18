@@ -45,9 +45,20 @@ tasks:
   # --------------------------------------------------------------------------
 
   test:
-    desc: Run unit tests with the race detector
+    desc: Run unit tests with the race detector, including examples/profile's own module
     cmds:
       - go test -race -count=1 ./...
+      - task: test:profile
+
+  test:profile:
+    desc: >-
+      Run examples/profile's tests — Phase 10 unit 9: it is a SEPARATE Go
+      module (its own go.mod), so it is invisible to `./...` from the root
+      and every gate step has to name it explicitly. `go build` and `go vet`
+      run here too, not only in lint, so a change that only breaks this
+      module's compilation still fails `task test` on its own.
+    cmds:
+      - cd examples/profile && go build ./... && go vet ./... && go test -race -count=1 ./...
 
   test:verbose:
     desc: Run unit tests with the race detector, verbose
@@ -87,12 +98,18 @@ tasks:
       - task: lint:md
 
   lint:vet:
-    desc: Run go vet
+    desc: Run go vet, including examples/profile's own module
     cmds:
       - go vet ./...
+      # examples/profile is a separate module (its own go.mod): `go vet ./...`
+      # above stops at that boundary, the same reason test:profile exists.
+      - cd examples/profile && go vet ./...
 
   lint:fmt:
     desc: Fail if any file needs gofmt
+    # gofmt is a filesystem walk, not a module-aware tool, so `gofmt -l .`
+    # already reaches examples/profile with no extra step — unlike lint:vet
+    # and lint:revive, which stop at a nested go.mod.
     cmds:
       - |
         out=$(gofmt -l .)
@@ -105,9 +122,23 @@ tasks:
       - gofmt -w .
 
   lint:revive:
-    desc: Run revive at the version pinned by go.mod's tool directive
+    desc: Run revive at the version pinned by go.mod's tool directive, including examples/profile's own module
     cmds:
       - go tool revive -config revive.toml -formatter friendly ./...
+      - task: lint:revive:profile
+
+  lint:revive:profile:
+    desc: >-
+      Run the same pinned revive against examples/profile — Phase 10 unit 9:
+      it is a separate module with no `tool` directive of its own (adding
+      one would put revive in every consumer's build graph for no reason),
+      so this builds the root module's pinned revive binary once and points
+      it at the nested module explicitly, the same way `go vet` above does.
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/revive-examples-profile github.com/mgechev/revive
+      - cd examples/profile && ../../bin/revive-examples-profile -config ../../revive.toml -formatter friendly ./...
+      - rm -f bin/revive-examples-profile
 
   lint:hosts:
     desc: Guard against real provider hostnames in scenarios and fixtures

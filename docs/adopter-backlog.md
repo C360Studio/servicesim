@@ -1451,6 +1451,50 @@ is theirs (D12); Servicesim does not unblock it.
       `ValidateScenario`'s signature to carry more than `map[string]Validator`, which is an exported-surface
       change beyond a minimal fix for what is, today, a misleading load-time warning rather than a functional
       defect.
+- **Phase 10 unit 9 (2026-08-17): a fifth profile out of tree, built by CI; the guide whose code is that
+  module.** `examples/profile/` is a SEPARATE Go module (`example.test/acmesim`, `replace ../..` for this
+  checkout) holding the fictional Acme profile written against nothing but the exported packages — `Profile()`
+  with every field a real one sets, two routes on distinct fault keys, a `Validator` with `ProjectionKeys`,
+  `ErrorBody` for all five kinds, `DefaultAuth: required`, an embedded contract bundle with an honest placeholder
+  `spec:` block, `CredentialNames`, `DerivedIDs` — plus the tests an adopter writes (`testkit.Start` +
+  `WithProfiles`, journal-proven correct request, rejection in the vendor's shape, 401, scripted 429→200 with no
+  `fault.unknown_key`, isolated namespaces, `GoldenDerivedIDs`, `AssertNoCredentialLeak`, `AssertNoLiveHosts` over
+  the module tree, `ValidateProfile`), a `main.go` composing Acme with `profiles/exa` through `servicesim.Main`, a
+  `Dockerfile`, and an `imports_test.go` (no `internal/` import; the go.mod budget). `task test`/`task check` and
+  CI build, vet, revive and race-test the module (`test:profile`, `lint:revive:profile`);
+  `scripts/lint-no-live-hosts.sh` now walks `examples/`. `docs/building-a-profile.md` is the first-time author's
+  guide: every Go and YAML block in it is a line-range excerpt of `examples/profile/**` (an
+  `<!-- excerpt: path#La-Lb -->` marker on the line before each fence), and the root module's `docs_test.go`
+  (`TestBuildingAProfileExcerptsMatchTheModule`) fails on any drift — proven failing in a scratch copy — and on
+  any Go/YAML block without a marker. Nothing in the framework changed to make the module compile.
+
+- **Phase 10 unit 9, review round (2026-08-17).** Three reviewers read the unit as a first-time author, as the
+  repo's gates, and as a maintainer asked to see `acme` copied twenty times. What their findings changed:
+  the guide now documents that **authentication is entirely the handler's** (`ValidateProfile`'s
+  `MissingCredential` covers the no-credential case and nothing else) and excerpts `checkAuth` in full; that
+  the misspelled-key protection comes from `DecodeProjection`'s strict decode, not from `ProjectionKeys`, which
+  out of tree is read by nothing at runtime; that a content-type finding is **mandatory** and its code must
+  contain `content_type`/`content-type`; the real `contracts.Conform` coverage minimum (one 2xx whose file
+  name omits `empty`, one whose file name carries it, **two or more** error goldens — the classification is
+  by FILE NAME) and the bundle's
+  goldens-plus-provenance-plus-README-only rule; the `note:` field; module bootstrap and the six importable
+  packages; and `errorResponse`, `ValidateProjections` and the projection struct as excerpts rather than
+  prose references. In the module: `handleAnswer` now records its required-field finding with `x.Fail` before
+  a single `x.Failed()` gate (`Exchange.Reject` returns its status whatever `validation.demote` says, so the
+  documented policy was a no-op and the journal disagreed with the wire); `checkAuth` warns on a non-Bearer
+  scheme and on a credential in the declared-but-unaccepted `x-acme-key`; `faultBody` renders symbolic codes
+  from one table rather than the decimal status; `doc.go`'s fault claim is corrected (the routes share one
+  plan and keep independent **cursors**); goldens for 400 and 405 were added; and every golden is now driven
+  from a live response by `TestAcmeGoldensMatchTheWire` — `Conform` never inspects content, so nothing was
+  comparing them. The Validator, the auth modes and the per-route fault cursors all gained tests.
+  Gates: `docs_test.go` also checks the module-layout tree against the filesystem, and its unmarked-block
+  check no longer misses a fence spelled `golang` or `YAML`, or an indented one; `examples/*/README.md`
+  joined `DOC_GLOBS`; CI checks
+  the nested module's own `go.mod`/`go.sum` tidiness; the `Dockerfile`'s documented build command names the
+  repository root as context (its `replace` needs the checkout inside it, verified with a real build).
+  One residual gap, deliberately left: nothing proves a projection struct field that `ProjectionKeys()`
+  forgot, because that needs reflection over an unexported type and therefore an in-package test file — the
+  reverse direction is pinned, and `profiles/perplexity/agent_test.go` is the in-tree shape to copy.
 
 ### Phase 9 — The two doctrine-contradicting features
 
