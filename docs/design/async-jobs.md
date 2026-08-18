@@ -679,7 +679,8 @@ Three properties of that string are load-bearing and all three already hold:
 
 - `SplitCursorKey` recovers `("t-42", ["exa:agent_runs.poll", "path:id=run_…"])`, and `Engine.planFor` finds the
   registered route key as the first part, so the poll route's declared fault plan still resolves. Nothing in
-  `internal/faults` learns that jobs exist.
+  `internal/faults` learns that jobs exist — now `provider/fault_engine.go`, built by `(*provider.Set).Faults`
+  ([ADR 0003](../adr/0003-framework-seam.md); Phase 10 deleted the package, 2026-08-17).
 - The namespace is the outermost component, so two tests polling the same job identifier never share a cursor.
 - Neither separator (`/`, `|`) can appear in the identifier — enforced, not assumed
   ([§7.1](#71-the-identifier-charset-is-load-bearing)).
@@ -889,6 +890,12 @@ a refusal. `Job` has no `TurnIndex` field — [§7.4](#74-optional-a-read-only-a
 cursor lives in the fault engine, which offers no non-claiming read, so there is nothing to populate it from.
 
 ### 4.2 `provider` additions
+
+> **Superseded in part by Phase 10 (2026-08-17).** `MintJob` returns `(id string, ok bool)` and `ResolveJob`
+> returns `bool`: `internal/jobs.Job` left every exported signature, so a consumer can no longer be handed a type
+> they cannot name. Both handlers below read only the identifier, which is why the change cost nothing. Everything
+> else in this section — what each call claims, what it records, which miss paths raise a finding — is unchanged.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 `provider` gains one `Deps` field, one `Route` field, one constant, and two helpers, at design time. **Shipped as:**
 two `Deps` fields (`Jobs`, `MaxJobs`); two `Route` fields (`Entry`, `LaneFrom`); one lane-extractor constant
@@ -1230,6 +1237,12 @@ const (
 
 ### 4.5 Import edges
 
+> **Superseded in part by Phase 10 (2026-08-17).** Level 5 is `profiles/{exa,tavily}`, and they consume
+> `MintJob`/`ResolveJob`'s narrowed returns rather than a `jobs.Job` value; `internal/faults` is gone (the engine
+> is a `provider` file constructed by `(*provider.Set).Faults`). `testkit`'s `Job`/`Jobs`/`JobStats` aliases stay
+> and now inline their field lists, because `go doc` cannot follow an alias into an internal package.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 Additive; no edge reverses and the acyclicity proof's labelling is unchanged.
 
 | Level | Package | Change |
@@ -1434,6 +1447,12 @@ with a fault plan.
 ---
 
 ## 6. GET routes on a POST-shaped mux
+
+> **Superseded in part by Phase 10 (2026-08-17).** The engine is no longer built by `internal/faults.New` from a
+> route list assembled by hand: `(*provider.Set).Faults` builds it from every registered profile's `Routes()`, so
+> a route that is registered is a route the engine knows — including an out-of-tree one. The argument below about
+> which routes need a `FaultKey`, and why a HEAD poll claims no attempt, is unchanged.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 `provider.NewMux` needs **no change at all**. Two drafts of this section claimed it needed one; A2 established
 otherwise by writing the tests, and the record is corrected here rather than left for a third reader to re-derive.

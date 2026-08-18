@@ -367,6 +367,12 @@ builds omits the member — it now omits it too, pinned by exact bytes in `TestU
 
 ## 12. Seam observations for D9 tier 2
 
+> **Superseded by Phase 10 (2026-08-17) — kept as the evidence the decision was made on.** D9 tier 2 was decided
+> yes on this section's numbers: every enumeration site counted below now derives from the registered
+> `*provider.Set`, `internal/faults` is gone, `testkit`'s per-vendor handler constructors are one generic
+> `testkit.Handler`, and the exports the last paragraph says are missing all shipped. Read what follows as the
+> before picture. [ADR 0003](../adr/0003-framework-seam.md) is the record of what replaced it.
+
 What the fourth in-tree profile actually needed from the composition layer, counted from `git show --stat 39d5809`
 and the seam survey the unit was scoped from. Facts only; the D9 proposal frames the question.
 
@@ -427,7 +433,9 @@ a new listener or to agree on its port or base-URL variable.
   under `contracts/<name>/`; `TestEveryProviderHasSpecRecorded` requires a `spec:` block; check-docs §6 checks the
   `contracts/README.md` index table in both directions. All three fired, correctly, during unit 2.
 - `contracts.VerifiedOn` is the oldest per-entry `verified:` date across every provider, so a new provider's
-  entries participate in a global.
+  entries participate in a global. *(Phase 10, 2026-08-17: that global is gone — a framework cannot compute "the
+  oldest date across every provider" over profiles it does not know. `contracts.OldestVerified(fsys)` answers the
+  same question for one bundle's own filesystem, which is what an out-of-tree profile can run.)*
 
 **What an out-of-tree profile would need that is not exported today** (from the survey and the D9 proposal, not
 re-derived here): a `provider.Faults` constructor taking a route set (`internal/faults.New(s, routes, …)` exists;

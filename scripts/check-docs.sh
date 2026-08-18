@@ -57,6 +57,15 @@ trap 'rm -rf "$tmp"' EXIT
 # specific claims about this repository's machinery — which Taskfile tasks and
 # CI jobs run the nested module — and a renamed task should fail here rather
 # than leave a README quietly wrong.
+#
+# Two more exclusions are deliberate rather than accidental, and are recorded
+# here so the next rename does not discover them by surprise. `docs/*.md` is
+# non-recursive, so docs/proposals/ is out of scope: a proposal is read as a
+# dated snapshot of what was intended, and one that still names a symbol the
+# implementation renamed is telling the truth about its own moment. CLAUDE.md
+# is out of scope because it is instructions to an agent rather than a claim
+# about the binary's surface. Both name real symbols today, checked by hand;
+# neither is protected against the next rename.
 DOC_GLOBS="README.md CONTRIBUTING.md docs/*.md docs/adr/*.md examples/*/README.md"
 
 # Flags that appear in the docs but belong to other programs (go, docker, task,

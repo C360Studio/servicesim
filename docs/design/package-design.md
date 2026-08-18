@@ -56,6 +56,12 @@ point of use, and the four that change the design are:
 
 ### 1.1 Responsibilities
 
+> **Superseded in part by Phase 10 (2026-08-17).** `internal/faults` no longer exists — fault *selection* moved to
+> `provider/fault_engine.go` and `(*provider.Set).Faults` is its only constructor; the four provider packages are
+> `profiles/<name>`; and a root `servicesim` package (`Main`/`Run`/`Build`) owns composition. The responsibility
+> split the table reasons about is unchanged — where a package lives is not.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 | Package | Visibility | Single responsibility |
 |---|---|---|
 | `scenario` | exported | The versioned YAML scenario schema: parse, validate, resolve source references, apply defaults. Knows nothing about HTTP. |
@@ -88,6 +94,12 @@ Deviations from the plan's layout, both additive:
   normalised). Wire rendering is provider-specific and lives in `provider/<name>/render.go`.
 
 ### 1.2 Import edges and the acyclicity proof
+
+> **Superseded in part by Phase 10 (2026-08-17).** Level 4 (`internal/faults`) is gone: the engine is a `provider`
+> file, built from the registered `*provider.Set`, so the cycle this section proves absent is now avoided by there
+> being one package rather than two. The handler packages sit at `profiles/<name>` and the root `servicesim`
+> package composes them. The direction of every remaining edge is as proved here.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 Assign every package a level. An import is legal only from a strictly higher level to a strictly lower one. A directed
 graph that admits a strictly decreasing integer labelling on every edge cannot contain a cycle, because a cycle would
@@ -141,6 +153,12 @@ because they are the ones a reviewer will want to check:
   only by U5's own contract test. See §2.10.
 
 ### 1.3 Exported versus internal, and how the seam stays usable
+
+> **Superseded in part by Phase 10 (2026-08-17).** The public API is now `provider`, `scenario`, `testkit`,
+> `contracts`, `scenarios` and the root `servicesim` composition package, with `profiles/<name>` as reference
+> examples an out-of-tree profile may compose beside its own. The alias reasoning below still holds for the
+> journal and jobs types; `Finding` and `Severity` left the alias set (the paragraph that closes this section
+> records it). [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 `provider/*`, `scenario`, `testkit`, `scenarios` and `contracts` are the public API. Everything under `internal/` is
 invisible to consuming repositories.
@@ -951,6 +969,13 @@ func Render(ref SourceRef) RenderedSource
 ```
 
 ### 2.2 `provider` — the seam every handler is built on
+
+> **Superseded in part by Phase 10 (2026-08-17).** `provider` gained the registration half of the seam —
+> `Profile`, `Set`/`NewSet`/`MustSet`, `Refusal`/`RefusalKind` (five kinds, `RefuseRequest` included),
+> `Render`/`Hex32`/`UUIDv5`/`FloatIn`, `Credential`/`Finding`/`Severity`, and `Exchange.AuthPolicy`/`EntryFor`/
+> `Reject`/`Credentials`/`ObserveCredential`. `MuxSpec.NotFound`/`MethodNotAllowed` were deleted in favour of the
+> required `Profile.ErrorBody` (`NewMux` takes the refusal renderer instead), `Exchange.Auth` is unexported, and
+> `MintJob`/`ResolveJob` return `(string, bool)`/`bool`. [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 This is the answer to "how a handler gets its scenario projection, the journal, the fault engine, and the clock".
 
@@ -1772,6 +1797,13 @@ Three named tests are mandatory:
 
 ### 2.5 Fault selection (`internal/faults`) and fault execution (`provider`)
 
+> **Superseded in part by Phase 10 (2026-08-17).** `internal/faults` is deleted; selection lives in
+> `provider/fault_engine.go` beside execution, and `(*provider.Set).Faults(s, opts...)` — built from the composed
+> route set — is the only constructor, so an engine that does not know a registered route cannot be built at all.
+> `testkit.NewFaults` is gone with it. The selection/execution distinction below still describes the code; the
+> import-cycle argument for keeping them in two packages no longer applies.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 Two responsibilities, two packages, and the split is forced rather than stylistic. **Selection** — which attempt index
 this request claims and what that attempt declares — is stateful, and its state must not be reachable from a consumer
 importing `profiles/exa`; it lives in `internal/faults` at level 4, which imports `provider`. **Execution** — how those
@@ -1918,6 +1950,14 @@ Two consequences worth stating once:
 
 ### 2.6 `internal/httpx`, `internal/wire`, `internal/ids`
 
+> **Superseded in part by Phase 10 (2026-08-17).** All three stay internal, but their capability is now reachable
+> from `provider`: `provider.Render(v, extra, omit)` is the one entry point that replaced `wire.Render`+`Omit`+
+> `MergeJSON` (making a third extra/omit ordering unrepresentable), `provider.Hex32`/`UUIDv5`/`FloatIn` are the
+> `ids` derivations, and `provider.Credential` plus `Exchange.Credentials`/`ObserveCredential` are the `httpx`
+> credential path. No profile's non-test code imports these packages any more, and an out-of-tree profile cannot
+> import them at all.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 ```go
 // Package httpx holds the request-side checks every provider shares.
 package httpx
@@ -2008,6 +2048,11 @@ func Float(lo, hi float64, parts ...string) float64
 ```
 
 ### 2.7 `internal/config`
+
+> **Superseded in part by Phase 10 (2026-08-17).** `internal/config` names no provider: `Listeners` is a map keyed
+> by `provider.Name` with a registration order, and the port flags, `SERVICESIM_<NAME>_PORT` bindings, the
+> `-providers` default and the fail-closed `Listener(name)` lookup are one loop over the `*provider.Set` the root
+> package hands it. [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 ```go
 // Package config resolves Servicesim's runtime configuration from flags,
@@ -2126,6 +2171,13 @@ environment would silently override an explicit flag.
 server into a health probe would be a footgun.
 
 ### 2.8 Provider packages
+
+> **Superseded in part by Phase 10 (2026-08-17).** These four are `profiles/{exa,tavily,perplexity,mcp}` now, each
+> exporting `Profile()` (and a typed `Name`) instead of `New(deps)`, each embedding its own contract bundle at
+> `profiles/<name>/contracts/`, and each trimmed to the exported surface a consumer actually names. Nothing under
+> `provider/`, `internal/`, `testkit/`, `scenario/`, `contracts/` or the repository root may import one — a test
+> enforces it, so a reference profile has no privilege an out-of-tree one lacks.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 All three follow the same file shape: `doc.go`, `handler.go` (routing and lifecycle wiring), `request.go` (validation),
 `response.go` (wire types), `render.go` (projection to wire types), `errors.go` (provider-shaped error bodies).
@@ -2515,6 +2567,13 @@ var SunsetDate = time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
 
 ### 2.9 `internal/admin` and `internal/server`
 
+> **Superseded in part by Phase 10 (2026-08-17).** `internal/server` imports no profile package: its listener,
+> handler, route, validator and fault-engine switches are `set.Lookup(name).Handler(deps)`, `set.Routes()`,
+> `set.Validators(...)` and `set.Faults(...)`, and `scenarioNotFoundBody` (with its duplicated MCP envelope) is
+> deleted in favour of each profile's own `ErrorBody`. The root `servicesim` package (`Main`/`Run`/`Build`) is
+> what `cmd/servicesim` and a consumer's own binary call. `internal/admin` is unchanged and deliberately closed to
+> composition (D-3). [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 ```go
 // Package admin serves health, readiness and the redacted request journal.
 package admin
@@ -2591,6 +2650,13 @@ func (s *Server) Shutdown(ctx context.Context) error
 ```
 
 ### 2.10 `testkit`
+
+> **Superseded in part by Phase 10 (2026-08-17).** `testkit` imports no profile package: `WithProfiles(...)` is
+> required, one generic `Handler(tb, name, opts...)` replaces the four per-vendor constructors, `NewFaults` and the
+> `Finding`/`Severity` aliases are deleted (`provider` owns those types), golden pruning is caller-declared through
+> `GoldenDerivedIDs`, and `ValidateProfile`, `AssertNoLiveHosts`, `AssertCovers` and `NewJournal` were added so a
+> consumer runs this repository's own discipline in their CI.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 ```go
 // Package testkit runs Servicesim's provider handlers in-process for Go consumer
@@ -2870,6 +2936,11 @@ derives from the scenario's stable keys.
 
 ### 3.1 Identifiers
 
+> **Superseded in part by Phase 10 (2026-08-17).** The derivations are exported as `provider.Hex32`,
+> `provider.UUIDv5` and `provider.FloatIn` — byte-identical to the `internal/ids` functions named below, which is
+> pinned by a test — so an out-of-tree profile derives identifiers the same way rather than reaching for
+> `math/rand`. [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 All three identifiers come from `internal/ids` over the same tuple, and the tuple has **two shapes**:
 
 ```text
@@ -3106,6 +3177,12 @@ and journaled.
 
 ### 5.1 Mux construction
 
+> **Superseded in part by Phase 10 (2026-08-17).** `MuxSpec` no longer carries `NotFound`/`MethodNotAllowed`:
+> `NewMux` takes the refusal renderer built from the profile's required `ErrorBody`, so a registered profile
+> cannot ship a bodyless 404 — `NewSet` refuses one without it, and a handler panic renders through the same path
+> as a `RefuseInternal` 500 rather than resetting the connection.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 Each provider listener gets its own `http.ServeMux` carrying **only** that provider's patterns. This is what preserves
 the `POST /search` collision between Exa and Tavily without a host-based hack. Three registrations per route.
 
@@ -3164,6 +3241,11 @@ against three copies of the registration logic.
 path, never a proxy, so failing closed still holds.
 
 ### 5.2 Error bodies
+
+> **Superseded in part by Phase 10 (2026-08-17).** These bodies are rendered by each profile's own
+> `Profile.ErrorBody` — one function per profile covering all five `RefusalKind`s — not by a `MuxSpec` field or by
+> `internal/server`. The bodies themselves are unchanged, and `testkit.ValidateProfile` now requires a non-empty
+> one for every kind. [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 Because unmatched routing goes through `provider.Handle` like everything else, it is journaled with
 `Outcome.Kind = OutcomeUnmatched` and `Findings` carrying `route.unmatched` or `route.method_not_allowed`. Bodies are
@@ -3473,6 +3555,12 @@ for 400, 401, 403, 404, 429 or 500. Those bodies are recorded as `simulator-chos
 ---
 
 ## Rejected review findings
+
+> **Superseded in part by Phase 10 (2026-08-17).** One row below was overtaken: the engine constructor *is*
+> exported now, as `(*provider.Set).Faults`, and the objection it was rejected on no longer applies — the
+> selection state hangs off the composed `Set` at the composition root, not off a profile package, so importing
+> `profiles/exa` still drags in no mutable engine state. `testkit.NewFaults` is deleted.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 Every *defect* raised against this design is fixed in the body above. Four proposed *remedies* were not adopted,
 because a different fix in the same section covers the same defect at lower cost. They are recorded here so they are

@@ -6,9 +6,10 @@ size of the codebase suggests.
 
 ## The one rule that matters most
 
-**Never write a wire field from memory.** [`contracts/<provider>/README.md`](contracts/README.md) records what the
-vendor's live documentation actually says, with the URLs it was read from and the date. It outranks every other
-document here, including the design and this file.
+**Never write a wire field from memory.** [`profiles/<provider>/contracts/README.md`](contracts/README.md) records
+what the vendor's live documentation actually says, with the URLs it was read from and the date (the
+repository-root `contracts/` package README linked here is the index across the four bundles). It outranks every
+other document here, including the design and this file.
 
 This is not theoretical caution. The original plan document — written carefully, by someone with the docs open —
 was wrong about Exa's `score` field (it does not exist), Tavily's `response_time` type (number, not string), and
@@ -43,13 +44,50 @@ with the symbol's name, a package comment in `doc.go` only, capitalised initiali
 
 Commits follow `<type>(scope): subject` — `feat`, `fix`, `docs`, `refactor`, `test`, `chore`.
 
-## Adding a provider
+## Writing a profile in your own repository
+
+This is the path almost everyone reading this file wants. If your vendor is not one of the four this repository
+ships, you do not need a pull request here at all — see "Adding a reference profile here" below only if your
+profile is genuinely worth maintaining inside this repository.
+
+**What a profile is**, in two lines: a verified vendor contract plus deterministic scenarios, written against
+`provider.Profile` in your own repository, with your own embedded contracts and your own scenario files. **What
+proves it**: `testkit.ValidateProfile` and `contracts.Conform` pass in your own CI, over your own `Profile()` and
+your own contract bundle. There is no registration step in this repository, no PR and no review by this
+framework's authors — nothing stands between "a Go package that answers HTTP" and "a Servicesim profile" except
+that conformance call passing.
+
+[`docs/building-a-profile.md`](docs/building-a-profile.md) is the guide, written against
+[`examples/profile/`](examples/profile) — a separate Go module this repository's own `task test` and CI build and
+run, so its code blocks cannot rot. Starting your own is three lines:
+
+```sh
+go mod init example.test/yoursim
+go get github.com/c360studio/servicesim@latest
+go mod tidy
+```
+
+Six packages are the framework surface: `provider`, `scenario`, `testkit`, `contracts`, `scenarios` (this
+repository's built-in corpus, reference-only — see D-7 below) and the root `servicesim` package (`Main`, for
+composing a binary) — plus `profiles/<name>` for any of ours you want to compose alongside your own. Everything
+else is under `internal/` and unreachable by Go's own import rules. The four reference profiles this repository
+ships carry no privilege yours would lack — `profiles/no_privilege_test.go` proves it by parsing every non-test
+file under `provider/`, `internal/`, `testkit/`, `scenario/` and `contracts/`, and the repository root, and
+failing the build on an import of a profile package.
+
+**The seam is pre-1.0.** Read `docs/building-a-profile.md`'s "The 1.0 trigger" before pinning a version: until at
+least one profile written by someone who has not read this repository has shipped and survived a framework minor
+release without source changes, and the `chat/completions` profile has landed, a `v0.x` pin means the seam may
+still move.
+
+## Adding a reference profile here
 
 The scenario schema is an open registry, so this needs **no change to the `scenario` package** and no schema
 version bump — the fourth profile, MCP (Phase 8, `profiles/mcp`), added a protocol rather than a vendor and
-touched nothing under `scenario/`. What it did touch is the checklist below, written from that diff
-(`git show 39d5809`) rather than from memory. Tick every box; the guards will tell you about most of the
-ones you miss, but not all.
+touched nothing under `scenario/`. What it did touch is most of the checklist below, written from that diff
+(`git show 39d5809`) rather than from memory; the registration step itself has since collapsed to one line
+([ADR 0003](docs/adr/0003-framework-seam.md), Phase 10). Tick every box; the guards will tell you about most of
+the ones you miss, but not all.
 
 ### 1. Verify the contract first — before any Go
 
@@ -76,14 +114,17 @@ propagates into fixtures that then look authoritative.
 
 ```text
 profiles/<name>/
-  doc.go       package comment — what is simulated, what is NOT, and every simulator-chosen default, numbered to
-               match the contract file's "Simulation decisions"
-  handler.go   Name, Pattern*, FaultKey*, Routes() []provider.Route (a function, not a var), New(provider.Deps),
-               Validator, selectProjection
-  request.go   finding codes (exported), request decoding and validation, checkAuth
-  response.go  the wire types, json tags exactly as the vendor names them
-  render.go    Projection (yours, in your package) + canonical -> this vendor's shape
-  errors.go    this vendor's error envelope, faultBody, the 404/405 bodies for NewMux
+  doc.go               package comment — what is simulated, what is NOT, and every simulator-chosen default,
+                       numbered to match the contract file's "Simulation decisions"
+  profile.go           Name, defaultPort, //go:embed contracts, Profile() — every field a real profile sets
+  handler.go           Pattern*, FaultKey*, Routes() []provider.Route (a function, not a var), the Validator,
+                       the route handlers, selectProjection
+  request.go           finding codes (exported), request decoding and validation, checkAuth
+  response.go          the wire types, json tags exactly as the vendor names them
+  render.go            Projection (yours, in your package) + canonical -> this vendor's shape, via provider.Render
+  errors.go            this vendor's error envelope, ErrorBody for every provider.RefusalKind, faultBody
+  conformance_test.go  testkit.ValidateProfile(t, Profile())
+  contracts/           README.md, provenance.yaml, goldens
 ```
 
 - [ ] **Your projection type lives in your package**, not in `scenario`. Get it by calling `Turn.DecodeProjection`
@@ -97,8 +138,9 @@ profiles/<name>/
 - [ ] **Implement `provider.Validator`** (and `provider.RouteLister` if your entries use `when.route`) so
       projections are decoded and checked at startup. A bad fixture must fail at boot, not on the first request.
 - [ ] **One route, many methods?** `provider.NewMux` keys handlers by pattern, so two routes sharing one pattern
-      collide: dispatch on the body inside one handler (MCP dispatches on `body.method`), and give the listener its
-      own JSON-shaped 404/405 through `MuxSpec.NotFound`/`MethodNotAllowed`.
+      collide: dispatch on the body inside one handler (MCP dispatches on `body.method`). Your listener's own
+      JSON-shaped 404/405 comes from `Profile.ErrorBody`, which `provider.NewSet` refuses to register without —
+      `MuxSpec` itself no longer carries a `NotFound`/`MethodNotAllowed` field (Phase 10).
 - [ ] **`Route.FaultKey` groups aliases.** Two routes that are the same operation share a key so a retry through
       the alias draws on the same attempt budget. Two genuinely different surfaces get different keys.
 - [ ] **Register `Response.FaultBody`** on every fault-eligible response so a scripted 429/503 renders in *your*
@@ -111,31 +153,36 @@ profiles/<name>/
       `internal/redact` judges it — MCP's `Mcp-Param-*`/`Mcp-Session-Id` needed `stripMirrorPrefix`. Then try to
       get a credential into a retained structure by any path; that is the review lens that finds it.
 
-### 3. Register it — every site, all mechanical
+### 3. Register it
 
-There is no registry; a provider is enumerated by hand in each of these. Every one is a switch or a list keyed on
-the name. Missing one is usually a compile error or a failing guard, but not always — `image-smoke.sh` and the
-docs tables fail only in CI.
+**The registration is one line.** `profiles/profiles.go`'s `Reference()` returns the four reference profiles in
+registration order; add `<name>.Profile()` to that slice and nothing else compiles a provider by hand. Everything
+that used to be a hand-kept switch derives from the registered `*provider.Set` (Phase 10 units 3–4, ADR 0003):
+`internal/config` and `internal/server` build every flag, listener and readiness check from it, `testkit` derives
+routes, validators, the fault engine and every handler from it (pass your `Profile()` to `testkit.WithProfiles`
+and it is served through the one generic `testkit.Handler`), and `cmd/servicesim/main.go`'s usage banner comes
+from `Profile.Title`/`Summary`, not a line written per vendor. Golden pruning is the same: declare
+`Profile.DerivedIDs`/`StreamDerivedIDs` and a caller prunes them with `testkit.GoldenDerivedIDs(...)` — nothing
+in `testkit/golden.go` names a provider.
+
+That one line is what the guards force. It does not force any of the following, and missing one is usually a
+failing test or a failing guard, but not always — `image-smoke.sh` and the docs tables fail only in CI:
 
 | File | What to add |
 |---|---|
-| `internal/config/config.go` | ten sites: the port default, `DefaultProviders`, `allProviders`, the `Config` field, the env binding, the raw flag target, the flag registration, `assemble`, the validate port table, the `listener()` switch |
-| `internal/server/listeners.go` | four switches: the import, `newSurfaces`, `newProviderHandler` (`<name>.New(deps)`), and `scenarioNotFoundBody` — the vendor-shaped body for an `/x/<unknown>` refusal |
-| `internal/server/server.go` | `<name>.Routes()` in the routes concat; `<name>.Validator{}` in the entry-kind validators map |
-| `testkit/server.go` | nothing (Phase 10 unit 4): `testkit` derives routes, validators, the fault engine and every handler from the registered `*provider.Set` — pass your `Profile()` to `testkit.WithProfiles` and it is served through the one generic `testkit.Handler` |
-| `testkit/golden.go` | nothing: declare `Profile.DerivedIDs`/`StreamDerivedIDs` on your registration record and a caller prunes them with `testkit.GoldenDerivedIDs(sim.DerivedIDs()...)` |
-| `profiles/<name>/profile.go` | a `//go:embed contracts` line and `fs.Sub(contractsFS, "contracts")` into `Profile.Contracts` (Phase 10 unit 6: `contracts` no longer embeds anything itself, or knows which providers exist — each profile embeds its own bundle) |
-| `profiles/<name>/contracts/` | goldens satisfying `contracts.Conform`'s `EveryProviderHasHappyAndEmptyAndErrorGoldens` subtest (a happy, an empty and an error case), each with a `provenance.yaml` entry (a golden with no provenance fails the build) — and a golden test in your package pinning each to the live handler |
-| `scenarios/protocol/*.yaml` | a block in **every** built-in — `TestBuiltins_CoverEveryImplementedProvider` requires it — expressing that file's intent on your surface; `malicious-content` needs every hostile source projected with a marker-bearing field (`TestMaliciousContent_EveryHostileSourceCarriesAMarker`) |
-| `scenarios/scenarios_test.go` | `implementedProviders`; `documentedProjectionKeys` (your `respond:` keys, cross-checked with `docs/scenario-schema.md`) |
-| `scripts/image-smoke.sh` | a route check and the per-provider journal loop; `Dockerfile` `EXPOSE` (and the description label); `docker-compose.example.yml` port and `*_BASE_URL` |
-| `cmd/servicesim/main.go` | the help banner |
+| `profiles/<name>/contracts/` | goldens satisfying `contracts.Conform`'s coverage minimum (a happy, an empty and an error case), each with a `provenance.yaml` entry — a golden with no provenance fails the build — and a golden test in your package pinning each to the live handler |
+| `profiles/<name>/conformance_test.go` | `testkit.ValidateProfile(t, Profile())` — the same call an out-of-tree profile's own CI makes, held to no lesser standard |
+| `scenarios/protocol/*.yaml` | a block in **every** built-in — `TestBuiltins_CoverEveryImplementedProvider` requires it, because built-in scenarios are reference-only (D-7, ADR 0003) and cover only the profiles shipped here; `malicious-content` needs every hostile source projected with a marker-bearing field (`TestMaliciousContent_EveryHostileSourceCarriesAMarker`) |
+| `scenarios/scenarios_test.go` | `implementedProviders` — still a hand-kept list, so this cross-check knows which entries every built-in must declare; `documentedProjectionKeys` is now derived from `profiles.Reference()` and needs nothing from you |
+| `scripts/image-smoke.sh` | a request against your listener under criterion 2 — the per-provider journal loop is derived from `--print-ports` and will demand a journal entry for your profile whether or not you add one |
+| `Dockerfile`, `docker-compose.example.yml` | `EXPOSE`, the port map, and the `*_BASE_URL`/`*_API_KEY` rows — check these against `bin/servicesim --print-ports`, which is the source of truth even though the files themselves stay hand-written (the smoke probes are not generated either — see `docs/proposals/framework-seam.md`, "Risks and what is deliberately NOT exported") |
 | Documents | the listener/port/base-URL tables in `README.md`, `docs/troubleshooting.md`, `docs/architecture-and-implementation-plan.md`, `CLAUDE.md`'s diagram; `docs/scenario-schema.md`'s entry-name list **and** a projection-body section for your keys; `contracts/README.md`'s index row now carries the `METHOD /path` |
 
 The docs guard (`scripts/check-docs.sh`) reads every backticked `METHOD /path` in the scanned docs as a route
-claim, every `builtin:<name>` as a scenario name, every backticked `testkit.` or `provider.` symbol as an exported
-name, and every dash-prefixed token as a CLI flag — and it checks the contracts index table against `Routes()` in
-both directions. Expect it to fail while the tables and the code are half-updated; that is what it is for.
+claim (checked against `servicesim --print-routes`), every `builtin:<name>` as a scenario name, every backticked
+`testkit.` or `provider.` symbol as an exported name, and every dash-prefixed token as a CLI flag — and it checks
+the contracts index table against the printed routes in both directions. Expect it to fail while the tables and
+the code are half-updated; that is what it is for.
 
 ### 4. Prove it
 
@@ -180,8 +227,11 @@ day.
   worth that?"*
 - A test that sleeps to wait for a goroutine. Use explicit synchronisation.
 - A credential reachable in the journal, logs or an error by any path.
-- An admin endpoint that mutates scenario state. Tests select behaviour by URL against scenarios validated at
-  startup; they do not push new behaviour into a live process.
+- An admin endpoint that mutates scenario state — though this is no longer a review gate to fail. The admin
+  surface is framework-owned and closed to composition (D-3, ADR 0003): `provider.Profile` has no admin-route
+  field and the composition root accepts none, so there is structurally nowhere to add one, in a reference
+  profile or anywhere else. Tests select behaviour by URL against scenarios validated at startup; they do not push
+  new behaviour into a live process.
 - A real vendor hostname in scenario or fixture data. `scripts/lint-no-live-hosts.sh` will catch it, and the
   failure it prevents — a base URL quietly reaching a paid API — is discovered in a billing statement.
 - Widening the exported surface without a reason. Prefer `internal/`.

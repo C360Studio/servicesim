@@ -807,6 +807,13 @@ scripted first-chunk `pace`, exactly as the field comment above says.
 
 ### 3.2 `provider` — transport
 
+> **Superseded in part by Phase 10 (2026-08-17).** The SSE grammar set is open: `Stream.Sentinel []byte` and
+> `Stream.SentinelPace` replaced `OmitDone`/`DonePace`, the `[DONE]` frame is data a profile sets
+> (`provider.DoneSentinel`) rather than behaviour the framework infers from `Grammar == GrammarDelta`, and a
+> `Stream` with an empty `Grammar` is refused (`stream.grammar_missing`) instead of silently inheriting one
+> dialect's framing. `GrammarDelta` and `GrammarTyped` remain the two reference values, and the scenario-side
+> `terminal.omit_done` key is unchanged. [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 ```go
 // SSEGrammar names the Server-Sent Events dialect a stream is written in. The two
 // in play differ only in whether frames are named; see §6.

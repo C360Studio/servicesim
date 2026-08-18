@@ -318,6 +318,12 @@ that only uses Sonar simply omits the `perplexity_agent` entry.
 
 ## Open provider registry and the turn model
 
+> **Superseded in part by Phase 10 (2026-08-17).** The scenario side of this registry is unchanged — that is the
+> point of it — but the *registration* half it assumed shipped: `ProviderEntry.Kind` now has a `Profile.Kind`
+> opposite it, so two listeners can be two instances of one handler shape (single-entry profiles only in v0.5.0),
+> and a registered profile with no block in the loaded scenario is warned once at startup as
+> `scenario.profile.unscripted`. [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 **This section supersedes the base design's `Providers` struct (§2.1) and is a decision taken deliberately for the
 initial release, not a future option.**
 
@@ -686,6 +692,12 @@ Streaming is still out of scope. When it arrives, a turn gains an event-sequence
 additive, and the reason the turn model needed to exist first.
 
 ## Why this was worth doing now rather than later
+
+> **Superseded in part by Phase 10 (2026-08-17).** The transfer argued for below is no longer hypothetical and no
+> longer needs a fork: the chassis is exported, a profile for any other API is written out of tree against
+> `provider`/`scenario`/`testkit`/`contracts` and composed through the root `servicesim` package, and
+> `internal/faults` named here is now `provider/fault_engine.go`.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 Servicesim's chassis is not search-specific. The provider seam, `internal/faults`, `internal/journal`,
 `internal/redact`, `testkit` and base-URL injection would all transfer unchanged to simulating OpenAI, Anthropic or

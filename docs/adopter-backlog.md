@@ -6,16 +6,35 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-17 (early), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6) plus,
-unreleased on `main`: Phase 7 (`6a43316`) and **Phase 8, merged to `main` at `16c4688` (PR #4, merge commit)** —
+Recorded 2026-08-17 (late), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6) plus,
+unreleased: Phase 7 (`6a43316`) and **Phase 8, merged to `main` at `16c4688` (PR #4, merge commit)** —
 unit 1 (the MCP contract, `contracts/mcp/`, `f5dd08e`), unit 2 (the MCP profile, `provider/mcp/`
 (now `profiles/mcp/`), `39d5809`) and unit 3 (the docs sweep — README onboarding, `examples/mcpclient.go` +
 `examples/mcp_test.go`,
 `docs/design/mcp-profile.md`, the D9 tier-2 evidence, the CONTRIBUTING checklist, troubleshooting, `02a0917`).
-The `phase-8` branch is merged and deleted. **Owner decisions the same morning: D11 — "modern only is a fine
+The `phase-8` branch is merged and deleted. **Owner decisions on 2026-08-17: D11 — "modern only is a fine
 start"; D9 tier 2 — YES, Servicesim is a framework and the four profiles are reference examples (the quote is in
-the D9 row). So Phase 8 was not the last feature phase after all: Phase 10, the framework seam, is next and gates
-the v0.5.0 release; its design proposal is being written first.**
+the D9 row).**
+
+**Phase 10 — the framework seam — is COMPLETE on branch `phase-10`, unmerged.** Units 0–9 shipped in nine commits
+(`4d10178`..`71a9a5e`; units 7 and 8 landed together) and unit 10, the documentation sweep, is the commit this
+paragraph is part of. What it did, in one sentence: `provider.Profile`/`Set` is the registration record, the root
+`servicesim` package is the composition entry point a consumer's own `main.go` calls, the four profiles moved to
+`profiles/<name>` as reference examples with their contract bundles beside them, `contracts` and `testkit` are
+generic over a set rather than four vendors, and the in-tree guards are library calls (`testkit.ValidateProfile`,
+`contracts.Conform`, `testkit.AssertNoLiveHosts`, `testkit.AssertCovers`) an out-of-tree profile runs in its own
+CI. [ADR 0003](adr/0003-framework-seam.md) is the record, [`proposals/framework-seam.md`](proposals/framework-seam.md)
+the design history (with its "Where it landed differently" list), and
+[`building-a-profile.md`](building-a-profile.md) + [`examples/profile/`](../examples/profile) the guide and the
+compiled proof.
+
+**The one step left is the release.** Merge `phase-10` and cut **v0.5.0** — the whole API break, Phase 8 and Phase
+7 in one tag. The note is drafted (Phase 10 section below, and the tag-message file the release commit lifts) and
+needs the owner's go-ahead; the procedure is `CONTRIBUTING.md` "Releasing": tag with the annotated note, publish,
+confirm both spellings resolve to one digest from the registry, then a follow-up commit moves the README/Compose
+pins to `v0.5.0` and its digest and drops README's interim "not tagged yet" paragraph (the one under the
+`servicesim:dev` note, which lists what `v0.4.0` lacks)
+(the docs guard fails on a pin that does not resolve, which is why publish comes first).
 
 | Phase | State |
 |---|---|
@@ -28,7 +47,8 @@ the v0.5.0 release; its design proposal is being written first.**
 | 6 — G-3 depth: hostile content, oversized bodies, hangs after headers, resilience built-ins, pacing evidence | **shipped** in v0.4.0 — units 1–6, the closing docs sweep, D9 tier 1; the adopter's own guardrail vectors are still an append to `malicious-content` when they arrive |
 | 7 — packaging, deployment and the contract-fidelity process | **DONE (rescoped) and merged to `main` (`6a43316`, PR #3), unreleased** — items 1–2 (the Gitea mirror, the Kubernetes manifest) dropped 2026-08-16 (owner; D3 reworded: no replicas by design); item 3 shipped 2026-08-15; items 4 and 5b shipped: a `spec:` block (url/version/sha256/retrieved) for every vendor's OpenAPI document, `contracts.Spec`/`ProviderSpec`, `Record.APIVersion`, and the no-canary refresh procedure (D10) |
 | 8 — the MCP profile (in-tree per D6) | **COMPLETE — merged to `main` (`16c4688`, PR #4), unreleased; v0.5.0 is the release** — the last feature phase: unit 1 (contract verification, `contracts/mcp/`) DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp` (now `profiles/mcp`), listener `mcp` on `POST /mcp` port 8084) DONE 2026-08-16; unit 3 (the docs sweep: README, `examples/` MCP client and tests, `docs/design/mcp-profile.md`, D9 tier-2 evidence, CONTRIBUTING, troubleshooting) DONE 2026-08-16. ODR is out per D12; D11 (era) pending owner — modern-only shipped, legacy only if needed; D9 tier 2 pending owner with the evidence now written |
-| 9 onward | **Phase 10 — the framework seam (D9 tier 2, owner 2026-08-17) is next and gates v0.5.0**: promote what a profile needs into exported packages, replace the 41 provider-name enumerations with a registry, an exported composition entry point so a consumer builds their own binary/image, the four profiles as reference examples, guards as library helpers a consumer runs in their own CI; the design proposal comes first. Then Phase 9 (the two doctrine-contradicting features), the shared-pipeline hardening follow-up from unit 2's review (folded into Phase 10 — a framework cannot rely on handler convention), the adopter's own guardrail vectors when they arrive |
+| 10 — the framework seam (D9 tier 2) | **COMPLETE on `phase-10`, pending merge and the v0.5.0 release** — units 0–9 in nine commits (`4d10178`..`71a9a5e`) plus unit 10, the docs; unit 11 is the release itself. `provider.Profile`/`Set`, the root `servicesim` composition package, `profiles/<name>` as reference examples, `contracts`/`testkit` generic over a set, the guards as library calls, and `examples/profile/` as an out-of-tree profile CI builds |
+| 9 onward | Phase 9 (the two doctrine-contradicting features) and the adopter's own guardrail vectors when they arrive. The shared-pipeline hardening follow-up from Phase 8 unit 2's review was folded into Phase 10 and closed by its unit 0 |
 
 **v0.4.0** is the last tag (2026-08-16, `b788f00`): Phase 6 end to end — `completed_at` observing every scripted
 hang, the `malicious-content`, `oversized-body`, `timeout`, `brownout`, `hang-then-abort` and `credential-rotation`
@@ -38,10 +58,10 @@ service-simulator framework shipping three research-API profiles). Two behaviour
 assertions could notice are in the tag note: Tavily's `faultBody` serves its error envelope for any kind paired with
 an error status, and `POST /research` warns `tavily.api_key.in_body` as `/search` does. The annotated tag message is
 the release note; every spelling resolves to one digest (`sha256:5a7d6d05…`) and the README/Compose pins follow it.
-`main` is where work lands now; `phase-6` and `phase-7` are merged and deleted. **Unreleased on `main` since
-v0.4.0:** Phase 7 (`df1eb64`). **Unmerged: `phase-8`** — three commits (`f5dd08e` unit 1, `39d5809` unit 2, unit 3
-on top). Merging it and cutting **v0.5.0** is the next release; the tag-note bullets are drafted in the Phase 8
-section below so the release commit can lift them.
+`phase-6`, `phase-7` and `phase-8` are merged and deleted. **Unreleased on `main` since v0.4.0:** Phase 7
+(`df1eb64`) and Phase 8 (`16c4688`). **Unmerged: `phase-10`** — ten commits (units 0–9 at `4d10178`..`71a9a5e`,
+plus this docs unit). Merging it and cutting **v0.5.0** is the next release; the tag-note bullets are drafted in
+the Phase 10 section below, and the full note in the tag-message draft, so the release commit can lift them.
 
 **Authority rule, reaffirmed by the owner 2026-08-15 evening:** vendor documentation decides every wire contract; the
 adopter's client code and remarks are not evidence ("we have no idea if their client works — we use the vendor
@@ -89,15 +109,23 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    tests, compiled and run by CI —, `docs/design/mcp-profile.md` the design record incl. the D9 tier-2 seam
    evidence, `docs/proposals/d9-framework-framing.md` "Evidence from Phase 8", the CONTRIBUTING "Adding a provider"
    checklist rewritten from the real diff, the troubleshooting MCP section, the small sweeps) are all done and
-   merged. **Next: cut v0.5.0 — needs the owner's go-ahead** (a full tag note is drafted from the three unit
-   commit bodies plus Phase 7's; the bullets are in the Phase 8 section; CONTRIBUTING "Releasing" order: tag,
-   publish, confirm one digest, then move the README/Compose pins and drop README's "ships in v0.5.0" sentence).
-   **ODR is out per D12.** **D11 (era) is pending owner** — modern-only shipped; a legacy 2025-11-25 follow-on
-   only if the adopter's client is pinned below go-sdk `v1.7.0` / TypeScript `2.0.0` / python-sdk `v2.0.0`.
-   **D9 tier 2 (export the provider seam) is pending owner** — the
-   evidence is written (`docs/design/mcp-profile.md` §12, the proposal's "Evidence from Phase 8"); it frames two
-   options and their cost and recommends nothing.
-5. Tell the adopter v0.3.0 and v0.4.0 exist; their questions in the two contract READMEs are still open; their
+   merged. **ODR is out per D12. D11 (era) decided 2026-08-17: "modern only is a fine start"** — a legacy
+   2025-11-25 follow-on only if the adopter's client turns out to be pinned below go-sdk `v1.7.0` / TypeScript
+   `2.0.0` / python-sdk `v2.0.0`. **D9 tier 2 decided 2026-08-17: yes, export the seam** — which became Phase 10.
+5. ~~**Phase 10 — the framework seam**~~ **COMPLETE on branch `phase-10`, unmerged.** Units 0–9 in nine commits
+   plus unit 10 (the docs); every unit, its commit and its review round are in the Phase 10 section below, and
+   [ADR 0003](adr/0003-framework-seam.md) is the decision record. Nothing in it is waiting on anything.
+6. **Cut v0.5.0 — the one remaining step, and it needs the owner's go-ahead.** The full note is drafted (the
+   framework release first, then Phase 8's MCP profile, then Phase 7); the bullets and the v0.4.0 → v0.5.0
+   migration table are in the Phase 10 section for the release commit to lift. The order is `CONTRIBUTING.md`
+   "Releasing", and it is publish-before-docs on purpose: merge `phase-10` to `main`; `git tag -a v0.5.0` with the
+   note as the tag message (no CHANGELOG, no GitHub Release object — v0.1.1 through v0.4.0 set that convention);
+   push the tag; wait for the publish workflow; confirm from the registry that both spellings (`v0.5.0` and
+   `0.5.0`, `v0.5`/`0.5`, `v0`/`0`) resolve to **one** digest and write that digest down; then one follow-up
+   commit moves the README and `docker-compose.example.yml` pins to `v0.5.0` and the new digest, drops README's
+   interim "not tagged yet" paragraph (under the `servicesim:dev` note), and re-runs `task check` (the docs guard
+   resolves every `ghcr.io` reference, so a pin written before the publish fails it).
+7. Tell the adopter v0.3.0 and v0.4.0 exist, and that v0.5.0 is the framework release they were blocked on; their
    own guardrail-classifier vectors are an append to `malicious-content` (add any new prefix to
    `hostileSourcePrefixes` in `scenarios/scenarios_test.go`).
 
@@ -182,7 +210,7 @@ These are settled. Re-open one only with new evidence, and record why.
 |  D6 | MCP and ODR are two new provider profiles for G-3. Build them in-tree, or make out-of-tree providers a supported path? | **Build MCP and ODR in-tree** (owner overrode the recommendation to export the seam instead). (ODR dropped from Phase 8 by D12, 2026-08-16.)  |
 |  D7 | Exa /contents, /findSimilar and Tavily /extract have no verified contract in this repository — contracts/exa/README.md:23 explicitly declines to as... | **Re-verify against vendor docs first** for `/contents`, `/findSimilar`, `/extract` — ADR-0002 holds as written.  |
 |  D8 | What should the adopter do about stream:true fixtures in the window before SSE ships (Phase 5)? | Tell the adopter **not to record `stream:true` fixtures** yet, and ship a `stream: reject` policy so their path fails loudly. **Reversed 2026-08-15: Phase 5 has shipped.** `stream: {when_requested: stream, deltas: [...]}` now serves a real, golden-tested SSE sequence on both Perplexity surfaces — the adopter can record `stream:true` fixtures today, against `testkit.AssertGoldenSSE`. `stream: reject` remains available for a suite that wants a hard failure instead. |
-|  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Decided 2026-08-16: tier 1 adopted** — README and CLAUDE.md led, as of tier 1, with "a deterministic service-simulator framework shipping three research-API profiles" (four profiles since Phase 8), the non-goals hold for any profile, README says what is provider-neutral versus profile-specific. **Tier 2 (export the seam, re-opening D6) is deferred until Phase 8's MCP/ODR have exercised the seam in-tree; tier 3 (positioning) stays open.** (ODR dropped from Phase 8 by D12, 2026-08-16 — tier 2 waits on the MCP profile alone.) The proposal, with the reasoning and the tier 2 shape, is [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md). **Evidence for tier 2 recorded 2026-08-16** (Phase 8 unit 3): the proposal's "Evidence from Phase 8" section and `docs/design/mcp-profile.md` §12 — what the fourth in-tree profile needed from the seam (nothing new), the one framework change (`internal/redact` mirrored headers), the 41 hand-maintained enumeration sites in 12 files it touched, and what an out-of-tree profile would need exported. Tier 2 awaits the owner. **Tier 2 DECIDED 2026-08-17 (owner, overriding the "defer until a concrete out-of-tree user exists" recommendation): YES — export the seam.** Verbatim: "as soon as you try to take over mocks for sem\* it's a framework. not to mention the three providers we started with are not even close to the number of providers our early adopter will end up with. so yes, we need to commit to being a proper framework so we do not need to babysit PRs — treat what we have as examples." Consequences: Servicesim is a framework; the four in-tree profiles are reference examples; an out-of-tree profile must be buildable and composable without a PR here; the v0.5.0 release is held until the seam ships ("1 depends on 3"); tier 3's sem\* mock-consolidation question is now inside the framing rather than beside it. The design proposal (three independent designs, judged, synthesised — `docs/proposals/framework-seam.md`) is the next step; Phase 10 is the work. |
+|  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Decided 2026-08-16: tier 1 adopted** — README and CLAUDE.md led, as of tier 1, with "a deterministic service-simulator framework shipping three research-API profiles" (four profiles since Phase 8), the non-goals hold for any profile, README says what is provider-neutral versus profile-specific. **Tier 2 (export the seam, re-opening D6) is deferred until Phase 8's MCP/ODR have exercised the seam in-tree; tier 3 (positioning) stays open.** (ODR dropped from Phase 8 by D12, 2026-08-16 — tier 2 waits on the MCP profile alone.) The proposal, with the reasoning and the tier 2 shape, is [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md). **Evidence for tier 2 recorded 2026-08-16** (Phase 8 unit 3): the proposal's "Evidence from Phase 8" section and `docs/design/mcp-profile.md` §12 — what the fourth in-tree profile needed from the seam (nothing new), the one framework change (`internal/redact` mirrored headers), the 41 hand-maintained enumeration sites in 12 files it touched, and what an out-of-tree profile would need exported. Tier 2 awaits the owner. **Tier 2 DECIDED 2026-08-17 (owner, overriding the "defer until a concrete out-of-tree user exists" recommendation): YES — export the seam.** Verbatim: "as soon as you try to take over mocks for sem\* it's a framework. not to mention the three providers we started with are not even close to the number of providers our early adopter will end up with. so yes, we need to commit to being a proper framework so we do not need to babysit PRs — treat what we have as examples." Consequences: Servicesim is a framework; the four in-tree profiles are reference examples; an out-of-tree profile must be buildable and composable without a PR here; the v0.5.0 release is held until the seam ships ("1 depends on 3"); tier 3's sem\* mock-consolidation question is now inside the framing rather than beside it. The design proposal (three independent designs, judged, synthesised — `docs/proposals/framework-seam.md`) was written and accepted the same day. **TIER 2 SHIPPED 2026-08-17 — Phase 10, branch `phase-10`, units 0–10:** `provider.Profile`/`Set` is the registration record, the root `servicesim` package is the composition entry point a consumer's own `main.go` calls, the four profiles are `profiles/<name>` reference examples with their contract bundles beside them and a test proving nothing in this repository may import one, `contracts` and `testkit` are generic over a registered set, and the in-tree guards are library calls (`testkit.ValidateProfile`, `contracts.Conform`, `testkit.AssertNoLiveHosts`, `testkit.AssertCovers`) an out-of-tree profile runs in its own CI; `examples/profile/` is a fifth profile built as its own module by CI and `docs/building-a-profile.md` is the guide. All eleven design decisions D-1…D-11 were taken as recommended; [ADR 0003](adr/0003-framework-seam.md) is the record and amends ADR 0001 rather than splitting the module (D-9, with tier 3's module question left open). This also answers **D6** — both: in-tree for the four reference profiles, out-of-tree as the supported path for everyone else. Tier 3's remaining half, where the sem\* `chat/completions` profile lands, was decided as **D-11: out of tree, in a sem\* repository**, sequenced against semstreams v1 by the owner. |
 |  D10 | How is contract drift detected without a canary? | **Dated, manual re-verification**, never a live canary — none is built or planned. Every provider's contract is generated with a machine-readable spec behind it — Exa's `exa-spec.yaml`, Tavily's `openapi.json` and Perplexity's `openapi.json`, each covering every route this repository simulates for that vendor — and each carries a RECORDED spec version and SHA-256 (`contracts.Spec`, `contracts/<provider>/provenance.yaml`'s `spec:` block) that a fresh fetch is compared against as the first, cheap step. That hash comparison is a drift SIGNAL, not a substitute for reading: most entries in every provider are still verified against the vendor's rendered prose pages (each entry's own `documentation_url`), which have no stable byte hash of their own — a page's bytes change with every site deploy independent of the content that matters — so a changed spec hash means a person re-reads the consumed fields against both the cited pages and the spec, never a hash of the prose itself. Only entries whose `documentation_url` IS the spec (all of Perplexity's, and Exa's three `/findSimilar` entries) were read from the spec directly and carry `api_version`; every other entry was read from prose and carries none. Reason for no canary: a canary is outbound infrastructure and a scheduled dependency on vendor availability, for a test simulator whose value is determinism; the recorded hash or the cited page gives a reviewer the same answer ("did the vendor change or did we?") on demand, without the outbound dependency. `contracts/README.md` "Keeping them honest" is the sanctioned procedure; ADR 0002 carries an "Amended 2026-08-16" section recording the same change. Owner, 2026-08-16.  |
 |  D11 | Which MCP protocol era(s) does the Phase 8 profile serve — **modern** (2026-07-28 only: stateless, per-request `_meta`, `server/discover`, no session, no handshake), **legacy** (2025-11-25 only: `initialize`/`notifications/initialized`, `MCP-Session-Id`, optional GET stream and `Last-Event-ID` resumability), or **dual-era** (both, selected per request by how the client opens)? The terms are the specification's own (`basic/versioning`, "Terminology"). | **Pending owner (recorded 2026-08-16).** Recommendation on record, from `contracts/mcp/README.md` "Protocol eras": **modern first** — 2026-07-28 is `latest` and the verified authority; it is stateless, which is exactly Servicesim's request/response model (nothing to hold between calls); and it is what every official SDK now sends by default (evidence via `gh api`, 2026-08-16: go-sdk `v1.7.0` 2026-07-28 — "full support for protocol version 2026-07-28", "enabled by default for new clients", Streamable HTTP serves 2026-07-28 only with `Stateless = true`; typescript-sdk `@modelcontextprotocol/server@2.0.0` 2026-07-27 — "Align the 2026-07-28 wire with the final revision" (note: `1.30.0` the same day is a v1.x maintenance release whose notes do not mention 2026-07-28); python-sdk `v2.0.0` 2026-07-28 — "supports the 2026-07-28 revision … and serves every earlier revision"). Every one of those clients falls back to `initialize` only when the server's answer to its first modern request (go-sdk: `server/discover`, per `mcp/client.go` on `main`) is not a recognised modern error, so a modern-only simulator is reachable from all of them. Build the **legacy 2025-11-25 path as a follow-on unit only if the adopter's mcp-adapter is pinned below** go-sdk `v1.7.0` / the TypeScript `2.0.0` packages / python-sdk `v2.0.0` — ask them (contract file, "Open questions for the adopter", Q1). A dual-era server is a superset and re-introduces the session state the profile would otherwise never hold. The legacy surface is recorded in the contract file's "Legacy revision 2025-11-25" subsection so the decision is made from a record, not a rebuild. **Unit 2 shipped modern-only per the recommendation; legacy is a follow-on if the owner decides dual-era.** **Decided 2026-08-17 (owner): "modern only is a fine start."** Modern 2026-07-28 only, as shipped; the legacy 2025-11-25 path is not planned — a follow-on only if the adopter's client turns out to be pinned to a pre-2026-07-28 SDK. |
 |  D12 | Is the ODR — "open-deep-research" — provider profile part of Phase 8? | **Owner, 2026-08-16: no.** "Let's not worry about Open Deep Research for P8 — we can make that an adopter problem for now." Phase 8 is the MCP profile alone; ODR is not built here and is not blocking anything. Recorded beside it, the reason it could not have been built from this tree anyway: the repository has no verifiable identity or wire surface for "open-deep-research" — the name matches several open-source projects with different or no HTTP APIs — and house rule 1 forbids writing a wire field from memory. If the adopter later wants it, the first step is theirs: name the project and its API documentation, and the contract-verification unit runs the way MCP's did before any handler. The audit table's ODR row below is the adopter's historical status and is left as written. |
@@ -807,7 +835,7 @@ troubleshooting, the Compose example, the startup log and `job.foreign_id`.
 - Note that the multi-replica README and troubleshooting text ships in Phase 3, not here — it must land with the job
   store that makes the divergence a hard 404.
 
-### Phase 8 — the MCP profile — COMPLETE, pending merge and v0.5.0
+### Phase 8 — the MCP profile — merged to `main` (`16c4688`), pending v0.5.0
 
 **Renamed 2026-08-16 (D12): Phase 8 is the MCP profile alone.** This is the adopter's G-3 second adapter and the
 largest single commitment in the backlog, which is why decision 6 recommends opening the seam before committing to
@@ -874,10 +902,13 @@ is theirs (D12); Servicesim does not unblock it.
   the true checklist from the unit-2 diff; `docs/troubleshooting.md`'s MCP section (every entry reproduced with
   `curl` against the binary); the small sweeps (CLAUDE.md, `contracts/mcp/README.md`'s `x-mcp-header` row,
   `docs/scenario-schema.md`, the plan's dated one-liner, the "three → four" sentences). No behaviour change.
-- **What remains after Phase 8:** merge `phase-8`; cut **v0.5.0**; **D11** (owner) — a legacy follow-on only if
-  the adopter's client needs it; **D9 tier 2** (owner) — evidence written, decision open; the shared-pipeline
-  hardening follow-up below; Phase 9.
-- **v0.5.0 tag-note bullets (draft, for the release commit to lift):**
+- **What remained after Phase 8, and where it went:** `phase-8` is merged; **D11** was decided 2026-08-17
+  ("modern only is a fine start" — a legacy follow-on only if the adopter's client needs it); **D9 tier 2** was
+  decided the same day and became Phase 10, which also closed the shared-pipeline hardening follow-up below (its
+  unit 0); cutting **v0.5.0** is the one step left, and Phase 9 is after it.
+- **v0.5.0 tag-note bullets — the Phase 8 and Phase 7 halves (draft, for the release commit to lift; the
+  framework half and the v0.4.0 → v0.5.0 migration table are in the Phase 10 section below, and the whole
+  note is the tag-message draft). The Phase 10 unit bullets nested here were written as those units landed:**
   - Phase 8 unit 1: `contracts/mcp/` — the MCP contract recorded from the 2026-07-28 specification and its
     machine-readable schema (`spec:` block, sha256 `ef70b61f…`) before any handler; the D11 era record.
   - Phase 8 unit 2: the MCP profile — `provider/mcp`, a modern-era (2026-07-28) Streamable HTTP server: listener
@@ -1495,6 +1526,101 @@ is theirs (D12); Servicesim does not unblock it.
   One residual gap, deliberately left: nothing proves a projection struct field that `ProjectionKeys()`
   forgot, because that needs reflection over an unexported type and therefore an in-package test file — the
   reverse direction is pinned, and `profiles/perplexity/agent_test.go` is the in-tree shape to copy.
+
+### Phase 10 — the framework seam — COMPLETE, pending merge and v0.5.0
+
+**Owner, 2026-08-17 (D9 tier 2, the quote is in the D9 row): "we need to commit to being a proper framework so we
+do not need to babysit PRs — treat what we have as examples."** Phase 10 is that decision built. The design is
+[`proposals/framework-seam.md`](proposals/framework-seam.md) — three independent designs, judged and synthesised,
+each backed by a compile spike, with its own "Where it landed differently" list read back from the commits — and
+[ADR 0003](adr/0003-framework-seam.md) is the record of what shipped. The eleven decisions D-1…D-11 were taken as
+recommended on 2026-08-17.
+
+After it, a consumer writes a profile for a vendor this repository does not ship, in their own repository, against
+`provider`/`scenario`/`testkit`/`contracts`, composes it into their own binary and image through the root
+`servicesim` package, and proves it with `testkit.ValidateProfile` plus `contracts.Conform` in their own CI. No PR
+here, no release here. [`building-a-profile.md`](building-a-profile.md) is the guide and
+[`examples/profile/`](../examples/profile) is a fifth profile, its own Go module, built and tested by this
+repository's CI — the guide's code blocks are excerpts of it, kept honest by a sync test.
+
+| Unit | What shipped | Commit |
+|---|---|---|
+| 0 | The memoised-fault gate: an attempt claimed before validation failed is no longer applied to the rejection; `fault.attempt_on_rejection` records it, the claimed index and namespaced key stay truthful | `4d10178` |
+| 1 | The seam widened so no profile imports `internal/*`: `provider.Render` (one ordering, fixing exa's inverted extra/omit), `Hex32`/`UUIDv5`/`FloatIn`, `Credential`/`Finding`/`Severity`, `Exchange.Credentials`/`ObserveCredential`/`HasJSONContentType`, narrowed `MintJob`/`ResolveJob` | `8524fc3` |
+| 2 | `provider.Profile` (16 fields) and `Set`/`NewSet`/`MustSet`; every refusal — 404, 405, unknown scenario, handler panic, and the fifth kind `RefuseRequest` — through the profile's own `ErrorBody`; the `Status < 400` fault-body guard framework-owned; the SSE grammar set opened (`Sentinel`/`SentinelPace`, `provider.DoneSentinel`) | `67053f6` |
+| 3 | The composition root: `servicesim.Main`/`Run`/`Build`, `internal/config` and `internal/server` derived from the `*Set`, `cmd/servicesim` a 19-line wrapper, one fault engine (`internal/faults` deleted), `--print-routes`/`--print-ports`/`--print-hosts`, `scenario.profile.unscripted` | `92008a3` |
+| 4 | `testkit` generalised over the `Set`: `WithProfiles` required, one generic `Handler`, caller-declared golden pruning (`GoldenDerivedIDs`), `AssertCovers`, `NewJournal`; the four per-vendor handler constructors, `NewFaults` and the `Finding`/`Severity` aliases deleted | `e8cb6a7` |
+| 5 | The four profiles moved to `profiles/<name>` as reference examples, `profiles.Reference()`, the no-privilege import test, and the per-profile surface trim (exa 47→5, tavily 44→12, perplexity 83→10, mcp 19→6 top-level declarations) | `9f08da0` |
+| 6 | The contract discipline as a library: `contracts` over `fs.FS`, `Conform` as ten named subtests, `OldestVerified`, the closed `Provider` enum deleted, the four bundles moved to `profiles/<name>/contracts/`, and `testkit.ValidateProfile` with `AssertDeterministic` and `AssertRenderShape` | `cfc5e19` |
+| 7+8 | Guards as libraries (`testkit.AssertNoLiveHosts` with the paid-host base list in Go; `Profile.CredentialNames` threaded into redaction as data) and `Profile.Kind` threaded — one handler shape, many listeners, with the lane cursor and fault key namespaced by listener name; `Validator.ProjectionKeys()` | `7261093` |
+| 9 | `examples/profile/` — an out-of-tree profile CI builds and tests as its own module, with its own `Dockerfile`, `main.go` and `imports_test.go` — and `docs/building-a-profile.md`, whose 23 code blocks are excerpts of that module | `71a9a5e` |
+| 10 | The docs: ADR 0001 amended, ADR 0003 written, CONTRIBUTING split in two, `CLAUDE.md` line 132 re-earned, README's composition section and the 1.0 trigger, the design records annotated, the proposal and D9 closed, this section | this commit |
+| 11 | The v0.5.0 release — tag, publish, confirm the digest, move the pins | not started |
+
+Each unit was implemented test-first, reviewed by three or four independent lenses (including one told to break a
+house rule and one mutation lens working in a scratch copy), fixed in place and verified with an independent
+`task check` before its commit. The full per-unit implementation and review records — every finding, every fix,
+every "recorded, not done" — were written as the units landed and sit above, inside the Phase 8 section, each
+headed "Phase 10 unit N": units 1–4 and 6–9 have one there. Unit 0 appears only as the follow-up it closed
+("closed by Phase 10 unit 0", above) and unit 5 has no separate record; for those two the commit bodies are the
+record. The commit bodies (`git log main..phase-10`) carry the same reasoning in shorter form for all of them.
+
+**What remains:** the release, and nothing else. Merge `phase-10`, cut v0.5.0 with the note below (the procedure is
+in "Start here" item 6), then tell the adopter. The follow-ups Phase 10 recorded rather than did, none of them
+blocking: `testkit.AssertNoCredentialLeak` takes a `*Sim` only, so a hand-built journal cannot be scanned with it;
+an instance block with no `kind:` draws a misnamed `scenario.provider.unimplemented`; MCP's own `Status < 400`
+fault-body check is a redundant duplicate of the framework's; and the CAS release of a claimed fault lane waits
+for a real out-of-tree profile to trip `fault.attempt_on_rejection`.
+
+#### v0.5.0 tag-note bullets — the framework release
+
+The full drafted note is the tag-message file; these are its Phase 10 half. Phase 8's and Phase 7's halves are the
+bullets in the Phase 8 section above, and they ship in the same tag.
+
+- **The seam is public.** `provider.Profile` is the registration record — name, kind, title, port, routes,
+  handlers, validators, the required `ErrorBody`, default auth, contracts, hosts, derived ids, credential names —
+  and `provider.NewSet`/`MustSet` build the ordered, validated, immutable `*Set` that is the only input to
+  composition. `servicesim.Main`/`Run`/`Build` is the composition root a consumer's own `main.go` calls with their
+  own profile list; `--print-ports`, `--print-routes` and `--print-hosts` feed their image, their docs and their
+  live-host guard.
+- **The four shipped profiles are reference examples.** They live at `profiles/{exa,tavily,perplexity,mcp}` with
+  their contract bundles beside them, and a test refuses any import of a profile package from anywhere else in the
+  repository: a reference profile has no privilege an out-of-tree one lacks.
+- **The discipline travels.** `testkit.ValidateProfile` runs the conformance suite (registration, contract
+  provenance, an error body for every refusal kind, unknown path / wrong method / wrong content type / missing
+  credential, fault-key resolution, byte determinism and render shape) in *your* CI; `contracts.Conform`,
+  `testkit.AssertNoLiveHosts`, `testkit.AssertNoCredentialLeak` and `testkit.AssertCovers` are the rest of the
+  in-tree guards as library calls.
+- **Behaviour a v0.4.0 consumer could notice, beyond the API break:** exa's `omit_fields` now wins over
+  `extra_fields`, matching the documented order and the other profiles; a handler panic is now a profile-shaped
+  500 with a `handler.panic` finding instead of a connection reset; and a scripted fault attempt claimed before a
+  request was rejected is no longer applied to the rejection (`fault.attempt_on_rejection`), so a resilience test
+  that depended on the old behaviour will see its rejection status rather than the scripted one.
+
+**Migration, v0.4.0 → v0.5.0.** Everything below is a compile error rather than a silent change, except the three
+rows marked **Silent:**. No scenario file changes: the schema is backward compatible.
+
+| v0.4.0 | v0.5.0 | Why |
+|---|---|---|
+| `testkit.Start(t, testkit.WithBuiltin("happy"))` | add `testkit.WithProfiles(exa.Profile(), …)` — required | A default of four would pull four vendors' contracts and goldens into the build graph of a team simulating one API (D-5) |
+| `import ".../provider/exa"` | `import ".../profiles/exa"` | The four are reference examples, not part of the core (D-4) |
+| each profile's wire, projection and validator types — `exa.SearchResponse`/`Result`/`Citation`/`Validator`/`Route*`, `exa.Categories`/`SearchTypes`/`Tag*`/`Status*`/`Stop*`, and tavily's and perplexity's equivalents | unexported — decode against your own structs, and read the shape from the profile's `contracts/` goldens | Rule 7: each reference profile is trimmed to what a consumer legitimately names — its typed `Name`, entry-kind names, `Profile()`, `Routes()`, the `Pattern*`/`FaultKey*`/`Code*` constants, and the wire types `docs/scenario-schema.md` names by Go type. Measured with `go doc -short` against v0.4.0: exa 46→5, tavily 44→12, perplexity 82→10, mcp 19→6 top-level declarations, 249 identifiers unexported (unit 5, `9f08da0`; the unit-5 row above counts from its own starting point one unit later, which is why exa and perplexity differ by one) |
+| the `provider` package's `Exa`/`Tavily`/`Perplexity`/`MCP` constants | `exa.Name`, `tavily.Name`, `perplexity.Name`, `mcp.Name` | A framework core has no business naming four vendors |
+| `testkit`'s `ExaHandler`/`TavilyHandler`/`PerplexityHandler`/`MCPHandler` | `testkit.Handler(tb, exa.Name, opts…)` | One generic constructor an out-of-tree profile can also use |
+| `exa.New(deps)` and the other three | `exa.Profile().Handler(deps)` | `Profile()` is the registration record; `New` was a wrapper for one unit |
+| `testkit`'s `NewFaults(s)` | `provider.MustSet(…).Faults(s)` | An engine that does not know a registered route is now unconstructible |
+| `testkit`'s `Finding`/`Severity` aliases and their consts | `provider.Finding`/`provider.Severity` | One name per concept; an alias into an internal package is a godoc dead end |
+| goldens pruned derived ids by default | pass `testkit.GoldenDerivedIDs(sim.DerivedIDs()…)` | Three vendors' knowledge was a package-global default; it is caller-declared now. **Silent:** an un-pruned compare fails on an id that used to be ignored |
+| `contracts.Provider`, `Providers()`, `FS()`, `AllGoldens()`, `VerifiedOn`, and `Golden`'s `Provider` field | `contracts.Read`/`Goldens`/`Provenance`/`ProviderSpec` over an `fs.FS`, `contracts.OldestVerified(fsys)`; each profile's bundle is `Profile.Contracts`, and a `Golden` carries `Name`/`Path`/`Data` only | A framework cannot enumerate profiles it does not know, and a fixture read out of a caller's own `fs.FS` has no provider enum to belong to |
+| `contracts/exa/…` paths | `profiles/exa/contracts/…` | The bundle lives beside its profile, exactly as an out-of-tree one does |
+| `provider.MuxSpec`'s `NotFound`/`MethodNotAllowed`; `provider.NewMux(d, name, spec)` | the two fields are deleted and `Profile.ErrorBody` (required) replaces them; `provider.NewMux(d, name, refuse, spec)` takes the refusal renderer directly | Fail-closed by construction: `NewSet` refuses a profile without one, and a mux cannot be built without a way to render a refusal |
+| `Exchange.Auth` (writable field) | `Exchange.ObserveCredential(c)` / `Exchange.Credentials()` | The only write path into a retained credential (rule 4) |
+| `provider.MintJob` → `(jobs.Job, bool)`, `ResolveJob` → `(jobs.Job, bool)` | `(id string, ok bool)` and `bool` | An unnameable internal type left every exported signature |
+| `Stream`'s `OmitDone`/`DonePace` | `Stream.Sentinel`/`SentinelPace`, with `provider.DoneSentinel` as the value | The `[DONE]` frame is data a profile sets, never inferred from the grammar |
+| the build stamps `main.Version` (ldflags `X` symbol path) | `github.com/c360studio/servicesim.Version` | The flag and serve code moved to the root package; the old symbol path silently leaves a release binary stamped `dev` |
+| exa `extra_fields` could reinstate an `omit_fields` key | `omit_fields` wins | **Silent:** the documented order, and what tavily and perplexity always did |
+| `-providers` defaulted to `exa,tavily,perplexity` (the `DefaultProviders` constant) | the default is every registered profile, derived from the `*Set` — so the shipped binary and image enable `exa,tavily,perplexity,mcp` and bind 8084; the constant is gone | A hand-kept default drifts from the registry; `-providers exa,tavily,perplexity` still keeps three |
+| journal assertions on `Mcp-Param-*` / `Mcp-Session-Id` header values | those headers are masked (Phase 8) | **Silent:** redaction now covers credentials mirrored under a wrapper name, on every profile |
 
 ### Phase 9 — The two doctrine-contradicting features
 

@@ -1,8 +1,8 @@
 # Consumed contracts
 
-Each provider directory records the subset of its vendor API that Servicesim simulates and that C360 consumers
-parse — the *consumed contract*, not the whole vendor surface. Every file carries the documentation URLs it was
-derived from and the date the shape was verified.
+Each provider's bundle under `profiles/<name>/contracts/` records the subset of its vendor API that Servicesim
+simulates and that C360 consumers parse — the *consumed contract*, not the whole vendor surface. Every file
+carries the documentation URLs it was derived from and the date the shape was verified.
 
 | Provider | Contract | Verified | Base URL simulated |
 |---|---|---|---|
@@ -11,7 +11,8 @@ derived from and the date the shape was verified.
 | Perplexity | [`../profiles/perplexity/contracts/README.md`](../profiles/perplexity/contracts/README.md) | 2026-08-15 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
 | MCP | [`../profiles/mcp/contracts/README.md`](../profiles/mcp/contracts/README.md) | 2026-08-16 | `POST /mcp` |
 
-Every route in that column has golden fixtures in this directory, except the two `HEAD` routes: `HEAD` carries no
+Every route in that column has golden fixtures in that provider's own bundle (`profiles/<name>/contracts/`),
+except the two `HEAD` routes: `HEAD` carries no
 body, so it has no fixture to pin — its behaviour is covered by the provider tests instead. Treat the column as the
 complete list of what is simulated, not as a summary of the interesting parts.
 

@@ -131,6 +131,27 @@ spec:
   retrieved: "2026-08-17"
 ```
 
+Each golden's own record follows under `goldens:`, keyed by `golden:` — the file name as it appears in the
+bundle. That key is the one worth copying rather than guessing: a record that names the file any other way is a
+record with no golden, and `Conform` reports it as both `entry N names no golden` and
+`<name>.json has no entry in provenance.yaml`, plus every coverage minimum the unmatched fixture would have
+satisfied.
+
+<!-- excerpt: examples/profile/acme/contracts/provenance.yaml#L24-L34 -->
+```yaml
+goldens:
+  - golden: acme-answer-happy.json
+    endpoint: POST /v1/answer
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.acme.test/v1/answer
+    verified: "2026-08-17"
+    note: >
+      Acme is fictional; this fixture exists to prove contracts.Conform and testkit.ValidateProfile
+      run against an out-of-tree profile's own bundle, the way docs/proposals/framework-seam.md
+      describes.
+```
+
 A real profile records the real document here. The reason the block exists at all is
 [ADR 0002](adr/0002-verified-contract-precedence.md): the verified contract outranks every other document, including
 this repository's own plan, and a wrong wire field in a simulator is a production bug distributed to every consumer
@@ -260,9 +281,10 @@ func Profile() provider.Profile {
 }
 ```
 
-- `Handlers` and `Routes` are the two halves of one table: `provider.NewSet` refuses a route with no handler and a
-  handler with no route, so a route added to one and forgotten in the other fails at composition, not on the first
-  request.
+- `Handlers` and `Routes` are the two halves of one table. `Handlers` is a `map[string]provider.Handler` keyed by
+  `Route.Pattern` (`provider.Handler` is the handler func type — see `go doc ./provider Handler`), and
+  `provider.NewSet` refuses a route with no handler and a handler with no route, so a route added to one and
+  forgotten in the other fails at composition, not on the first request.
 - `Validators` is keyed by scenario **entry kind**, not by listener — one listener may contribute several
   (Perplexity's Sonar and Agent surfaces). Acme has one, under its own name.
 - `ErrorBody` is **required**. House rule 3: an unmatched path, method, provider or scenario answers in the
@@ -642,6 +664,13 @@ the request before any handler ran — and `provider.RefuseRequest` arrives with
 findings, so the body it renders is the same body a handler-side rejection renders. `Refusal.X` is nil for the
 first four; `ValidateProfile`'s `ErrorBody` subtest calls yours for every kind, with and without an `Exchange`, and
 requires a non-empty body each time.
+
+**The error envelope goes through `provider.Render` too.** Acme's own `errorBody` helper — the one every branch
+above calls — is `provider.Render(errorEnvelope{...}, nil, nil)`, not `json.Marshal`. This is the same rule as the
+success path and it is usually discovered the hard way: the moment a message quotes a header
+(`Authorization: Bearer <token>` in a 401 is the common one), `encoding/json` HTML-escapes the angle brackets and
+`AssertRenderShape` fails the build with `body 0 contains the escape sequence "<" — the signature of
+encoding/json's default HTML escaping; render through provider.Render, which turns HTML escaping off`.
 
 Neither the 401 nor the 404 in that list is produced by the framework. `ErrorBody` renders a body; the *status*
 comes from your own findings-to-status map, which is the piece that is easy to leave out and impossible to pass
@@ -1130,8 +1159,8 @@ difficulty; pick by what your vendor looks like.
 | [`profiles/perplexity`](../profiles/perplexity) | Two scenario entries (Sonar and Agent) on one listener; two SSE grammars; SDK-alias routes sharing a fault key. |
 
 Each has a `doc.go` that is a decision log — what is simulated, what is not, and every simulator-chosen default —
-and a `contracts/README.md` in the shape step 1 asks for. `CONTRIBUTING.md`'s "Adding a provider" is the checklist
-for adding a *reference* profile to this repository; this guide is the one for a profile in yours.
+and a `contracts/README.md` in the shape step 1 asks for. `CONTRIBUTING.md`'s "Adding a reference profile here" is
+the checklist for adding a *reference* profile to this repository; this guide is the one for a profile in yours.
 
 ## The 1.0 trigger
 
