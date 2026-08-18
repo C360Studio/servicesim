@@ -517,9 +517,14 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 
 	sc := loadScenario(tb, o, set.Validators())
 	derivedIDs, streamDerivedIDs := set.DerivedIDs()
+	credentialNames := set.CredentialNames()
 	s := &Sim{
-		scenario:             sc,
-		journal:              journal.NewRing(o.capacity, provider.DefaultMaxJournalBodyBytes),
+		scenario: sc,
+		journal: journal.NewRingWithLimits(journal.Limits{
+			Capacity:        o.capacity,
+			MaxBodyBytes:    provider.DefaultMaxJournalBodyBytes,
+			CredentialNames: credentialNames,
+		}),
 		faults:               set.Faults(sc),
 		jobs:                 jobs.NewRegistry(jobs.Limits{}),
 		names:                enabled(tb, requested, available),
@@ -530,13 +535,14 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 	}
 
 	deps := provider.Deps{
-		Scenario:  sc,
-		Journal:   s.journal,
-		Faults:    s.faults,
-		Clock:     o.clock,
-		DelayMode: o.delayMode,
-		Logger:    slog.New(slog.DiscardHandler),
-		Jobs:      s.jobs,
+		Scenario:        sc,
+		Journal:         s.journal,
+		Faults:          s.faults,
+		Clock:           o.clock,
+		DelayMode:       o.delayMode,
+		Logger:          slog.New(slog.DiscardHandler),
+		Jobs:            s.jobs,
+		CredentialNames: credentialNames,
 	}
 	for _, name := range s.names {
 		// enabled already proved name is in set.Names(), so the miss branch

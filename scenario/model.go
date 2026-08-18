@@ -775,6 +775,18 @@ func (m *Match) IsEmpty() bool {
 // which would make `route: "exa:search"` silently match tavily:search if someone
 // pasted it into the wrong block. Being explicit must never widen a match.
 //
+// On an instanced listener (Phase 10 unit 8: Kind != Name) key carries a
+// third, leading qualifier — the listener's own Name — that the documented
+// two spellings above say nothing about ("acme_fallback:acme:answer", not
+// "acme:answer"). A qualified predicate is still compared against that
+// leading qualifier stripped, so the one documented qualified spelling
+// (`<kind>:<name>`, docs/scenario-schema.md's `when.route` table) matches an
+// instanced listener's key exactly as it matches every other listener's —
+// still never reduced to its own bare suffix, and still refused outright
+// against a key with no listener-Name qualifier to strip (a key with
+// exactly one colon leaves rest with none, so the guard below never fires
+// for a non-instanced route).
+//
 // It is exported for one reason: provider.ValidateScenario must reject a route
 // name that matches nothing, and a validator using a second, separately-written
 // copy of this rule would eventually disagree with the matcher about what a
@@ -784,6 +796,9 @@ func RouteMatches(authored, key string) bool {
 		return true
 	}
 	if strings.Contains(authored, ":") {
+		if _, rest, ok := strings.Cut(key, ":"); ok && strings.Contains(rest, ":") && authored == rest {
+			return true
+		}
 		return false
 	}
 	return authored == RouteKeySuffix(key)

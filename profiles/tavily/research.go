@@ -410,6 +410,13 @@ type researchValidator struct{}
 // is checked against the research routes alone.
 func (researchValidator) Routes() []provider.Route { return researchRoutes() }
 
+// ProjectionKeys returns researchProjection's own top-level keys — the
+// vocabulary a turn's `respond:` body under the "tavily_research" entry kind
+// may use (Phase 10 unit 8).
+func (researchValidator) ProjectionKeys() []string {
+	return []string{"status", "content", "sources", "response_time", "extra_fields"}
+}
+
 // ValidateProjections decodes every turn of the research entry.
 func (researchValidator) ValidateProjections(s *scenario.Scenario, e *scenario.ProviderEntry) []scenario.Finding {
 	if s == nil || e == nil {

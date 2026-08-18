@@ -111,17 +111,29 @@ type Profile struct {
 	// Kind is the handler implementation this profile is an instance OF.
 	// Empty means Name. It is the forward-looking field for an
 	// OpenAI-compatible shape served as several distinct listeners from one
-	// handler; see the package design's "Kind" discussion. Stored now,
-	// threaded through config/server/testkit in unit 8.
+	// handler; see the package design's "Kind" discussion.
 	//
-	// Not yet threaded: two instances of one Kind (Kind != Name, single
-	// entry, accepted by NewSet — see "instancing" in Validate's doc
-	// comment) still share one fault counter and one fault plan per Route,
-	// because Route.FaultKey and (*Set).Faults are keyed on the route, not
-	// on which listener is asking. A scenario author who wants the two
-	// instances to draw on independent budgets must give each instance's
-	// Routes a distinct FaultKey; unit 8's threading of Kind through the
-	// fault engine is what makes that automatic.
+	// Threaded (Phase 10 unit 8): two instances of one Kind (Kind != Name,
+	// single entry, accepted by NewSet — see "instancing" in Validate's doc
+	// comment) draw on INDEPENDENT fault counters, and each may script its
+	// own fault plan under its own scenario block, addressed by its own
+	// Name — the failover shape instancing exists for ("openai" scripts a
+	// 429, "openai_fallback" scripts nothing and serves 200) needs both.
+	// namespacedRoutes (profile.go) is the one place this is done, called
+	// from both composition points that must agree: (*Set).Routes, which is
+	// what the fault engine registers a plan and a counter under, and
+	// Profile.Handler, which is what builds the mux a request is actually
+	// routed through — so x.Route.FaultKey a request's cursor and fault key
+	// are drawn from is already the namespaced value by the time resolveLane
+	// (lane.go) runs, and Handle itself needs no Kind-awareness of its own.
+	// The plan itself prefers the instance's own scenario block (by Name)
+	// and falls back to the Kind's shared block only when the instance
+	// declares none of its own (see instanceFault). A profile whose Kind is
+	// empty or equals its own Name — every profile registered before Kind
+	// existed, and all four reference profiles today — is untouched:
+	// namespacedRoutes is a no-op copy for it, so the FaultKey it declares
+	// is exactly the key the engine registers and the key a request draws
+	// on, byte for byte.
 	Kind string
 
 	// Title is the human-readable vendor name: "Exa", "Perplexity", "MCP" —
@@ -327,14 +339,26 @@ func (noopValidator) ValidateProjections(*scenario.Scenario, *scenario.ProviderE
 	return nil
 }
 
+// ProjectionKeys reports nothing: there is no decode struct behind a
+// no-op validator for a doc cross-check to name keys from.
+func (noopValidator) ProjectionKeys() []string { return nil }
+
 // Handler builds this profile's listener handler over d, through NewMux. It
 // is what every reference profile's <pkg>.New did before this unit; <pkg>.New
 // is now a deprecated one-line wrapper over Profile().Handler(d).
 //
 // d is normalised once here (NewMux normalises again, idempotently) so
 // Announce — if set — observes the same defaulted Deps every request does.
+//
+// MuxSpec.Routes is namespacedRoutes(p), not p.Routes verbatim (Phase 10
+// unit 8): an instanced profile's (Kind != Name) requests must draw their
+// cursor and fault key from the SAME namespaced string (*Set).Routes
+// registered the fault engine's plan and counter under, and this is where
+// that agreement is made structural rather than coincidental — every
+// x.Route a handler or resolveLane ever sees already carries it.
 func (p Profile) Handler(d Deps) http.Handler {
 	d = d.Normalized()
+	d.CredentialNames = mergeCredentialNames(d.CredentialNames, p.CredentialNames)
 	if p.Announce != nil {
 		p.Announce(d)
 	}
@@ -342,7 +366,30 @@ func (p Profile) Handler(d Deps) http.Handler {
 	for pattern, h := range p.Handlers {
 		handlers[pattern] = installProfile(p, h)
 	}
-	return NewMux(d, p.Name, p.Refuse, MuxSpec{Routes: p.Routes, Handlers: handlers})
+	return NewMux(d, p.Name, p.Refuse, MuxSpec{Routes: namespacedRoutes(p), Handlers: handlers})
+}
+
+// mergeCredentialNames appends p's own declared vocabulary to whatever the
+// caller's Deps already carries.
+//
+// A profile must never be served under a handler that does not know its own
+// vendor-declared credential names, regardless of who built Deps. Set-based
+// composition (internal/server, testkit.Start) already passes the Set-wide
+// union — (*Set).CredentialNames() — as Deps.CredentialNames, so appending
+// p's own names again there is a harmless, idempotent superset: extra
+// vocabulary is deduplicated by isCredentialName's normalised-name lookup
+// the moment it reaches internal/redact. What this closes is the hand-built
+// idiom testkit.NewJournal/NewJobs document
+// (p.Handler(provider.Deps{Scenario: s, Faults: set.Faults(s), Journal:
+// testkit.NewJournal()})), which carries no CredentialNames at all: without
+// this merge, a profile served that way masks nothing beyond
+// internal/redact's own fixed tables, no matter what the profile itself
+// declares.
+func mergeCredentialNames(existing, own []string) []string {
+	if len(own) == 0 {
+		return existing
+	}
+	return append(slices.Clone(existing), own...)
 }
 
 // installProfile wraps h so every Exchange it receives carries this
@@ -543,13 +590,107 @@ func (s *Set) Lookup(name Name) (Profile, bool) {
 	return cloneProfileFields(p), true
 }
 
+// namespacedFaultKey is the one rule both sides of the fault engine's
+// contract compute identically (Phase 10 unit 8): (*Set).Routes, which is
+// what newSetFaultEngine registers a plan and a counter under, and
+// Profile.Handler (by way of namespacedRoutes, below), which is what a
+// request's own x.Route.FaultKey — and so its cursor and fault key — are
+// built from. The two MUST agree on the same string for the same (name,
+// kind, key), or an instanced listener's requests resolve no plan at all
+// (fault.unknown_key) despite NewSet having accepted the registration.
+//
+// key is returned verbatim when kind is empty or equals name's own string
+// form — every profile whose Kind is "" or equals Name, which is every
+// profile registered before Kind existed and all four reference profiles
+// today — so a route's FaultKey, and every cursor/fault key built from it,
+// stays byte-for-byte what it already was. An empty key is also returned
+// verbatim (there is nothing to namespace, and Validate already refuses an
+// empty FaultKey on a real route — this only guards a synthetic Route such
+// as NewMux's 404/405 catch-alls, which carry no FaultKey at all).
+//
+// When kind != string(name) — this listener instances a shared Kind under a
+// Name of its own (docs/proposals/framework-seam.md, "Kind": "openai" /
+// "openai_fallback") — key is namespaced by name, the LISTENER's own
+// identity, not by the Kind the two instances have in common: that is what
+// gives each instance an independent fault-engine counter and an
+// independent fault plan instead of both aliasing the one Route.FaultKey
+// their shared Profile() declares.
+func namespacedFaultKey(name Name, kind, key string) string {
+	if key == "" || kind == "" || kind == string(name) {
+		return key
+	}
+	return string(name) + ":" + key
+}
+
+// namespacedRoutes returns p.Routes with each Route's FaultKey namespaced
+// for instancing by namespacedFaultKey, and — for an instanced profile —
+// each Route's Fault wrapped by instanceFault so the instance's own
+// scenario block gets first say over its own plan. Both are no-op copies
+// for every profile whose Kind is "" or equals its own Name (every profile
+// registered before Kind existed, and all four reference profiles today).
+//
+// It is the ONE place this transformation is written, called from both
+// composition points that must agree on the result: (*Set).Routes, which is
+// what the fault engine's plans and counters are registered from, and
+// Profile.Handler, which is what builds the mux a request is actually
+// routed through (NewMux's MuxSpec.Routes become each request's x.Route).
+// Because Profile.Handler applies it too, x.Route.FaultKey already IS the
+// namespaced key by the time a request reaches resolveLane (lane.go) —
+// Handle itself needs no awareness of Kind at all, and turnLaneKey's
+// existing "produce Route.FaultKey verbatim" default keeps meaning exactly
+// that, for whichever value FaultKey carries.
+func namespacedRoutes(p Profile) []Route {
+	kind := p.effectiveKind()
+	instanced := kind != "" && kind != string(p.Name)
+	out := make([]Route, len(p.Routes))
+	for i, rt := range p.Routes {
+		rt.FaultKey = namespacedFaultKey(p.Name, kind, rt.FaultKey)
+		if instanced {
+			rt.Fault = instanceFault(p.Name, rt.Fault)
+		}
+		out[i] = rt
+	}
+	return out
+}
+
+// instanceFault wraps a route's Fault closure so an instanced listener's own
+// scenario block — addressed by its own Name, exactly how Exchange.EntryFor
+// already resolves that block's ordinary turn content — gets first say over
+// the plan its routes draw attempts from. base is what the Kind's own
+// package authored (typically `func(s *scenario.Scenario) *scenario.Fault {
+// return provider.TurnFault(s, "<kind>") }`, fixed at Route declaration and
+// therefore blind to which listener Name is asking); it runs only when the
+// instance's own block declares no fault of its own, which is what keeps a
+// scenario that scripts only the Kind's primary block ("openai": 429)
+// working unchanged for an instance that scripts nothing ("openai_fallback"
+// falls back to that same plan). Without this, "a scenario block is
+// addressed by Name" would hold for every dimension except the one the
+// failover shape instancing exists for (D-1's "openai" / "openai_fallback"
+// motivating example): the fallback could never script an outcome
+// independent of the Kind's shared block.
+func instanceFault(name Name, base func(*scenario.Scenario) *scenario.Fault) func(*scenario.Scenario) *scenario.Fault {
+	return func(sc *scenario.Scenario) *scenario.Fault {
+		if f := TurnFault(sc, string(name)); f != nil {
+			return f
+		}
+		if base == nil {
+			return nil
+		}
+		return base(sc)
+	}
+}
+
 // Routes returns every route of every registered profile, in registration
 // order — what a fault engine must be built from so that no registered
-// route is fault-blind.
+// route is fault-blind. An instanced profile's routes (Kind != Name) carry
+// their FaultKey namespaced by namespacedRoutes, so two instances of one
+// Kind register two independent plans and counters rather than aliasing
+// the one FaultKey their shared Profile() declares; every other profile's
+// FaultKey values are unchanged.
 func (s *Set) Routes() []Route {
 	var out []Route
 	for _, p := range s.profiles {
-		out = append(out, p.Routes...)
+		out = append(out, namespacedRoutes(p)...)
 	}
 	return out
 }
@@ -607,6 +748,21 @@ func (s *Set) LiveHosts() []string {
 	var out []string
 	for _, p := range s.profiles {
 		out = append(out, p.Hosts...)
+	}
+	return out
+}
+
+// CredentialNames returns the union of every registered profile's
+// CredentialNames, in registration order — what composition merges into the
+// journal's redaction vocabulary (house rule 4). internal/server and testkit
+// pass this to Deps.CredentialNames and to the Ring's own
+// Limits.CredentialNames, so a header or JSON property under any registered
+// profile's vendor-declared name is masked at both redaction points, without
+// internal/redact ever being exported or its own tables touched.
+func (s *Set) CredentialNames() []string {
+	var out []string
+	for _, p := range s.profiles {
+		out = append(out, p.CredentialNames...)
 	}
 	return out
 }

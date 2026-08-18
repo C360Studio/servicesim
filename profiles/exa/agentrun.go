@@ -222,6 +222,13 @@ type agentRunValidator struct{}
 // exa_agent_runs entry is checked against the async routes alone.
 func (agentRunValidator) Routes() []provider.Route { return agentRunRoutes() }
 
+// ProjectionKeys returns the async projection's own top-level keys — the
+// vocabulary a turn's `respond:` body under the "exa_agent_runs" entry kind
+// may use (Phase 10 unit 8).
+func (agentRunValidator) ProjectionKeys() []string {
+	return []string{"status", "stop_reason", "output", "error", "cost_dollars", "usage", "extra_fields"}
+}
+
 // ValidateProjections decodes every turn of the async entry and reports what it
 // finds, addressed by the turn's YAML path.
 //

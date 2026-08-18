@@ -276,6 +276,10 @@ func (v *recordingValidator) ValidateProjections(_ *scenario.Scenario, e *scenar
 	return v.findings
 }
 
+// ProjectionKeys is unused by any test in this file: they only care about
+// which entries ValidateProjections was asked about.
+func (*recordingValidator) ProjectionKeys() []string { return nil }
+
 func TestValidateScenario(t *testing.T) {
 	t.Parallel()
 

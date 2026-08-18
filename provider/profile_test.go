@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/internal/journal"
+	"github.com/c360studio/servicesim/internal/redact"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -236,6 +237,10 @@ func (stubValidator) ValidateProjections(*scenario.Scenario, *scenario.ProviderE
 	return nil
 }
 
+// ProjectionKeys is unused by any test in this file: they only care about
+// stubValidator's map key, never its decode struct.
+func (stubValidator) ProjectionKeys() []string { return nil }
+
 var _ Validator = stubValidator{}
 
 func TestMustSetPanicsOnRefusal(t *testing.T) {
@@ -416,15 +421,42 @@ func TestSetDerivedIDsAndLiveHostsConcatenate(t *testing.T) {
 	a.DerivedIDs = []string{"requestId"}
 	a.StreamDerivedIDs = []string{"item.id"}
 	a.Hosts = []string{"api.acme.test"}
+	a.CredentialNames = []string{"x-acme-key"}
 	b := acmeProfile(okHandler(`{}`))
 	b.Name, b.Port = "acme-b", 9095
 	b.DerivedIDs = []string{"request_id"}
+	b.CredentialNames = []string{"acme_token"}
 
 	s := MustSet(a, b)
 	paths, streamPaths := s.DerivedIDs()
 	require.Equal(t, []string{"requestId", "request_id"}, paths)
 	require.Equal(t, []string{"item.id"}, streamPaths)
 	require.Equal(t, []string{"api.acme.test"}, s.LiveHosts())
+	// CredentialNames concatenates in registration order too, on the same
+	// terms as LiveHosts and DerivedIDs: this is the union internal/server
+	// and testkit merge into the journal's redaction vocabulary (house rule
+	// 4), so a caller mutating what All() returned must not reach it either
+	// (proved separately below, TestSetCredentialNamesIsNotAliasedByAll).
+	require.Equal(t, []string{"x-acme-key", "acme_token"}, s.CredentialNames())
+}
+
+// TestSetCredentialNamesIsNotAliasedByAll proves CredentialNames() reads a
+// clone, on the same terms LiveHosts and DerivedIDs already prove elsewhere
+// in this file (see the "mutating ... must not reach" comment above
+// TestSetDerivedIDsAndLiveHostsConcatenate's assertion): a caller mutating a
+// Profile it got back from All() must never be able to change what a Set's
+// own accessor reports.
+func TestSetCredentialNamesIsNotAliasedByAll(t *testing.T) {
+	t.Parallel()
+	a := acmeProfile(okHandler(`{}`))
+	a.CredentialNames = []string{"x-acme-key"}
+
+	s := MustSet(a)
+	got := s.All()
+	got[0].CredentialNames[0] = "tampered"
+
+	require.Equal(t, []string{"x-acme-key"}, s.CredentialNames(),
+		"mutating CredentialNames returned by All must not reach what CredentialNames derives from")
 }
 
 // --- (*Set).Faults ------------------------------------------------------------
@@ -529,6 +561,63 @@ func TestProfileHandlerRendersMethodNotAllowedThroughErrorBody(t *testing.T) {
 	require.Equal(t, "POST", w.Header().Get("Allow"))
 	require.Equal(t, `{"error":"acme refused"}`, w.Body.String())
 	require.Equal(t, CodeMethodNotAllowed, j.Snapshot()[0].Errors()[0].Code)
+}
+
+// TestProfileHandlerMergesItsOwnCredentialNamesIntoHandBuiltDeps proves
+// Profile.Handler seeds Deps.CredentialNames with the profile's OWN
+// CredentialNames even when the caller's Deps carries none at all — the
+// testkit.NewJournal/NewJobs documented idiom (a consumer builds Deps by
+// hand, over a Profile, with no CredentialNames field set because that
+// field predates the idiom's own doc examples). Before this fix, a profile
+// served this way masked nothing beyond internal/redact's own fixed
+// tables, no matter what CredentialNames it declared: a profile must never
+// be served under a handler that does not know its own vendor-declared
+// vocabulary, regardless of who built Deps.
+func TestProfileHandlerMergesItsOwnCredentialNamesIntoHandBuiltDeps(t *testing.T) {
+	t.Parallel()
+
+	const secret = "SECRETSHIBBOLETH77"
+
+	p := acmeProfile(okHandler(`{"ok":true}`))
+	p.CredentialNames = []string{"x-acme-key", "acme_token"}
+
+	j := journal.NewRing(8, 4096)
+	// Deliberately no CredentialNames on Deps: the hand-built idiom's shape.
+	h := p.Handler(Deps{Journal: j})
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/answer", strings.NewReader(`{"acme_token":"`+secret+`"}`))
+	r.Header.Set("X-Acme-Key", secret)
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	entry := j.Snapshot()[0]
+	require.NotContains(t, string(entry.Body), secret, "the body's acme_token must be masked")
+	require.Equal(t, "[REDACTED]", http.Header(entry.Headers).Get("X-Acme-Key"),
+		"the X-Acme-Key header must be masked")
+}
+
+// TestProfileHandlerCredentialNamesAreAdditiveNotReplacing proves the merge
+// in Profile.Handler is additive: Deps.CredentialNames the caller already
+// set (the Set-wide union, in real composition) survives alongside the
+// profile's own names rather than being overwritten by them.
+func TestProfileHandlerCredentialNamesAreAdditiveNotReplacing(t *testing.T) {
+	t.Parallel()
+
+	const otherSecret = "OTHERSHIBBOLETH99"
+	const ownSecret = "OWNSHIBBOLETH11"
+
+	p := acmeProfile(okHandler(`{"ok":true}`))
+	p.CredentialNames = []string{"acme_token"}
+
+	j := journal.NewRing(8, 4096)
+	h := p.Handler(Deps{Journal: j, CredentialNames: []string{"other_token"}})
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/answer",
+		strings.NewReader(`{"acme_token":"`+ownSecret+`","other_token":"`+otherSecret+`"}`))
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	entry := j.Snapshot()[0]
+	require.NotContains(t, string(entry.Body), ownSecret, "the profile's own vocabulary must still be masked")
+	require.NotContains(t, string(entry.Body), otherSecret, "the caller's own vocabulary must still be masked")
 }
 
 // --- house rule 3: a non-abort handler panic becomes a RefuseInternal 500 ----
@@ -938,6 +1027,33 @@ func TestExchangeRejectWithNoInstalledErrorBodyReturnsEmptyBody(t *testing.T) {
 	require.Empty(t, resp.Body)
 	require.False(t, resp.FaultEligible)
 	require.True(t, x.HasFinding(CodeRefusalEmptyBody))
+}
+
+// TestExchangeFindingsMaskProfileDeclaredCredentialNames is CLAUDE.md house
+// rule 4 applied to Exchange.Findings/journalFindings: a finding's Field is
+// frequently a client-chosen key (an unrecognised JSON property becomes a
+// finding addressed at that property's own name, exactly as
+// TestExchangeRejectRendersThroughInstalledErrorBody's own field param
+// shows), and its Message may quote that same key. Both must be masked
+// through x.Deps.CredentialNames on the SERVED path (Findings(), rendered
+// into a 4xx body before Handle's own journal.Redact ever runs), not only
+// in the stored journal entry.
+func TestExchangeFindingsMaskProfileDeclaredCredentialNames(t *testing.T) {
+	t.Parallel()
+
+	const secret = "SECRETSHIBBOLETH77"
+	x := &Exchange{
+		Provider: "acme",
+		Deps:     Deps{CredentialNames: []string{"acme_token"}},
+	}
+	x.Fail("acme.unknown_field", "acme_token="+secret, "unknown field %q", "acme_token="+secret)
+
+	findings := x.Findings()
+	require.Len(t, findings, 1)
+	require.NotContains(t, findings[0].Field, secret, "Field must be masked")
+	require.NotContains(t, findings[0].Message, secret, "Message must be masked")
+	require.Contains(t, findings[0].Field, redact.Mask)
+	require.Contains(t, findings[0].Message, redact.Mask)
 }
 
 // TestExchangeRejectSetsLabel proves Reject's Response carries a Label, the

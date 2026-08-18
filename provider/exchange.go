@@ -199,14 +199,20 @@ func (x *Exchange) Findings() []Finding {
 // journal entry's Findings field stays journal.Finding, since journal must
 // not import provider (journal.doc.go).
 //
-// Message is passed through redact.String here, at the one place both
-// Findings() and the journal entry's Findings field are built from, so
-// "redacted before it is stored, logged or served" (Finding's doc comment)
-// is true of the served path too: a handler that renders Findings() into a
-// 4xx body (exa's classify, tavily's errorFindings, perplexity's
-// validationErrorBody) does so before Handle's own record() ever runs
-// journal.Redact over the entry. redact.String is identity on ordinary
-// finding text, so this changes no existing wire body.
+// Message and Field are both passed through redact.String here, at the one
+// place both Findings() and the journal entry's Findings field are built
+// from, so "redacted before it is stored, logged or served" (Finding's doc
+// comment) is true of the served path too: a handler that renders
+// Findings() into a 4xx body (exa's classify, tavily's errorFindings,
+// perplexity's validationErrorBody) does so before Handle's own record()
+// ever runs journal.Redact over the entry. Field is a client-chosen key
+// name in three of the four reference profiles (an unrecognised JSON
+// property becomes a finding addressed at that property's own name), so it
+// is exactly as capable of quoting a credential as Message is. extra is
+// x.Deps.CredentialNames, so a profile-declared vocabulary reaches this
+// pass the same way it reaches every other credential-name test in this
+// package (house rule 4). redact.String is identity on ordinary finding
+// text and field names, so this changes no existing wire body.
 func (x *Exchange) journalFindings() []journal.Finding {
 	if len(x.findings) == 0 {
 		return nil
@@ -215,7 +221,8 @@ func (x *Exchange) journalFindings() []journal.Finding {
 	out := make([]journal.Finding, len(x.findings))
 	for i, f := range x.findings {
 		f.Severity = effectiveSeverity(policy, f)
-		f.Message = redact.String(f.Message)
+		f.Message = redact.String(f.Message, x.Deps.CredentialNames...)
+		f.Field = redact.String(f.Field, x.Deps.CredentialNames...)
 		out[i] = f
 	}
 	slices.SortStableFunc(out, func(a, b journal.Finding) int {

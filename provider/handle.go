@@ -176,8 +176,11 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 			// Redact BEFORE the logger sees it. Append redacts too, but Append takes
 			// Entry by value, so the local entry would still hold the raw
 			// Authorization header when logRequest ran. journal.Redact is idempotent
-			// precisely so it can be called at both points.
-			entry = journal.Redact(entry)
+			// precisely so it can be called at both points. d.CredentialNames widens
+			// the vocabulary by whatever the registered profiles declared (house
+			// rule 4); Append widens it the same way via the Ring's own
+			// Limits.CredentialNames, so both redaction points see one union.
+			entry = journal.Redact(entry, d.CredentialNames...)
 			d.Journal.Append(entry)
 			logRequest(d.Logger, entry)
 		}

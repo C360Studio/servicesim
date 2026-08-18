@@ -60,7 +60,7 @@ DOC_GLOBS="README.md CONTRIBUTING.md docs/*.md docs/adr/*.md"
 # curl). They are counted and reported as ignored rather than silently dropped,
 # so this list cannot quietly grow into a way of hiding a real miss.
 THIRD_PARTY_FLAGS="race count run bench cover rm it detach build no-cache
-env volume file list silent header data include location output"
+env volume file list silent header data include location output short"
 
 fail_count=0
 claim_count=0

@@ -1225,6 +1225,233 @@ is theirs (D12); Servicesim does not unblock it.
   names only `provider`, `scenario` and the standard library — no direct `internal/...` import, even with a real
   contract bundle and a conformance test wired in.
 
+- **Phase 10 unit 7 (2026-08-17): guards as libraries — `testkit.AssertNoLiveHosts`; `Profile.CredentialNames`
+  merged into redaction.** `testkit.AssertNoLiveHosts(tb, fsys, skip, hosts...)` scans every file under `fsys` —
+  Go source included, mirroring `scripts/lint-no-live-hosts.sh`'s own `SEARCH_PATHS` — for the framework's base
+  paid-host list (new `internal/paidhosts.Base`, api.openai.com among them) union `hosts`, skipping only `skip`
+  and honouring the same `servicesim:allow-live-host` line escape hatch the script does. The base list is one Go
+  source now: `internal/paidhosts/paidhosts_test.go`'s `TestBaseMatchesGuardScript` parses the script's own
+  `BASE_PATTERN='...'` line and fails if it and `paidhosts.Base` have drifted, since a shell script cannot import
+  a Go package and the two were always going to be two literals — this is what keeps them one *decided* list
+  rather than two maintained ones. The two in-tree guards share the library form where the properties they check
+  actually agree: `TestMaliciousContent_CredentialBaitNeverReachesTheJournal` (`scenarios/scenarios_test.go`)
+  already called `testkit.AssertNoCredentialLeak` before this unit, so nothing there needed to change.
+  `TestBuiltins_UseReservedHostsOnly` keeps its own whitelist logic (every host found must be a *reserved*
+  domain) — strictly stronger than the library's blacklist (no host may be a *known paid* one) for scenario data,
+  since it also catches a host that is neither reserved nor on any paid list, which `AssertNoLiveHosts` would
+  silently pass — and gained a `t.Run("library-guard", ...)` subtest calling `testkit.AssertNoLiveHosts` over the
+  same embedded corpus with the four reference profiles' own hosts folded in, so the library code path is
+  exercised in-tree too. **`AssertNoCredentialInJournal` decision: not added.** `testkit.AssertNoCredentialLeak`
+  already scans every retained field for a literal — headers (names and values), body, query, path,
+  `Outcome.Label`, `Outcome.FaultKey` and every finding message — which is exactly what the framework-seam
+  proposal's guards-as-libraries table describes for the new name; adding a second symbol for one existing
+  behaviour would violate rule 7. The table's row resolves to `testkit.AssertNoCredentialLeak`, not a new
+  `AssertNoCredentialInJournal`.
+  `Profile.CredentialNames` (already declared as a field since unit 2) is now merged into redaction as DATA, at
+  two independent points, with `internal/redact`'s own tables (`exactCredentialNames`,
+  `substringCredentialFragments`) untouched: `internal/redact`'s exported functions (`Headers`, `HeaderValue`,
+  `Query`, `JSON`, `JSONBytes`, `String`, `IsCredentialKey`, `IsCredentialHeader`) gained a variadic
+  `extra ...string` parameter, matched as a whole normalised name exactly like the fixed tables — never a
+  substring rule, so a profile cannot invent a looser match than the framework's own. `journal.Redact(e Entry,
+  extraCredentialNames ...string) Entry` threads it to every masking call; `journal.Limits` gained a
+  `CredentialNames []string` field a `Ring` bakes in at construction and reads in `Append`; `provider.Deps`
+  gained a `CredentialNames []string` field `Handle` passes to `journal.Redact` before logging; `(*provider.Set)
+  CredentialNames() []string` returns the registration-order union, the same shape as the existing `LiveHosts`
+  and `DerivedIDs`. `internal/server.New` and `testkit`'s `Start`/`Handler` both bake `set.CredentialNames()`
+  into the `Ring`'s `Limits` at construction and into `Deps.CredentialNames`, so a header or JSON property under
+  any registered profile's vendor-declared name is masked whether a reader looks at the per-request log line or
+  a later `/__admin/requests` (or `sim.Journal()`) read. `internal/server` has a *second* production `Deps`
+  construction site — `refusalHandler` (`listeners.go`), built once per listener at startup for the
+  unknown-scenario refusal path, separate from the per-scenario `Deps` `Server.add` builds — found by grepping
+  every `provider.Deps{` construction rather than trusting the two sites the spec named; it gained the same
+  `CredentialNames: s.cfg.Set.CredentialNames()` line, because a request that never resolves a scenario still
+  carries whatever headers and body a real client sent
+  (`internal/server/credentialnames_test.go`). Proven at three layers: `internal/redact`,
+  `internal/journal` (`TestRedact_MasksProfileDeclaredCredentialNames`,
+  `TestRing_AppendMasksLimitsCredentialNames` — each with a baseline subtest proving nothing masks without the
+  extra name), and end-to-end through `testkit.Start` (`testkit/credentialnames_test.go`), all using a name and a
+  value shaped like neither an in-tree vendor's vocabulary nor `internal/redact`'s vendor-key pattern, so masking
+  is attributable only to the declared vocabulary. `go doc -short ./provider` shows no *top-level* diff (Go's
+  package-level short listing does not enumerate struct fields or methods); the real surface added is
+  `(*provider.Set).CredentialNames()` and the `provider.Deps.CredentialNames` field, both doc-commented at their
+  declarations. `go doc -short ./testkit` gains exactly one line: `AssertNoLiveHosts`. The out-of-tree module
+  (`scratchpad/u2-outoftree/`) gained a module-root `guards_test.go` calling `testkit.AssertNoLiveHosts(t,
+  os.DirFS("."), []string{"acme/contracts"}, set.LiveHosts()...)` and `acme/acme_credentialnames_test.go`:
+  `acme.Profile()` now declares `CredentialNames: []string{"x-acme-key", "acme_token"}`, and a request through
+  `testkit.Start` with that header and that body property comes back masked in the per-request entry, in
+  `sim.Journal()`, and passes `testkit.AssertNoCredentialLeak` — with no redaction code anywhere in the `acme`
+  package.
+
+- **Phase 10 unit 8 (2026-08-17): `Profile.Kind` threaded — one handler shape, many listeners.** Two profiles of
+  one `Kind` on two ports now draw on INDEPENDENT fault counters and fault plans, with no authoring change: the
+  cursor key and the fault key are namespaced by the LISTENER's own `Name`, never by the shared `Kind`, whenever
+  `Kind != Name`, and left byte-for-byte untouched — proven against `main`'s own binary, not merely asserted —
+  when `Kind == Name` (every profile registered before `Kind` existed, and all four reference profiles today).
+  `namespacedFaultKey(name, kind, key)` (`provider/profile.go`) is the one rule both composition points compute
+  identically: `(*Set).Routes`, which is what `newSetFaultEngine` registers a plan and counter under, and the new
+  `namespacedRoutes(p)`, which `Profile.Handler` now builds its `MuxSpec.Routes` from instead of `p.Routes`
+  verbatim. That second call site is the load-bearing discovery of this unit: `resolveLane` (`lane.go`) runs
+  BEFORE the handler — and therefore before `installProfile`'s wrapper, which is what sets `Exchange.kind` — ever
+  runs, so a fix that read `x.kind` at lane-resolution time (the first design tried) silently namespaced nothing,
+  passing every test except the one instancing test that actually checked the SECOND request's fault key. The
+  fix that shipped needs no `Handle`/`NewMux` signature change and no `Exchange.kind` involvement at all: by the
+  time a request reaches `resolveLane`, `x.Route.FaultKey` (from `Handle`'s own `route Route` parameter) already
+  IS the namespaced key, because `Profile.Handler` built the mux from `namespacedRoutes(p)` rather than `p.Routes`.
+  `turnLaneKey` and `Exchange.cursorKey()`'s fallback are therefore unchanged code (`x.Route.FaultKey`), now
+  reading an already-correct value — the smallest path the spec asked for, once the actual timing constraint was
+  found. `Exchange.EntryFor`/`Entry()` already resolved an instanced listener's own block by `Name` (unit 2); this
+  unit did not need to touch them, and a pre-existing test
+  (`TestExchangeEntryForOnAnInstancedListenerResolvesToItsOwnBlock`) already pinned it.
+  `internal/server.unscriptedProfileFindings` had a real bug this unit's own instancing test caught: it decided
+  "scripted" by scanning the WHOLE scenario for any entry declaring a profile's Kind, so a scenario scripting
+  only the primary's block ("acme") read the unscripted FALLBACK ("acme_fallback", Kind "acme") as scripted too,
+  merely because they share a Kind. Rewritten as `profileHasAScriptedBlock(sc, p)`: a profile's PRIMARY entry is
+  checked by its OWN Name (exactly how `Exchange.Entry()` itself resolves it), and every SECONDARY entry-kind key
+  `p.Validators` claims (Perplexity's Agent kind is the shipped example) is checked by that literal kind string as
+  a NAME — safe because `NewSet` refuses instancing a multi-entry profile outright, so a secondary entry's
+  `Route.Entry` is always a static string, never subject to renaming. Behaviour-preserving for every existing
+  test (Name == Kind everywhere before this unit, so by-Name and by-kind agreed by coincidence); the instancing
+  case is the one it was actually wrong about.
+  `Validator.ProjectionKeys() []string` is a new REQUIRED method on the `Validator` interface (not a RouteLister-
+  style optional side interface: every validator decodes some struct and can always name its keys, even if nil) —
+  seven in-tree implementations across the four reference packages (exa's own + `exa_agent_runs`, tavily's own +
+  `tavily_research`, perplexity's Sonar + Agent, mcp's own), each returning the exact literal key list
+  `scenarios/scenarios_test.go` used to hand-mirror, plus `provider.noopValidator` (nil) and the two test-only
+  stand-ins (`stubValidator`, `recordingValidator`). `scenarios_test.go`'s `documentedProjectionKeys` is now
+  `derivedProjectionKeys(profiles.Reference())`, reading each validator's own `ProjectionKeys()` instead of a
+  parallel hand-kept map — `profiles/no_privilege_test.go`'s no-privilege rule does not reach `scenarios` (only
+  `provider`, `internal`, `testkit`, `scenario`, `contracts`) and exempts every `_test.go` file besides, so this
+  import is not a privilege gap. `go test` on the derived map still passes byte-for-byte against the same
+  built-ins, proving the seven literals were transcribed correctly.
+  Config/server/testkit needed NO changes to thread `Name`/`Kind` through registration, ports, flags or the
+  scenario router: all of it was already derived from `Set` and keyed on `Name` (unit 3), so two profiles differing
+  only in `Name`/`Port`/`Kind` were already two ordinary listeners as far as `internal/config` and
+  `internal/server`'s routing are concerned — confirmed, not assumed, by the new instancing tests below serving
+  real HTTP through them.
+  **Tests**: in-tree, `provider/kind_test.go` (`Set.Routes()` namespacing, `namespacedFaultKey`'s three no-op
+  guards, the fault engine's own counter isolation via `newSetFaultEngine` directly, and one full HTTP-level test
+  building two hand-registered listeners over one `Set`/journal/fault engine); `testkit/kind_test.go`
+  (`testkit.Start` with `Profile{Name: "acme", Kind: "acme"}` + `Profile{Name: "acme_fallback", Kind: "acme"}`
+  from one profile literal, a scenario scripting `acme` and `acme_fallback: {kind: acme}` with distinct turns,
+  proving own-block resolution and budget independence over `sim.Client()`); `internal/server/kind_test.go`
+  (`TestUnscriptedInstanceIsWarnedByItsOwnName` — the regression test for the `unscriptedProfileFindings` bug
+  above — and `TestValidateScenarioAcceptsAnInstanceBlockAddressedByItsOwnName`); root `kind_test.go`
+  (`--print-ports` lists both instances, each under its own `Name`). Out of tree,
+  `scratchpad/u78-consumer/` (module `example.com/acmesim`, `replace` to this checkout): package `acme` exports
+  one `Profile()`; `main.go` registers it twice (`Name: "acme"` and `Name: "acme_fallback", Port: 8091, Kind:
+  "acme"`) through `servicesim.Main`; `go list -f '{{join .Imports "\n"}}' ./acme` names only `provider`,
+  `scenario` and `net/http`; run against a scenario scripting only `acme` — the primary's first call draws the
+  scripted 429, the fallback's OWN first call ALSO draws 429 (its own fresh budget, not the plan's second,
+  unfaulted attempt a shared counter would have handed it), `/__admin/scenario` shows
+  `scenario.profile.unscripted` at `"path":"providers.acme_fallback"` only, and `--print-ports` lists both; run
+  again against a scenario scripting both blocks (`acme_fallback: {kind: acme}`) — zero findings, each listener's
+  second call renders its own block's `turn`, and `/__admin/requests` shows `fault_key: "acme:answer"` for the
+  primary and `fault_key: "acme_fallback:acme:answer"` for the instance.
+  **Four-reference-profiles-unchanged proof**: `main`'s own binary (`13f70ca`, built in a worktree) and this
+  tree's binary, both served `builtin:happy`, one request to each of the four with `--strict-auth=false`: status
+  codes (200, 200, 200, 400 for MCP's `initialize` body on this particular request) and `outcome.fault_key`
+  (`exa:search`, `tavily:search`, `perplexity:completions`, `mcp:mcp`) are identical byte-for-byte between the two
+  binaries.
+
+- **Phase 10 units 7+8, review-and-fix round (post-implementation, same units):** an adversarial house-rule-4
+  review (a hand-built out-of-tree profile declaring `CredentialNames`, instanced twice) and a
+  keys/instancing review each ran against the merged tree; confirmed findings were fixed in place with tests
+  added per fix, since every one was inside these units' own surface. No fixture or golden file changed (a
+  stat-only `git diff` against fixture/golden paths stayed renames-only), so wire bytes and journal keys for
+  the four reference profiles are unchanged by construction:
+  - **Blocker, house rule 4:** a `turn_key` extractor naming a profile-declared credential name was NOT
+    fingerprinted — only the framework's own fixed vocabulary was. `fingerprintHeaderLaneValue`,
+    `pathHasCredentialSegment` and `laneValueLooksLikeCredential` (`provider/lane.go`) called
+    `redact.IsCredentialHeader`/`IsCredentialKey`/`String` with no extra names at all, so
+    `turn_key: ["header:x-acme-key"]` on a profile declaring `CredentialNames: ["x-acme-key"]` wrote the raw
+    secret into `FaultDecision.Key`, then `journal.Entry.Outcome.FaultKey` — retained in the ring, served by
+    `GET /__admin/requests`, logged as `fault_key`, and interpolated into the "fault attempt N on key ..."
+    finding message. Fixed by threading `x.Deps.CredentialNames` through all three functions (tests:
+    `provider/lane_test.go`'s `TestTurnKeyProfileDeclaredCredentialHeaderIsFingerprinted`/
+    `...BodyJSONIsFingerprinted`).
+  - **House rule 4, free-text pass:** the SAME extra vocabulary reached the top-level entry point of every
+    masking function (`String`, `HeaderValue`, `Query`, `JSON`) but not the recursive, unnamed free-text pass
+    those functions fall through to for a value under a name that is not itself credential-shaped —
+    `redactValue`'s JSON string case, `headerValue`'s non-credential branch, and `encodeQuery`'s value/key
+    branches all called `String(x)` with no extras. A profile-declared name embedded as `"acme_token=<value>"`
+    inside an unrelated JSON string, header value or query value therefore survived untouched while the
+    identical shape under the framework's own vocabulary (`token=<value>`) was masked. Fixed with a new
+    `stringWith(s, extra map[string]bool)` internal form of `String` that every recursive call site now uses
+    (tests: `internal/redact/redact_test.go`'s new `TestExtraCredentialNames_*` section, including spelling
+    variants — `X_Acme_Key`, `xAcmeKey`, `acme.token` — that a case-fold-only implementation would still pass).
+  - **House rule 4, findings:** `Exchange.journalFindings` (`provider/exchange.go`) masked `Message` with no
+    extras and never masked `Field` at all — both reachable in three of the four reference profiles, where an
+    unrecognised JSON property becomes a finding addressed at that property's own (client-chosen) name. This was
+    wire-visible (a served 4xx body), not only journal-visible: `Findings()` and the journal entry's `Findings`
+    are built from the same call. Fixed by threading `x.Deps.CredentialNames` and masking `Field` alongside
+    `Message`; `internal/journal.Redact` gained the matching `Findings[].Field -> redact.String` pass for
+    defense in depth at the storage boundary, and `testkit.AssertNoCredentialLeak`'s field scan now includes
+    `Finding.Field` (tests: `provider/profile_test.go`'s `TestExchangeFindingsMaskProfileDeclaredCredentialNames`).
+  - **House rule 4, hand-built `Deps`:** `Profile.Handler` had `p.CredentialNames` in hand but never merged it
+    into `d.CredentialNames`, so the documented hand-built idiom `testkit/server.go`'s own doc comments show
+    (`p.Handler(provider.Deps{Scenario: s, Faults: set.Faults(s), Journal: testkit.NewJournal()})`) served a
+    profile whose own vocabulary was dropped entirely — header, body property and query parameter all retained
+    raw. Fixed: `Profile.Handler` now merges `p.CredentialNames` into whatever `Deps.CredentialNames` the caller
+    supplied (additive, not replacing — harmless when composition through a `Set` already supplied the same
+    names via the union) (tests: `provider/profile_test.go`'s
+    `TestProfileHandlerMergesItsOwnCredentialNamesIntoHandBuiltDeps`/`...AreAdditiveNotReplacing`).
+  - **Instancing, fault plans:** an instanced listener's OWN scenario block `fault:` was silently ignored. A
+    route's `Fault` closure is authored once, in the Kind's own package, against the Kind's own primary entry
+    name (`func(s) *scenario.Fault { return provider.TurnFault(s, "acme") }`) and copied byte-for-byte to every
+    instance's registration, so `acme_fallback: {kind: acme, fault: {...}}` was never read — only the fault
+    COUNTER was independent per instance, not the PLAN, contradicting `Profile.Kind`'s own doc comment. The
+    canonical failover shape instancing exists for (the primary fails per its own script, the fallback succeeds,
+    or fails differently, per its own) could not be authored. Fixed with `instanceFault` (`provider/profile.go`),
+    applied by `namespacedRoutes` only to an instanced route's `Fault`: it resolves the plan through the
+    instance's OWN scenario block first (`TurnFault(sc, string(p.Name))`), falling back to the Kind's shared
+    closure only when the instance declares no fault of its own — so a scenario that scripts only the Kind's
+    primary block keeps working unchanged for an instance that scripts nothing (tests: `provider/kind_test.go`'s
+    `TestInstanceFault*`, `TestKindInstancingHonoursTheInstanceOwnFaultBlockOverHTTP`).
+  - **Instancing, qualified route predicates:** the documented fully-qualified `when.route` spelling
+    (`<kind>:<name>`, `docs/scenario-schema.md`'s "matched exactly") never matched on an instanced listener,
+    because the request's route key there carries a third, leading qualifier (the listener's own `Name`:
+    `"acme_fallback:acme:answer"`) that `scenario.RouteMatches` refused to reduce for any authored value
+    containing `:`. Fixed: a qualified predicate is now also compared against the key with a leading
+    `<listener-Name>:` qualifier stripped, so the one documented spelling matches an instanced listener exactly
+    as it matches every other one — still never reduced to its own bare suffix, still refused outright when it
+    does not match (tests: `scenario/model_test.go`'s extended `TestRouteMatches` table,
+    `provider/kind_test.go`'s `TestQualifiedRoutePredicateSelectsATurnOnAnInstancedListener`).
+  - **`Validator.ProjectionKeys()` drift:** `profiles/perplexity/handler.go`'s `agentValidator.ProjectionKeys()`
+    omitted `created_at`, which the decode struct accepts and `docs/scenario-schema.md`'s `perplexity_agent`
+    table documents — the method's own contract ("the top-level keys this validator's own decode struct
+    accepts") was not true of this one. Fixed by adding it, plus a reflection-based regression test
+    (`profiles/perplexity/agent_test.go`'s `TestAgentValidatorProjectionKeysMatchesTheDecodeStruct`, asserting
+    set-equality against `perplexityAgent`'s own yaml tags) so this specific literal cannot drift silently again;
+    the other six validators' literals were re-verified against their structs by hand but do not yet have the
+    same reflection guard — **recorded as a follow-up**, not fixed here, since generalising the pattern touches
+    seven packages for a drift class only one of them currently has.
+  - Two stale doc comments in `provider/profile.go` (`Profile.Kind`'s own doc comment and `namespacedFaultKey`'s)
+    named `Exchange.routeFaultKey (lane.go)` as the request-time counterpart of `(*Set).Routes` — that design was
+    tried and reverted during unit 8's own implementation (see unit 8's entry above) in favour of
+    `namespacedRoutes(p)` inside `Profile.Handler`, and the comments were never updated to say so. Corrected to
+    name the real mechanism.
+  - `testkit.AssertNoLiveHosts`'s documented root-of-module idiom (`skip: []string{"myprofile/contracts"}`) does
+    not run clean over a real checkout unmodified: `.git` (a commit message or reflog entry naming a paid host is
+    not scenario, fixture or Go-source data) is walked and can fail a consumer's suite on history the guard was
+    never meant to scan. Fixed: `.git` is now always skipped, whether or not the caller names it — the one path a
+    caller cannot meaningfully choose to exempt itself (test:
+    `testkit/guards_test.go`'s `TestAssertNoLiveHosts_GitDirIsAlwaysSkipped`). The doc comment also now says a
+    caller whose own `docs/` cites real vendor URLs (the same legitimate citation a contracts provenance record
+    makes) should list it in `skip` too, mirroring `lint-no-live-hosts.sh`'s own exemption.
+  - **Confirmed, not fixed — recorded as follow-ups:**
+    - `testkit.AssertNoCredentialLeak` takes `*Sim`, so it cannot be run against the hand-built-`Deps` path
+      (a `Journal` built via `testkit.NewJournal` with no `Sim` around it) — exactly the path the hand-built-Deps
+      fix above closes a masking gap in. Widening it to accept a `Journal` (or an interface exposing one) instead
+      of `*Sim` is an exported-signature question for the next unit that touches `testkit/assertions.go`, not a
+      minimal fix.
+    - An instance block written with no `kind:` (`acme_fallback: {respond: ...}`) IS served at runtime (resolved
+      by `Name`, unaffected by this), but `ValidateScenario` still raises `scenario.provider.unimplemented`
+      naming the wrong reason (`handlers` there is keyed by `Kind`, and `ValidateScenario` has no access to the
+      registered listener `Name`s a `Set` knows to tell the two apart). Correcting the message precisely needs
+      `ValidateScenario`'s signature to carry more than `map[string]Validator`, which is an exported-surface
+      change beyond a minimal fix for what is, today, a misleading load-time warning rather than a functional
+      defect.
+
 ### Phase 9 — The two doctrine-contradicting features
 
 > Phase 9 — The two doctrine-contradicting features: enforced rate limiting and the callback injector

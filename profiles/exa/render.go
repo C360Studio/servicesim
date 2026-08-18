@@ -466,6 +466,18 @@ type validator struct{}
 // checked against the routes this package actually serves.
 func (validator) Routes() []provider.Route { return Routes() }
 
+// ProjectionKeys returns projectionBody's own top-level JSON keys — the
+// vocabulary a turn's `respond:` body under the "exa" entry kind may use.
+// scenarios/scenarios_test.go's documentedProjectionKeys derives its "exa"
+// entry from this list instead of hand-mirroring it a second time (Phase 10
+// unit 8).
+func (validator) ProjectionKeys() []string {
+	return []string{
+		"request_id", "results", "cost_dollars", "output", "answer", "contents",
+		"find_similar", "stream", "resolved_search_type", "context", "extra_fields",
+	}
+}
+
 // ValidateProjections decodes every turn's Exa projection and reports what it
 // finds, addressed by the turn's YAML path. internal/server calls it through
 // provider.ValidateScenario before readiness reports true, so a fixture with a

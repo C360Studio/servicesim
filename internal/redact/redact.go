@@ -114,13 +114,21 @@ func normalizeName(name string) string {
 }
 
 // isCredentialName is the single matcher behind IsCredentialKey and
-// IsCredentialHeader. There is deliberately no second, weaker rule.
-func isCredentialName(name string) bool {
+// IsCredentialHeader. There is deliberately no second, weaker rule for the
+// framework's own vocabulary.
+//
+// extra is a profile-declared vocabulary (provider.Profile.CredentialNames,
+// merged at composition — house rule 4) matched on exactly the same terms as
+// exactCredentialNames: a whole normalised name, never a substring. A nil
+// extra is the framework's own vocabulary unchanged, which is what every
+// caller inside this package that has no profile-declared names to add
+// passes via newExtraSet(nil).
+func isCredentialName(name string, extra map[string]bool) bool {
 	n := normalizeName(name)
 	if n == "" {
 		return false
 	}
-	if exactCredentialNames[n] {
+	if exactCredentialNames[n] || extra[n] {
 		return true
 	}
 	for _, fragment := range substringCredentialFragments {
@@ -131,9 +139,29 @@ func isCredentialName(name string) bool {
 	return false
 }
 
-// IsCredentialKey reports whether a JSON property name looks like a credential.
-func IsCredentialKey(name string) bool {
-	return isCredentialName(name)
+// newExtraSet normalises a caller-supplied credential-name list into the
+// lookup isCredentialName uses, built once per call so a recursive walk
+// (redactValue, maskPairs) normalises the caller's list once rather than on
+// every property it visits. A nil result for an empty list keeps the
+// zero-extra path (every call site with nothing to add) allocation-free.
+func newExtraSet(extra []string) map[string]bool {
+	if len(extra) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(extra))
+	for _, name := range extra {
+		if n := normalizeName(name); n != "" {
+			out[n] = true
+		}
+	}
+	return out
+}
+
+// IsCredentialKey reports whether a JSON property name looks like a
+// credential. extra is an additional, profile-declared vocabulary — see
+// isCredentialName.
+func IsCredentialKey(name string, extra ...string) bool {
+	return isCredentialName(name, newExtraSet(extra))
 }
 
 // IsCredentialHeader reports whether a header name carries a credential. It runs
@@ -141,7 +169,8 @@ func IsCredentialKey(name string) bool {
 // vendor-prefixed header is caught: X-Exa-Api-Key, X-Tavily-Api-Key, Api_Key and
 // X-Api-Key-2 all normalise into the substring tier. Applying a weaker rule to
 // headers than to JSON properties would leak exactly the adapter mistake the
-// journal exists to surface.
+// journal exists to surface. extra is an additional, profile-declared
+// vocabulary — see isCredentialName.
 //
 // It also judges the plain name a wrapper header mirrors, via
 // stripMirrorPrefix, so a header that carries a credential UNDER another
@@ -150,8 +179,15 @@ func IsCredentialKey(name string) bool {
 // header family that wraps rather than states its content's name
 // directly (contracts/mcp/README.md, "Request-metadata headers" and
 // "Legacy traffic at a modern-only server").
-func IsCredentialHeader(name string) bool {
-	return isCredentialName(name) || isCredentialName(stripMirrorPrefix(name))
+func IsCredentialHeader(name string, extra ...string) bool {
+	set := newExtraSet(extra)
+	return isCredentialHeaderName(name, set)
+}
+
+// isCredentialHeaderName is IsCredentialHeader's recursion-friendly form,
+// taking an already-built extra set instead of normalising one per call.
+func isCredentialHeaderName(name string, extra map[string]bool) bool {
+	return isCredentialName(name, extra) || isCredentialName(stripMirrorPrefix(name), extra)
 }
 
 // stripMirrorPrefix strips the wrapper prefix off a header name that
@@ -180,18 +216,20 @@ func stripMirrorPrefix(name string) string {
 // Authorization the scheme is preserved — "Bearer [REDACTED]" — because
 // authentication placement is exactly what an adapter contract test asserts,
 // and masking the scheme would destroy the evidence while protecting nothing.
+// extra is an additional, profile-declared vocabulary — see isCredentialName.
 //
 // A nil header stays nil so a caller can store the result unchanged. The copy is
 // deep: neither the map nor any value slice is shared with h.
-func Headers(h http.Header) http.Header {
+func Headers(h http.Header, extra ...string) http.Header {
 	if h == nil {
 		return nil
 	}
+	set := newExtraSet(extra)
 	out := make(http.Header, len(h))
 	for name, values := range h {
 		masked := make([]string, len(values))
 		for i, value := range values {
-			masked[i] = HeaderValue(name, value)
+			masked[i] = headerValue(name, value, set)
 		}
 		out[name] = masked
 	}
@@ -201,12 +239,19 @@ func Headers(h http.Header) http.Header {
 // HeaderValue masks a single header value according to its name. A value under a
 // name that is not credential-bearing still passes through String, because a
 // credential quoted in an unrelated header is still a credential in the journal.
-func HeaderValue(name, value string) string {
+// extra is an additional, profile-declared vocabulary — see isCredentialName.
+func HeaderValue(name, value string, extra ...string) string {
+	return headerValue(name, value, newExtraSet(extra))
+}
+
+// headerValue is HeaderValue's recursion-friendly form, taking an
+// already-built extra set instead of normalising one per header value.
+func headerValue(name, value string, extra map[string]bool) string {
 	if value == "" {
 		return ""
 	}
-	if !IsCredentialHeader(name) {
-		return String(value)
+	if !isCredentialHeaderName(name, extra) {
+		return stringWith(value, extra)
 	}
 	if isSchemeHeader(name) {
 		if scheme, rest, found := strings.Cut(value, " "); found && isAuthScheme(scheme) && strings.TrimSpace(rest) != "" {
@@ -243,21 +288,23 @@ func isAuthScheme(token string) bool {
 // Encode percent-escapes the mask's brackets; they are restored afterwards so
 // the stored query reads as [REDACTED] rather than %5BREDACTED%5D. The result
 // still parses back to the same values, so the substitution costs nothing.
-func Query(raw string) string {
+// extra is an additional, profile-declared vocabulary — see isCredentialName.
+func Query(raw string, extra ...string) string {
 	if raw == "" {
 		return ""
 	}
+	set := newExtraSet(extra)
 	if values, err := url.ParseQuery(raw); err == nil {
-		return encodeQuery(values)
+		return encodeQuery(values, set)
 	}
 	// The fallback is re-parsed rather than returned directly, because masking
 	// can turn an unparseable query into a parseable one — a bad percent escape
 	// often sits inside the credential itself. Without this second attempt the
 	// first pass would produce text the second pass canonicalised differently,
 	// and Query would not be idempotent.
-	masked := String(raw)
+	masked := String(raw, extra...)
 	if values, err := url.ParseQuery(masked); err == nil {
-		return encodeQuery(values)
+		return encodeQuery(values, set)
 	}
 	return masked
 }
@@ -265,10 +312,10 @@ func Query(raw string) string {
 // encodeQuery masks parsed parameters and re-encodes them. Names are visited in
 // sorted order so that two names masking to the same string merge the same way
 // on every run; a parameter name can itself be a credential.
-func encodeQuery(values url.Values) string {
+func encodeQuery(values url.Values, extra map[string]bool) string {
 	out := make(url.Values, len(values))
 	for _, key := range slices.Sorted(maps.Keys(values)) {
-		credential := IsCredentialKey(key)
+		credential := isCredentialName(key, extra)
 		masked := make([]string, len(values[key]))
 		for i, v := range values[key] {
 			switch {
@@ -278,11 +325,11 @@ func encodeQuery(values url.Values) string {
 			case credential:
 				v = Mask
 			default:
-				v = String(v)
+				v = stringWith(v, extra)
 			}
 			masked[i] = v
 		}
-		name := String(key)
+		name := stringWith(key, extra)
 		out[name] = append(out[name], masked...)
 	}
 	return strings.ReplaceAll(out.Encode(), url.QueryEscape(Mask), Mask)
@@ -295,14 +342,17 @@ func encodeQuery(values url.Values) string {
 // Masking under a credential-named property applies to the whole subtree: a
 // number, an array of strings and a nested object under "credentials" are all
 // credentials. Strings elsewhere pass through String, which catches a credential
-// quoted inside a free-text field such as a search query.
-func JSON(v any) any {
-	return redactValue(v, false)
+// quoted inside a free-text field such as a search query. extra is an
+// additional, profile-declared vocabulary — see isCredentialName.
+func JSON(v any, extra ...string) any {
+	return redactValue(v, false, newExtraSet(extra))
 }
 
 // redactValue is JSON's recursion. masked is true once an enclosing property
-// name was credential-bearing.
-func redactValue(v any, masked bool) any {
+// name was credential-bearing; extra is the already-built profile-declared
+// vocabulary, built once by JSON rather than renormalised at every property
+// this recursion visits.
+func redactValue(v any, masked bool, extra map[string]bool) any {
 	switch t := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(t))
@@ -312,20 +362,20 @@ func redactValue(v any, masked bool) any {
 		// Iterating the map directly would let map order decide which value
 		// survived, which is exactly the nondeterminism this repository forbids.
 		for _, key := range slices.Sorted(maps.Keys(t)) {
-			out[String(key)] = redactValue(t[key], masked || IsCredentialKey(key))
+			out[String(key)] = redactValue(t[key], masked || isCredentialName(key, extra), extra)
 		}
 		return out
 	case []any:
 		out := make([]any, len(t))
 		for i, value := range t {
-			out[i] = redactValue(value, masked)
+			out[i] = redactValue(value, masked, extra)
 		}
 		return out
 	case string:
 		if masked {
 			return Mask
 		}
-		return String(t)
+		return stringWith(t, extra)
 	case nil:
 		// A null under a credential name is the absence of a credential.
 		return nil
@@ -347,13 +397,15 @@ func redactValue(v any, masked bool) any {
 //
 // Numbers are carried as json.Number so re-encoding does not reformat them, and
 // object keys are re-encoded in sorted order, so the output is byte-stable for a
-// given input.
-func JSONBytes(raw []byte) []byte {
+// given input. extra is an additional, profile-declared vocabulary — see
+// isCredentialName.
+func JSONBytes(raw []byte, extra ...string) []byte {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return raw
 	}
+	set := newExtraSet(extra)
 
-	if encoded, ok := redactJSONDocument(raw); ok {
+	if encoded, ok := redactJSONDocument(raw, set); ok {
 		return encoded
 	}
 
@@ -362,8 +414,8 @@ func JSONBytes(raw []byte) []byte {
 	// credential is enough. Without this second attempt the first pass would
 	// produce bytes the second pass redacted structurally and differently, and
 	// JSONBytes would not be idempotent.
-	masked := []byte(String(string(raw)))
-	if encoded, ok := redactJSONDocument(masked); ok {
+	masked := []byte(String(string(raw), extra...))
+	if encoded, ok := redactJSONDocument(masked, set); ok {
 		return encoded
 	}
 	return masked
@@ -371,7 +423,7 @@ func JSONBytes(raw []byte) []byte {
 
 // redactJSONDocument redacts raw structurally, reporting false when raw is not
 // exactly one JSON document.
-func redactJSONDocument(raw []byte) ([]byte, bool) {
+func redactJSONDocument(raw []byte, extra map[string]bool) ([]byte, bool) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 
@@ -387,7 +439,7 @@ func redactJSONDocument(raw []byte) ([]byte, bool) {
 		return nil, false
 	}
 
-	encoded, err := encodeJSON(JSON(decoded))
+	encoded, err := encodeJSON(redactValue(decoded, false, extra))
 	if err != nil {
 		return nil, false
 	}
@@ -420,14 +472,28 @@ func encodeJSON(v any) ([]byte, error) {
 // Free text is prose as often as it is a quoted request, so what follows a scheme
 // name is masked only when it is shaped like a credential — see
 // looksLikeCredential. Nothing else is conditional: a value under a credential
-// name and a vendor-prefixed key are masked wherever they appear.
-func String(s string) string {
+// name and a vendor-prefixed key are masked wherever they appear. extra is an
+// additional, profile-declared vocabulary — see isCredentialName.
+func String(s string, extra ...string) string {
+	return stringWith(s, newExtraSet(extra))
+}
+
+// stringWith is String's recursion-friendly form, taking an already-built
+// extra set instead of normalising one per call — the same pattern
+// headerValue, redactValue and encodeQuery use for their own extra
+// parameter. Every internal caller that recurses into free-text masking
+// (a non-credential header value, a JSON string, a query value or key) goes
+// through this form rather than String itself, which is what lets a
+// profile-declared name in extra reach "name=value" pairs nested anywhere a
+// value can appear, not only the places that already had a []string to
+// pass — see the isCredentialName doc comment.
+func stringWith(s string, extra map[string]bool) string {
 	if s == "" {
 		return s
 	}
 	s = maskUserinfo(s)
 	s = maskSchemes(s)
-	s = maskPairs(s)
+	s = maskPairs(s, extra)
 	return maskVendorKeys(s)
 }
 
@@ -522,8 +588,9 @@ func looksLikeCredential(v string) bool {
 
 // maskPairs masks the value of every credential-named name=value or name: value
 // pair, rebuilding the string around the value spans so names, separators and
-// surrounding punctuation survive untouched.
-func maskPairs(s string) string {
+// surrounding punctuation survive untouched. extra is the already-built
+// profile-declared vocabulary — see isCredentialName.
+func maskPairs(s string, extra map[string]bool) string {
 	matches := pairPattern.FindAllStringSubmatchIndex(s, -1)
 	if matches == nil {
 		return s
@@ -536,7 +603,7 @@ func maskPairs(s string) string {
 		if valueStart < 0 || valueEnd <= valueStart {
 			continue
 		}
-		if !IsCredentialKey(s[nameStart:nameEnd]) {
+		if !isCredentialName(s[nameStart:nameEnd], extra) {
 			continue
 		}
 		valueEnd = extendValue(s, valueEnd)

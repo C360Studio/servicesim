@@ -32,7 +32,12 @@ const (
 type Finding struct {
 	Severity Severity `json:"severity"`
 	Code     string   `json:"code"`
-	Field    string   `json:"field,omitempty"`
+
+	// Field is a client-chosen key or path in several reference profiles (an
+	// unrecognised JSON property becomes a finding addressed at that
+	// property's own name), so — like Message — it is passed through
+	// redact.String by Redact before it is stored, logged or served.
+	Field string `json:"field,omitempty"`
 
 	// Message is free text that may quote part of the request, so it is passed
 	// through redact.String by Redact before it is stored, logged or served. A
@@ -357,6 +362,7 @@ func ResetIn(j Journal, namespace string) bool {
 //	Body                -> redact.JSONBytes (which redacts even a non-JSON body)
 //	BodyParseError      -> redact.String
 //	Findings[].Message  -> redact.String
+//	Findings[].Field    -> redact.String
 //	Path                -> redact.String
 //	Outcome.FaultKey    -> redact.String
 //
@@ -389,34 +395,45 @@ func ResetIn(j Journal, namespace string) bool {
 // that quotes a misplaced credential lands in the journal, the admin API, the
 // log and — for error-severity findings — the HTTP error body.
 //
+// extraCredentialNames widens the credential-name vocabulary Headers/Query/
+// JSONBytes/String mask by, beyond internal/redact's own fixed tables —
+// provider.Deps.CredentialNames at the Handle call site, and
+// [Limits.CredentialNames] baked into a Ring at the Append call site (see
+// [Ring.Append]), both sourced from the union of every registered profile's
+// CredentialNames (house rule 4: the vocabulary is profile-declared data,
+// never a call into internal/redact, whose own tables stay untouched). Empty
+// is the framework's fixed vocabulary alone, unchanged from before this
+// parameter existed.
+//
 // The result shares no mutable state with e: the header map, the body slice and
 // the findings slice are all rebuilt, so redacting an entry whose Headers is
 // the live r.Header cannot mutate the request.
-func Redact(e Entry) Entry {
-	e.Headers = redact.Headers(http.Header(e.Headers))
+func Redact(e Entry, extraCredentialNames ...string) Entry {
+	e.Headers = redact.Headers(http.Header(e.Headers), extraCredentialNames...)
 
 	if e.Path != "" {
-		e.Path = redact.String(e.Path)
+		e.Path = redact.String(e.Path, extraCredentialNames...)
 	}
 	if e.Query != "" {
-		e.Query = redact.Query(e.Query)
+		e.Query = redact.Query(e.Query, extraCredentialNames...)
 	}
 	if len(e.Body) > 0 {
-		e.Body = redact.JSONBytes(e.Body)
+		e.Body = redact.JSONBytes(e.Body, extraCredentialNames...)
 	}
 	if e.BodyParseError != "" {
-		e.BodyParseError = redact.String(e.BodyParseError)
+		e.BodyParseError = redact.String(e.BodyParseError, extraCredentialNames...)
 	}
 	if len(e.Findings) > 0 {
 		findings := make([]Finding, len(e.Findings))
 		copy(findings, e.Findings)
 		for i := range findings {
-			findings[i].Message = redact.String(findings[i].Message)
+			findings[i].Message = redact.String(findings[i].Message, extraCredentialNames...)
+			findings[i].Field = redact.String(findings[i].Field, extraCredentialNames...)
 		}
 		e.Findings = findings
 	}
 	if e.Outcome.FaultKey != "" {
-		e.Outcome.FaultKey = redact.String(e.Outcome.FaultKey)
+		e.Outcome.FaultKey = redact.String(e.Outcome.FaultKey, extraCredentialNames...)
 	}
 	// Placements hold fingerprints, never values, so there is nothing here to
 	// mask. It is still rebuilt, because this function promises to share no

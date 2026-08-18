@@ -1177,6 +1177,104 @@ func TestTurnKeyCredentialBodyJSONIsFingerprinted(t *testing.T) {
 	require.NotEqual(t, wantA, wantB)
 }
 
+// profileDeclaredHeaderKeyYAML keys the cursor on a header whose name is not
+// in internal/redact's own fixed vocabulary at all — "x-acme-key" matches
+// neither exactCredentialNames nor substringCredentialFragments — so it can
+// only be fingerprinted through a profile-declared Deps.CredentialNames.
+const profileDeclaredHeaderKeyYAML = `
+version: 1
+name: profile-declared-header-key
+providers:
+  exa:
+    turn_key: ["header:x-acme-key"]
+    turns:
+      - respond:
+          answer: only
+`
+
+// profileDeclaredBodyKeyYAML is profileDeclaredHeaderKeyYAML's body_json
+// sibling: "acme_token" is not in internal/redact's own vocabulary either.
+const profileDeclaredBodyKeyYAML = `
+version: 1
+name: profile-declared-body-key
+providers:
+  exa:
+    turn_key: ["body_json:acme_token"]
+    turns:
+      - respond:
+          answer: only
+`
+
+// TestTurnKeyProfileDeclaredCredentialHeaderIsFingerprinted is CLAUDE.md
+// house rule 4 applied to Deps.CredentialNames (Phase 10 unit 7): a
+// turn_key extractor naming a header the FRAMEWORK'S OWN vocabulary does not
+// recognise, but a profile declares via CredentialNames, must still be
+// fingerprinted — not written verbatim into FaultDecision.Key, then
+// journal.Entry.Outcome.FaultKey, retained in the ring and served by
+// GET /__admin/requests. Before this fix, fingerprintHeaderLaneValue and
+// pathHasCredentialSegment called redact.IsCredentialHeader/IsCredentialKey
+// with no extra vocabulary at all, so a profile-declared name — despite
+// being masked everywhere else in the journal — reached outcome.fault_key
+// (and the "fault attempt N on key ..." finding message) as plain text.
+func TestTurnKeyProfileDeclaredCredentialHeaderIsFingerprinted(t *testing.T) {
+	t.Parallel()
+
+	const secret = "SECRETSHIBBOLETH77"
+
+	j := journal.NewRing(8, 8192)
+	d := Deps{
+		Journal:         j,
+		Scenario:        mustScenario(t, profileDeclaredHeaderKeyYAML),
+		CredentialNames: []string{"x-acme-key"},
+	}
+	var key string
+	mux := NewMux(d, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
+		key = x.Lane().Key
+		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
+	}))
+
+	r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{}`))
+	r.Header.Set("X-Acme-Key", secret)
+	mux.ServeHTTP(httptest.NewRecorder(), r)
+
+	require.NotContains(t, key, secret, "the raw profile-declared credential must never reach the lane key")
+	want := "exa:search|header:x-acme-key=" + redact.Fingerprint(secret)
+	require.Equal(t, want, key)
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1)
+	require.NotContains(t, entries[0].Outcome.FaultKey, secret,
+		"the journaled outcome.fault_key must not carry the raw credential either")
+}
+
+// TestTurnKeyProfileDeclaredCredentialBodyJSONIsFingerprinted is
+// TestTurnKeyProfileDeclaredCredentialHeaderIsFingerprinted's body_json
+// sibling.
+func TestTurnKeyProfileDeclaredCredentialBodyJSONIsFingerprinted(t *testing.T) {
+	t.Parallel()
+
+	const secret = "SECRETSHIBBOLETH77"
+
+	j := journal.NewRing(8, 8192)
+	d := Deps{
+		Journal:         j,
+		Scenario:        mustScenario(t, profileDeclaredBodyKeyYAML),
+		CredentialNames: []string{"acme_token"},
+	}
+	var key string
+	mux := NewMux(d, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
+		key = x.Lane().Key
+		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
+	}))
+
+	r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{"acme_token":"`+secret+`"}`))
+	mux.ServeHTTP(httptest.NewRecorder(), r)
+
+	require.NotContains(t, key, secret, "the raw profile-declared credential must never reach the lane key")
+	want := "exa:search|body_json:acme_token=" + redact.Fingerprint(secret)
+	require.Equal(t, want, key)
+}
+
 // laneKeyFor posts one request against src carrying body against a
 // single-route mux and returns the lane key the request drew.
 func laneKeyFor(t *testing.T, src, body string) string {

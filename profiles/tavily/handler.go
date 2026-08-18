@@ -72,6 +72,16 @@ type validator struct{}
 // checked against the routes this package actually serves.
 func (validator) Routes() []provider.Route { return Routes() }
 
+// ProjectionKeys returns this package's search/extract projection's own
+// top-level keys — the vocabulary a turn's `respond:` body under the
+// "tavily" entry kind may use (Phase 10 unit 8).
+func (validator) ProjectionKeys() []string {
+	return []string{
+		"request_id", "answer", "images", "results", "response_time",
+		"auto_parameters", "usage", "extract", "extra_fields",
+	}
+}
+
 // Compile-time proof that the seam is implemented; provider.ValidateScenario
 // takes a map of these and a mismatch would otherwise surface as a build error
 // in internal/server rather than here.

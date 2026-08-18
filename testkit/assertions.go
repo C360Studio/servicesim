@@ -103,8 +103,8 @@ func AssertDifferentCredential(tb testing.TB, a, b Entry) {
 
 // AssertNoCredentialLeak scans every journal entry for the given literals and
 // fails if any appears. The scan covers every text-bearing field, not just the
-// two obvious ones: Headers, Body, Query, Path, Outcome.Label, BodyParseError
-// and every Finding.Message.
+// two obvious ones: Headers, Body, Query, Path, Outcome.Label, BodyParseError,
+// Outcome.FaultKey and every finding's Message and Field.
 //
 // It is the assertion form of the rule that credentials never survive a round
 // trip, and it is worth running in a consumer's suite against whatever key that
@@ -158,6 +158,7 @@ func leakFields(e Entry) []leakField {
 	}
 	for _, f := range e.Findings {
 		out = append(out, leakField{"finding " + f.Code, f.Message})
+		out = append(out, leakField{"finding.field " + f.Code, f.Field})
 	}
 	return out
 }

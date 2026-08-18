@@ -18,8 +18,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	"github.com/c360studio/servicesim/profiles"
 	"github.com/c360studio/servicesim/profiles/exa"
-	"github.com/c360studio/servicesim/profiles/mcp"
 	"github.com/c360studio/servicesim/profiles/perplexity"
 	"github.com/c360studio/servicesim/profiles/tavily"
 	"github.com/c360studio/servicesim/provider"
@@ -30,10 +30,10 @@ import (
 
 // referenceProfiles is the four in-tree profiles' registration list, shared
 // across this package's tests so testkit.WithProfiles has one thing to say
-// instead of four calls repeated at every testkit.Start site — until Phase
-// 10 unit 5 promotes it to profiles.Reference().
+// instead of four calls repeated at every testkit.Start site — profiles.
+// Reference() itself (Phase 10 unit 5).
 func referenceProfiles() []provider.Profile {
-	return []provider.Profile{exa.Profile(), tavily.Profile(), perplexity.Profile(), mcp.Profile()}
+	return profiles.Reference()
 }
 
 // builtins is the set this build ships. Naming them here rather than deriving
@@ -70,23 +70,37 @@ var implementedProviders = []string{
 	"exa", "tavily", "perplexity", "perplexity_agent", "exa_agent_runs", "tavily_research", "mcp",
 }
 
-// documentedProjectionKeys is the projection body key set docs/scenario-schema.md
-// documents per provider, minus the reserved envelope keys the scenario package
-// strips. The scenario package cannot check these — a projection body is an
-// undecoded node whose type only its provider package knows — so a typo in a
-// built-in would otherwise survive until provider.ValidateScenario runs.
-var documentedProjectionKeys = map[string]map[string]bool{
-	"exa": keySet("request_id", "results", "cost_dollars", "output", "answer", "contents", "find_similar",
-		"stream", "resolved_search_type", "context", "extra_fields"),
-	"tavily": keySet("request_id", "answer", "images", "results", "response_time",
-		"auto_parameters", "usage", "extract", "extra_fields"),
-	"perplexity": keySet("completion_id", "created", "model", "answer", "finish_reason",
-		"citations", "search_results", "usage", "images", "related_questions", "stream", "extra_fields"),
-	"perplexity_agent": keySet("response_id", "message_id", "model", "status", "answer", "queries",
-		"search_results", "annotations", "error", "usage", "stream", "extra_fields"),
-	"exa_agent_runs":  keySet("status", "stop_reason", "output", "error", "cost_dollars", "usage", "extra_fields"),
-	"tavily_research": keySet("status", "content", "sources", "response_time", "extra_fields"),
-	"mcp":             keySet("instructions", "ttl_ms", "cache_scope", "tools", "results", "stream", "extra_fields"),
+// documentedProjectionKeys is the projection body key set every reference
+// validator's own [provider.Validator.ProjectionKeys] documents, minus the
+// reserved envelope keys the scenario package strips. The scenario package
+// cannot check these — a projection body is an undecoded node whose type
+// only its provider package knows — so a typo in a built-in would otherwise
+// survive until provider.ValidateScenario runs.
+//
+// Derived from profiles.Reference() (Phase 10 unit 8) rather than
+// hand-mirrored a second time: each reference profile's own validator is the
+// one place that knows its decode struct's keys, and this cross-check reads
+// them from there instead of keeping a parallel literal that could drift.
+// This package is exempt from profiles/no_privilege_test.go's no-privilege
+// rule — that rule holds provider/, internal/, testkit/, scenario/ and
+// contracts/ to "no privilege an out-of-tree profile lacks"; scenarios is
+// none of those, and this is a _test.go file besides, which the rule
+// exempts everywhere it applies.
+var documentedProjectionKeys = derivedProjectionKeys(profiles.Reference())
+
+// derivedProjectionKeys builds the same shape the hand-mirrored map used to
+// be, keyed by scenario entry kind, from every profile's own Validators —
+// exactly what internal/server's provider.ValidateScenario and
+// (*provider.Set).Validators already key on, so this cross-check asks the
+// same question those do.
+func derivedProjectionKeys(ps []provider.Profile) map[string]map[string]bool {
+	out := make(map[string]map[string]bool)
+	for _, p := range ps {
+		for kind, v := range p.Validators {
+			out[kind] = keySet(v.ProjectionKeys()...)
+		}
+	}
+	return out
 }
 
 // refListKeys are the projection keys whose list elements may be the scalar
@@ -191,7 +205,7 @@ func TestBuiltins_ProjectionKeysAreDocumented(t *testing.T) {
 				for i := range entry.Turns {
 					for _, key := range mappingKeys(&entry.Turns[i].Respond) {
 						assert.Truef(t, allowed[key],
-							"%s: providers.%s.turns[%d].respond declares %q, which docs/scenario-schema.md does not document for %s",
+							"%s: providers.%s.turns[%d].respond declares %q, which %s's own Validator.ProjectionKeys() does not list",
 							name, provider, i, key, provider)
 					}
 				}
@@ -242,6 +256,18 @@ var reservedSuffixes = []string{".test", ".example", ".invalid", "example.com", 
 // TestBuiltins_UseReservedHostsOnly is the same guard scripts/lint-no-live-hosts.sh
 // applies, run where the failure is cheap. A scenario URL that resolves to a real
 // host is one copy-paste from a consumer's base URL pointing at a paid API.
+//
+// It stays a whitelist (every host found must be RESERVED), not the library's
+// blacklist (no host may be a known PAID one), because the two check different
+// properties and the whitelist is strictly the stronger one for scenario data:
+// it also catches a host that is neither reserved nor on any paid list — a
+// typo, or a vendor no one has registered a profile for yet — which
+// [testkit.AssertNoLiveHosts]'s blacklist would silently pass. That is the
+// "where feasible" boundary Phase 10 unit 7 recorded: the two guards share one
+// implementation for the blacklist half (below, over the same embedded
+// corpus, with the four reference profiles' own real hostnames folded in),
+// and this test's own whitelist logic is the part that cannot fold into it
+// without losing coverage.
 func TestBuiltins_UseReservedHostsOnly(t *testing.T) {
 	t.Parallel()
 	for _, name := range builtins {
@@ -256,6 +282,17 @@ func TestBuiltins_UseReservedHostsOnly(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("library-guard", func(t *testing.T) {
+		t.Parallel()
+		set, err := provider.NewSet(referenceProfiles()...)
+		require.NoError(t, err)
+		// scenarios.FS holds only the embedded protocol/*.yaml files, so this
+		// is the built-in corpus's half of the two-line idiom
+		// AssertNoLiveHosts documents — the same call an out-of-tree
+		// adopter's CI makes over their own scenario fixtures.
+		testkit.AssertNoLiveHosts(t, scenarios.FS, nil, set.LiveHosts()...)
+	})
 }
 
 func isReserved(host string) bool {

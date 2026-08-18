@@ -231,6 +231,12 @@ func (s *Server) refusalHandler(name provider.Name, reason string) http.Handler 
 		MaxRequestBytes:     s.cfg.MaxRequestBytes,
 		MaxJournalBodyBytes: s.cfg.MaxJournalBodyBytes,
 		MaxNamespaces:       s.cfg.MaxNamespaces,
+		// A request that lands here (an unknown scenario) still carries
+		// whatever headers and body a real client sent, so it needs the same
+		// redaction vocabulary as an ordinary request's Deps — see New's own
+		// journal construction and add's Deps for the other two sites this
+		// union is threaded to.
+		CredentialNames: s.cfg.Set.CredentialNames(),
 	}
 
 	// The body comes from the profile itself, through Refuse, rather than

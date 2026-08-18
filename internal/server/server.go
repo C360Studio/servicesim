@@ -200,9 +200,10 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Server, error
 		version: o.version,
 		byName:  make(map[string]*loadedScenario, len(sources)),
 		journal: journal.NewRingWithLimits(journal.Limits{
-			Capacity:      cfg.JournalCapacity,
-			MaxBodyBytes:  cfg.MaxJournalBodyBytes,
-			MaxNamespaces: cfg.MaxNamespaces,
+			Capacity:        cfg.JournalCapacity,
+			MaxBodyBytes:    cfg.MaxJournalBodyBytes,
+			MaxNamespaces:   cfg.MaxNamespaces,
+			CredentialNames: cfg.Set.CredentialNames(),
 		}),
 		jobs:    jobs.NewRegistry(jobs.Limits{MaxJobs: cfg.MaxJobs}),
 		ready:   new(atomic.Bool),
@@ -299,7 +300,7 @@ func (s *Server) loadRegistry(sources []scenarioSource) error {
 const codeProfileUnscripted = "scenario.profile.unscripted"
 
 // unscriptedProfileFindings warns once per enabled profile whose scenario
-// entry kind(s) have no block in sc — the reference-only-built-ins
+// has no block it can actually reach — the reference-only-built-ins
 // accommodation (docs/proposals/framework-seam.md, "Contracts, goldens and
 // built-ins for out-of-tree profiles"): builtin:happy will never cover a
 // fifth profile without a PR here, so a registered profile silently getting
@@ -310,36 +311,13 @@ func unscriptedProfileFindings(cfg config.Config, sc *scenario.Scenario, scenari
 		return nil
 	}
 
-	scripted := make(map[string]bool, sc.Providers.Len())
-	for _, name := range sc.Providers.Names() {
-		e := sc.Providers.Get(name)
-		if e == nil {
-			continue
-		}
-		kind := e.Kind
-		if kind == "" {
-			kind = e.Name
-		}
-		scripted[kind] = true
-	}
-
 	var findings []scenario.Finding
 	for _, name := range cfg.Enabled() {
-		if _, ok := cfg.Set.Lookup(name); !ok {
+		p, ok := cfg.Set.Lookup(name)
+		if !ok {
 			continue
 		}
-		// Set.Validators(name) is the profile's entry-kind map — a profile
-		// that registers no validator of its own still claims its effective
-		// kind there (provider.Profile.entryValidators), which is what keeps
-		// this from misreporting the simplest foreign profile as unscripted.
-		var has bool
-		for kind := range cfg.Set.Validators(name) {
-			if scripted[kind] {
-				has = true
-				break
-			}
-		}
-		if has {
+		if profileHasAScriptedBlock(sc, p) {
 			continue
 		}
 		findings = append(findings, scenario.Finding{
@@ -353,6 +331,48 @@ func unscriptedProfileFindings(cfg config.Config, sc *scenario.Scenario, scenari
 		})
 	}
 	return findings
+}
+
+// profileHasAScriptedBlock reports whether sc scripts at least one block
+// this profile's own listener can actually reach.
+//
+// The PRIMARY entry — Route.Entry == "", which Exchange.Entry() resolves as
+// Deps.Scenario.Provider(string(x.Provider)) — is checked by the LISTENER's
+// OWN NAME (Phase 10 unit 8), never by its effective Kind: an instanced
+// listener (Kind != Name) reads its own block by Name, so a scenario
+// scripting only the PRIMARY instance's block ("acme") must not read the
+// FALLBACK instance ("acme_fallback") as scripted merely because the two
+// share a Kind — that was this function's bug before this unit, found by
+// the instancing test that pins the fix. Name == Kind for every profile
+// registered before Kind existed and for all four reference profiles today,
+// so this is unchanged for them: their own block is still found by the same
+// name it always was.
+//
+// Every OTHER entry-kind key p.Validators claims — a multi-entry profile's
+// secondary surfaces, Perplexity's Agent kind being the shipped example —
+// is checked by that literal kind string AS A NAME: NewSet refuses
+// instancing a multi-entry profile outright (Validate's own doc comment,
+// "instancing"), so a secondary entry's Route.Entry is always a static Go
+// string equal to its own kind, never subject to renaming, and
+// Exchange.Entry() resolves it by that same literal name
+// (Deps.Scenario.Provider(x.Route.Entry)).
+func profileHasAScriptedBlock(sc *scenario.Scenario, p provider.Profile) bool {
+	if sc.Providers.Get(string(p.Name)) != nil {
+		return true
+	}
+	kind := p.Kind
+	if kind == "" {
+		kind = string(p.Name)
+	}
+	for entryKind := range p.Validators {
+		if entryKind == kind {
+			continue // the profile's own kind, already checked above by Name
+		}
+		if sc.Providers.Get(entryKind) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // add registers one loaded scenario and builds the Deps every handler serving it
@@ -376,6 +396,7 @@ func (s *Server) add(ls *loadedScenario, isDefault bool) {
 		MaxNamespaces:       s.cfg.MaxNamespaces,
 		Jobs:                s.jobs,
 		MaxJobs:             s.cfg.MaxJobs,
+		CredentialNames:     s.cfg.Set.CredentialNames(),
 	}
 
 	s.scenarios = append(s.scenarios, ls)

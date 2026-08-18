@@ -3,6 +3,7 @@ package perplexity
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -413,4 +414,34 @@ func TestAgentValidatorAcceptsAGoodFixture(t *testing.T) {
 	t.Parallel()
 	s := mustScenario(t, agentCorpus)
 	require.Empty(t, agentValidator{}.ValidateProjections(s, s.Provider(NameAgent)))
+}
+
+// TestAgentValidatorProjectionKeysMatchesTheDecodeStruct pins
+// agentValidator.ProjectionKeys() to perplexityAgent's own top-level yaml
+// tags by reflection, so the hand-copied literal (scenarios_test.go's
+// documentedProjectionKeys' own source, since Phase 10 unit 8) cannot drift
+// from the struct silently again in either direction — additive (a
+// documented, decodable key like "created_at" missing from the list, which
+// is exactly the gap this test was written to catch) or stale (a listed key
+// the struct no longer accepts).
+func TestAgentValidatorProjectionKeysMatchesTheDecodeStruct(t *testing.T) {
+	t.Parallel()
+
+	typ := reflect.TypeOf(perplexityAgent{})
+	want := make(map[string]bool, typ.NumField())
+	for i := range typ.NumField() {
+		tag := typ.Field(i).Tag.Get("yaml")
+		name, _, _ := strings.Cut(tag, ",")
+		if name != "" && name != "-" {
+			want[name] = true
+		}
+	}
+
+	got := make(map[string]bool)
+	for _, k := range (agentValidator{}).ProjectionKeys() {
+		got[k] = true
+	}
+
+	require.Equal(t, want, got,
+		"agentValidator.ProjectionKeys() must list exactly perplexityAgent's own yaml tags")
 }

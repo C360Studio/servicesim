@@ -200,6 +200,20 @@ type Deps struct {
 	// body clipped before redaction is a body redaction can no longer parse.
 	MaxJournalBodyBytes int
 
+	// CredentialNames widens the credential-name vocabulary the journal masks
+	// by, beyond internal/redact's own fixed tables (house rule 4). It is the
+	// union of every registered profile's Profile.CredentialNames — sourced
+	// from (*Set) CredentialNames() at composition, not authored by hand —
+	// merged in as DATA: no exported call reaches internal/redact, and its
+	// tables stay untouched. Handle passes it to journal.Redact before
+	// logging; internal/server and testkit bake the same union into the
+	// Ring's own Limits.CredentialNames so storage-time redaction
+	// ([journal.Ring.Append]) sees it too, on the same terms as
+	// MaxJournalBodyBytes and MaxNamespaces below — a number or a vocabulary
+	// the seam records, for the store that actually applies it. Nil widens
+	// nothing: only internal/redact's own fixed tables apply.
+	CredentialNames []string
+
 	// MaxNamespaces is the bound on live namespaces this process was configured
 	// with. Zero means DefaultMaxNamespaces.
 	//

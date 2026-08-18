@@ -266,18 +266,18 @@ func TestEveryFunctionIsIdempotent(t *testing.T) {
 		{"non credential header", "retrying with " + secret, func(s string) string {
 			return redact.HeaderValue("X-Debug-Note", s)
 		}},
-		{"query", "api_key=" + secret + "&query=weather", redact.Query},
-		{"query that will not parse", "api_key=" + secret + "&bad=%zz", redact.Query},
+		{"query", "api_key=" + secret + "&query=weather", func(s string) string { return redact.Query(s) }},
+		{"query that will not parse", "api_key=" + secret + "&bad=%zz", func(s string) string { return redact.Query(s) }},
 		{"json bytes", `{"api_key":"` + secret + `","query":"weather"}`, func(s string) string {
 			return string(redact.JSONBytes([]byte(s)))
 		}},
 		{"non json bytes", "api_key=" + secret + "&query=weather", func(s string) string {
 			return string(redact.JSONBytes([]byte(s)))
 		}},
-		{"string with a bearer token", "Authorization: Bearer " + secret, redact.String},
-		{"string with a pair", `{"api_key": "` + secret + `"}`, redact.String},
-		{"string with userinfo", "POST http://user:" + secret + "@exa.test/search", redact.String},
-		{"string with a bare vendor key", "rejected " + secret, redact.String},
+		{"string with a bearer token", "Authorization: Bearer " + secret, func(s string) string { return redact.String(s) }},
+		{"string with a pair", `{"api_key": "` + secret + `"}`, func(s string) string { return redact.String(s) }},
+		{"string with userinfo", "POST http://user:" + secret + "@exa.test/search", func(s string) string { return redact.String(s) }},
+		{"string with a bare vendor key", "rejected " + secret, func(s string) string { return redact.String(s) }},
 	}
 
 	for _, tt := range tests {
@@ -964,6 +964,154 @@ func FuzzNoVendorKeySurvives(f *testing.F) {
 					o.name, in, o.out, match)
 			}
 		}
+	})
+}
+
+// TestExtraCredentialNames_MatchExactlyLikeTheFrameworksOwn proves the
+// isCredentialName doc comment's claim — a profile-declared name is "matched
+// on exactly the same terms as exactCredentialNames: a whole normalised
+// name, never a substring" — for IsCredentialKey and IsCredentialHeader, over
+// the same spelling variants the framework's own vocabulary is tested
+// against above (separator and case insensitivity). "acme_token" is used
+// throughout because it is in neither exactCredentialNames nor
+// substringCredentialFragments, so a positive result can only be explained
+// by extra.
+func TestExtraCredentialNames_MatchExactlyLikeTheFrameworksOwn(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"acme_token", true},
+		{"acme-token", true},
+		{"acme.token", true},
+		{"ACME_TOKEN", true},
+		{"acmeToken", true},
+		{"Acme_Token", true},
+		{"x-acme-key", true},
+		{"X-Acme-Key", true},
+		{"X_Acme_Key", true},
+		{"xAcmeKey", true},
+
+		{"acme", false},
+		{"acme_tokens", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redact.IsCredentialKey(tt.name, "acme_token", "x-acme-key"); got != tt.want {
+				t.Fatalf("IsCredentialKey(%q, extra...) = %v, want %v", tt.name, got, tt.want)
+			}
+			if got := redact.IsCredentialHeader(tt.name, "acme_token", "x-acme-key"); got != tt.want {
+				t.Fatalf("IsCredentialHeader(%q, extra...) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+	// "token" is credential-shaped on the framework's own vocabulary alone
+	// (exactCredentialNames), so it is true with or without extra — asserted
+	// separately so the table above stays a clean extra-only proof.
+	if !redact.IsCredentialKey("token") {
+		t.Fatal("IsCredentialKey(\"token\") = false, want true (framework's own vocabulary)")
+	}
+}
+
+// TestExtraCredentialNames_ReachEveryMaskingFunction proves house rule 4's
+// vocabulary reaches every exported masking function that accepts extra —
+// not just the two whose extras thread most directly (IsCredentialKey,
+// IsCredentialHeader). "not-vendor-shaped-1234" carries no "sk-"/"pplx-"/
+// "tvly-" prefix, so a positive result can only be explained by the
+// credential-NAME test, and "acme_token"/"x-acme-key" are absent from
+// internal/redact's own tables.
+func TestExtraCredentialNames_ReachEveryMaskingFunction(t *testing.T) {
+	const value = "not-vendor-shaped-1234"
+
+	t.Run("Headers", func(t *testing.T) {
+		h := http.Header{"X-Acme-Key": {value}}
+		got := redact.Headers(h, "x-acme-key")
+		assertMasked(t, "Headers", got.Get("X-Acme-Key"), value)
+	})
+
+	t.Run("HeaderValue", func(t *testing.T) {
+		got := redact.HeaderValue("X-Acme-Key", value, "x-acme-key")
+		assertMasked(t, "HeaderValue", got, value)
+	})
+
+	t.Run("Query", func(t *testing.T) {
+		got := redact.Query("acme_token="+url.QueryEscape(value), "acme_token")
+		assertMasked(t, "Query", got, value)
+	})
+
+	t.Run("JSON", func(t *testing.T) {
+		var decoded any
+		if err := json.Unmarshal([]byte(`{"acme_token":"`+value+`"}`), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		out := redact.JSON(decoded, "acme_token")
+		encoded, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertMasked(t, "JSON", string(encoded), value)
+	})
+
+	t.Run("JSONBytes", func(t *testing.T) {
+		got := redact.JSONBytes([]byte(`{"acme_token":"`+value+`"}`), "acme_token")
+		assertMasked(t, "JSONBytes", string(got), value)
+	})
+
+	// String's own top-level extra parameter is covered by
+	// TestString_MasksCredentialShapedText's siblings below; this section is
+	// about String reached through the FREE-TEXT recursion of the other
+	// masking functions — a "name=value" pair under a profile-declared name
+	// nested inside a value the caller did not itself name as credential.
+	t.Run("String direct", func(t *testing.T) {
+		got := redact.String("acme_token="+value, "acme_token")
+		assertMasked(t, "String", got, value)
+	})
+}
+
+// TestExtraCredentialNames_ReachTheFreeTextPassUnderNonCredentialNames pins
+// the exact gap a Phase 10 unit 7 review found: a profile-declared name
+// reaching the top-level String/HeaderValue/Query call is not the same as
+// reaching the recursive, unnamed free-text pass every one of those
+// functions falls through to for a value under a name that is NOT itself
+// credential-shaped — a JSON string field, a non-credential header's value,
+// or a query value. Before the fix, redactValue's string case, headerValue's
+// non-credential branch and encodeQuery's value/key branches called
+// String(x) with no extras at all, so "acme_token=<value>" embedded in an
+// unrelated field survived untouched while "token=<value>" in the identical
+// position was masked.
+func TestExtraCredentialNames_ReachTheFreeTextPassUnderNonCredentialNames(t *testing.T) {
+	const value = "SECRETSHIBBOLETH77"
+	pair := "acme_token=" + value
+
+	t.Run("JSON string under a non-credential property", func(t *testing.T) {
+		var decoded any
+		if err := json.Unmarshal([]byte(`{"note":"`+pair+`"}`), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		out := redact.JSON(decoded, "acme_token")
+		encoded, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertMasked(t, "JSON note field", string(encoded), value)
+	})
+
+	t.Run("header value under a non-credential header name", func(t *testing.T) {
+		got := redact.HeaderValue("X-Debug", pair, "acme_token")
+		assertMasked(t, "HeaderValue X-Debug", got, value)
+	})
+
+	t.Run("query value under a non-credential parameter name", func(t *testing.T) {
+		got := redact.Query("note="+url.QueryEscape(pair), "acme_token")
+		assertMasked(t, "Query note param", got, value)
+	})
+
+	t.Run("query key itself is the pair", func(t *testing.T) {
+		// A degenerate but real shape: the whole "name=value" text lands as a
+		// query KEY with no value (a client that double-encoded), exercising
+		// encodeQuery's key-masking branch rather than its value branch.
+		got := redact.Query(url.QueryEscape(pair)+"=1", "acme_token")
+		assertMasked(t, "Query key", got, value)
 	})
 }
 

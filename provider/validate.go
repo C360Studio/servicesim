@@ -59,6 +59,23 @@ type Validator interface {
 	//
 	// It must not mutate the scenario, and it must be safe to call more than once.
 	ValidateProjections(s *scenario.Scenario, e *scenario.ProviderEntry) []scenario.Finding
+
+	// ProjectionKeys returns the top-level keys this validator's own
+	// decode struct accepts in a turn's `respond:` body, for a doc
+	// cross-check that would otherwise hand-mirror this package's decode
+	// struct a second time (scenarios/scenarios_test.go's
+	// documentedProjectionKeys, derived from profiles.Reference()'s own
+	// validators rather than a parallel literal — Phase 10 unit 8). It is
+	// a REQUIRED method, not an optional side interface on the RouteLister
+	// pattern: unlike Routes (which only a package with routes to name
+	// can answer), every Validator decodes SOME struct and can always
+	// name its keys, even if that is nil (a validator that decodes
+	// nothing, such as a profile with no Validators of its own —
+	// noopValidator, profile.go). Widening the interface outright rather
+	// than adding a third optional side interface is an engineering call,
+	// not an owner one: four in-tree implementations, zero external,
+	// still pre-1.0 (framework-seam.md, "Decisions for the owner").
+	ProjectionKeys() []string
 }
 
 // ValidateScenario asks every provider named in the scenario to decode and

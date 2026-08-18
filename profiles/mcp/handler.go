@@ -252,6 +252,12 @@ type validator struct{}
 // entry is checked against the route this package actually serves.
 func (validator) Routes() []provider.Route { return Routes() }
 
+// ProjectionKeys returns projection's own top-level keys — the vocabulary a
+// turn's `respond:` body under the "mcp" entry kind may use (Phase 10 unit 8).
+func (validator) ProjectionKeys() []string {
+	return []string{"instructions", "ttl_ms", "cache_scope", "tools", "results", "stream", "extra_fields"}
+}
+
 // Compile-time proof that the seam is implemented.
 var _ provider.Validator = validator{}
 

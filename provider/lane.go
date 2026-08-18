@@ -474,8 +474,15 @@ func turnLaneKey(x *Exchange) string {
 	}
 
 	// The default is one lane per route, and it must produce Route.FaultKey
-	// verbatim: that is the key a fault engine pre-registered at construction.
-	// A turn_key of nothing but "route" entries says the same thing.
+	// verbatim: that is the key a fault engine pre-registered at
+	// construction. (Phase 10 unit 8: for an instanced listener, Kind !=
+	// Name, x.Route.FaultKey is ALREADY the namespaced key by the time a
+	// request reaches here — Profile.Handler builds the mux from
+	// namespacedRoutes(p), the same per-profile transformation (*Set).Routes
+	// applies when it registers the fault engine's plans and counters, so
+	// the two agree by construction and this function needs no Kind
+	// awareness of its own.) A turn_key of nothing but "route" entries says
+	// the same thing.
 	//
 	// The route's own extractors are included in this question. Without them a
 	// poll route with the default turn_key would take this path and return the
@@ -507,7 +514,7 @@ func turnLaneKey(x *Exchange) string {
 				// See the fingerprintLaneValue doc comment for the two independent
 				// tests (by name, by shape) that decide whether value survives
 				// verbatim. CLAUDE.md house rule 4.
-				value = fingerprintLaneValue(value, pathHasCredentialSegment(path))
+				value = fingerprintLaneValue(x, value, pathHasCredentialSegment(x, path))
 			}
 			parts = appendLanePart(x, parts, extractor, value, ok, turnKeyFault)
 
@@ -636,9 +643,9 @@ func decodeLaneBody(raw []byte) any {
 // final segment ("primary", the numeric index "0") is not a credential name by
 // itself. Checking every segment is what keeps this test and redact.JSON's
 // agreeing about which values are sensitive.
-func pathHasCredentialSegment(path string) bool {
+func pathHasCredentialSegment(x *Exchange, path string) bool {
 	for _, seg := range strings.Split(path, ".") {
-		if redact.IsCredentialKey(seg) {
+		if redact.IsCredentialKey(seg, x.Deps.CredentialNames...) {
 			return true
 		}
 	}
@@ -651,8 +658,8 @@ func pathHasCredentialSegment(path string) bool {
 // matter what property it came from. See turnLaneKey's doc comment for why
 // both tests exist and why the shape test runs here, on the isolated value,
 // rather than on the composed key.
-func fingerprintLaneValue(value string, byName bool) string {
-	if byName || laneValueLooksLikeCredential(value) {
+func fingerprintLaneValue(x *Exchange, value string, byName bool) string {
+	if byName || laneValueLooksLikeCredential(x, value) {
 		return redact.Fingerprint(value)
 	}
 	return value
@@ -661,9 +668,13 @@ func fingerprintLaneValue(value string, byName bool) string {
 // laneValueLooksLikeCredential reports whether redact.String would change
 // value — the same by-shape test (a vendor key prefix, a "Bearer …" token, an
 // embedded "name=value" pair, URL userinfo) redact.String and redact.JSON
-// already apply elsewhere in this repository.
-func laneValueLooksLikeCredential(value string) bool {
-	return value != "" && redact.String(value) != value
+// already apply elsewhere in this repository. x.Deps.CredentialNames widens
+// the name=value half of that test to the profile's own declared vocabulary,
+// exactly as every other credential-name test in this file does (house rule
+// 4: the extra vocabulary must reach every path, not only the ones that
+// already had an Exchange in scope).
+func laneValueLooksLikeCredential(x *Exchange, value string) bool {
+	return value != "" && redact.String(value, x.Deps.CredentialNames...) != value
 }
 
 // fingerprintHeaderLaneValue substitutes a credential header's fingerprint for
@@ -684,12 +695,12 @@ func laneValueLooksLikeCredential(value string) bool {
 // under an unlisted header name is caught too.
 func fingerprintHeaderLaneValue(x *Exchange, name, value string) string {
 	switch {
-	case redact.IsCredentialHeader(name):
+	case redact.IsCredentialHeader(name, x.Deps.CredentialNames...):
 		if fp, ok := authPlacementFingerprint(x, name); ok {
 			return fp
 		}
 		return redact.Fingerprint(strings.TrimSpace(value))
-	case laneValueLooksLikeCredential(value):
+	case laneValueLooksLikeCredential(x, value):
 		return redact.Fingerprint(value)
 	default:
 		return value

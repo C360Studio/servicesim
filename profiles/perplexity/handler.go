@@ -444,6 +444,16 @@ type sonarValidator struct{}
 // entry is checked against the Sonar surface alone.
 func (sonarValidator) Routes() []provider.Route { return sonarRoutes() }
 
+// ProjectionKeys returns perplexityProjection's own top-level keys — the
+// vocabulary a turn's `respond:` body under the "perplexity" entry kind
+// may use (Phase 10 unit 8).
+func (sonarValidator) ProjectionKeys() []string {
+	return []string{
+		"completion_id", "created", "model", "answer", "finish_reason", "citations",
+		"search_results", "usage", "images", "related_questions", "stream", "extra_fields",
+	}
+}
+
 // ValidateProjections decodes every turn's Sonar projection body and reports
 // what it finds, addressed by the turn's YAML path.
 //
@@ -488,6 +498,16 @@ type agentValidator struct{}
 // Routes implements provider.RouteLister, so a `when.route:` in a
 // "perplexity_agent" entry is checked against the Agent surface alone.
 func (agentValidator) Routes() []provider.Route { return agentRoutes() }
+
+// ProjectionKeys returns the Agent projection's own top-level keys — the
+// vocabulary a turn's `respond:` body under the "perplexity_agent" entry
+// kind may use (Phase 10 unit 8).
+func (agentValidator) ProjectionKeys() []string {
+	return []string{
+		"response_id", "message_id", "model", "created_at", "status", "answer", "queries",
+		"search_results", "annotations", "error", "usage", "stream", "extra_fields",
+	}
+}
 
 // ValidateProjections decodes every turn's Agent projection body and reports
 // what it finds, addressed by the turn's YAML path.
