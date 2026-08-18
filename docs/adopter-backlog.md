@@ -36,8 +36,9 @@ had just taught the smoke test to refuse. The gate was right; the workflow was w
 matters: tell the adopter v0.5.0 exists and what the migration table below says; Phase 9 (the two
 doctrine-contradicting features — enforced rate limiting and the callback injector's outbound half), still
 recommended as "ship the cheap half only"; the sem\* `chat/completions` profile out of tree (D-11) once
-semstreams v1 lands, which is also what the 1.0 trigger waits on; and the follow-ups each Phase 10 unit
-recorded in its section below.
+semstreams v1 lands, which is also what the 1.0 trigger waits on; the LangGraph Server profile shipped as ODR
+(D13), investigated 2026-08-18 and waiting on one answer from the adopter about the credential; and the
+follow-ups each Phase 10 unit recorded in its section below.
 
 | Phase | State |
 |---|---|
@@ -217,6 +218,7 @@ These are settled. Re-open one only with new evidence, and record why.
 |  D10 | How is contract drift detected without a canary? | **Dated, manual re-verification**, never a live canary — none is built or planned. Every provider's contract is generated with a machine-readable spec behind it — Exa's `exa-spec.yaml`, Tavily's `openapi.json` and Perplexity's `openapi.json`, each covering every route this repository simulates for that vendor — and each carries a RECORDED spec version and SHA-256 (`contracts.Spec`, `contracts/<provider>/provenance.yaml`'s `spec:` block) that a fresh fetch is compared against as the first, cheap step. That hash comparison is a drift SIGNAL, not a substitute for reading: most entries in every provider are still verified against the vendor's rendered prose pages (each entry's own `documentation_url`), which have no stable byte hash of their own — a page's bytes change with every site deploy independent of the content that matters — so a changed spec hash means a person re-reads the consumed fields against both the cited pages and the spec, never a hash of the prose itself. Only entries whose `documentation_url` IS the spec (all of Perplexity's, and Exa's three `/findSimilar` entries) were read from the spec directly and carry `api_version`; every other entry was read from prose and carries none. Reason for no canary: a canary is outbound infrastructure and a scheduled dependency on vendor availability, for a test simulator whose value is determinism; the recorded hash or the cited page gives a reviewer the same answer ("did the vendor change or did we?") on demand, without the outbound dependency. `contracts/README.md` "Keeping them honest" is the sanctioned procedure; ADR 0002 carries an "Amended 2026-08-16" section recording the same change. Owner, 2026-08-16.  |
 |  D11 | Which MCP protocol era(s) does the Phase 8 profile serve — **modern** (2026-07-28 only: stateless, per-request `_meta`, `server/discover`, no session, no handshake), **legacy** (2025-11-25 only: `initialize`/`notifications/initialized`, `MCP-Session-Id`, optional GET stream and `Last-Event-ID` resumability), or **dual-era** (both, selected per request by how the client opens)? The terms are the specification's own (`basic/versioning`, "Terminology"). | **Pending owner (recorded 2026-08-16).** Recommendation on record, from `contracts/mcp/README.md` "Protocol eras": **modern first** — 2026-07-28 is `latest` and the verified authority; it is stateless, which is exactly Servicesim's request/response model (nothing to hold between calls); and it is what every official SDK now sends by default (evidence via `gh api`, 2026-08-16: go-sdk `v1.7.0` 2026-07-28 — "full support for protocol version 2026-07-28", "enabled by default for new clients", Streamable HTTP serves 2026-07-28 only with `Stateless = true`; typescript-sdk `@modelcontextprotocol/server@2.0.0` 2026-07-27 — "Align the 2026-07-28 wire with the final revision" (note: `1.30.0` the same day is a v1.x maintenance release whose notes do not mention 2026-07-28); python-sdk `v2.0.0` 2026-07-28 — "supports the 2026-07-28 revision … and serves every earlier revision"). Every one of those clients falls back to `initialize` only when the server's answer to its first modern request (go-sdk: `server/discover`, per `mcp/client.go` on `main`) is not a recognised modern error, so a modern-only simulator is reachable from all of them. Build the **legacy 2025-11-25 path as a follow-on unit only if the adopter's mcp-adapter is pinned below** go-sdk `v1.7.0` / the TypeScript `2.0.0` packages / python-sdk `v2.0.0` — ask them (contract file, "Open questions for the adopter", Q1). A dual-era server is a superset and re-introduces the session state the profile would otherwise never hold. The legacy surface is recorded in the contract file's "Legacy revision 2025-11-25" subsection so the decision is made from a record, not a rebuild. **Unit 2 shipped modern-only per the recommendation; legacy is a follow-on if the owner decides dual-era.** **Decided 2026-08-17 (owner): "modern only is a fine start."** Modern 2026-07-28 only, as shipped; the legacy 2025-11-25 path is not planned — a follow-on only if the adopter's client turns out to be pinned to a pre-2026-07-28 SDK. |
 |  D12 | Is the ODR — "open-deep-research" — provider profile part of Phase 8? | **Owner, 2026-08-16: no.** "Let's not worry about Open Deep Research for P8 — we can make that an adopter problem for now." Phase 8 is the MCP profile alone; ODR is not built here and is not blocking anything. Recorded beside it, the reason it could not have been built from this tree anyway: the repository has no verifiable identity or wire surface for "open-deep-research" — the name matches several open-source projects with different or no HTTP APIs — and house rule 1 forbids writing a wire field from memory. If the adopter later wants it, the first step is theirs: name the project and its API documentation, and the contract-verification unit runs the way MCP's did before any handler. The audit table's ODR row below is the adopter's historical status and is left as written. |
+|  D13 | ODR is named at last: the adopter runs a vanilla `langchain-ai/open_deep_research` locally and intends to test several configurations. Build an ODR profile, or a LangGraph Server profile that ships as ODR? | **Structure it as LangGraph, ship it as ODR** (owner, 2026-08-18: "seems a fine tactic to me"). The consumed surface is identical either way — the same ~13 operations — so this is a package boundary and a contract-authority split, not extra scope. Why it is not preemptive abstraction: the two halves have different verification authorities and different drift rates. The LangGraph half is pinned to a versioned OpenAPI document that can be fetched and hashed; the ODR half — the graph name, the assistant config schema, the run input and output payloads, the credential — is verifiable only from ODR's own source and from live introspection. Fused into one bundle, a single dated verification would cover both, which is the failure D10's drift procedure and house rule 1 exist to prevent. `Profile.Kind` is the framework's mechanism for a second LangGraph app later — one handler implementation, several named listeners drawing on independent fault counters — but it stays EMPTY for now: one app is one Name, and reaching for Kind before app 2 exists is the one abstraction this decision would otherwise be buying on speculation. Lands out of tree per D7 unless the owner reopens it; see the section below. |
 
 Two of these reversed a recommendation, and the reasoning is worth keeping. On D6 the owner chose in-tree because the
 adopter's G-3 should not wait on their own team's out-of-tree build. On D7 the owner held ADR-0002 — vendor
@@ -1661,6 +1663,102 @@ limiter proof — both reachable in Tier-1 without any new doctrine exception.
   journaled — an outbound dial absent from /__admin/requests puts the one action that can cost money outside the surface
   the whole tool exists to provide.
 
+### The LangGraph Server profile, shipped as ODR — NOT STARTED
+
+Investigated 2026-08-18. D12 left ODR to the adopter because this repository could not name its wire surface:
+"open-deep-research" matches several unrelated projects with different or no HTTP APIs. The adopter has now named
+it — they run a vanilla `langchain-ai/open_deep_research` instance locally and intend to test several
+configurations — which resolves D12's blocker. Nothing is started. This section is the investigation, recorded so
+the next person does not repeat it.
+
+**Most of what made this "large" has already shipped.** The audit table sizes the item on its long-running-job
+semantics. That machine landed in v0.2.0 and is exported: `provider.MintJob`, `provider.ResolveJob`,
+`provider.ValidJobID`, `provider.LaneFromPath` and the job finding codes, with `testkit.Jobs` and
+`testkit.NewJobs` for a hand-wired store. Route-addressable turns landed in the same release, so the audit
+table's "a provider with 3+ routes cannot be scripted per route" is stale — the default `turn_key` is `["route"]`.
+SSE is in the seam. And the framework seam means there is no PR here at all.
+
+**The contract is machine-readable, and obtainable without running the server.** The LangGraph Server OpenAPI
+document ships inside the `langgraph-api` wheel as an `openapi.json` member — extract it from the published
+artifact rather than standing an instance up and introspecting it.
+
+| field | value |
+|---|---|
+| source | `langgraph-api` 0.12.5 (PyPI wheel), member `openapi.json` |
+| bytes | 219,991 |
+| sha256 | `0b4d3d1e2da065a50a53838e7f63f5d90763a1dc759b165dd7a4409b5959888c` |
+| openapi | 3.1.0 |
+| title / version | "LangSmith Deployment" / 0.1.0 |
+| surface | 49 paths, 63 operations, 57 schemas |
+
+`info.version` is a static `0.1.0` that does not track the package, so the D10 `spec:` block must record the
+WHEEL version beside the hash or the drift anchor means nothing.
+
+**The consumed subset is about 13 operations across 10 paths**, not 63. Method and path are written bare below,
+because the backticked form is how this repository claims a route is simulated and these are LangGraph's routes,
+not ours.
+
+| operations | purpose | machinery |
+|---|---|---|
+| POST /assistants, POST /assistants/search | the configured graph instances — this is "test several configs" | routes plus body validation |
+| POST /threads | create a thread | route |
+| POST and GET /threads/{thread_id}/runs | start a run, list runs | the job machine mints here |
+| GET /threads/{thread_id}/runs/{run_id} | poll a run | the job machine resolves here |
+| GET /threads/{thread_id}/runs/{run_id}/join | block until the run finishes | job machine plus a scripted delay |
+| POST /threads/{thread_id}/runs/stream | stream a run | the SSE machinery |
+| GET and POST /threads/{thread_id}/state | read and write thread state — where the report comes back | routes |
+| POST /runs/wait, POST /runs/stream | the stateless variants of the two above | as above |
+
+The error surface is close to free. LangGraph Server is FastAPI, so its 422 is the
+`{"detail":[{"loc":…,"msg":…,"type":…}]}` shape `profiles/perplexity` already renders and goldens
+(`validationErrorResponse` in its `response.go`, `perplexity-sonar-422.json`).
+
+**The credential is not in the specification.** `securitySchemes` is empty and top-level `security` is null: the
+platform declares no authentication and a deployment adds its own. ODR supplies one through `langgraph.json`'s
+`auth.path`, which wants `Authorization: Bearer <JWT>` verified against Supabase and answers 401 with a
+`{"detail": "<string>"}` body. But that module only initialises when `SUPABASE_URL` and `SUPABASE_KEY` are set,
+and a vanilla local instance likely has neither — in which case it raises 500 rather than 401, and Studio users
+bypass it entirely. This decides `DefaultAuth`, the credential names and the whole 401 convention
+`testkit.ValidateProfile` checks, so it is an open question for the adopter rather than something to guess.
+
+**Four units, ordered so the cheap ones de-risk the module before the risky one:**
+
+1. Contract verification — the platform document plus ODR's own auth, and drawing the consumed-subset line.
+   Harder than Phase 8 unit 1: 63 operations to say no to, and two authorities to date separately.
+2. Assistants and threads — synchronous CRUD, which proves the out-of-tree module skeleton.
+3. Runs — the job machine and the SSE grammar. The risky unit; see below.
+4. Composition, scenarios, docs, and the CI wiring of the guards.
+
+Sizing against measured anchors — `profiles/exa` is four routes at 3,837 non-test and 4,350 test lines with 34
+goldens; `profiles/mcp` is 2,569 and 2,395 with 16 goldens and a 1,148-line contract README — expect roughly
+3,500–4,500 non-test lines, 4,000–5,000 test lines, 25–35 goldens, and a contract README at the MCP end, because
+it carries two authorities rather than one. At the Phase 10 cadence that is a day to a day and a half of unit
+work, plus owner review between units.
+
+**Three risks worth pricing in:**
+
+- **Two trailblazer taxes in one profile.** This would be the first out-of-tree profile to drive either the job
+  machine or the stream machinery across the module boundary. `examples/profile/acme` is synchronous and has no
+  stream, and `profiles/exa` and `profiles/tavily` reach `internal/jobs` directly in their async tests, which an
+  out-of-tree module cannot do. Phase 10 already left a note anticipating exactly this: the CAS release of a
+  claimed fault lane "waits for a real out-of-tree profile to trip `fault.attempt_on_rejection`". Expect unit 3
+  to find framework gaps, not only to write handlers.
+- **Instancing is single-entry only at v0.5.0.** `Validate` refuses a profile that names a Kind and also declares
+  more than one entry kind (`provider/profile.go`). Exa is the precedent that says one coherent multi-route API
+  fits in a single entry kind — four routes including the async create-poll pair, one validator — and Perplexity
+  is the only two-entry profile, because it serves two genuinely different vendor surfaces on one listener.
+  Verify this in unit 1 rather than assuming it: if LangGraph needs two entry kinds, the Kind path is closed
+  until the framework changes.
+- **63 operations is standing scope pressure.** The store, crons, batch, a2a and MCP surfaces all look reasonable
+  to add. The consumed-subset line belongs in the contract README, defended the way the four shipped profiles
+  defend theirs.
+
+**Where it lands is still open.** Out of tree is the default (D7, D12). But "generally helpful to early adopters"
+— the owner's own reason for preferring the LangGraph framing — is an argument for a fifth reference profile in
+tree, which is the opposite of both. Nothing forces the call now: a profile can move in later, and the seam means
+it runs identically either way. It gets easier to answer once it is known whether anyone besides this adopter
+points at LangGraph.
+
 ## Audited gap status
 
 Every item below was checked against the code with file:line evidence or a live probe. `contradicts-current-design`
@@ -1730,6 +1828,11 @@ means the gap cannot be closed without changing a stated design property.
   That tier is the one place per-process lane state actually bites.
 - Which OpenAI SDK base-URL convention do their cores use, and which Perplexity routes do they actually
   call? All four spellings now route, but the reconciliation they asked for still needs their answer.
+- What does their ODR client actually send as a credential, and what does their local instance actually
+  answer without one? LangGraph declares no authentication of its own and ODR's `auth.path` module only
+  initialises when `SUPABASE_URL` and `SUPABASE_KEY` are set, so a vanilla local instance may 500 where a
+  deployed one 401s. This decides `DefaultAuth`, the credential names and the 401 convention
+  `testkit.ValidateProfile` checks — see the LangGraph section above.
 
 ## Sequencing rule
 
