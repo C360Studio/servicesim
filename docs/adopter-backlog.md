@@ -1713,13 +1713,32 @@ The error surface is close to free. LangGraph Server is FastAPI, so its 422 is t
 `{"detail":[{"loc":…,"msg":…,"type":…}]}` shape `profiles/perplexity` already renders and goldens
 (`validationErrorResponse` in its `response.go`, `perplexity-sonar-422.json`).
 
-**The credential is not in the specification.** `securitySchemes` is empty and top-level `security` is null: the
-platform declares no authentication and a deployment adds its own. ODR supplies one through `langgraph.json`'s
-`auth.path`, which wants `Authorization: Bearer <JWT>` verified against Supabase and answers 401 with a
-`{"detail": "<string>"}` body. But that module only initialises when `SUPABASE_URL` and `SUPABASE_KEY` are set,
-and a vanilla local instance likely has neither — in which case it raises 500 rather than 401, and Studio users
-bypass it entirely. This decides `DefaultAuth`, the credential names and the whole 401 convention
-`testkit.ValidateProfile` checks, so it is an open question for the adopter rather than something to guess.
+**The credential is not in the specification, and there are two regimes rather than one.**
+`securitySchemes` is empty and top-level `security` is null: the platform declares no authentication and a
+deployment adds its own. ODR supplies one through `langgraph.json`'s `auth.path` — `Authorization: Bearer <JWT>`
+verified against Supabase, answering with a `{"detail": "<string>"}` body — and it is installed in local dev
+exactly as in a deployment, because the server selects the custom backend on the presence of its auth config with
+no dev-mode guard (verified 2026-08-18 against `langgraph-api` 0.12.5, `auth/middleware.py` and `auth/custom.py`).
+
+The second regime is the one that is easy to miss: **the Studio bypass is a request header, not a server mode.**
+The custom backend short-circuits to the LangSmith/Studio backend when a request carries `x-auth-scheme:
+langsmith`, and under `langgraph dev` that backend is populated. So one running server answers two different auth
+regimes on the same routes, chosen by the caller. Studio sends the header; a plain HTTP client does not, and lands
+on the JWT path.
+
+The reason this is still an open question rather than a settled one: a genuinely vanilla instance cannot serve the
+JWT path at all. ODR's handler checks in order — no header 401, malformed 401, then `if not supabase:` **500** —
+so without `SUPABASE_URL` and `SUPABASE_KEY` a well-formed Bearer token gets a 500, not a 200.
+
+| request | vanilla, no Supabase | Supabase configured | via the Studio header |
+|---|---|---|---|
+| no `Authorization` | 401 | 401 | 200 |
+| well-formed Bearer | 500 | 200 or 401 | 200 |
+
+A client that works today is therefore in one of three states, and they are three different contracts. This
+decides `DefaultAuth`, the credential names and the 401 convention `testkit.ValidateProfile` checks. The
+recommendation is to model BOTH regimes: `x-auth-scheme` is a header a consumer could send by accident, and
+proving they do not is what house rule 5 exists for.
 
 **Four units, ordered so the cheap ones de-risk the module before the risky one:**
 
@@ -1828,11 +1847,11 @@ means the gap cannot be closed without changing a stated design property.
   That tier is the one place per-process lane state actually bites.
 - Which OpenAI SDK base-URL convention do their cores use, and which Perplexity routes do they actually
   call? All four spellings now route, but the reconciliation they asked for still needs their answer.
-- What does their ODR client actually send as a credential, and what does their local instance actually
-  answer without one? LangGraph declares no authentication of its own and ODR's `auth.path` module only
-  initialises when `SUPABASE_URL` and `SUPABASE_KEY` are set, so a vanilla local instance may 500 where a
-  deployed one 401s. This decides `DefaultAuth`, the credential names and the 401 convention
-  `testkit.ValidateProfile` checks — see the LangGraph section above.
+- Which of the three ODR auth states is their instance actually in? JWT is the shipped default and it is
+  active under `langgraph dev`, but a vanilla instance with no `SUPABASE_URL`/`SUPABASE_KEY` answers 500 to a
+  well-formed Bearer token, and a caller sending `x-auth-scheme: langsmith` bypasses the custom handler
+  altogether. So a working client means either Supabase is configured, or it is going through the Studio header,
+  or the auth block was edited out — three different contracts. See the LangGraph section above for the table.
 
 ## Sequencing rule
 
