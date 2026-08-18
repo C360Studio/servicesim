@@ -14,7 +14,7 @@ services:
     # Pin the tag. Servicesim's contract is its wire output, so an image that
     # moves underneath a test suite moves the fixtures the suite asserts on.
     # Renovate or Dependabot can bump this line; :latest cannot be reviewed.
-    image: ghcr.io/c360studio/servicesim:v0.4.0
+    image: ghcr.io/c360studio/servicesim:v0.5.0
 
     # Pin the replica count. Every piece of lane state (turn cursors, fault
     # counters, async job records, the namespace registry) lives in one
