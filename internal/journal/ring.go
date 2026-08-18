@@ -55,6 +55,14 @@ type Limits struct {
 	// and it would put this store one namespace out of step with the fault
 	// engine, which exempts it for the same reason.
 	MaxNamespaces int
+
+	// CredentialNames widens the credential-name vocabulary [Redact] masks by
+	// at the storage boundary (see [Ring.Append]), beyond internal/redact's own
+	// fixed tables. It is the union of every registered profile's
+	// provider.Profile.CredentialNames (house rule 4) — data carried into the
+	// Ring at construction, never a call into internal/redact, whose tables
+	// stay untouched. Nil is the framework's fixed vocabulary alone.
+	CredentialNames []string
 }
 
 // normalized returns l with every out-of-range field replaced by its documented
@@ -256,7 +264,7 @@ func (r *Ring) Append(e Entry) {
 		return
 	}
 
-	redacted := bound(Redact(e), r.limits.MaxBodyBytes)
+	redacted := bound(Redact(e, r.limits.CredentialNames...), r.limits.MaxBodyBytes)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()

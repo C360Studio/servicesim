@@ -36,7 +36,12 @@ scenario YAML ──► canonical sources ──► per-provider projection ─�
 ```
 
 Separate listeners are not a stylistic choice — Exa and Tavily both serve `POST /search`, so preserving each
-vendor's real path requires one listener per provider.
+vendor's real path requires one listener per provider. The four listeners above are reference profiles under
+`profiles/<name>`, composed by the root `servicesim` package (`Main`/`Run`) from a `provider.Set` —
+`cmd/servicesim/main.go` registers `profiles.Reference()`, and a consumer's own binary registers its own profiles
+the same way (`docs/adr/0003-framework-seam.md`). The built-in scenario corpus (`scenarios/`) is reference-only:
+it scripts only these four profiles, and a profile registered elsewhere ships its own scenario files rather than
+relying on an overlay.
 
 The design of record is `docs/design/package-design.md`. The requirements it implements are
 `docs/architecture-and-implementation-plan.md`.
@@ -45,9 +50,10 @@ The design of record is `docs/design/package-design.md`. The requirements it imp
 
 ### 1. The verified contract wins, always
 
-`contracts/<provider>/README.md` records what the vendor's live documentation actually says, with the URLs it was
-read from and the date. When any other document in this repository disagrees with it — including the plan — the
-contract file is right and the other document is stale. The plan document was written from a snapshot and has
+`profiles/<provider>/contracts/README.md` records what the vendor's live documentation actually says, with the
+URLs it was read from and the date (the repository-root `contracts/` package README is the index across the four
+bundles and the shared discipline). When any other document in this repository disagrees with it — including the
+plan — the contract file is right and the other document is stale. The plan document was written from a snapshot and has
 already been wrong about Exa's `score` field, Tavily's `response_time` type, and Perplexity's `usage` shape.
 
 Never write a wire field from memory. Read the contract file.
@@ -91,11 +97,17 @@ Consumers, by contrast, must tolerate unknown response fields, because real APIs
 Parallel test suites start separate processes or containers. `POST /__admin/reset` is a local-development
 convenience, not a concurrency mechanism. Do not add admin endpoints that mutate scenario state — a mutable
 admin API becomes hidden shared state between concurrent tests, and the resulting flakes are miserable to debug.
+The admin surface is framework-owned and closed to composition: `provider.Profile` has no admin-route field and
+the composition root accepts none, so this is structural, not a review gate (D-3, `docs/adr/0003-framework-seam.md`).
 
 ### 7. Consumers pay for every exported symbol
 
-Other repositories import `provider/*`, `scenario` and `testkit` and pin a released version. Anything exported
-is a compatibility obligation. Keep the exported surface small; put everything else in `internal/`.
+Other repositories import six packages and pin a released version: `provider`, `scenario`, `testkit`, `contracts`,
+`scenarios` (the built-in corpus, reference-only) and the root `servicesim` composition package. Anything exported
+is a compatibility obligation. Keep the exported surface small; put everything else in `internal/`. Those six are
+the seam; `profiles/<name>` are reference examples, importable so a consumer can compose ours alongside their own,
+whose exported surface is trimmed to what a consumer actually needs to name
+(`docs/adr/0003-framework-seam.md`).
 
 ## Commands
 
@@ -130,4 +142,5 @@ is not a proxy or gateway, does not store real credentials or unsanitised record
 implement every field of every vendor — for the four shipped profiles or for any profile added later. Requests to
 make it "more realistic" in these directions are out of scope — the value here is determinism, not fidelity to a
 vendor's ML behaviour. It is also not a generic mock server: a profile is a verified vendor contract plus
-deterministic scenarios, added the way the shipped profiles were, not free-form request/response configuration.
+deterministic scenarios, added the way the shipped profiles were — which, out of tree, means
+`testkit.ValidateProfile` and `contracts.Conform` in your own CI — not free-form request/response configuration.

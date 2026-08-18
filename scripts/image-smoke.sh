@@ -80,6 +80,20 @@ for _ in $(seq 1 60); do
 done
 [ "${ready}" -eq 1 ] || { echo "FAIL: /readyz never succeeded"; failures=1; exit 1; }
 
+echo "==> --version reports a real build, not the unstamped default"
+# github.com/c360studio/servicesim.Version's own doc comment (Phase 10 unit 3
+# moved it here from cmd/servicesim/main.go) warns that a renamed ldflags
+# symbol silently reverts every release binary to "dev" with no other signal.
+# This is the assertion that would have caught it: run the image's own binary
+# (ENTRYPOINT, CMD overridden) rather than checking the Dockerfile text, so a
+# build-arg wiring mistake fails here too, not just a renamed ldflags symbol.
+image_version=$(docker run --rm "${IMAGE}" --version | head -1)
+if printf '%s' "${image_version}" | grep -q ' dev$'; then
+  fail "image reports the unstamped default version: ${image_version}"
+else
+  pass "image reports a stamped version: ${image_version}"
+fi
+
 echo "==> criterion 12: runs as a non-root user"
 declared_user=$(docker inspect --format '{{.Config.User}}' "${IMAGE}")
 check "image declares a non-root USER" "${declared_user}" "65532:65532"
@@ -273,7 +287,16 @@ else
   pass "journal contains no credential value"
 fi
 
-for provider in exa tavily perplexity mcp; do
+# Provider names come from the image's own --print-ports rather than a
+# hand-kept "exa tavily perplexity mcp" literal, so this loop covers whatever
+# this build actually registers (Phase 10 unit 3: --print-ports is what
+# generates the Dockerfile's EXPOSE list too, so the two are the same source
+# of truth). Parsed with grep/sed rather than jq, which the CI runner and a
+# developer machine are not both guaranteed to have.
+smoke_providers=$(docker run --rm "${IMAGE}" --print-ports |
+  grep -oE '"name":"[a-z0-9_-]+"' | sed -E 's/"name":"([^"]+)"/\1/')
+
+for provider in ${smoke_providers}; do
   if printf '%s' "${journal}" | grep -q "\"provider\":\"${provider}\""; then
     pass "journal recorded a ${provider} request"
   else

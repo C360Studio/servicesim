@@ -1,830 +1,459 @@
 package contracts_test
 
 import (
-	"bytes"
-	"encoding/json"
-	"io/fs"
-	"path"
-	"regexp"
-	"slices"
-	"strconv"
+	"fmt"
+	"maps"
 	"strings"
+	"sync"
 	"testing"
-	"time"
+	"testing/fstest"
 
 	"github.com/c360studio/servicesim/contracts"
 )
 
-// TestGoldensAreValidJSON decodes every embedded fixture. A golden that is not
-// valid JSON fails a provider test with a parse error a long way from here, so
-// it is caught at the source instead.
-func TestGoldensAreValidJSON(t *testing.T) {
-	t.Parallel()
-
-	for _, golden := range allGoldens(t) {
-		t.Run(golden.Path, func(t *testing.T) {
-			t.Parallel()
-
-			decoder := json.NewDecoder(bytes.NewReader(golden.Data))
-			decoder.UseNumber()
-
-			var body any
-			if err := decoder.Decode(&body); err != nil {
-				t.Fatalf("decoding %s: %v", golden.Path, err)
-			}
-			if _, ok := body.(map[string]any); !ok {
-				t.Fatalf("%s: top level is %T, want a JSON object", golden.Path, body)
-			}
-			if decoder.More() {
-				t.Fatalf("%s: trailing content after the JSON body", golden.Path)
-			}
-		})
-	}
-}
-
-// TestEveryGoldenHasProvenance is the reason this package exists. A fixture with
-// no provenance entry cannot be reviewed: when it changes, nobody can say
-// whether the vendor moved or Servicesim did.
+// goodBundle returns a fresh, well-formed synthetic contract bundle: one
+// success golden, one empty-result golden, two error goldens and one SSE
+// transcript golden, with a provenance.yaml (carrying a spec: block) that
+// fully covers all five. It exists so this package's own tests exercise
+// Read, Goldens, Provenance, ProviderSpec, OldestVerified and Conform
+// without depending on any real vendor's fixtures — those live beside their
+// own profile now (profiles/<name>/contracts), not here, because contracts
+// no longer knows which providers exist.
 //
-// JSON goldens are enumerated through goldens(t, ...) / [contracts.Goldens].
-// SSE transcript goldens (*.sse, docs/design/streaming.md §5.4) are walked
-// separately, directly off [contracts.FS], because Goldens deliberately
-// enumerates JSON fixtures only (see its doc comment) — without this second
-// pass, a future *.sse fixture with no provenance entry would pass this test
-// silently, which is exactly the drift this test exists to catch.
-func TestEveryGoldenHasProvenance(t *testing.T) {
+// Returned fresh every call (fstest.MapFS is a map) so a test that mutates
+// its copy — every "broken bundle" test below does — never leaks into
+// another.
+func goodBundle() fstest.MapFS {
+	return fstest.MapFS{
+		"happy.json":      &fstest.MapFile{Data: []byte(`{"result":"ok"}`)},
+		"empty.json":      &fstest.MapFile{Data: []byte(`{"result":[]}`)},
+		"error-400.json":  &fstest.MapFile{Data: []byte(`{"error":"bad request"}`)},
+		"error-429.json":  &fstest.MapFile{Data: []byte(`{"error":"rate limited"}`)},
+		"stream.sse":      &fstest.MapFile{Data: []byte("data: {\"delta\":\"hi\"}\n\n")},
+		"README.md":       &fstest.MapFile{Data: []byte("# Acme contract\n")},
+		"provenance.yaml": &fstest.MapFile{Data: []byte(goodProvenanceYAML)},
+	}
+}
+
+var goodProvenanceYAML = `
+provider: acme
+verified: "2026-08-10"
+spec:
+  url: https://api.example.test/openapi.json
+  version: "1.0.0"
+  sha256: "` + strings.Repeat("a", 64) + `"
+  retrieved: "2026-08-10"
+goldens:
+  - golden: happy.json
+    endpoint: POST /v1/answer
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://api.example.test/openapi.json
+    verified: "2026-08-01"
+    note: happy path
+    api_version: "1.0.0"
+  - golden: empty.json
+    endpoint: POST /v1/answer
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.example.test/answer
+    verified: "2026-08-02"
+    note: empty result set
+  - golden: error-400.json
+    endpoint: POST /v1/answer
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://docs.example.test/errors
+    verified: "2026-08-03"
+    note: bad request shape
+  - golden: error-429.json
+    endpoint: POST /v1/answer
+    status: 429
+    kind: vendor-documented
+    documentation_url: https://docs.example.test/errors
+    verified: "2026-08-04"
+    note: rate limited shape
+  - golden: stream.sse
+    endpoint: POST /v1/answer (stream)
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.example.test/stream
+    verified: "2026-08-05"
+    note: one streamed delta
+`
+
+// cloneBundle returns a shallow copy of b, so a test can add, remove or
+// replace an entry without mutating a bundle another test still holds.
+func cloneBundle(b fstest.MapFS) fstest.MapFS {
+	return maps.Clone(b)
+}
+
+// TestRead pins Read's contract: it serves a bare name's bytes verbatim, and
+// rejects anything that is not a bare name or does not exist.
+func TestRead(t *testing.T) {
 	t.Parallel()
 
-	for _, provider := range contracts.Providers() {
-		records := provenance(t, provider)
+	bundle := goodBundle()
 
-		for _, golden := range goldens(t, provider) {
-			if _, ok := records[golden.Name]; !ok {
-				t.Errorf("%s has no entry in %s/%s", golden.Path, provider, contracts.ProvenanceFile)
-			}
+	data, err := contracts.Read(bundle, "happy.json")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if string(data) != `{"result":"ok"}` {
+		t.Errorf("Read returned %q, want the golden's literal bytes", data)
+	}
+
+	for _, name := range []string{"../elsewhere/happy.json", "sub/happy.json"} {
+		if _, err := contracts.Read(bundle, name); err == nil {
+			t.Errorf("Read(%q) succeeded, want an error for a non-bare name", name)
 		}
+	}
 
-		for _, name := range sseGoldenNames(t, provider) {
-			if _, ok := records[name]; !ok {
-				t.Errorf("%s/%s has no entry in %s/%s", provider, name, provider, contracts.ProvenanceFile)
-			}
+	if _, err := contracts.Read(bundle, "nonexistent.json"); err == nil {
+		t.Error("Read of a name absent from the bundle succeeded")
+	}
+}
+
+// TestReadRejectsANestedNameEvenWhenItExists strengthens TestRead's
+// "sub/happy.json" case above: goodBundle has no file at that path, so
+// fstest.MapFS.Open itself refuses it (fs.ValidPath's own rule) before
+// Read's OWN bare-name guard is ever reached — a mutant that deletes
+// Read's `if name != path.Base(name)` check entirely still passes that
+// assertion, because the underlying fs.FS was already going to error for
+// an unrelated reason. This test builds a bundle that DOES have a file at
+// a nested path, so Read("sub/nested.json") can only fail if Read's own
+// guard is the thing doing the rejecting — proving the guard, not fs.FS's.
+func TestReadRejectsANestedNameEvenWhenItExists(t *testing.T) {
+	t.Parallel()
+
+	bundle := cloneBundle(goodBundle())
+	bundle["sub/nested.json"] = &fstest.MapFile{Data: []byte(`{"result":"reachable"}`)}
+
+	if _, err := contracts.Read(bundle, "sub/nested.json"); err == nil {
+		t.Error("Read(\"sub/nested.json\") succeeded for a name with a directory component that " +
+			"genuinely exists in the bundle — Read's own bare-name guard did not fire")
+	} else if !strings.Contains(err.Error(), "not a bare file name") {
+		t.Errorf("Read error = %q, want it to name the bare-file-name requirement", err)
+	}
+}
+
+// TestGoldens pins sorting and the JSON-only filter: Goldens must not depend
+// on the underlying fs.FS's own enumeration order, and must not enumerate
+// the SSE transcript golden.
+func TestGoldens(t *testing.T) {
+	t.Parallel()
+
+	goldens, err := contracts.Goldens(goodBundle())
+	if err != nil {
+		t.Fatalf("Goldens: %v", err)
+	}
+
+	var names []string
+	for _, g := range goldens {
+		names = append(names, g.Name)
+	}
+	want := []string{"empty.json", "error-400.json", "error-429.json", "happy.json"}
+	if len(names) != len(want) {
+		t.Fatalf("Goldens returned %v, want %v", names, want)
+	}
+	for i, name := range names {
+		if name != want[i] {
+			t.Errorf("Goldens()[%d].Name = %q, want %q (sorted order)", i, name, want[i])
 		}
 	}
 }
 
-// TestEveryProvenanceEntryHasGolden catches the opposite drift: a record left
-// behind by a deleted or renamed fixture, which would make the provenance file
-// describe a shape nothing serves.
-//
-// Existence is checked through [contracts.Read] rather than goldens(t, ...):
-// the latter wraps [contracts.Goldens], which deliberately enumerates JSON
-// fixtures only (see its doc comment) and would report every SSE transcript
-// golden — *.sse, docs/design/streaming.md §5.4 — as missing even though it
-// is embedded and real. Read has no such restriction: it serves any embedded
-// fixture by name, whatever its extension.
-func TestEveryProvenanceEntryHasGolden(t *testing.T) {
+// TestProvenance pins Provenance's error cases: an entry with no golden name
+// and two entries naming the same golden must both fail closed, because
+// either would let a fixture change with no reviewable record.
+func TestProvenance(t *testing.T) {
 	t.Parallel()
 
-	for _, provider := range contracts.Providers() {
-		for name := range provenance(t, provider) {
-			if _, err := contracts.Read(provider, name); err != nil {
-				t.Errorf("%s/%s names %s, which does not exist", provider, contracts.ProvenanceFile, name)
-			}
-		}
+	records, err := contracts.Provenance(goodBundle())
+	if err != nil {
+		t.Fatalf("Provenance: %v", err)
+	}
+	if len(records) != 5 {
+		t.Fatalf("Provenance returned %d records, want 5", len(records))
+	}
+	if records["happy.json"].Endpoint != "POST /v1/answer" {
+		t.Errorf("happy.json endpoint = %q, want %q", records["happy.json"].Endpoint, "POST /v1/answer")
+	}
+
+	unnamed := cloneBundle(goodBundle())
+	unnamed["provenance.yaml"] = &fstest.MapFile{Data: []byte(`
+provider: acme
+verified: "2026-08-10"
+goldens:
+  - endpoint: POST /v1/answer
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.example.test/answer
+    verified: "2026-08-01"
+    note: no golden name
+`)}
+	if _, err := contracts.Provenance(unnamed); err == nil {
+		t.Error("Provenance accepted an entry naming no golden")
+	}
+
+	dup := cloneBundle(goodBundle())
+	dup["provenance.yaml"] = &fstest.MapFile{Data: []byte(`
+provider: acme
+verified: "2026-08-10"
+goldens:
+  - golden: happy.json
+    endpoint: POST /v1/answer
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.example.test/answer
+    verified: "2026-08-01"
+    note: first
+  - golden: happy.json
+    endpoint: POST /v1/answer
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.example.test/answer
+    verified: "2026-08-01"
+    note: duplicate
+`)}
+	if _, err := contracts.Provenance(dup); err == nil {
+		t.Error("Provenance accepted two entries for the same golden")
 	}
 }
 
-// TestProvenanceRecordsAreComplete checks the fields a reviewer actually uses:
-// where the shape was read, when, and whether the vendor or Servicesim chose it.
-// A record missing any of those is not a provenance record.
-//
-// verified is checked only for being a real YYYY-MM-DD date, never for
-// equalling anything else: the whole point of the per-entry date model is that
-// one golden's verification date is its own, independent of every other entry
-// in the file. TestProviderVerifiedIsAtLeastEveryEntry and
-// TestProviderVerifiedMatchesReadmeIndexTable check the cross-entry and
-// cross-document constraints that actually apply.
-func TestProvenanceRecordsAreComplete(t *testing.T) {
+// TestProviderSpec pins the ok=false case: a bundle with no spec: block at
+// all is not an error, only the absence of one.
+func TestProviderSpec(t *testing.T) {
 	t.Parallel()
 
-	for _, provider := range contracts.Providers() {
-		for name, record := range provenance(t, provider) {
-			if record.Endpoint == "" {
-				t.Errorf("%s/%s: no endpoint", provider, name)
-			}
-			if record.Status < 100 || record.Status > 599 {
-				t.Errorf("%s/%s: status %d is not an HTTP status", provider, name, record.Status)
-			}
-			switch record.Kind {
-			case contracts.VendorDocumented, contracts.SimulatorChosen:
-			default:
-				t.Errorf("%s/%s: kind %q is neither %q nor %q",
-					provider, name, record.Kind, contracts.VendorDocumented, contracts.SimulatorChosen)
-			}
-			if !strings.HasPrefix(record.DocumentationURL, "https://") {
-				t.Errorf("%s/%s: documentation_url %q is not an https URL",
-					provider, name, record.DocumentationURL)
-			}
-			if _, err := time.Parse(time.DateOnly, record.Verified); err != nil {
-				t.Errorf("%s/%s: verified %q is not a YYYY-MM-DD date", provider, name, record.Verified)
-			}
-			if record.Note == "" {
-				t.Errorf("%s/%s: no note saying what is load-bearing about this fixture", provider, name)
-			}
-		}
+	spec, ok, err := contracts.ProviderSpec(goodBundle())
+	if err != nil {
+		t.Fatalf("ProviderSpec: %v", err)
 	}
-}
-
-// TestEveryProviderHasHappyAndEmptyAndErrorGoldens asserts the coverage the
-// simulator's own tests depend on. A provider directory holding only success
-// fixtures leaves every error path in the handler ungoldened.
-func TestEveryProviderHasHappyAndEmptyAndErrorGoldens(t *testing.T) {
-	t.Parallel()
-
-	for _, provider := range contracts.Providers() {
-		var happy, empty, errors int
-		for name, record := range provenance(t, provider) {
-			switch {
-			case record.Status >= 400:
-				errors++
-			case strings.Contains(name, "empty"):
-				empty++
-			default:
-				happy++
-			}
-		}
-
-		if happy == 0 {
-			t.Errorf("%s has no success golden", provider)
-		}
-		if empty == 0 {
-			t.Errorf("%s has no empty-result golden", provider)
-		}
-		if errors < 2 {
-			t.Errorf("%s has %d error goldens, want at least 2", provider, errors)
-		}
-	}
-}
-
-// TestVerifiedOnIsTheOldestEntry pins contracts.VerifiedOn's contract: the
-// oldest verified date across every provenance entry in every provider — the
-// age of the single stalest golden — computed rather than restated, so it
-// cannot drift from the entries it summarises.
-func TestVerifiedOnIsTheOldestEntry(t *testing.T) {
-	t.Parallel()
-
-	var oldest string
-	for _, provider := range contracts.Providers() {
-		for _, record := range provenance(t, provider) {
-			if oldest == "" || record.Verified < oldest {
-				oldest = record.Verified
-			}
-		}
-	}
-
-	if oldest == "" {
-		t.Fatal("no provenance entry carries a verified date at all")
-	}
-	if contracts.VerifiedOn != oldest {
-		t.Errorf("contracts.VerifiedOn = %q, want %q (the oldest per-entry date)", contracts.VerifiedOn, oldest)
-	}
-}
-
-// TestProviderVerifiedIsAtLeastEveryEntry and
-// TestProviderVerifiedMatchesReadmeIndexTable — the two cross-document checks
-// on the provider-level `verified:` date — live in provenance_internal_test.go
-// (package contracts), because they need provenanceFile.Verified and that
-// field is unexported: house rule 7 says a test-only need is not a reason to
-// export a new symbol, so there is no contracts.VerifiedFor here.
-//
-// TestSpecRetrievedIsAtLeastProviderVerified, the one spec check that also
-// needs the unexported provider-level Verified, lives there too for the same
-// reason.
-
-// TestSpecBlockFieldsAreComplete checks every field contracts.ProviderSpec
-// reports when a provider has a spec: block at all: a spec that names a URL
-// but forgets to record what was hashed, or when, cannot answer "did the
-// vendor change?" any better than no spec block would.
-func TestSpecBlockFieldsAreComplete(t *testing.T) {
-	t.Parallel()
-
-	hexSHA256 := regexp.MustCompile(`^[0-9a-f]{64}$`)
-
-	for _, provider := range contracts.Providers() {
-		spec, ok, err := contracts.ProviderSpec(provider)
-		if err != nil {
-			t.Fatalf("%s: ProviderSpec: %v", provider, err)
-		}
-		if !ok {
-			continue
-		}
-
-		if !strings.HasPrefix(spec.URL, "https://") {
-			t.Errorf("%s: spec.url %q is not an https URL", provider, spec.URL)
-		}
-		if spec.Version == "" {
-			t.Errorf("%s: spec.version is empty", provider)
-		}
-		if !hexSHA256.MatchString(spec.SHA256) {
-			t.Errorf("%s: spec.sha256 %q is not 64 lowercase hex characters", provider, spec.SHA256)
-		}
-		if _, err := time.Parse(time.DateOnly, spec.Retrieved); err != nil {
-			t.Errorf("%s: spec.retrieved %q is not a YYYY-MM-DD date", provider, spec.Retrieved)
-		}
-	}
-}
-
-// TestEveryProviderHasSpecRecorded pins that every provider in
-// contracts.Providers() carries a spec: block: every provider simulated
-// today (Exa, Tavily, Perplexity, MCP) publishes a machine-readable specification
-// that covers every route Servicesim simulates for them, so recording one
-// is not Perplexity-specific — it is what any provider added to this
-// package in the future must also do. A refresh dropping a block silently
-// (rather than as a deliberate, documented decision) is exactly the drift
-// this test exists to catch.
-func TestEveryProviderHasSpecRecorded(t *testing.T) {
-	t.Parallel()
-
-	for _, provider := range contracts.Providers() {
-		_, ok, err := contracts.ProviderSpec(provider)
-		if err != nil {
-			t.Fatalf("ProviderSpec(%s): %v", provider, err)
-		}
-		if !ok {
-			t.Errorf("%s has no spec: block, want one — every simulated provider publishes a "+
-				"machine-readable specification covering the routes Servicesim simulates for it", provider)
-		}
-	}
-}
-
-// TestRecordAPIVersionWhenPresentIsNonEmpty checks the one field the schema
-// allows to be entirely absent: api_version is legitimately empty for a
-// prose-sourced entry, but a present key with blank or whitespace-only
-// content would be a version nobody could act on. A plain string field
-// cannot tell "absent" from "present but empty" apart — both decode to ""
-// — so this only catches whitespace-only values; TestSpecSourcedEntriesCarryAPIVersion
-// is what actually pins that a spec-sourced entry carries a real one.
-func TestRecordAPIVersionWhenPresentIsNonEmpty(t *testing.T) {
-	t.Parallel()
-
-	for _, provider := range contracts.Providers() {
-		for name, record := range provenance(t, provider) {
-			if record.APIVersion == "" {
-				continue
-			}
-			if strings.TrimSpace(record.APIVersion) == "" {
-				t.Errorf("%s/%s: api_version is whitespace-only, want a real version or an absent key", provider, name)
-			}
-		}
-	}
-}
-
-// TestSpecSourcedEntriesCarryAPIVersion pins the pair the schema makes
-// enforceable: an entry whose documentation_url IS the provider's spec.url
-// was read from a versioned document, so it must carry api_version.
-//
-// It does NOT require spec.url to be cited by at least one entry. A
-// provider's spec: block is recorded even when every entry's
-// documentation_url is a prose page (Tavily's case, and two of Exa's five
-// /findSimilar entries): the spec's sha256 is still a valid drift signal for
-// the whole provider — "did the vendor's machine-readable surface move at
-// all?" — even where no single golden was read from it directly. See
-// contracts/README.md "Keeping them honest": a changed hash means re-read
-// the consumed fields against the per-entry pages AND the spec, it is not
-// itself a diff of what changed.
-func TestSpecSourcedEntriesCarryAPIVersion(t *testing.T) {
-	t.Parallel()
-
-	for _, provider := range contracts.Providers() {
-		spec, ok, err := contracts.ProviderSpec(provider)
-		if err != nil {
-			t.Fatalf("%s: ProviderSpec: %v", provider, err)
-		}
-		if !ok {
-			continue
-		}
-
-		for name, record := range provenance(t, provider) {
-			if record.DocumentationURL != spec.URL {
-				continue
-			}
-			if strings.TrimSpace(record.APIVersion) == "" {
-				t.Errorf("%s/%s: read from spec %s but carries no api_version", provider, name, spec.URL)
-			}
-		}
-	}
-}
-
-// TestExaResultsCarryNoScore guards the single most likely Exa mistake. The plan
-// document says results carry a score float; Exa's schema has no such field, and
-// a golden containing one would teach every consumer to parse something the real
-// API never sends. The walk is recursive because subpages nest results.
-func TestExaResultsCarryNoScore(t *testing.T) {
-	t.Parallel()
-
-	for _, golden := range goldens(t, contracts.Exa) {
-		body := decode(t, golden)
-		walk(body, func(where string, object map[string]any) {
-			if _, found := object["score"]; found {
-				t.Errorf("%s: %s carries a score field; Exa's result schema has none", golden.Path, where)
-			}
-		})
-	}
-}
-
-// TestExaRateLimitBodyIsReduced pins the one Exa status that does not use the
-// flat three-key envelope. A simulator that always emitted {requestId, error,
-// tag} would be wrong for exactly the response retry logic reads.
-func TestExaRateLimitBodyIsReduced(t *testing.T) {
-	t.Parallel()
-
-	body := decodeNamed(t, contracts.Exa, "exa-search-429.json")
-	if len(body) != 1 {
-		t.Fatalf("429 body has %d keys, want exactly one (error)", len(body))
-	}
-	if _, ok := body["error"].(string); !ok {
-		t.Fatalf("429 body error is %T, want a string", body["error"])
-	}
-}
-
-// TestTavilyResponseTimeIsANumber guards the plan document's other verified
-// error. Tavily's schema declares response_time as a number; the plan encodes
-// the string "1.15", and a string breaks every typed consumer.
-func TestTavilyResponseTimeIsANumber(t *testing.T) {
-	t.Parallel()
-
-	for _, golden := range goldens(t, contracts.Tavily) {
-		body := decode(t, golden)
-		value, present := body["response_time"]
-		if !present {
-			continue
-		}
-		if _, ok := value.(json.Number); !ok {
-			t.Errorf("%s: response_time is %T, want a JSON number", golden.Path, value)
-		}
-	}
-}
-
-// TestTavilyResultsCarryScore is the deliberate counterpart to
-// TestExaResultsCarryNoScore: POST /search's result schema does declare score,
-// and it is required, so dropping it here would be just as wrong as adding it
-// to Exa.
-//
-// It is scoped to POST /search goldens via their provenance Endpoint, not to
-// every Tavily fixture: POST /extract shares the "results" field NAME for an
-// entirely different, vendor-documented object shape (url, raw_content,
-// images, favicon — no score at all, see contracts/tavily/README.md's
-// "POST /extract" § "Response"), and an unscoped walk would wrongly demand a
-// field /extract's own contract never lists.
-func TestTavilyResultsCarryScore(t *testing.T) {
-	t.Parallel()
-
-	records := provenance(t, contracts.Tavily)
-	for _, golden := range goldens(t, contracts.Tavily) {
-		if records[golden.Name].Endpoint != "POST /search" {
-			continue
-		}
-		body := decode(t, golden)
-		results, ok := body["results"].([]any)
-		if !ok {
-			continue
-		}
-		for i, item := range results {
-			result, ok := item.(map[string]any)
-			if !ok {
-				t.Fatalf("%s: results[%d] is %T, want an object", golden.Path, i, item)
-			}
-			if _, ok := result["score"].(json.Number); !ok {
-				t.Errorf("%s: results[%d].score is %T, want a JSON number",
-					golden.Path, i, result["score"])
-			}
-		}
-	}
-}
-
-// TestPerplexitySonarChoicesCarryMessageAndDelta pins the specification's
-// unusual requirement: delta is declared required alongside message, so even a
-// non-streaming completion carries both.
-func TestPerplexitySonarChoicesCarryMessageAndDelta(t *testing.T) {
-	t.Parallel()
-
-	for _, name := range []string{"perplexity-sonar-happy.json", "perplexity-sonar-empty.json"} {
-		body := decodeNamed(t, contracts.Perplexity, name)
-
-		choices, ok := body["choices"].([]any)
-		if !ok || len(choices) == 0 {
-			t.Fatalf("%s: choices is %T, want a non-empty array", name, body["choices"])
-		}
-		for i, item := range choices {
-			choice, ok := item.(map[string]any)
-			if !ok {
-				t.Fatalf("%s: choices[%d] is %T, want an object", name, i, item)
-			}
-			for _, key := range []string{"message", "delta"} {
-				if _, ok := choice[key].(map[string]any); !ok {
-					t.Errorf("%s: choices[%d].%s is %T, want an object", name, i, key, choice[key])
-				}
-			}
-		}
-	}
-}
-
-// TestPerplexitySonarUsageRequiresCost guards the field the plan document omits.
-// cost is required inside UsageInfo, so a consumer validating against the real
-// schema would reject a usage object without it.
-func TestPerplexitySonarUsageRequiresCost(t *testing.T) {
-	t.Parallel()
-
-	for _, name := range []string{"perplexity-sonar-happy.json", "perplexity-sonar-empty.json"} {
-		body := decodeNamed(t, contracts.Perplexity, name)
-
-		usage, ok := body["usage"].(map[string]any)
-		if !ok {
-			t.Fatalf("%s: usage is %T, want an object", name, body["usage"])
-		}
-		cost, ok := usage["cost"].(map[string]any)
-		if !ok {
-			t.Fatalf("%s: usage.cost is %T, want an object", name, usage["cost"])
-		}
-		for _, key := range []string{"input_tokens_cost", "output_tokens_cost", "total_cost"} {
-			if _, ok := cost[key].(json.Number); !ok {
-				t.Errorf("%s: usage.cost.%s is %T, want a JSON number", name, key, cost[key])
-			}
-		}
-	}
-}
-
-// TestPerplexityAgentSearchResultIDsAreIntegers guards the one identifier in
-// this repository that is not a string. Encoding it as a string is the single
-// most likely implementation error on the Agent surface, and it survives a
-// round trip through any permissive decoder, so the assertion is on the raw
-// JSON number rather than on a decoded struct field.
-func TestPerplexityAgentSearchResultIDsAreIntegers(t *testing.T) {
-	t.Parallel()
-
-	body := decodeNamed(t, contracts.Perplexity, "perplexity-agent-happy.json")
-
-	output, ok := body["output"].([]any)
 	if !ok {
-		t.Fatalf("output is %T, want an array", body["output"])
+		t.Fatal("ProviderSpec reported ok=false for a bundle with a spec: block")
+	}
+	if spec.Version != "1.0.0" {
+		t.Errorf("spec.Version = %q, want %q", spec.Version, "1.0.0")
 	}
 
-	checked := 0
-	for _, item := range output {
-		object, ok := item.(map[string]any)
-		if !ok || object["type"] != "search_results" {
-			continue
-		}
-		results, ok := object["results"].([]any)
-		if !ok {
-			t.Fatalf("search_results.results is %T, want an array", object["results"])
-		}
-		for i, entry := range results {
-			result, ok := entry.(map[string]any)
-			if !ok {
-				t.Fatalf("results[%d] is %T, want an object", i, entry)
-			}
-			number, ok := result["id"].(json.Number)
-			if !ok {
-				t.Fatalf("results[%d].id is %T, want a JSON integer", i, result["id"])
-			}
-			if _, err := number.Int64(); err != nil {
-				t.Errorf("results[%d].id is %s, want a JSON integer: %v", i, number, err)
-			}
-			checked++
-		}
+	noSpec := cloneBundle(goodBundle())
+	noSpec["provenance.yaml"] = &fstest.MapFile{Data: []byte(`
+provider: acme
+verified: "2026-08-10"
+goldens:
+  - golden: happy.json
+    endpoint: POST /v1/answer
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.example.test/answer
+    verified: "2026-08-01"
+    note: happy path
+`)}
+	_, ok, err = contracts.ProviderSpec(noSpec)
+	if err != nil {
+		t.Fatalf("ProviderSpec: %v", err)
 	}
-
-	if checked == 0 {
-		t.Fatal("no search_results output item carried any result to check")
+	if ok {
+		t.Error("ProviderSpec reported ok=true for a bundle with no spec: block")
 	}
 }
 
-// TestPerplexityErrorEnvelopesStaySeparate pins the asymmetry the addendum calls
-// out: 422 is FastAPI's array-valued detail on both surfaces, non-422 Sonar is a
-// string-valued detail, and non-422 Agent is the specification's ErrorInfo.
-// Unifying them would be wrong for two of the three.
-func TestPerplexityErrorEnvelopesStaySeparate(t *testing.T) {
+// TestOldestVerified pins the replacement for the deleted package-level
+// VerifiedOn: the oldest per-entry date in THIS bundle, computed rather than
+// declared, so it cannot drift from the entries it summarises.
+func TestOldestVerified(t *testing.T) {
+	t.Parallel()
+
+	oldest, err := contracts.OldestVerified(goodBundle())
+	if err != nil {
+		t.Fatalf("OldestVerified: %v", err)
+	}
+	if oldest != "2026-08-01" {
+		t.Errorf("OldestVerified = %q, want %q (happy.json's date, the earliest entry)", oldest, "2026-08-01")
+	}
+
+	empty := cloneBundle(goodBundle())
+	empty["provenance.yaml"] = &fstest.MapFile{Data: []byte("provider: acme\nverified: \"2026-08-10\"\ngoldens: []\n")}
+	if _, err := contracts.OldestVerified(empty); err == nil {
+		t.Error("OldestVerified accepted a provenance file naming no goldens")
+	}
+}
+
+// TestConformPassesOnAWellFormedBundle runs the real, unwrapped Conform
+// against goodBundle through a genuine *testing.T, so every generic guard
+// actually produces the individually selectable subtest its name promises
+// (go test -run TestConformPassesOnAWellFormedBundle/GoldensAreValidJSON).
+func TestConformPassesOnAWellFormedBundle(t *testing.T) {
+	t.Parallel()
+	contracts.Conform(t, goodBundle())
+}
+
+// TestConformCatchesEachBreak proves each generic guard actually guards
+// something, by breaking goodBundle one way at a time and checking Conform's
+// recorded failure names what broke. Run through stubTB rather than a real
+// *testing.T (as [contracts.Conform]'s own doc comment says a caller may):
+// testing.TB has no Run method, so Conform falls back to running each check
+// inline against the stub, and every check reports through Errorf rather
+// than Fatalf for exactly this reason — see stubTB's doc comment.
+func TestConformCatchesEachBreak(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		golden string
-		check  func(t *testing.T, body map[string]any)
+		name    string
+		mutate  func(fstest.MapFS)
+		wantErr string
 	}{
-		{"perplexity-sonar-422.json", func(t *testing.T, body map[string]any) {
-			if _, ok := body["detail"].([]any); !ok {
-				t.Errorf("detail is %T, want an array of validation errors", body["detail"])
-			}
-		}},
-		{"perplexity-agent-422.json", func(t *testing.T, body map[string]any) {
-			if _, ok := body["detail"].([]any); !ok {
-				t.Errorf("detail is %T, want an array of validation errors", body["detail"])
-			}
-		}},
-		{"perplexity-sonar-429.json", func(t *testing.T, body map[string]any) {
-			if _, ok := body["detail"].(string); !ok {
-				t.Errorf("detail is %T, want a string", body["detail"])
-			}
-		}},
-		{"perplexity-agent-429.json", func(t *testing.T, body map[string]any) {
-			info, ok := body["error"].(map[string]any)
-			if !ok {
-				t.Fatalf("error is %T, want an ErrorInfo object", body["error"])
-			}
-			if _, ok := info["message"].(string); !ok {
-				t.Errorf("error.message is %T, want a string", info["message"])
-			}
-		}},
+		{
+			name: "a golden with no provenance entry",
+			mutate: func(b fstest.MapFS) {
+				b["orphan.json"] = &fstest.MapFile{Data: []byte(`{"ok":true}`)}
+			},
+			wantErr: "orphan.json has no entry",
+		},
+		{
+			name: "a provenance entry naming a golden that does not exist",
+			mutate: func(b fstest.MapFS) {
+				b["provenance.yaml"] = &fstest.MapFile{Data: []byte(goodProvenanceYAML + `
+  - golden: missing.json
+    endpoint: POST /v1/answer
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.example.test/answer
+    verified: "2026-08-01"
+    note: names a golden that is not here
+`)}
+			},
+			wantErr: "missing.json, which does not exist",
+		},
+		{
+			name: "an incomplete record",
+			mutate: func(b fstest.MapFS) {
+				b["provenance.yaml"] = &fstest.MapFile{Data: []byte(strings.Replace(
+					goodProvenanceYAML, "note: happy path", "note:", 1))}
+			},
+			wantErr: "no note",
+		},
+		{
+			name: "fewer than two error goldens",
+			mutate: func(b fstest.MapFS) {
+				delete(b, "error-429.json")
+				b["provenance.yaml"] = &fstest.MapFile{Data: []byte(strings.Replace(
+					goodProvenanceYAML,
+					"  - golden: error-429.json\n    endpoint: POST /v1/answer\n    status: 429\n"+
+						"    kind: vendor-documented\n    documentation_url: https://docs.example.test/errors\n"+
+						"    verified: \"2026-08-04\"\n    note: rate limited shape\n",
+					"", 1))}
+			},
+			wantErr: "want at least 2",
+		},
+		{
+			name: "a malformed spec sha256",
+			mutate: func(b fstest.MapFS) {
+				b["provenance.yaml"] = &fstest.MapFile{Data: []byte(strings.Replace(
+					goodProvenanceYAML, strings.Repeat("a", 64), "not-a-hash", 1))}
+			},
+			wantErr: "not 64 lowercase hex",
+		},
+		{
+			// Boundary case for hexSHA256's own regexp: one character short
+			// of 64 must still be rejected, not accepted by a `{63,64}`-style
+			// off-by-one in the length quantifier.
+			name: "a spec sha256 one character short of 64",
+			mutate: func(b fstest.MapFS) {
+				b["provenance.yaml"] = &fstest.MapFile{Data: []byte(strings.Replace(
+					goodProvenanceYAML, strings.Repeat("a", 64), strings.Repeat("a", 63), 1))}
+			},
+			wantErr: "not 64 lowercase hex",
+		},
+		{
+			// The other boundary: one character too many.
+			name: "a spec sha256 one character longer than 64",
+			mutate: func(b fstest.MapFS) {
+				b["provenance.yaml"] = &fstest.MapFile{Data: []byte(strings.Replace(
+					goodProvenanceYAML, strings.Repeat("a", 64), strings.Repeat("a", 65), 1))}
+			},
+			wantErr: "not 64 lowercase hex",
+		},
+		{
+			// hexSHA256 must require LOWERCASE hex — a vendor's spec bytes
+			// hash the same regardless of how the digest is later cased, so
+			// an uppercase digest is a formatting slip this bundle should
+			// still catch, not silently accept.
+			name: "an uppercase spec sha256",
+			mutate: func(b fstest.MapFS) {
+				b["provenance.yaml"] = &fstest.MapFile{Data: []byte(strings.Replace(
+					goodProvenanceYAML, strings.Repeat("a", 64), strings.Repeat("A", 64), 1))}
+			},
+			wantErr: "not 64 lowercase hex",
+		},
+		{
+			name: "an entry read from the spec URL with no api_version",
+			mutate: func(b fstest.MapFS) {
+				b["provenance.yaml"] = &fstest.MapFile{Data: []byte(strings.Replace(
+					goodProvenanceYAML, "    api_version: \"1.0.0\"\n", "", 1))}
+			},
+			wantErr: "carries no api_version",
+		},
+		{
+			name: "a stray file in the bundle",
+			mutate: func(b fstest.MapFS) {
+				b["notes.txt"] = &fstest.MapFile{Data: []byte("scratch")}
+			},
+			wantErr: "neither a golden, README.md nor provenance.yaml",
+		},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.golden, func(t *testing.T) {
-			t.Parallel()
-			tc.check(t, decodeNamed(t, contracts.Perplexity, tc.golden))
-		})
-	}
-}
-
-// TestMCPResultsCarryResultTypeAndServerInfo guards decision 9/14's two
-// wire-visible constants every MCP success result carries: resultType is
-// always "complete" and _meta.io.modelcontextprotocol/serverInfo names
-// this build. A result missing either would teach a consumer's tolerance
-// test the wrong lesson — that the field is truly optional, when the
-// specification MUSTs the first and SHOULDs the second and this profile
-// promises both every time (provider/mcp/doc.go's decisions 9 and 14).
-func TestMCPResultsCarryResultTypeAndServerInfo(t *testing.T) {
-	t.Parallel()
-
-	for _, name := range []string{
-		"mcp-discover-happy.json", "mcp-tools-list-happy.json", "mcp-tools-list-empty.json",
-		"mcp-tools-call-happy.json", "mcp-tools-call-empty.json", "mcp-tools-call-tool-error.json",
-		"mcp-tools-call-structured.json",
-	} {
-		body := decodeNamed(t, contracts.MCP, name)
-		result, ok := body["result"].(map[string]any)
-		if !ok {
-			t.Fatalf("%s: result is %T, want an object", name, body["result"])
-		}
-		if result["resultType"] != "complete" {
-			t.Errorf("%s: resultType is %v, want \"complete\"", name, result["resultType"])
-		}
-		meta, ok := result["_meta"].(map[string]any)
-		if !ok {
-			t.Fatalf("%s: result._meta is %T, want an object", name, result["_meta"])
-		}
-		info, ok := meta["io.modelcontextprotocol/serverInfo"].(map[string]any)
-		if !ok {
-			t.Fatalf("%s: result._meta.io.modelcontextprotocol/serverInfo is %T, want an object",
-				name, meta["io.modelcontextprotocol/serverInfo"])
-		}
-		if info["name"] != "servicesim" {
-			t.Errorf("%s: serverInfo.name is %v, want \"servicesim\"", name, info["name"])
-		}
-		if _, ok := info["version"].(string); !ok {
-			t.Errorf("%s: serverInfo.version is %T, want a string", name, info["version"])
-		}
-	}
-}
-
-// TestMCPErrorEnvelopesCarryCodes pins decision 6's status/code pairing for
-// every error golden: each is a JSON-RPC error object carrying exactly the
-// integer code its filename claims, at the HTTP status its provenance
-// entry records — the two facts a consumer's retry logic and its
-// JSON-RPC error handling key on independently, so a golden that got one
-// right and the other wrong would still look correct at a glance.
-func TestMCPErrorEnvelopesCarryCodes(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		golden        string
-		status        int
-		code          int
-		wantIDOmitted bool // true when the response's id cannot be attributed
-		// to a request at all — schema.json's RequestId admits only string or
-		// integer (no null variant), so JSONRPCErrorResponse.id, which the
-		// schema itself marks optional, must be an ABSENT key in that case,
-		// never a JSON null (see contracts/mcp/README.md, "Error response"
-		// row, and provider/mcp/jsonrpc.go's nullID).
-	}{
-		{"mcp-error-header-mismatch.json", 400, -32020, false},
-		{"mcp-error-unsupported-version.json", 400, -32022, false},
-		{"mcp-error-method-not-found.json", 404, -32601, false},
-		{"mcp-error-unknown-tool.json", 200, -32602, false},
-		{"mcp-error-invalid-request.json", 400, -32600, true},
-		{"mcp-error-parse.json", 400, -32700, true},
-		{"mcp-401.json", 401, -32600, true},
-		{"mcp-405.json", 405, -32600, true},
-		{"mcp-fault-503.json", 503, -32603, false},
-	}
-
-	records := provenance(t, contracts.MCP)
-	for _, tc := range tests {
-		t.Run(tc.golden, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			record, ok := records[tc.golden]
-			if !ok {
-				t.Fatalf("%s has no provenance entry", tc.golden)
-			}
-			if record.Status != tc.status {
-				t.Errorf("%s: provenance status is %d, want %d", tc.golden, record.Status, tc.status)
-			}
+			bundle := cloneBundle(goodBundle())
+			tc.mutate(bundle)
 
-			body := decodeNamed(t, contracts.MCP, tc.golden)
-			if _, ok := body["result"]; ok {
-				t.Fatalf("%s carries a result, not an error", tc.golden)
+			stub := &stubTB{}
+			contracts.Conform(stub, bundle)
+
+			if !stub.Failed() {
+				t.Fatalf("Conform did not fail on: %s", tc.name)
 			}
-			errObj, ok := body["error"].(map[string]any)
-			if !ok {
-				t.Fatalf("%s: error is %T, want an object", tc.golden, body["error"])
-			}
-			code, ok := errObj["code"].(json.Number)
-			if !ok {
-				t.Fatalf("%s: error.code is %T, want a JSON integer", tc.golden, errObj["code"])
-			}
-			got, err := code.Int64()
-			if err != nil {
-				t.Fatalf("%s: error.code %s is not an integer: %v", tc.golden, code, err)
-			}
-			if got != int64(tc.code) {
-				t.Errorf("%s: error.code is %d, want %d", tc.golden, got, tc.code)
-			}
-			if _, ok := errObj["message"].(string); !ok {
-				t.Errorf("%s: error.message is %T, want a string", tc.golden, errObj["message"])
-			}
-			_, hasID := body["id"]
-			switch {
-			case tc.wantIDOmitted && hasID:
-				t.Errorf("%s: carries an id member, but this response's id cannot be attributed to a "+
-					"request — schema.json's RequestId has no null variant, so the member must be "+
-					"absent, never a JSON null", tc.golden)
-			case !tc.wantIDOmitted && !hasID:
-				t.Errorf("%s: no top-level id key; this response's id is the request's own and must be echoed", tc.golden)
+			if !strings.Contains(stub.Message(), tc.wantErr) {
+				t.Errorf("Conform's recorded failures = %q, want a message containing %q", stub.Message(), tc.wantErr)
 			}
 		})
 	}
 }
 
-// TestReadRejectsUnknownProviderAndPaths checks the two ways a caller can ask
-// for something that is not here. Both must name what was wrong rather than
-// return an empty result.
-func TestReadRejectsUnknownProviderAndPaths(t *testing.T) {
-	t.Parallel()
+// stubTB captures what Conform reports instead of failing the real test, so
+// TestConformCatchesEachBreak can assert Conform fails when it should.
+// Mirrors testkit's own stubTB (testkit/assertions_test.go): every check in
+// this package reports through Errorf, never Fatalf, which is what lets a
+// plain embedded testing.TB stand in — the embedded interface is nil, so a
+// method this stub does not override would panic rather than silently pass.
+type stubTB struct {
+	testing.TB
 
-	if _, err := contracts.Read("openai", "anything.json"); err == nil {
-		t.Error("Read accepted an unknown provider")
-	}
-	if _, err := contracts.Read(contracts.Exa, "../tavily/tavily-401.json"); err == nil {
-		t.Error("Read accepted a path outside the provider directory")
-	}
-	if _, err := contracts.Goldens("openai"); err == nil {
-		t.Error("Goldens accepted an unknown provider")
-	}
-	if _, err := contracts.Provenance("openai"); err == nil {
-		t.Error("Provenance accepted an unknown provider")
-	}
+	mu       sync.Mutex
+	messages []string
 }
 
-// TestFSHoldsOnlyGoldensAndProvenance keeps stray files out of the embedded
-// set: anything else here would ship to consumers as contract data. The
-// README.md files are deliberately not embedded — they are the human record,
-// not wire data. .sse is the SSE transcript golden extension
-// docs/design/streaming.md §5.4 names; contracts.Goldens does not enumerate
-// them (see its doc comment), but they are still legitimate embedded contract
-// data, not stray files.
-func TestFSHoldsOnlyGoldensAndProvenance(t *testing.T) {
-	t.Parallel()
+func (s *stubTB) Helper()        {}
+func (s *stubTB) Cleanup(func()) {}
 
-	err := fs.WalkDir(contracts.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		switch {
-		case strings.HasSuffix(name, ".json"), strings.HasSuffix(name, ".sse"), path.Base(name) == contracts.ProvenanceFile:
-		default:
-			t.Errorf("%s is embedded but is neither a golden nor a provenance record", name)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walking the embedded contracts: %v", err)
-	}
+func (s *stubTB) Errorf(format string, args ...any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = append(s.messages, fmt.Sprintf(format, args...))
 }
 
-// allGoldens fails the test rather than returning an error, because every caller
-// here would do the same thing with it.
-func allGoldens(t *testing.T) []contracts.Golden {
-	t.Helper()
-
-	all, err := contracts.AllGoldens()
-	if err != nil {
-		t.Fatalf("loading goldens: %v", err)
-	}
-	if len(all) == 0 {
-		t.Fatal("no goldens are embedded")
-	}
-	return all
+func (s *stubTB) Failed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.messages) > 0
 }
 
-func goldens(t *testing.T, p contracts.Provider) []contracts.Golden {
-	t.Helper()
-
-	list, err := contracts.Goldens(p)
-	if err != nil {
-		t.Fatalf("loading %s goldens: %v", p, err)
-	}
-	if len(list) == 0 {
-		t.Fatalf("%s has no goldens", p)
-	}
-	return list
-}
-
-// sseGoldenNames returns the bare file names of every *.sse fixture embedded
-// for p, walked directly off [contracts.FS] since [contracts.Goldens]
-// deliberately does not enumerate them (its doc comment explains why).
-func sseGoldenNames(t *testing.T, p contracts.Provider) []string {
-	t.Helper()
-
-	names, err := fs.Glob(contracts.FS(), path.Join(string(p), "*.sse"))
-	if err != nil {
-		t.Fatalf("listing %s .sse goldens: %v", p, err)
-	}
-	out := make([]string, len(names))
-	for i, name := range names {
-		out[i] = path.Base(name)
-	}
-	return out
-}
-
-func provenance(t *testing.T, p contracts.Provider) map[string]contracts.Record {
-	t.Helper()
-
-	records, err := contracts.Provenance(p)
-	if err != nil {
-		t.Fatalf("loading %s provenance: %v", p, err)
-	}
-	if len(records) == 0 {
-		t.Fatalf("%s has no provenance records", p)
-	}
-	return records
-}
-
-// decode returns a golden as a generic object. Numbers are kept as json.Number
-// so a test can tell 1 from "1" and from 1.0, which is the whole point of the
-// Perplexity integer-id assertion.
-func decode(t *testing.T, golden contracts.Golden) map[string]any {
-	t.Helper()
-
-	decoder := json.NewDecoder(bytes.NewReader(golden.Data))
-	decoder.UseNumber()
-
-	var body map[string]any
-	if err := decoder.Decode(&body); err != nil {
-		t.Fatalf("decoding %s: %v", golden.Path, err)
-	}
-	return body
-}
-
-func decodeNamed(t *testing.T, p contracts.Provider, name string) map[string]any {
-	t.Helper()
-
-	data, err := contracts.Read(p, name)
-	if err != nil {
-		t.Fatalf("reading %s: %v", name, err)
-	}
-	return decode(t, contracts.Golden{Provider: p, Name: name, Path: path.Join(string(p), name), Data: data})
-}
-
-// walk visits every JSON object in a decoded body, including objects nested in
-// arrays, and reports each one's dotted location. Exa results nest through
-// subpages, so a top-level-only check would miss a score field one level down.
-func walk(body map[string]any, visit func(where string, object map[string]any)) {
-	var descend func(where string, value any)
-	descend = func(where string, value any) {
-		switch typed := value.(type) {
-		case map[string]any:
-			visit(where, typed)
-			for _, key := range sortedKeys(typed) {
-				descend(where+"."+key, typed[key])
-			}
-		case []any:
-			for i, item := range typed {
-				descend(where+"["+strconv.Itoa(i)+"]", item)
-			}
-		}
-	}
-	descend("$", body)
-}
-
-// sortedKeys keeps failure messages stable across runs. Go map order is not.
-func sortedKeys(object map[string]any) []string {
-	keys := make([]string, 0, len(object))
-	for key := range object {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
+func (s *stubTB) Message() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Join(s.messages, "\n")
 }

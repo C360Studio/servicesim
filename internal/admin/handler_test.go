@@ -16,9 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/internal/admin"
-	// Aliased because several tests below name a local fake "faults"; the real
-	// engine appears here only to prove the shipped wiring answers a scoped reset.
-	faultengine "github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
@@ -673,8 +670,8 @@ func TestHandler_ResetNamespaceRefusesWhenStateIsNotIsolated(t *testing.T) {
 }
 
 // TestHandler_ResetNamespaceWithTheShippedEngine wires the two implementations
-// the binary actually runs — journal.Ring and faults.Engine — instead of the
-// fakes the tests above use.
+// the binary actually runs — journal.Ring and [provider.Set.Faults]'s own
+// engine — instead of the fakes the tests above use.
 //
 // The capability the handler asserts for is unexported and satisfied
 // structurally, so a real engine that never grew ResetIn would compile, pass
@@ -688,11 +685,24 @@ func TestHandler_ResetNamespaceWithTheShippedEngine(t *testing.T) {
 	ring.Append(newEntry(3, "tavily", inNamespace("t-2")))
 
 	rateLimited := &scenario.Fault{Attempts: []scenario.FaultAttempt{{Status: 429}}}
-	engine := faultengine.New(nil, []provider.Route{{
-		Pattern:  "POST /search",
-		FaultKey: "exa:search",
-		Fault:    func(*scenario.Scenario) *scenario.Fault { return rateLimited },
-	}})
+	// A minimal, single-route Profile: (*provider.Set).Faults is the only
+	// exported fault-engine constructor (internal/faults was deleted once
+	// internal/server and testkit.NewFaults were the last callers of its own
+	// New), so a bare route slice is no longer a way to build one — a Set
+	// naming exactly the one route this test claims against is.
+	set := provider.MustSet(provider.Profile{
+		Name: "exa",
+		Handlers: map[string]provider.Handler{
+			"POST /search": func(*provider.Exchange) provider.Response { return provider.Response{} },
+		},
+		Routes: []provider.Route{{
+			Pattern:  "POST /search",
+			FaultKey: "exa:search",
+			Fault:    func(*scenario.Scenario) *scenario.Fault { return rateLimited },
+		}},
+		ErrorBody: func(provider.Refusal) []byte { return nil },
+	})
+	engine := set.Faults(nil)
 
 	// Both namespaces spend their single 429, so a cursor that failed to reset is
 	// indistinguishable from one that reset and a cursor that reset is

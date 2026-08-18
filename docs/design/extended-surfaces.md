@@ -4,7 +4,7 @@
 >
 > This addendum describes surfaces that have since shipped: the Perplexity Agent API, Exa `/answer`, the open
 > provider registry and turn model, and per-request namespaces. **The code is authoritative** wherever this
-> document and the shipped `provider/perplexity`, `provider` or `scenario` packages disagree — read the source
+> document and the shipped `profiles/perplexity`, `provider` or `scenario` packages disagree — read the source
 > first. **Every Go block here is illustrative**, not a contract to depend on; where a block and the shipped code
 > disagree, the code wins. `contracts/perplexity/README.md` outranks this document on any wire field
 > ([ADR 0002](../adr/0002-verified-contract-precedence.md)). Later phases extended the surface further — the
@@ -97,7 +97,7 @@ providers:
       - source: source-a
 ```
 
-Both projection types live in `provider/perplexity` and are decoded from their turn via `Turn.DecodeProjection`.
+Both projection types live in `profiles/perplexity` and are decoded from their turn via `Turn.DecodeProjection`.
 
 ```go
 // PerplexityAgent projects canonical sources into an Agent API response.
@@ -215,7 +215,7 @@ type AgentCost struct {
 
 ## Rendering rules
 
-The wire types live in `provider/perplexity/response.go` alongside the Sonar types and follow the same convention:
+The wire types live in `profiles/perplexity/response.go` alongside the Sonar types and follow the same convention:
 `json` tags exactly as the specification names them, `omitempty` only where the field is genuinely optional.
 
 Ordering of `output[]` is fixed and deterministic: **`search_results` first, then `message`**. This mirrors the
@@ -266,7 +266,7 @@ convention, while the Agent API declares its own `ErrorInfo`. Do not unify them.
 |---|---|
 | **U0** | **Do not split `Taskfile.yml` into `taskfiles/`.** The base design proposes this for house consistency. The plan document's repository layout specifies a single root `Taskfile.yml`, `semsource` also uses a single file, and the existing one is complete and working. Churn without benefit; U0's scope is `go.mod`/`go.sum` only. |
 | **U5** | `contracts/{exa,tavily,perplexity}/README.md` are **already written** and are generated provenance — Perplexity's from `openapi.json` directly. U5 owns golden JSON fixtures and `provenance.yaml` in those directories and must **not** rewrite the README files. |
-| **U13** | Extended: also owns `provider/perplexity/agent.go` and `provider/perplexity/agent_test.go`, and serves all four Perplexity routes. |
+| **U13** | Extended: also owns `profiles/perplexity/agent.go` and `profiles/perplexity/agent_test.go`, and serves all four Perplexity routes. |
 | **U19**, **U20** | **Deferred.** Consumer examples are plan Phase 4 and the live canary is Phase 5; this release is Phases 0–3. `contracts/README.md` already documents the canary's contract for when it is built. |
 | **U21** | Also owns this file. |
 
@@ -317,6 +317,12 @@ validation policies independently settable per surface, and it falls out of the 
 that only uses Sonar simply omits the `perplexity_agent` entry.
 
 ## Open provider registry and the turn model
+
+> **Superseded in part by Phase 10 (2026-08-17).** The scenario side of this registry is unchanged — that is the
+> point of it — but the *registration* half it assumed shipped: `ProviderEntry.Kind` now has a `Profile.Kind`
+> opposite it, so two listeners can be two instances of one handler shape (single-entry profiles only in v0.5.0),
+> and a registered profile with no block in the loaded scenario is warned once at startup as
+> `scenario.profile.unscripted`. [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 **This section supersedes the base design's `Providers` struct (§2.1) and is a decision taken deliberately for the
 initial release, not a future option.**
@@ -686,6 +692,12 @@ Streaming is still out of scope. When it arrives, a turn gains an event-sequence
 additive, and the reason the turn model needed to exist first.
 
 ## Why this was worth doing now rather than later
+
+> **Superseded in part by Phase 10 (2026-08-17).** The transfer argued for below is no longer hypothetical and no
+> longer needs a fork: the chassis is exported, a profile for any other API is written out of tree against
+> `provider`/`scenario`/`testkit`/`contracts` and composed through the root `servicesim` package, and
+> `internal/faults` named here is now `provider/fault_engine.go`.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 Servicesim's chassis is not search-specific. The provider seam, `internal/faults`, `internal/journal`,
 `internal/redact`, `testkit` and base-URL injection would all transfer unchanged to simulating OpenAI, Anthropic or

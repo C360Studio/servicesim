@@ -61,6 +61,21 @@ const (
 	// unreachable through NewMux and exists so a direct Handle caller gets a
 	// journaled failure rather than a nil dereference.
 	CodeNoHandler = "route.no_handler"
+
+	// CodeAttemptOnRejection is raised when a handler claimed a fault attempt
+	// (via x.Fault, x.CallIndex, or a turn selector such as SelectTurnFor) and the
+	// request was then rejected before that claimed decision could be applied.
+	// CONTRIBUTING.md's "validate before you claim" convention names the ordinary
+	// way a handler avoids this, but SelectTurnFor (scenario.no_matching_turn) and
+	// MintJob (job.limit_reached) both claim before they can know whether the
+	// request will be rejected, by design — so this branch is the ordinary path
+	// for those, not only a fallback for a handler that broke convention. It is a
+	// WARNING, not an error: the request is already rejected on its own terms,
+	// and this finding exists only to make the claim visible, because Handle
+	// discards the attempt rather than applying it. See the doc comment above
+	// "Validation has the last word" in Handle for the mechanism and its known
+	// limitation.
+	CodeAttemptOnRejection = "fault.attempt_on_rejection"
 )
 
 // Handle wraps h with the shared lifecycle and returns an http.HandlerFunc:
@@ -153,16 +168,19 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 			appended = true
 			entry.CompletedAt = d.Clock.Now()
 			entry.Namespace = x.lane.Namespace
-			entry.Findings = x.Findings()
+			entry.Findings = x.journalFindings()
 			entry.Headers = r.Header
 			entry.Body = json.RawMessage(x.Raw)
-			entry.Auth = x.Auth
+			entry.Auth = x.auth
 
 			// Redact BEFORE the logger sees it. Append redacts too, but Append takes
 			// Entry by value, so the local entry would still hold the raw
 			// Authorization header when logRequest ran. journal.Redact is idempotent
-			// precisely so it can be called at both points.
-			entry = journal.Redact(entry)
+			// precisely so it can be called at both points. d.CredentialNames widens
+			// the vocabulary by whatever the registered profiles declared (house
+			// rule 4); Append widens it the same way via the Ring's own
+			// Limits.CredentialNames, so both redaction points see one union.
+			entry = journal.Redact(entry, d.CredentialNames...)
 			d.Journal.Append(entry)
 			logRequest(d.Logger, entry)
 		}
@@ -230,7 +248,7 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 		// misconfiguration, and a journal that showed only one of them could not
 		// be used to prove which placements an adapter actually sends.
 		if creds := httpx.ExtractCredentials(r); len(creds) > 0 {
-			x.Auth = httpx.ObserveAll(creds)
+			x.auth = httpx.ObserveAll(creds)
 		}
 
 		// One resolution, here, after the body is readable and before the handler
@@ -252,17 +270,82 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 		}
 
 		resp = h(x)
+
+		// The SSE grammar vocabulary is open (Phase 10 unit 2, house rule 3):
+		// the framework can no longer default a missing Grammar to one
+		// dialect's framing, so a profile that forgets to set it fails loudly
+		// — RefuseInternal, not a silent fallback — rather than a third-party
+		// grammar silently inheriting behaviour nobody asked for. This must
+		// run before the suppression/fault logic below, which assumes
+		// resp.Stream != nil means "this exchange WILL stream": replacing
+		// resp here, rather than mutating it, is what keeps that true.
+		if resp.Stream != nil && resp.Stream.Grammar == "" {
+			x.Fail(CodeStreamGrammarMissing, "",
+				"route %q returned a Stream with an empty Grammar; the SSE grammar vocabulary is open, "+
+					"so a stream must declare its own", route.Pattern)
+			resp = Response{
+				Status: http.StatusInternalServerError,
+				Body:   x.refuse(RefuseInternal, http.StatusInternalServerError),
+				Label:  "provider.stream_grammar_missing",
+			}
+		}
+
 		if x.Failed() {
 			// A handler that left FaultEligible set on a rejected request would
-			// otherwise consume a retry budget and journal the rejection as though
-			// it were the scenario's own response. Validation has the last word.
+			// otherwise journal the rejection as though it were the scenario's
+			// own response. Validation has the last word — but "the last word"
+			// is enforced here, not by every handler's own ordering: the branch
+			// below is what stops a decision already CLAIMED (by the handler
+			// calling x.Fault or x.CallIndex, or by a turn selector such as
+			// SelectTurnFor, or by MintJob) before the request was rejected
+			// from reaching the wire anyway. A handler is still expected to
+			// validate before it claims (CONTRIBUTING.md) where it can, but
+			// SelectTurnFor and MintJob claim first BY DESIGN — they cannot
+			// know the request will be rejected until the claimed index tells
+			// them so — which makes this branch their ordinary path, not a
+			// fallback for a convention violation.
 			resp.FaultEligible = false
 		}
 
-		if resp.FaultEligible {
+		switch {
+		case resp.FaultEligible:
 			if dec := x.Fault(); dec.Unknown {
 				x.Warn(CodeUnknownFaultKey, "", "no fault plan registered for key %q", dec.Key)
 			}
+		case x.claimed && x.decision.Index >= 0:
+			// An attempt was claimed — from Deps.Faults, on this (possibly
+			// namespaced) lane's cursor key — and this response is not
+			// fault-eligible: either the request was rejected (x.Failed()) or
+			// the handler opted a served response out of faults directly,
+			// without failing (a documented way to serve a real success
+			// outside the fault plan). Deps.Faults.Next already incremented
+			// its counter for that key, and that budget is NOT returned here:
+			// releasing a claimed lane touches the fault engine's counter under
+			// concurrency and is deferred by design (framework-seam.md rule 5)
+			// until a real out-of-tree profile trips this warning — a later,
+			// separately spiked unit, not this one.
+			//
+			// What unit 0 guarantees is narrower: only the claimed Attempt is
+			// cleared here, before faultOutcome or execute (both below) can
+			// see it, so no fault is ever applied to the wire response.
+			// Index and Key are deliberately left exactly as claimed —
+			// Deps.Faults really did hand out that index on that key, so the
+			// journal must keep saying so. testkit's namespace-isolation and
+			// attempt-budget assertions read Outcome.FaultKey and
+			// Outcome.AttemptIndex to audit precisely this, and a Key or
+			// Index that did not match the counter actually drawn on would
+			// make those assertions either miss a real budget gap or flag a
+			// namespace collision that never happened.
+			//
+			// The x.decision.Index >= 0 guard excludes an Unknown-key claim
+			// (Index -1, nothing consumed, see FaultDecision.Unknown): x.Fault
+			// still sets x.claimed on that path, but there is no claimed
+			// attempt to speak of, so no warning is owed.
+			x.decision.Attempt = nil
+			x.Warn(CodeAttemptOnRejection, "",
+				"fault attempt %d on key %q was claimed but this response is not fault-eligible; "+
+					"the claimed attempt was not applied and its index stays spent",
+				x.decision.Index, x.decision.Key)
 		}
 		dec := x.decision
 

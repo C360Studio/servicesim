@@ -6,7 +6,10 @@ Accepted — 2026-08-14. Still in effect through Phase 6 (2026-08-16).
 [D9](../proposals/d9-framework-framing.md) does not disturb the one-repository, one-binary,
 one-listener-per-provider decision this ADR made: its Tier 1 (framing) and Tier 2 (exporting the provider seam)
 leave the decision untouched either way they resolve, and its Tier 3 raises a framework/profiles module split
-only as an open question, not a proposal to relitigate it.
+only as an open question, not a proposal to relitigate it. **Amended 2026-08-17**: that claim is now false — D9
+tier 2 was decided and shipped as [ADR 0003](0003-framework-seam.md) (the framework seam), which does touch this
+decision, though not the one-repository conclusion itself. See the closing section below; the Decision and
+Consequences text is left as accepted, with two of the Context's inferences withdrawn there.
 
 ## Context
 
@@ -85,3 +88,54 @@ construction changes between the simulator and the real API.
   scenario schema was designed so that this does not change the schema either.
 - Running a subset is supported (`--providers exa,tavily`), so the port cost is opt-out for consumers that need
   only one surface.
+
+## Amended 2026-08-17
+
+The Decision and Consequences sections above are the accepted text and are left as written — this section
+supersedes only the Status paragraph's now-false claim and two of the Context's inferences, and records why.
+
+**The listener reasoning (`:35-43`) stands, and is strengthened.** Exa and Tavily both serving `POST /search` is
+still why a shared listener cannot preserve every vendor's real path. [ADR 0003](0003-framework-seam.md) makes
+this argument stronger, not weaker: an open profile set — a fifth, tenth, twentieth profile written in another
+repository — makes a path collision *more* likely than a closed set of three or four vendors ever did, and
+`provider.Profile.Port` turns each profile's port allocation into a registration input a `provider.Set` validates
+(refusing a duplicate), rather than a hand-maintained constant in `internal/config`. One listener per profile is
+what makes an open profile set safe to compose at all.
+
+**The consumer-pays argument (`:32-33`) stands, and is why there is no module split.** ADR 0003's "Compatibility
+stance" is the current answer to the module-split question; this ADR's own negative consequence (`:83` — a change
+to one provider's handler is a release every consumer sees) is exactly why an incremental post-release reshaping
+of the exported surface would have been a coordinated break for every consumer, repeatedly, rather than once.
+
+**Two inferences are withdrawn:**
+
+- The inference from "one scenario schema, one process" to "in one repository" (`:24-27`) does not hold: one
+  process can load profiles registered from several Go modules, and `scenario` was already an open registry that
+  needed no change to add MCP as a fourth profile (`CONTRIBUTING.md`, "Adding a reference profile here"; Phase 8,
+  `39d5809`).
+- The version-skew paragraph (`:28-31`) becomes an accepted cost with a stated mitigation, not an argument against
+  an open profile set: the framework module carries the chassis *and* the four reference examples together, so
+  skew is one edge — framework release versus a third-party profile's own release cadence — not the N² skew among
+  N separately-versioned simulator repositories the original alternative (`exasim`, `tavilysim`, `perplexitysim`)
+  considered.
+
+**Mechanically stale, corrected:** the listener table (`:52-57`) predates the MCP profile (Phase 8) and the
+framework seam (Phase 10). The reference set as shipped:
+
+| Listener | Port | Why it is separate |
+|---|---:|---|
+| admin | 8080 | Health, readiness and the journal must not collide with a profile path, and must not be reachable through a profile base URL. |
+| exa | 8081 | `POST /search`, `POST /answer` at the vendor's real paths. |
+| tavily | 8082 | `POST /search` — the collision with Exa is the whole reason for the split. |
+| perplexity | 8083 | `POST /v1/sonar`, `/chat/completions`, `/v1/agent`, `/v1/responses`. |
+| mcp | 8084 | `POST /mcp` at the specification's own path — the fourth reference profile is a protocol, not a vendor (Phase 8, `39d5809`). |
+
+These four are **the reference set this repository ships**, registered by `profiles.Reference()`
+(`cmd/servicesim/main.go`) — not a closed list of every provider Servicesim can serve. A consumer composing their
+own binary lists their own profiles, in place of or alongside any of these (ADR 0003, "The root `servicesim`
+composition package").
+
+**Tier 3's module question is recorded verbatim as open**, not resolved by this amendment
+(`docs/proposals/framework-seam.md`, decision D-9): "Module split now, or one module with ADR 0001 amended?
+*Recommend one module, amend* — the split's benefit is release noise; its cost is the version-skew mode ADR 0001
+named and a second artefact every consumer pins."

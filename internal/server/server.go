@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net"
 	"net/http"
 	"slices"
@@ -15,14 +14,9 @@ import (
 
 	"github.com/c360studio/servicesim/internal/admin"
 	"github.com/c360studio/servicesim/internal/config"
-	"github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
-	"github.com/c360studio/servicesim/provider/exa"
-	"github.com/c360studio/servicesim/provider/mcp"
-	"github.com/c360studio/servicesim/provider/perplexity"
-	"github.com/c360studio/servicesim/provider/tavily"
 	"github.com/c360studio/servicesim/scenario"
 	"github.com/c360studio/servicesim/scenarios"
 )
@@ -78,7 +72,14 @@ type loadedScenario struct {
 
 	scenario *scenario.Scenario
 	report   scenario.Report
-	faults   *faults.Engine
+
+	// faults is this scenario's fault engine, built by [provider.Set.Faults]
+	// — the ONLY exported fault-engine constructor, so an engine that does
+	// not know an out-of-tree profile's route is unconstructible. Held as
+	// the interface, not a concrete type: internal/server names no profile
+	// package and no longer names internal/faults either (Phase 10 unit 3
+	// deleted it, once this was its last caller alongside testkit.NewFaults).
+	faults provider.Faults
 
 	// deps is what every handler serving this scenario is constructed with.
 	deps provider.Deps
@@ -151,23 +152,31 @@ type Server struct {
 // reported together. The operator fixing a mounted directory needs to see all of
 // its problems, not one per restart.
 //
-// It is also where the fault engine is constructed — one per scenario, because a
-// plan belongs to the scenario that declares it — because this is the lowest
-// level that can see all three provider packages:
+// It is also where the fault engine is constructed — one per scenario, because
+// a plan belongs to the scenario that declares it — through the ONE seam that
+// can build one at all:
 //
-//	routes := slices.Concat(exa.Routes(), tavily.Routes(), perplexity.Routes(), mcp.Routes())
-//	engine := faults.New(s, routes)
+//	engine := cfg.Set.Faults(s, provider.WithMaxNamespaces(cfg.MaxNamespaces), provider.WithFaultLogger(logger))
+//
+// [provider.Set.Faults] is the only exported fault-engine constructor for
+// exactly this reason: an engine built from anything other than the whole
+// registered Set could be missing an out-of-tree profile's route, and would
+// then silently serve a clean 200 where the scenario scripted a 429. Deriving
+// it from cfg.Set — rather than profiles/exa.Routes() and its three
+// siblings, concatenated by hand — is also what lets this package import no
+// profile package at all (Phase 10 unit 3): cfg.Set is the ONLY thing
+// internal/server knows about which providers this build serves.
 //
 // A scenario's engine is wired into every handler serving that scenario, and the
 // admin surface receives a fan-out over all of them, so POST /__admin/reset
 // zeroes the counters the handlers actually consult. testkit does the identical
 // wiring at level 7 for the single-scenario case.
 //
-// Every route is registered with each engine, including routes whose listener is
-// disabled, so that the key set does not depend on which subset of the listeners
-// this process runs. A key that were missing would make its route report
-// fault.unknown_key on every request instead of serving the scenario's declared
-// fault.
+// Every route in cfg.Set is registered with each engine, including routes
+// whose listener is disabled, so that the key set does not depend on which
+// subset of the listeners this process runs. A key that were missing would
+// make its route report fault.unknown_key on every request instead of
+// serving the scenario's declared fault.
 //
 // A nil logger discards, which keeps New usable from a test that only cares
 // about the returned error.
@@ -191,9 +200,10 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Server, error
 		version: o.version,
 		byName:  make(map[string]*loadedScenario, len(sources)),
 		journal: journal.NewRingWithLimits(journal.Limits{
-			Capacity:      cfg.JournalCapacity,
-			MaxBodyBytes:  cfg.MaxJournalBodyBytes,
-			MaxNamespaces: cfg.MaxNamespaces,
+			Capacity:        cfg.JournalCapacity,
+			MaxBodyBytes:    cfg.MaxJournalBodyBytes,
+			MaxNamespaces:   cfg.MaxNamespaces,
+			CredentialNames: cfg.Set.CredentialNames(),
 		}),
 		jobs:    jobs.NewRegistry(jobs.Limits{MaxJobs: cfg.MaxJobs}),
 		ready:   new(atomic.Bool),
@@ -223,8 +233,7 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Server, error
 // names every broken scenario rather than the first one the directory listing
 // happened to reach.
 func (s *Server) loadRegistry(sources []scenarioSource) error {
-	routes := slices.Concat(exa.Routes(), tavily.Routes(), perplexity.Routes(), mcp.Routes())
-	handlers := validators(s.cfg)
+	handlers := s.cfg.Set.Validators(s.cfg.Enabled()...)
 
 	var failures []error
 	for _, src := range sources {
@@ -245,6 +254,15 @@ func (s *Server) loadRegistry(sources []scenarioSource) error {
 		if name == "" {
 			name = sc.Name
 		}
+
+		// The opposite direction from provider.ValidateScenario above: a
+		// registered, enabled profile whose scenario entry kind(s) declare no
+		// block gets a warning too, because "no block" and "no handler" are
+		// symmetric authoring mistakes — a request to it renders the
+		// well-shaped empty answer forever, which is silent in the same way
+		// an unrecognised entry kind used to be.
+		report.Findings = append(report.Findings, unscriptedProfileFindings(s.cfg, sc, name)...)
+
 		logFindings(s.logger, report, name, src.origin)
 		if !report.OK() {
 			failures = append(failures, fmt.Errorf("validating scenario %s: %w", src.origin, report.Err()))
@@ -262,15 +280,99 @@ func (s *Server) loadRegistry(sources []scenarioSource) error {
 			origin:   src.origin,
 			scenario: sc,
 			report:   report,
-			faults: faults.New(sc, routes,
-				faults.WithMaxNamespaces(s.cfg.MaxNamespaces),
-				faults.WithLogger(s.logger)),
+			faults: s.cfg.Set.Faults(sc,
+				provider.WithMaxNamespaces(s.cfg.MaxNamespaces),
+				provider.WithFaultLogger(s.logger)),
 		}, src.isDefault)
 	}
 	if len(failures) > 0 {
 		return errors.Join(failures...)
 	}
 	return nil
+}
+
+// codeProfileUnscripted is the finding recorded when a registered, enabled
+// profile's scenario entry kind(s) have no block in the loaded scenario: a
+// request to that listener still renders the well-shaped empty answer, which
+// house rule 3 accepts (it is not a refusal — the profile is registered and
+// its handler runs) but which is worth a startup diagnosis, the same way
+// [provider.CodeProviderUnimplemented] diagnoses the opposite mistake.
+const codeProfileUnscripted = "scenario.profile.unscripted"
+
+// unscriptedProfileFindings warns once per enabled profile whose scenario
+// has no block it can actually reach — the reference-only-built-ins
+// accommodation (docs/proposals/framework-seam.md, "Contracts, goldens and
+// built-ins for out-of-tree profiles"): builtin:happy will never cover a
+// fifth profile without a PR here, so a registered profile silently getting
+// no block is the ordinary case for an out-of-tree consumer, and this
+// finding is the diagnosis rather than a load failure.
+func unscriptedProfileFindings(cfg config.Config, sc *scenario.Scenario, scenarioName string) []scenario.Finding {
+	if sc == nil || cfg.Set == nil {
+		return nil
+	}
+
+	var findings []scenario.Finding
+	for _, name := range cfg.Enabled() {
+		p, ok := cfg.Set.Lookup(name)
+		if !ok {
+			continue
+		}
+		if profileHasAScriptedBlock(sc, p) {
+			continue
+		}
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityWarning,
+			Code:     codeProfileUnscripted,
+			Path:     "providers." + string(name),
+			Message: fmt.Sprintf(
+				"profile %q is registered but scenario %q scripts no %q block; "+
+					"every request to it renders the well-shaped empty answer",
+				name, scenarioName, name),
+		})
+	}
+	return findings
+}
+
+// profileHasAScriptedBlock reports whether sc scripts at least one block
+// this profile's own listener can actually reach.
+//
+// The PRIMARY entry — Route.Entry == "", which Exchange.Entry() resolves as
+// Deps.Scenario.Provider(string(x.Provider)) — is checked by the LISTENER's
+// OWN NAME (Phase 10 unit 8), never by its effective Kind: an instanced
+// listener (Kind != Name) reads its own block by Name, so a scenario
+// scripting only the PRIMARY instance's block ("acme") must not read the
+// FALLBACK instance ("acme_fallback") as scripted merely because the two
+// share a Kind — that was this function's bug before this unit, found by
+// the instancing test that pins the fix. Name == Kind for every profile
+// registered before Kind existed and for all four reference profiles today,
+// so this is unchanged for them: their own block is still found by the same
+// name it always was.
+//
+// Every OTHER entry-kind key p.Validators claims — a multi-entry profile's
+// secondary surfaces, Perplexity's Agent kind being the shipped example —
+// is checked by that literal kind string AS A NAME: NewSet refuses
+// instancing a multi-entry profile outright (Validate's own doc comment,
+// "instancing"), so a secondary entry's Route.Entry is always a static Go
+// string equal to its own kind, never subject to renaming, and
+// Exchange.Entry() resolves it by that same literal name
+// (Deps.Scenario.Provider(x.Route.Entry)).
+func profileHasAScriptedBlock(sc *scenario.Scenario, p provider.Profile) bool {
+	if sc.Providers.Get(string(p.Name)) != nil {
+		return true
+	}
+	kind := p.Kind
+	if kind == "" {
+		kind = string(p.Name)
+	}
+	for entryKind := range p.Validators {
+		if entryKind == kind {
+			continue // the profile's own kind, already checked above by Name
+		}
+		if sc.Providers.Get(entryKind) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // add registers one loaded scenario and builds the Deps every handler serving it
@@ -294,6 +396,7 @@ func (s *Server) add(ls *loadedScenario, isDefault bool) {
 		MaxNamespaces:       s.cfg.MaxNamespaces,
 		Jobs:                s.jobs,
 		MaxJobs:             s.cfg.MaxJobs,
+		CredentialNames:     s.cfg.Set.CredentialNames(),
 	}
 
 	s.scenarios = append(s.scenarios, ls)
@@ -414,45 +517,22 @@ func loadScenarioEntry(cfg config.Config, file string) (*scenario.Scenario, scen
 	return scenario.Parse(src)
 }
 
-// validators returns the projection validators for the providers this process
-// serves, keyed on the scenario provider kind each one implements.
-//
-// Only enabled providers are registered, and that is the point rather than an
-// oversight: --providers exa runs a process with nothing bound in front of a
-// tavily block, so reporting that block as unimplemented is accurate. It is a
-// warning either way, never a load failure.
-//
-// Perplexity contributes two kinds from one listener — Sonar and the Agent API
-// are independent scenario entries with independent auth, validation and fault
-// policies — so its registrations come from perplexity.Validators rather than
-// from a literal here that could fall out of step with it.
-func validators(cfg config.Config) map[string]provider.Validator {
-	out := make(map[string]provider.Validator, 4)
-	for _, name := range cfg.Enabled() {
-		switch name {
-		case provider.Exa:
-			out[string(provider.Exa)] = exa.Validator{}
-			out[exa.NameAgentRuns] = exa.AgentRunValidator{}
-		case provider.Tavily:
-			out[tavily.Name] = tavily.Validator{}
-			out[tavily.NameResearch] = tavily.ResearchValidator{}
-		case provider.Perplexity:
-			maps.Copy(out, perplexity.Validators())
-		case provider.MCP:
-			out[mcp.Name] = mcp.Validator{}
-		}
-	}
-	return out
-}
-
 // relaxAuth applies --strict-auth=false to the loaded scenario.
 //
 // Config documents StrictAuth as "a missing credential is a 401 when the
-// scenario does not say otherwise", and the provider packages implement the
-// strict half by defaulting an entry with no auth block to AuthRequired. The
-// permissive half has to be expressed somewhere, and the scenario entry is the
-// only seam the handlers read, so it is expressed here — on entries that declare
-// no policy of their own, and never on an entry that does.
+// scenario does not say otherwise", and each PROFILE declares that default
+// through Profile.DefaultAuth — required for the three research profiles,
+// optional for MCP (decision 3), never one flattened behaviour for all four.
+// The permissive half has to be expressed somewhere, and the scenario entry is
+// the only seam the handlers read, so it is expressed here — on an entry
+// whose OWNING profile defaults to AuthRequired and that declares no policy
+// of its own; never on an entry that declares one, and never on an entry
+// whose profile already defaults to AuthOptional (relaxing it would write an
+// explicit policy with the same meaning the profile's own default already
+// has, which is harmless but not what "consult the profile" means).
+// [Exchange.AuthPolicy] reads the same DefaultAuth for the same reason: an
+// entry this function leaves untouched still resolves to the right mode
+// there.
 //
 // It runs after validation so that a scenario is validated exactly as it was
 // written, and it mutates the in-memory scenario only: nothing is written back
@@ -462,13 +542,31 @@ func relaxAuth(cfg config.Config, s *scenario.Scenario) {
 	if cfg.StrictAuth || s == nil {
 		return
 	}
+	defaults := entryDefaultAuth(cfg.Set)
 	for _, name := range s.Providers.Names() {
 		e := s.Providers.Get(name)
 		if e == nil || e.Auth != nil {
 			continue
 		}
+		if defaults[name] == scenario.AuthOptional {
+			continue
+		}
 		e.Auth = &scenario.AuthPolicy{Mode: scenario.AuthOptional}
 	}
+}
+
+// entryDefaultAuth maps every scenario entry kind any registered profile
+// declares a validator for to that profile's DefaultAuth, so relaxAuth can
+// consult the OWNING profile's default instead of flattening every profile
+// to one strict-auth behaviour.
+func entryDefaultAuth(set *provider.Set) map[string]scenario.AuthMode {
+	out := make(map[string]scenario.AuthMode)
+	for _, p := range set.All() {
+		for entry := range p.Validators {
+			out[entry] = p.DefaultAuth
+		}
+	}
+	return out
 }
 
 // faultsFanout is the fault engine the admin surface resets: one Reset reaches
@@ -483,7 +581,7 @@ func relaxAuth(cfg config.Config, s *scenario.Scenario) {
 // it — resetting is all it wants — and a key alone cannot say which scenario it
 // belongs to, so answering from the default is the only honest choice available.
 type faultsFanout struct {
-	engines []*faults.Engine
+	engines []provider.Faults
 	primary provider.Faults
 }
 
@@ -507,7 +605,7 @@ type scopedFaultsFanout struct {
 
 // newFaultsFanout returns the fault seam the admin surface is wired with.
 func newFaultsFanout(loaded []*loadedScenario) provider.Faults {
-	f := faultsFanout{engines: make([]*faults.Engine, 0, len(loaded))}
+	f := faultsFanout{engines: make([]provider.Faults, 0, len(loaded))}
 	scoped := true
 	for _, ls := range loaded {
 		f.engines = append(f.engines, ls.faults)

@@ -34,7 +34,7 @@ const (
 type SSEEvent struct {
 	// Name fills the "event:" line. Empty omits the line entirely, which is
 	// the chat-completions grammar (GrammarDelta); GrammarTyped's renderer
-	// (renderAgentStream, provider/perplexity/agent.go) sets it on every
+	// (renderAgentStream, profiles/perplexity/agent.go) sets it on every
 	// frame.
 	Name string
 
@@ -74,10 +74,10 @@ type Stream struct {
 	Grammar SSEGrammar
 
 	// Chunks holds exactly the indexed sequence: the N delta chunks and the
-	// one terminal chunk, len(Chunks) == N+1. It never holds the [DONE]
-	// sentinel — see [Stream.Bytes] and [OmitDone] — which is what lets
-	// ChunkCount, TerminalIndex and an abort loop's index all range over
-	// [0, len(Chunks)) with no separate accounting anywhere.
+	// one terminal chunk, len(Chunks) == N+1. It never holds the trailing
+	// sentinel frame — see [Stream.Bytes] and [Stream.Sentinel] — which is
+	// what lets ChunkCount, TerminalIndex and an abort loop's index all range
+	// over [0, len(Chunks)) with no separate accounting anywhere.
 	Chunks []StreamChunk
 
 	// Usage is the terminal chunk's usage object, verbatim, lifted out so
@@ -90,44 +90,53 @@ type Stream struct {
 	// is a convenience and is nil when the script omits usage.
 	CostTotal *float64
 
-	// OmitDone drops the terminating "data: [DONE]" sentinel that
-	// [executeStream] would otherwise write after Chunks on GrammarDelta.
-	//
-	// docs/design/streaming.md §3.2's illustrative Stream struct lists only
-	// Grammar/Chunks/Usage/CostTotal, with nowhere for a scripted
-	// terminal.omit_done to live: executeStream is grammar- and
-	// provider-blind (it lives in this package, not in provider/perplexity),
-	// so it cannot reach into a Perplexity-specific StreamTerminal to find
-	// this bit. This field is the corrected shape — noted here per the
-	// design's own instruction that shipped code, once it disagrees with an
-	// illustrative block, wins and the design should say so.
-	OmitDone bool
+	// Sentinel is the trailing frame written verbatim after Chunks, once,
+	// with no further encoding — already-framed bytes, not an SSEEvent to
+	// run through EncodeSSE. Empty (nil or zero-length) means none written —
+	// both readings of "has a sentinel" must agree, so the framework gates
+	// on len(Sentinel) > 0, not on a nil check that a zero-length non-nil
+	// slice could disagree with. This is data, not a Grammar-keyed default
+	// (Phase 10 unit 2, framework-seam.md rule 3): the SSE grammar
+	// vocabulary is open, so the framework can no longer infer a sentinel
+	// from Grammar == GrammarDelta the way it once did — a profile that
+	// wants the chat-completions [DONE] frame sets Sentinel: DoneSentinel
+	// itself. Replaces OmitDone, inverted: OmitDone's zero value (false)
+	// meant "write it"; Sentinel's zero value (nil) means "don't".
+	Sentinel []byte
 
-	// DonePace is the gap before the [DONE] sentinel on GrammarDelta. [DONE]
-	// is never an indexed chunk (see Chunks' doc comment), so it has no
-	// per-frame StreamChunk.Pace of its own to carry one; the renderer sets
-	// this from the script's own default pace (scenario.StreamScript.Pace),
-	// which is the rule docs/design/streaming.md §4.3 states explicitly.
-	// Shipped as (Phase 5 unit 2): §3.2's illustrative Stream struct predates
-	// per-chunk pacing entirely and has no field for this; it is added here
-	// for the same reason OmitDone was — nowhere else in this grammar- and
-	// provider-blind package could carry a Perplexity-scripted value.
-	DonePace time.Duration
+	// SentinelPace is the gap before Sentinel is written. Meaningless when
+	// Sentinel is empty. Sentinel is never an indexed chunk (see Chunks' doc
+	// comment), so it has no per-frame StreamChunk.Pace of its own to carry
+	// one; the renderer sets this from the script's own default pace
+	// (scenario.StreamScript.Pace), which is the rule
+	// docs/design/streaming.md §4.3 states explicitly. Replaces DonePace.
+	SentinelPace time.Duration
 }
+
+// DoneSentinel is the chat-completions [DONE] frame, pre-framed: byte-
+// identical to what EncodeSSE([]SSEEvent{{Data: []byte("[DONE]")}}) produces,
+// verified by TestEncodeSSEFraming, but held here as a literal because the
+// framework itself must never infer it from a Grammar value (see
+// [Stream.Sentinel]) — a profile that wants it sets this field explicitly.
+//
+// Read-only by convention, not by the type system: it is an exported
+// package-level []byte, so any importer holding a reference to the backing
+// array can mutate it process-wide. The framework itself never writes
+// through it; a profile that needs a variant frame should build its own
+// []byte rather than mutate this one.
+var DoneSentinel = []byte("data: [DONE]\n\n")
 
 // Bytes returns the total the plan will write, which is known before the
 // first write and is what StreamOutcome.BytesPlanned records. It answers "how
 // many bytes will the wire carry", which is allowed to disagree with
-// ChunkCount ("how many chunks are there") by design: [DONE] counts toward
+// ChunkCount ("how many chunks are there") by design: Sentinel counts toward
 // the former and is never one of the latter.
 func (s *Stream) Bytes() int {
 	n := 0
 	for _, c := range s.Chunks {
 		n += len(c.Bytes)
 	}
-	if s.Grammar == GrammarDelta && !s.OmitDone {
-		n += len(doneChunk().Bytes)
-	}
+	n += len(s.Sentinel)
 	return n
 }
 
@@ -174,11 +183,12 @@ func encodeFrame(name string, data []byte) []byte {
 	return buf.Bytes()
 }
 
-// doneChunk is the encoded "data: [DONE]\n\n" sentinel frame written after
-// every GrammarDelta stream unless [Stream.OmitDone] is set. It is never a
-// Stream.Chunks element (see that field's doc comment) but reuses the same
-// framing rule, which is why it goes through [EncodeSSE] rather than a
-// hand-written literal that could drift from real frames.
+// doneChunk builds the [DONE] frame's bytes through the same framing rule
+// every other frame uses, so a test can prove [DoneSentinel]'s hand-written
+// literal matches [EncodeSSE]'s own output rather than drifting from it.
+// Production code never calls this: DoneSentinel is what a profile sets on
+// [Stream.Sentinel], because the framework itself must not infer a sentinel
+// from Grammar (see that field's doc comment).
 func doneChunk() StreamChunk {
 	return EncodeSSE([]SSEEvent{{Data: []byte("[DONE]")}})[0]
 }
@@ -202,7 +212,7 @@ func StreamHeader() http.Header {
 // write a Stream: which chunk (if any) a stream_disconnect aborts before,
 // which chunk (if any) a stream_truncate_chunk writes a partial frame for
 // before aborting, each chunk's actual pace (folding in a stream_stall's
-// extra Delay at its own index), and the [DONE] sentinel's own gap. It is
+// extra Delay at its own index), and the trailing sentinel's own gap. It is
 // computed once, before the first byte, from the stream's own baked-in
 // per-chunk paces and the claimed attempt, so executeStream's loop never has
 // to re-derive a fault decision itself — the same reason faultOutcome
@@ -213,8 +223,9 @@ func StreamHeader() http.Header {
 // exactly one kind, so at most one of the two aborting behaviours below is
 // active for a given plan.
 type streamPlan struct {
-	chunks   []StreamChunk
-	donePace time.Duration
+	chunks       []StreamChunk
+	sentinel     []byte
+	sentinelPace time.Duration
 
 	// stallAt is the chunk index stream_stall's extra Delay is folded into;
 	// -1 means no stall is scripted.
@@ -247,7 +258,10 @@ type streamPlan struct {
 // leaves every abort/stall field at its "nothing scripted" zero value in
 // both cases, since only the three stream_* kinds ever populate them.
 func planStream(a *scenario.FaultAttempt, s *Stream) streamPlan {
-	p := streamPlan{chunks: s.Chunks, donePace: s.DonePace, stallAt: -1, disconnectAt: -1, truncateAt: -1}
+	p := streamPlan{
+		chunks: s.Chunks, sentinel: s.Sentinel, sentinelPace: s.SentinelPace,
+		stallAt: -1, disconnectAt: -1, truncateAt: -1,
+	}
 	if a == nil {
 		return p
 	}
@@ -331,8 +345,8 @@ func truncationLenForChunk(a *scenario.FaultAttempt, chunkBytes int) int {
 }
 
 // executeStream writes resp.Stream to w: headers and one flush, then each
-// chunk in turn, then — on GrammarDelta, unless the script asked to omit it —
-// the [DONE] sentinel. out already carries the PLANNED half of the journal
+// chunk in turn, then — when the profile set one — the trailing Sentinel.
+// out already carries the PLANNED half of the journal
 // outcome (built by Handle before the first byte); this returns it with the
 // OBSERVED half filled in, and amends the already-appended journal entry
 // through closer along the way.
@@ -433,12 +447,11 @@ func executeStream(ctx context.Context, w http.ResponseWriter, a *scenario.Fault
 		sent++
 	}
 
-	if stream.Grammar == GrammarDelta && !stream.OmitDone {
-		if err := sleep(ctx, plan.donePace, mode); err != nil {
+	if len(plan.sentinel) > 0 {
+		if err := sleep(ctx, plan.sentinelPace, mode); err != nil {
 			return closeWith(out, closer, written, sent, journal.StreamClientGone)
 		}
-		done := doneChunk()
-		n, err := w.Write(done.Bytes)
+		n, err := w.Write(plan.sentinel)
 		written += n
 		_ = rc.Flush()
 		if err != nil {

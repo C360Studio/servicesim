@@ -6,7 +6,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -217,7 +216,7 @@ func TestSelectTurnForSharesTheFaultCounter(t *testing.T) {
 
 	for callIndex, c := range calls {
 		x := &Exchange{
-			Deps: d, Provider: Exa, Route: testRoute,
+			Deps: d, Provider: testProviderExa, Route: testRoute,
 			Raw:      []byte(c.raw),
 			decision: FaultDecision{Index: -1},
 		}
@@ -234,7 +233,7 @@ func TestSelectTurnForRecordsAFindingWhenNothingMatches(t *testing.T) {
 	entry := mustScenario(t, noFallbackYAML).Provider("exa")
 	d := Deps{Faults: &scriptedFaults{}}.Normalized()
 
-	x := &Exchange{Deps: d, Provider: Exa, Route: testRoute, decision: FaultDecision{Index: -1}}
+	x := &Exchange{Deps: d, Provider: testProviderExa, Route: testRoute, decision: FaultDecision{Index: -1}}
 	_ = x.Fault() // claim 0
 	x.claimed = true
 	x.decision = FaultDecision{Index: 1, Key: testRoute.FaultKey}
@@ -244,7 +243,7 @@ func TestSelectTurnForRecordsAFindingWhenNothingMatches(t *testing.T) {
 	require.Equal(t, -1, index)
 	require.True(t, x.Failed())
 	require.Equal(t, CodeNoMatchingTurn, x.Findings()[0].Code)
-	require.Equal(t, journal.SeverityError, x.Findings()[0].Severity)
+	require.Equal(t, SeverityError, x.Findings()[0].Severity)
 }
 
 func TestTurnFault(t *testing.T) {
@@ -276,6 +275,10 @@ func (v *recordingValidator) ValidateProjections(_ *scenario.Scenario, e *scenar
 	v.seen = append(v.seen, e.Name)
 	return v.findings
 }
+
+// ProjectionKeys is unused by any test in this file: they only care about
+// which entries ValidateProjections was asked about.
+func (*recordingValidator) ProjectionKeys() []string { return nil }
 
 func TestValidateScenario(t *testing.T) {
 	t.Parallel()
@@ -441,7 +444,7 @@ func TestSelectTurnForIsKeyedOnTheLaneNotTheRoute(t *testing.T) {
 
 	call := func(lane Lane, raw string) int {
 		x := &Exchange{
-			Deps: d, Provider: Exa, Route: testRoute,
+			Deps: d, Provider: testProviderExa, Route: testRoute,
 			Raw: []byte(raw), lane: lane,
 			decision: FaultDecision{Index: -1},
 		}
@@ -467,7 +470,7 @@ func TestSelectTurnForIsKeyedOnTheLaneNotTheRoute(t *testing.T) {
 func TestExchangeCursorKeyFallsBackToTheRoute(t *testing.T) {
 	t.Parallel()
 
-	x := &Exchange{Deps: Deps{}.Normalized(), Provider: Exa, Route: testRoute}
+	x := &Exchange{Deps: Deps{}.Normalized(), Provider: testProviderExa, Route: testRoute}
 	require.Equal(t, testRoute.FaultKey, x.cursorKey())
 	require.Equal(t, testRoute.FaultKey, x.Fault().Key)
 

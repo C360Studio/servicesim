@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -104,6 +105,15 @@ func (f *scriptedFaults) Reset() {
 	f.calls = 0
 }
 
+// testRefuse is the refuse function most tests that build a mux directly (not
+// through Profile.Handler) pass to NewMux: it does not care about the shape
+// of a 404/405/panic body, only that the mux dispatches, journals and
+// applies faults correctly. Tests that assert on refusal body content build
+// their own.
+func testRefuse(r Refusal) []byte {
+	return []byte(`{"kind":"` + string(r.Kind) + `"}`)
+}
+
 // okHandler is the simplest fault-eligible provider handler.
 func okHandler(body string) Handler {
 	return func(_ *Exchange) Response {
@@ -118,10 +128,23 @@ func okHandler(body string) Handler {
 
 var testRoute = Route{Pattern: "POST /search", FaultKey: "exa:search"}
 
+// testProviderExa and testProviderPerplexity are Name values this package's
+// own tests use to exercise Handle, NewMux and Exchange without naming a
+// vendor package — provider.Exa/Tavily/Perplexity/MCP were deleted in Phase
+// 10 unit 4 ("a framework core has no business naming four vendors"). The
+// spellings match some tests' scenario fixtures, which declare "exa" and
+// "perplexity"/"perplexity_agent" provider blocks by the same convention
+// the vendor packages themselves use; that is a fixture-authoring choice,
+// not a dependency on either package.
+const (
+	testProviderExa        Name = "exa"
+	testProviderPerplexity Name = "perplexity"
+)
+
 // serve runs one in-process request through Handle with an httptest recorder.
 func serve(d Deps, h Handler, r *http.Request) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
-	Handle(d, Exa, testRoute, h)(w, r)
+	Handle(d, testProviderExa, testRoute, h)(w, r)
 	return w
 }
 
@@ -370,6 +393,214 @@ func TestHandleValidationHasTheLastWordOnFaultEligibility(t *testing.T) {
 	require.Equal(t, journal.OutcomeError, j.Snapshot()[0].Outcome.Kind)
 }
 
+// TestHandleClaimedAttemptOnRejection is unit 0 of docs/proposals/framework-seam.md
+// (rule 5), fixing the gap docs/adopter-backlog.md's "Follow-up surfaced by unit
+// 2's review" recorded: an attempt claimed (via x.CallIndex, x.Fault, or a turn
+// selector such as SelectTurnFor) before the request is rejected must not be
+// applied to the wire response. The journal, however, must keep reporting
+// exactly what Deps.Faults actually handed out — Index and Key both — because
+// the counter really did advance on that (possibly namespaced) key, and
+// testkit's isolation and attempt-budget assertions audit the journal to prove
+// it: see TestHandleClaimedAttemptOnRejectionSpendsTheBudget_KnownLimitation.
+//
+// The control case proves existing behaviour — a handler that validates first,
+// per CONTRIBUTING.md's "validate before you claim" — is unchanged: it claims
+// nothing, so there is nothing for this guard to catch.
+//
+// The namespaced case is the regression this fix closes: an earlier version
+// reset the journaled key to the bare, unnamespaced Route.FaultKey, which made
+// two namespaces that each rejected a claimed request look like they shared one
+// counter (testkit.AssertNamespacesIsolated false positive).
+//
+// The "opts out without failing" case is what a handler that sets
+// FaultEligible: false directly — without ever calling x.Fail — looks like: a
+// documented way to serve a real 200 outside the fault plan. It must not be
+// confused with a rejection: the claimed attempt still must not reach the
+// wire, but the handler's own successful status must.
+func TestHandleClaimedAttemptOnRejection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		path             string
+		handler          Handler
+		wantStatus       int
+		wantBody         string
+		wantKey          string
+		wantAttemptIndex int
+		wantWarning      bool
+	}{
+		{
+			name: "handler claims an attempt via CallIndex, then rejects",
+			path: "/search",
+			handler: func(x *Exchange) Response {
+				x.CallIndex() // claims attempt 0 from the fault engine before validating
+				x.Fail("test.rejected", "query", "query is required")
+				return Response{Status: http.StatusBadRequest, Body: []byte(`{"error":"bad"}`), FaultEligible: false}
+			},
+			wantStatus:       http.StatusBadRequest,
+			wantBody:         `{"error":"bad"}`,
+			wantKey:          "exa:search",
+			wantAttemptIndex: 0,
+			wantWarning:      true,
+		},
+		{
+			// Control case: existing behaviour. A handler that validates FIRST
+			// never calls into the fault engine at all, so nothing is claimed
+			// and no fault.attempt_on_rejection warning is expected.
+			name: "handler validates first and rejects, claiming nothing",
+			path: "/search",
+			handler: func(x *Exchange) Response {
+				x.Fail("test.rejected", "query", "query is required")
+				return Response{Status: http.StatusBadRequest, Body: []byte(`{"error":"bad"}`), FaultEligible: false}
+			},
+			wantStatus:       http.StatusBadRequest,
+			wantBody:         `{"error":"bad"}`,
+			wantKey:          "exa:search",
+			wantAttemptIndex: -1,
+			wantWarning:      false,
+		},
+		{
+			// The regression case: the same claim-then-reject shape as the first
+			// row, but under a /n/ namespace prefix. The journaled key must stay
+			// the lane's namespaced cursor key, matching what every other
+			// unclaimed rejection on this lane journals (resolveLane, lane.go) —
+			// not the bare, unnamespaced Route.FaultKey.
+			name: "namespaced handler claims an attempt, then rejects",
+			path: "/n/tenant-a/search",
+			handler: func(x *Exchange) Response {
+				x.CallIndex()
+				x.Fail("test.rejected", "query", "query is required")
+				return Response{Status: http.StatusBadRequest, Body: []byte(`{"error":"bad"}`), FaultEligible: false}
+			},
+			wantStatus:       http.StatusBadRequest,
+			wantBody:         `{"error":"bad"}`,
+			wantKey:          "tenant-a/exa:search",
+			wantAttemptIndex: 0,
+			wantWarning:      true,
+		},
+		{
+			// A handler may opt a response out of faults directly, without ever
+			// calling x.Fail — a documented way to serve a real success outside
+			// the fault plan (§6.2). x.claimed alone must not be read as "this
+			// request was rejected": the claimed attempt still must not reach
+			// the wire, but the handler's own 200 must, not the scripted 429.
+			name: "handler claims an attempt, then opts out of faults without failing",
+			path: "/search",
+			handler: func(x *Exchange) Response {
+				x.CallIndex()
+				return Response{Status: http.StatusOK, Body: []byte(`{"ok":true}`), FaultEligible: false}
+			},
+			wantStatus:       http.StatusOK,
+			wantBody:         `{"ok":true}`,
+			wantKey:          "exa:search",
+			wantAttemptIndex: 0,
+			wantWarning:      true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+				{Status: http.StatusTooManyRequests, Body: map[string]any{"error": "rate limited"}},
+			}}
+			j := journal.NewRing(8, 4096)
+			r := postJSON(`{}`)
+			r.URL.Path = tc.path
+			w := serve(Deps{Journal: j, Faults: engine}, tc.handler, r)
+
+			require.Equal(t, tc.wantStatus, w.Code,
+				"the handler's own status must be served, not the scripted 429")
+			require.JSONEq(t, tc.wantBody, w.Body.String(), "the handler's own body, not the fault's")
+
+			entries := j.Snapshot()
+			require.Len(t, entries, 1)
+			e := entries[0]
+			require.Equal(t, tc.wantAttemptIndex, e.Outcome.AttemptIndex,
+				"the journal must report exactly what Deps.Faults handed out, not -1 for a claim that was real")
+			require.Equal(t, tc.wantKey, e.Outcome.FaultKey,
+				"the journal must keep naming the lane the request was counted in")
+			require.Equal(t, tc.wantStatus, e.Outcome.Status)
+
+			warnings := e.Warnings()
+			if tc.wantWarning {
+				require.Len(t, warnings, 1)
+				require.Equal(t, CodeAttemptOnRejection, warnings[0].Code)
+				require.Contains(t, warnings[0].Message,
+					fmt.Sprintf("fault attempt %d on key %q", tc.wantAttemptIndex, tc.wantKey),
+					"names the exact claimed index and key")
+			} else {
+				require.Empty(t, warnings)
+			}
+		})
+	}
+}
+
+// TestHandleClaimedAttemptOnRejectionIgnoresAnUnknownKeyClaim proves the guard
+// does not fire on a claim that consumed nothing: x.Fault sets x.claimed even
+// when Deps.Faults reports Unknown (no plan registered for this key, Index
+// stays -1 — see FaultDecision.Unknown), and there is no claimed attempt to
+// warn about in that case.
+func TestHandleClaimedAttemptOnRejectionIgnoresAnUnknownKeyClaim(t *testing.T) {
+	t.Parallel()
+
+	j := journal.NewRing(8, 4096)
+	handler := func(x *Exchange) Response {
+		x.Fault() // claims nothing real: the engine holds no plan for this key
+		x.Fail("test.rejected", "query", "query is required")
+		return Response{Status: http.StatusBadRequest, Body: []byte(`{"error":"bad"}`), FaultEligible: false}
+	}
+	w := serve(Deps{Journal: j, Faults: &scriptedFaults{unknown: true}}, handler, postJSON(`{}`))
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, -1, entries[0].Outcome.AttemptIndex)
+	require.Empty(t, entries[0].Warnings(), "an Unknown claim consumed nothing, so no fault.attempt_on_rejection is owed")
+}
+
+// TestHandleClaimedAttemptOnRejectionSpendsTheBudget_KnownLimitation documents
+// the deferred half of unit 0 (framework-seam.md rule 5, "an engineering call,
+// recorded here, not an owner question"): the claimed Attempt is kept off the
+// rejection's wire response, but the counter slot the claim consumed from
+// Deps.Faults is NOT released, and the journal says so truthfully — the
+// rejected request's entry reports AttemptIndex 0, the index Deps.Faults
+// actually handed out, not -1. A second, VALID request on the same lane
+// therefore receives attempt index 1, not the 429 scripted for index 0 — the
+// scripted fault is silently skipped rather than replayed. A CAS release of the
+// claimed lane is deferred until a real out-of-tree profile trips the
+// fault.attempt_on_rejection warning (see the doc comment on Handle).
+func TestHandleClaimedAttemptOnRejectionSpendsTheBudget_KnownLimitation(t *testing.T) {
+	t.Parallel()
+
+	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
+		{Status: http.StatusTooManyRequests, Body: map[string]any{"error": "rate limited"}},
+	}}
+	claims := func(x *Exchange) Response {
+		x.CallIndex()
+		x.Fail("test.rejected", "query", "query is required")
+		return Response{Status: http.StatusBadRequest, Body: []byte(`{"error":"bad"}`), FaultEligible: false}
+	}
+	j := journal.NewRing(8, 4096)
+	d := Deps{Journal: j, Faults: engine}
+
+	serve(d, claims, postJSON(`{}`)) // burns attempt index 0's claim on a rejected request
+
+	w2 := serve(d, okHandler(`{"ok":true}`), postJSON(`{}`))
+	require.Equal(t, http.StatusOK, w2.Code,
+		"the 429 scripted for attempt 0 was already consumed by the rejected request's claim")
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 2)
+	require.Equal(t, 0, entries[0].Outcome.AttemptIndex,
+		"the journal reports the index Deps.Faults actually handed out, even though it was never applied")
+	require.Equal(t, 1, entries[1].Outcome.AttemptIndex,
+		"attempt 0's budget was burned by the rejection, not replayed for the next valid request")
+}
+
 func TestHandleUnknownFaultKeyWarns(t *testing.T) {
 	t.Parallel()
 
@@ -597,7 +828,7 @@ func TestHandleCloseBeforeHeadersWithDelayAfterHeadersStillRecordsEarly(t *testi
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultCloseBeforeHeaders, DelayAfterHeaders: scenario.Duration(time.Hour)},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	start := time.Now()
@@ -641,7 +872,7 @@ func TestHandleDelayAfterHeadersHeadersArriveBeforeTheHang(t *testing.T) {
 
 	j := journal.NewRing(8, 4096)
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{{DelayAfterHeaders: scenario.Duration(delay)}}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -683,7 +914,7 @@ func TestHandleDelayAndDelayAfterHeadersCompose(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Delay: scenario.Duration(preDelay), DelayAfterHeaders: scenario.Duration(afterDelay)},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 	defer srv.Close()
 
 	start := time.Now()
@@ -720,7 +951,7 @@ func TestHandleDelayAfterHeadersDelaySkipRecordsBothWithoutWaiting(t *testing.T)
 		{Delay: scenario.Duration(preDelay), DelayAfterHeaders: scenario.Duration(afterDelay)},
 	}}
 	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine, DelayMode: DelaySkip},
-		Exa, testRoute, okHandler(`{"ok":true}`)))
+		testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	start := time.Now()
@@ -761,7 +992,7 @@ func TestHandleDelayAfterHeadersClientCancelledDuringHangLandsAbortedEntry(t *te
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{DelayAfterHeaders: scenario.Duration(time.Hour)},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -801,7 +1032,7 @@ func TestHandleDelayAfterHeadersTruncateBodyClientCancelledDuringHangLandsDeferr
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultTruncateBody, DelayAfterHeaders: scenario.Duration(time.Hour), Reset: true},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -853,7 +1084,7 @@ func TestHandleDelayAfterHeadersTruncateBodyRecordsAfterTheHangBeforeTheAbort(t 
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultTruncateBody, DelayAfterHeaders: scenario.Duration(delay), Reset: true},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -899,7 +1130,7 @@ func TestHandleOversizedBodyDelayAfterHeaders(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultOversizedBody, BodyBytes: wantLen, DelayAfterHeaders: scenario.Duration(delay)},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -928,7 +1159,7 @@ func TestHandleCloseBeforeHeadersIsJournaledBeforeTheAbort(t *testing.T) {
 
 	j := journal.NewRing(8, 4096)
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{{Kind: scenario.FaultCloseBeforeHeaders}}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	_, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -998,7 +1229,7 @@ func TestHandleAbortingFaultDelayIsObservedInCompletedAt(t *testing.T) {
 
 			j := journal.NewRing(8, 4096)
 			engine := &scriptedFaults{attempts: []scenario.FaultAttempt{tc.attempt}}
-			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`)))
+			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 			defer srv.Close()
 
 			start := time.Now()
@@ -1039,7 +1270,7 @@ func TestHandleAbortingFaultDelaySkipRecordsRequestedDelayWithoutWaiting(t *test
 		{Kind: scenario.FaultCloseBeforeHeaders, Delay: scenario.Duration(declared)},
 	}}
 	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine, DelayMode: DelaySkip},
-		Exa, testRoute, okHandler(`{"ok":true}`)))
+		testProviderExa, testRoute, okHandler(`{"ok":true}`)))
 	defer srv.Close()
 
 	start := time.Now()
@@ -1152,7 +1383,7 @@ func TestHandleTruncateBody(t *testing.T) {
 
 			j := journal.NewRing(8, 4096)
 			engine := &scriptedFaults{attempts: []scenario.FaultAttempt{tc.attempt}}
-			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 			defer srv.Close()
 
 			resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -1224,7 +1455,7 @@ func TestHandleOversizedBodyFault(t *testing.T) {
 
 			j := journal.NewRing(8, 4096)
 			engine := &scriptedFaults{attempts: []scenario.FaultAttempt{tc.attempt}}
-			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(body)))
+			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(body)))
 			defer srv.Close()
 
 			resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -1281,7 +1512,7 @@ func TestHandleOversizedBodyUsesTheProviderShapedBody(t *testing.T) {
 		{Status: http.StatusInternalServerError, BodyBytes: len(errBody) + 64},
 	}}
 	j := journal.NewRing(8, 4096)
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, h))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, h))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -1404,7 +1635,7 @@ func TestHandleRecordIsIdempotent(t *testing.T) {
 	// record. Exactly one entry must exist afterwards.
 	j := journal.NewRing(8, 4096)
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{{Kind: scenario.FaultCloseBeforeHeaders}}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{}`)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{}`)))
 	defer srv.Close()
 
 	_, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -1433,7 +1664,7 @@ func TestHandleIsRaceFree(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Status: http.StatusTooManyRequests}, {Status: http.StatusTooManyRequests},
 	}}
-	handler := Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, okHandler(`{"ok":true}`))
+	handler := Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, okHandler(`{"ok":true}`))
 
 	const n = 32
 	var wg sync.WaitGroup

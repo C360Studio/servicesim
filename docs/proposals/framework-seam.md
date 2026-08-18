@@ -2,14 +2,21 @@
 
 ## Status
 
-**Proposal, 2026-08-17, revised the same day after an independent critique. Awaiting the owner's decisions in
-the last section.** Written against `main` @ `7318989` (Phase 8 merged; D9 tier 2 decided). It exists to turn the
-owner's decision below into one shippable design, and it was produced from three audits (the exported-surface
-gap, the 54 composition sites, the constraints and consumers), three independently written designs each backed by
-a compile spike, three independent judgements of those designs, and one critique of the merged result. Where the
-designs disagreed, this document resolves the disagreement by what the audits measured and the spikes compiled,
-not by taste; where only the owner can resolve it, the question is in the last section with a one-line
-recommendation.
+**Accepted and shipped in Phase 10 (2026-08-17); [ADR 0003](../adr/0003-framework-seam.md) is the record, and this
+file is the design history.** Every decision in the last section was taken as recommended (D-1 … D-11, owner,
+2026-08-17), and units 0–9 shipped on branch `phase-10` in nine commits (`4d10178`..`71a9a5e` — units 7 and 8
+landed together); unit 10 is the documentation sweep this Status line belongs to, and unit 11 is the v0.5.0
+release. Where this document and the shipped code disagree, **the code wins** — the differences the commits record
+are listed under "Where it landed differently" below rather than edited into the design.
+
+The text below is the proposal as the owner read it, kept for the reasoning: *proposal, 2026-08-17, revised the
+same day after an independent critique.* Written against `main` @ `7318989` (Phase 8 merged; D9 tier 2 decided).
+It exists to turn the owner's decision below into one shippable design, and it was produced from three audits
+(the exported-surface gap, the 54 composition sites, the constraints and consumers), three independently written
+designs each backed by a compile spike, three independent judgements of those designs, and one critique of the
+merged result. Where the designs disagreed, this document resolves the disagreement by what the audits measured
+and the spikes compiled, not by taste; where only the owner can resolve it, the question is in the last section
+with a one-line recommendation.
 
 The decision this serves, verbatim (owner, 2026-08-17):
 
@@ -21,6 +28,68 @@ Prior art this builds on: [`d9-framework-framing.md`](d9-framework-framing.md) (
 8"), [`docs/adopter-backlog.md`](../adopter-backlog.md) rows D6/D9/D11, [ADR 0001](../adr/0001-single-repository.md),
 [ADR 0002](../adr/0002-verified-contract-precedence.md), `CONTRIBUTING.md` "Adding a provider",
 [`docs/design/mcp-profile.md`](../design/mcp-profile.md) §12.
+
+## Where it landed differently
+
+Read from the nine commit bodies and the code, 2026-08-17. Everything not listed here shipped as designed.
+
+- **`RefusalKind` has five values, not four.** `RefuseRequest` was added in unit 2 as the kind
+  `Exchange.Reject(...)` renders through — "the compiler-settled fifth", because a validation rejection needs the
+  profile's own error envelope exactly as a 404 does. `testkit.ValidateProfile` checks `ErrorBody` for all five.
+- **`MuxSpec.NotFound`/`MethodNotAllowed` were deleted outright**, not deprecated first, and `NewMux` gained its
+  refusal parameter in the same unit: no external caller existed and the whole break ships in v0.5.0.
+- **`(*Set).CredentialNames()` exists** as well as the `Profile.CredentialNames` field: the composed union is what
+  redaction and `testkit` need, and it reaches both redaction points as data through `Deps` (unit 7).
+- **The four contract bundles moved beside their profiles** — `contracts/<name>/*` → `profiles/<name>/contracts/*`,
+  105 files as pure renames — and each profile embeds its own. The design said a profile's bundle is
+  `Profile.Contracts`; it did not say ours would move, and moving them is what makes an in-tree profile's layout
+  identical to an out-of-tree one's. `contracts/` keeps the shared discipline and the index README.
+- **`AssertNoCredentialInJournal` was not added.** `testkit.AssertNoCredentialLeak` already scans every retained
+  field for a literal, so the proposal's table row resolves to it — one name per concept (rule 7), unit 7.
+- **A profile with no `Validators` claims its own entry kind** (unit 3). Entry kinds were derived from `Validators`
+  keys, so the simplest foreign profile drew both `scenario.profile.unscripted` *and*
+  `scenario.provider.unimplemented` for a block that demonstrably applied; a validator-less profile now installs a
+  no-op validator for its own kind, and `Set.Validators`/`EntryKinds`, `ValidateScenario`, the duplicate-kind
+  refusal and the unscripted check all see it.
+- **The fault engine was consolidated in two steps, not one.** `(*Set).Faults` could not call `internal/faults`
+  (that package imports `provider`, so the call closes a cycle), so unit 2 shipped `provider/fault_engine.go` as a
+  documented duplicate and unit 3 deleted `internal/faults` outright, moving its 28 tests intact. `testkit.NewFaults`
+  was a deprecated wrapper for one unit and is gone.
+- **`Kind` scopes the fault key and the lane cursor** (unit 8): `<Name>:<key>` when `Kind != Name`, byte-identical
+  to before when `Kind == Name`. Unit 2's own note said `Route.FaultKey` was not `Kind`-scoped and left it to unit
+  8; it is scoped now, so two instances of one shape have independent budgets without hand-distinct fault keys.
+- **`EXPOSE`, the Compose port map and the `<NAME>_BASE_URL` rows are not generated.** `--print-ports` exists and
+  is the check; the values stay hand-written with a "regenerate with `--print-ports`" note beside them, and the
+  image-smoke journal loop reads its names from the flag. Generation was designed; a documented regeneration
+  source is what shipped.
+- **`AssertNoLiveHosts` carries the paid-host base list in Go** (`internal/paidhosts.Base`), and a test parses the
+  script's own pattern so the two cannot drift. The design left the base list in the shell script; a consumer's CI
+  gets no shell script, so `api.openai.com` is refused for them whether or not a profile names it.
+- **`Validator.ProjectionKeys()` shipped** (unit 8, the engineering call the last section flagged as not the
+  owner's), and `scenarios_test.go`'s `documentedProjectionKeys` is derived from `profiles.Reference()`;
+  `implementedProviders` is still a hand-kept literal.
+- **Unit 1's DoD was unmeasurable as written.** "An empty `go list -deps`" cannot hold while `provider` itself
+  wraps `internal/*` transitively; the shipped proof is *direct* imports (`go list -f '{{.Imports}}'` over the four
+  plus a non-test grep), which is the property the unit was actually for.
+- **Rule 5's memoised-fault gate keeps the claimed index and key**, clearing only the attempt (recorded inline in
+  rule 5 above after the spike, and shipped that way in unit 0): `testkit`'s namespace-isolation and attempt-budget
+  assertions read `Outcome.FaultKey`/`Outcome.AttemptIndex`, and a zeroed `Index: -1` misreports which lane was
+  drawn on. The budget half — the claimed index is still spent — is warn-only, as designed.
+- **Review added registration refusals the design did not list**: a `Route` with no handler, a handler with no
+  `Route`, and a deep-cloning `Set` (mutating a caller's own `Profile` after `NewSet` used to be visible through
+  it). MCP's own `Status < 400` fault-body guard was left in place as a one-line follow-up rather than deleted with
+  the other three duplicates.
+- **The exported-surface trim measured slightly different totals** than the sketch: exa 47→5, tavily 44→12,
+  perplexity 83→10, mcp 19→6 top-level declarations, 249 identifiers unexported.
+- **The guide found one blocker the design did not predict** (unit 9): a handler implements authentication itself
+  against `AuthPolicy()`/`AcceptedPlacements()`/`Credentials()`, and a handler that ignored scenario auth policy
+  passed `ValidateProfile` and every test the guide taught. `docs/building-a-profile.md` now excerpts `checkAuth`
+  in full, and "Authentication is yours" is its own step.
+
+Recorded, not done, and carried on the backlog: `AssertNoCredentialLeak` takes a `*Sim` only (a hand-built journal
+cannot be scanned with it); an instance block with no `kind:` draws a misnamed `scenario.provider.unimplemented`;
+and the CAS release of a claimed fault lane still waits for a real out-of-tree profile to trip
+`fault.attempt_on_rejection`.
 
 ## What the owner decided and what it implies
 
@@ -547,12 +616,19 @@ mechanisms rely on handler convention today and become construction:
   unconditionally, so an attempt claimed before validation failed is still applied — the rejection wears a
   scripted 429 and the consumer cannot prove it sent a wrong request. Fix, spiked, six lines: if the response is
   not fault-eligible and a decision was claimed, zero the decision (`Index: -1`), keep the handler's status, and
-  record `fault.attempt_on_rejection`. All existing tests pass with it (confirming "latent, not reachable
-  today"); an out-of-tree test proves the pre-fix code served the 429. **This ships first, as unit 0, before any
-  seam work.** The retry *budget* half — the claimed index is still spent — is warn-only in unit 0; a CAS release
-  of the claimed lane is an implementation choice that touches the lane counter under concurrency and belongs
-  behind a `-race` spike with two concurrent requests, so it waits until a real out-of-tree profile trips the
-  warning. An engineering call, recorded here, not an owner question.
+  record `fault.attempt_on_rejection`. All existing tests pass with it, which was read at spike time as
+  "latent, not reachable today" — that reading was wrong: `SelectTurnFor` claims via `CallIndex` and then fails
+  `scenario.no_matching_turn`, and `MintJob` claims unconditionally and then fails `job.limit_reached`, so every
+  shipped handler that uses either one takes this exact path on an ordinary unmatched-turn or over-limit request;
+  the existing suite simply had no test exercising it. An out-of-tree test proves the pre-fix code served the 429.
+  **This ships first, as unit 0, before any seam work.** Unit 0's actual implementation keeps `Index` and `Key` as
+  claimed rather than zeroing them (`Attempt` alone is cleared), because testkit's namespace-isolation and
+  attempt-budget assertions read the journal's `Outcome.FaultKey`/`Outcome.AttemptIndex` and a zeroed, unnamespaced
+  `Index: -1` misreports which lane and which counter slot were actually drawn on. The retry *budget* half — the
+  claimed index is still spent — is warn-only in unit 0; a CAS release of the claimed lane is an implementation
+  choice that touches the lane counter under concurrency and belongs behind a `-race` spike with two concurrent
+  requests, so it waits until a real out-of-tree profile trips the warning. An engineering call, recorded here,
+  not an owner question.
 - *`Response.FaultBody` is called for a no-op attempt.* Verified: `provider/fault_exec.go:307` calls
   `resp.FaultBody(*a)` for any executing attempt, and `exa/errors.go:119`, `tavily/errors.go:193` and
   `perplexity/errors.go:104` each re-implement `if a.Status < 400 { return nil }` — three profiles independently
@@ -593,7 +669,7 @@ Each unit is independently green (`task check`) and independently revertible.
 
 | # | Scope | Definition of done |
 |---|---|---|
-| **0** | The memoised-fault gate: `provider/handle.go` (six lines), `CodeAttemptOnRejection`, a table test that a handler which claims then rejects gets its own status, `AttemptIndex -1` and the finding | New test fails on `main`, passes after; every existing test unchanged. **Independent of every other decision — merge today.** |
+| **0** | The memoised-fault gate: `provider/handle.go`, `CodeAttemptOnRejection`, a table test that a handler which claims then rejects (or opts out of faults) gets its own status and body, the journal keeps the claimed index and namespaced key truthfully (only the attempt is cleared — the counter really was drawn on), and the finding is recorded | New test fails on `main`, passes after; every existing test unchanged. **Independent of every other decision — merged first (`phase-10`).** Review showed the gap is not latent: `SelectTurnFor` and `MintJob` claim before they can know the request will be rejected, so every profile reached it via `scenario.no_matching_turn`. |
 | **1** | `provider`: `Render`, `Hex32`, `UUIDv5`, `FloatIn`, `ContentTypeJSON`, `Credential`, `Severity`, `Finding`; `Exchange.Credentials`/`ObserveCredential`/`HasJSONContentType`/`AuthPolicy`/`EntryFor`/`Reject`; `Findings()` → `[]Finding`; unexport `Exchange.Auth`; `MintJob` → `(string, bool)`, `ResolveJob` → `bool`; the four profiles rewritten off `internal/{wire,ids,httpx,journal}`; exa's extra/omit order fixed to what `docs/scenario-schema.md:452-454` documents | **No non-test file under the four profiles imports `servicesim/internal/…`** (`go list -deps`), and — **the full test suite compiles and passes**. The winning spike ran vet excluding in-tree `_test.go`; this unit's DoD is the measurement that spike skipped. A test that a key both omitted and re-added by `extra_fields` is absent from exa's body, release-noted. |
 | **2** | `Profile` (incl. `DefaultAuth`, `Kind` stored but not yet threaded), `Refusal`, `RefusalKind`, `Set`, `NewSet`, `MustSet`, `Validate`, `Handler`, `Refuse(Refusal)`, `(*Set).Faults` + `FaultOption`/`WithFaultLogger`/`WithMaxNamespaces`; `MuxSpec` loses `NotFound`/`MethodNotAllowed`; each profile gains `Profile()` and a typed `Name` (exa and perplexity add theirs) and loses `New`; the four `provider.Exa…` constants deleted; refusal bodies move out of `internal/server`, the duplicated envelope deleted; `Status < 400` guard into `fault_exec.go`; panic → `RefuseInternal` 500; `Stream.Sentinel`/`SentinelPace` replace `OmitDone`/`DonePace`, empty `Grammar` refused, perplexity's renderer sets `DoneSentinel`; `relaxAuth` consults `DefaultAuth` | **An out-of-tree profile compiles, is registered and serves** — this is the unit at which `provider/mcp` builds against exported packages only, proven by all three spikes (`go list -deps ./provider/mcp` → no `internal/` for the minimal-export shape). `NewSet` refuses missing `ErrorBody`, duplicate names and ports, an unknown `DefaultAuth`, one entry kind from two `Kind`s, and instancing of a multi-entry profile, each with a test. A `- {}` attempt serves the scenario body at 200. A `Stream{Grammar: "tool_call_delta"}` with no `Sentinel` streams its chunks and nothing after; with `Grammar: ""` it is refused. MCP's no-`auth:` entry is still optional under `--strict-auth` (default), and `--strict-auth=false` still relaxes exa. |
 | **3** | `internal/config` + `internal/server` derived from `*Set`; root `servicesim` package with `Main`/`Run`/`Build`; `cmd/servicesim` a wrapper; ldflags paths in `Dockerfile`, `Taskfile.yml`, CI; `--print-routes --print-ports --print-hosts`; `scenario.profile.unscripted` | `internal/{config,server}` import no profile package; `--help` derives from the set; `image-smoke.sh` passes and asserts `--version`; an out-of-module `main.go` composing one foreign profile plus two of ours builds and serves (all three spikes). **After this unit a consumer composes their own binary and image.** |

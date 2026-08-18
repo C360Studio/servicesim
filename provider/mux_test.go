@@ -13,7 +13,8 @@ import (
 )
 
 // testSpec is a provider-shaped MuxSpec: two routes on one path, one route on
-// another, and the two error-body builders a real provider package supplies.
+// another. NewMux's 404/405 bodies come from testExaRefuse, passed at the
+// call site — MuxSpec itself no longer carries them (Phase 10 unit 2).
 func testSpec() MuxSpec {
 	return MuxSpec{
 		Routes: []Route{
@@ -24,23 +25,20 @@ func testSpec() MuxSpec {
 			"POST /search": okHandler(`{"route":"search"}`),
 			"POST /answer": okHandler(`{"route":"answer"}`),
 		},
-		NotFound: func(_ *Exchange) Response {
-			return Response{
-				Status: http.StatusNotFound,
-				Body:   []byte(`{"error":"Not Found","tag":"NOT_FOUND"}`),
-				Label:  "exa.error.NOT_FOUND",
-			}
-		},
-		MethodNotAllowed: func(allow []string) Handler {
-			return func(_ *Exchange) Response {
-				return Response{
-					Status: http.StatusMethodNotAllowed,
-					Header: http.Header{"Allow": []string{strings.Join(allow, ", ")}},
-					Body:   []byte(`{"error":"Method Not Allowed","tag":"METHOD_NOT_ALLOWED"}`),
-					Label:  "exa.error.METHOD_NOT_ALLOWED",
-				}
-			}
-		},
+	}
+}
+
+// testExaRefuse renders a Refusal the way an Exa-shaped profile's ErrorBody
+// would: a fixed body per kind, so a test asserting on 404/405 body content
+// has something real to assert against.
+func testExaRefuse(r Refusal) []byte {
+	switch r.Kind {
+	case RefuseNotFound:
+		return []byte(`{"error":"Not Found","tag":"NOT_FOUND"}`)
+	case RefuseMethodNotAllowed:
+		return []byte(`{"error":"Method Not Allowed","tag":"METHOD_NOT_ALLOWED"}`)
+	default:
+		return []byte(`{"error":"Internal Server Error","tag":"INTERNAL_ERROR"}`)
 	}
 }
 
@@ -73,18 +71,6 @@ func pollSpec(get, head Handler) MuxSpec {
 			"GET /runs/{id}":  get,
 			"HEAD /runs/{id}": head,
 		},
-		NotFound: func(_ *Exchange) Response {
-			return Response{Status: http.StatusNotFound, Body: []byte(`{}`), Label: "nf"}
-		},
-		MethodNotAllowed: func(allow []string) Handler {
-			return func(_ *Exchange) Response {
-				return Response{
-					Status: http.StatusMethodNotAllowed,
-					Header: http.Header{"Allow": []string{strings.Join(allow, ", ")}},
-					Body:   []byte(`{}`), Label: "mna",
-				}
-			}
-		},
 	}
 }
 
@@ -106,7 +92,7 @@ func TestHeadIsServedByItsOwnHandler(t *testing.T) {
 			return Response{Status: http.StatusOK, Label: "head"}
 		},
 	)
-	mux := NewMux(Deps{}, Exa, spec)
+	mux := NewMux(Deps{}, testProviderExa, testRefuse, spec)
 
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodHead, "/runs/run_a", nil))
@@ -126,7 +112,7 @@ func TestHeadAppearsInAllow(t *testing.T) {
 		okHandler(`{"status":"running"}`),
 		func(_ *Exchange) Response { return Response{Status: http.StatusOK, Label: "head"} },
 	)
-	mux := NewMux(Deps{}, Exa, spec)
+	mux := NewMux(Deps{}, testProviderExa, testRefuse, spec)
 
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/runs/run_a", nil))
@@ -155,7 +141,7 @@ func TestHeadDoesNotAdvanceThePollCursor(t *testing.T) {
 			return Response{Status: http.StatusOK, Label: "head"}
 		},
 	)
-	mux := NewMux(Deps{}, Exa, spec)
+	mux := NewMux(Deps{}, testProviderExa, testRefuse, spec)
 
 	for range 3 {
 		w := httptest.NewRecorder()
@@ -186,7 +172,7 @@ func TestPollCursorsArePerJob(t *testing.T) {
 		},
 		func(_ *Exchange) Response { return Response{Status: http.StatusOK, Label: "head"} },
 	)
-	mux := NewMux(Deps{}, Exa, spec)
+	mux := NewMux(Deps{}, testProviderExa, testRefuse, spec)
 
 	for _, id := range []string{"run_a", "run_b", "run_a", "run_b", "run_a"} {
 		w := httptest.NewRecorder()
@@ -246,7 +232,7 @@ func TestNewMuxRoutingTable(t *testing.T) {
 			t.Parallel()
 
 			j := journal.NewRing(8, 4096)
-			mux := NewMux(Deps{Journal: j}, Exa, testSpec())
+			mux := NewMux(Deps{Journal: j}, testProviderExa, testExaRefuse, testSpec())
 
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
@@ -294,12 +280,10 @@ func TestNewMuxAllowHeaderIsSorted(t *testing.T) {
 			"POST /search":   okHandler(`{}`),
 			"DELETE /search": okHandler(`{}`),
 		},
-		NotFound:         func(_ *Exchange) Response { return Response{Status: http.StatusNotFound} },
-		MethodNotAllowed: func(_ []string) Handler { return func(_ *Exchange) Response { return Response{Status: 405} } },
 	}
 
 	for range 20 {
-		mux := NewMux(Deps{}, Exa, spec)
+		mux := NewMux(Deps{}, testProviderExa, testRefuse, spec)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, httptest.NewRequest(http.MethodPatch, "/search", nil))
 
@@ -318,7 +302,7 @@ func TestNewMuxSuppliesAllowAndFindingWhenTheProviderDoesNot(t *testing.T) {
 		Handlers: map[string]Handler{"POST /search": okHandler(`{}`)},
 	}
 	j := journal.NewRing(8, 4096)
-	mux := NewMux(Deps{Journal: j}, Exa, spec)
+	mux := NewMux(Deps{Journal: j}, testProviderExa, testRefuse, spec)
 
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/search", nil))
@@ -332,7 +316,7 @@ func TestNewMuxUnmatchedConsumesNoFaultBudget(t *testing.T) {
 	t.Parallel()
 
 	engine := &countingFaults{}
-	mux := NewMux(Deps{Faults: engine}, Exa, testSpec())
+	mux := NewMux(Deps{Faults: engine}, testProviderExa, testExaRefuse, testSpec())
 
 	for _, target := range []string{"/nope", "/search/"} {
 		w := httptest.NewRecorder()
@@ -352,7 +336,7 @@ func TestNewMuxSharesOneJournalSequenceAcrossRoutes(t *testing.T) {
 	// Deps is normalised once, in NewMux, so two routes on one listener cannot
 	// draw sequence numbers from two different substitute journals.
 	j := journal.NewRing(8, 4096)
-	mux := NewMux(Deps{Journal: j}, Exa, testSpec())
+	mux := NewMux(Deps{Journal: j}, testProviderExa, testExaRefuse, testSpec())
 
 	for _, path := range []string{"/search", "/answer", "/search"} {
 		w := httptest.NewRecorder()

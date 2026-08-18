@@ -149,7 +149,7 @@ func TestTurnLaneKeyResolvesTheRoutesEntry(t *testing.T) {
 	newExchange := func(route Route) *Exchange {
 		return &Exchange{
 			Deps:     Deps{Scenario: s}.Normalized(),
-			Provider: Perplexity,
+			Provider: testProviderPerplexity,
 			Route:    route,
 			Raw:      []byte(body),
 		}
@@ -211,7 +211,7 @@ providers:
 	newExchange := func(route Route) *Exchange {
 		return &Exchange{
 			Deps:     Deps{Scenario: s}.Normalized(),
-			Provider: Perplexity,
+			Provider: testProviderPerplexity,
 			Route:    route,
 		}
 	}
@@ -242,7 +242,7 @@ func TestRouteEntryNamingAnUndeclaredEntry(t *testing.T) {
 	s := mustScenario(t, twoEntryScenario)
 	x := &Exchange{
 		Deps:     Deps{Scenario: s}.Normalized(),
-		Provider: Perplexity,
+		Provider: testProviderPerplexity,
 		Route:    Route{Pattern: "POST /x", FaultKey: "perplexity:x", Entry: "not_declared"},
 	}
 
@@ -266,7 +266,7 @@ func laneFromExchange(t *testing.T, s *scenario.Scenario, id string) *Exchange {
 	r.SetPathValue("id", id)
 	return &Exchange{
 		Deps:     Deps{Scenario: s}.Normalized(),
-		Provider: Exa,
+		Provider: testProviderExa,
 		Request:  r,
 		Route: Route{
 			Pattern:  "GET /agent/runs/{id}",
@@ -431,7 +431,7 @@ providers:
 
 	x := &Exchange{
 		Deps:     Deps{Scenario: s}.Normalized(),
-		Provider: Exa,
+		Provider: testProviderExa,
 		Route:    Route{Pattern: "POST /search", FaultKey: "exa:search"},
 	}
 	if got := turnLaneKey(x); got != "exa:search" {
@@ -613,7 +613,7 @@ func TestPrefixedAndUnprefixedReachTheSameRoute(t *testing.T) {
 			var got Lane
 			j := journal.NewRing(8, 4096)
 			d := Deps{Journal: j, Scenario: mustScenario(t, rolesYAML)}
-			mux := NewMux(d, Exa, laneSpec(func(x *Exchange) Response {
+			mux := NewMux(d, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 				got = x.Lane()
 				return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 			}))
@@ -673,7 +673,7 @@ func TestPrefixedRouteStillFailsClosed(t *testing.T) {
 			t.Parallel()
 
 			j := journal.NewRing(8, 4096)
-			mux := NewMux(Deps{Journal: j}, Exa, testSpec())
+			mux := NewMux(Deps{Journal: j}, testProviderExa, testRefuse, testSpec())
 
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
@@ -729,7 +729,7 @@ func TestInvalidNamespaceIsRejected(t *testing.T) {
 			// that needs cleaning before any handler sees it, and "/n//search" is
 			// one. Resolution is what is under test here, so it is fed the path
 			// verbatim.
-			h := Handle(Deps{Journal: j}, Exa, testRoute, func(x *Exchange) Response {
+			h := Handle(Deps{Journal: j}, testProviderExa, testRoute, func(x *Exchange) Response {
 				failed, lane = x.Failed(), x.Lane()
 				if failed {
 					return Response{Status: http.StatusBadRequest, Body: []byte(`{}`), Label: "test.error"}
@@ -763,7 +763,7 @@ func TestInvalidNamespaceThroughTheMux(t *testing.T) {
 	t.Parallel()
 
 	j := journal.NewRing(8, 4096)
-	mux := NewMux(Deps{Journal: j}, Exa, laneSpec(func(x *Exchange) Response {
+	mux := NewMux(Deps{Journal: j}, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 		if x.Failed() {
 			return Response{Status: http.StatusBadRequest, Body: []byte(`{}`), Label: "test.error"}
 		}
@@ -805,7 +805,7 @@ func TestNamespaceHeaderIsAcceptedAndLosesToThePath(t *testing.T) {
 			t.Parallel()
 
 			var got Lane
-			mux := NewMux(Deps{}, Exa, laneSpec(func(x *Exchange) Response {
+			mux := NewMux(Deps{}, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 				got = x.Lane()
 				return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 			}))
@@ -835,7 +835,7 @@ func TestJournalSequencesAreIsolatedPerNamespace(t *testing.T) {
 	t.Parallel()
 
 	j := journal.NewRing(16, 4096)
-	mux := NewMux(Deps{Journal: j}, Exa, laneSpec(func(_ *Exchange) Response {
+	mux := NewMux(Deps{Journal: j}, testProviderExa, testRefuse, laneSpec(func(_ *Exchange) Response {
 		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 	}))
 
@@ -869,7 +869,7 @@ func TestNamespaceHeaderSequencesInItsOwnLane(t *testing.T) {
 	t.Parallel()
 
 	j := journal.NewRing(16, 4096)
-	mux := NewMux(Deps{Journal: j}, Exa, laneSpec(func(_ *Exchange) Response {
+	mux := NewMux(Deps{Journal: j}, testProviderExa, testRefuse, laneSpec(func(_ *Exchange) Response {
 		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 	}))
 
@@ -902,7 +902,7 @@ func TestRejectedNamespaceSequencesInTheDefaultLane(t *testing.T) {
 	j := journal.NewRing(16, 4096)
 	// Handle directly: ServeMux cleans a path like "/n//search" before routing,
 	// and the rejection is what this needs to reach the sequence claim.
-	h := Handle(Deps{Journal: j}, Exa, testRoute, func(x *Exchange) Response {
+	h := Handle(Deps{Journal: j}, testProviderExa, testRoute, func(x *Exchange) Response {
 		if x.Failed() {
 			return Response{Status: http.StatusBadRequest, Body: []byte(`{}`), Label: "test.error"}
 		}
@@ -938,7 +938,7 @@ func TestConcurrentNamespacesHaveIndependentCursors(t *testing.T) {
 		mu   sync.Mutex
 		seen = map[string][]int{}
 	)
-	mux := NewMux(Deps{}, Exa, laneSpec(func(x *Exchange) Response {
+	mux := NewMux(Deps{}, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 		index := x.CallIndex()
 		mu.Lock()
 		seen[x.Lane().Namespace] = append(seen[x.Lane().Namespace], index)
@@ -981,7 +981,7 @@ func TestConcurrentNamespacesHaveIndependentCursors(t *testing.T) {
 func TestTurnKeySeparatesConcurrentRoles(t *testing.T) {
 	t.Parallel()
 
-	mux := NewMux(Deps{Scenario: mustScenario(t, rolesYAML)}, Exa, laneSpec(turnIndexHandler))
+	mux := NewMux(Deps{Scenario: mustScenario(t, rolesYAML)}, testProviderExa, testRefuse, laneSpec(turnIndexHandler))
 
 	post := func(role string) string {
 		w := httptest.NewRecorder()
@@ -1004,7 +1004,7 @@ func TestTurnKeySeparatesConcurrentRoles(t *testing.T) {
 func TestTurnKeyAndNamespaceCompose(t *testing.T) {
 	t.Parallel()
 
-	mux := NewMux(Deps{Scenario: mustScenario(t, rolesYAML)}, Exa, laneSpec(turnIndexHandler))
+	mux := NewMux(Deps{Scenario: mustScenario(t, rolesYAML)}, testProviderExa, testRefuse, laneSpec(turnIndexHandler))
 
 	post := func(namespace, role string) string {
 		w := httptest.NewRecorder()
@@ -1027,7 +1027,7 @@ func TestTurnKeyHeaderExtractor(t *testing.T) {
 	t.Parallel()
 
 	var keys []string
-	mux := NewMux(Deps{Scenario: mustScenario(t, headerKeyYAML)}, Exa, laneSpec(func(x *Exchange) Response {
+	mux := NewMux(Deps{Scenario: mustScenario(t, headerKeyYAML)}, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 		keys = append(keys, x.Lane().Key)
 		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 	}))
@@ -1074,7 +1074,7 @@ func laneKeysFor(t *testing.T, src, field string, creds []string) []string {
 	t.Helper()
 
 	var keys []string
-	mux := NewMux(Deps{Scenario: mustScenario(t, src)}, Exa, laneSpec(func(x *Exchange) Response {
+	mux := NewMux(Deps{Scenario: mustScenario(t, src)}, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 		keys = append(keys, x.Lane().Key)
 		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 	}))
@@ -1124,7 +1124,7 @@ func TestTurnKeyCredentialHeaderIsFingerprinted(t *testing.T) {
 	j := journal.NewRing(8, 8192)
 	d := Deps{Journal: j, Scenario: mustScenario(t, headerAuthKeyYAML)}
 	var keys []string
-	mux := NewMux(d, Exa, laneSpec(func(x *Exchange) Response {
+	mux := NewMux(d, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 		keys = append(keys, x.Lane().Key)
 		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 	}))
@@ -1177,13 +1177,111 @@ func TestTurnKeyCredentialBodyJSONIsFingerprinted(t *testing.T) {
 	require.NotEqual(t, wantA, wantB)
 }
 
+// profileDeclaredHeaderKeyYAML keys the cursor on a header whose name is not
+// in internal/redact's own fixed vocabulary at all — "x-acme-key" matches
+// neither exactCredentialNames nor substringCredentialFragments — so it can
+// only be fingerprinted through a profile-declared Deps.CredentialNames.
+const profileDeclaredHeaderKeyYAML = `
+version: 1
+name: profile-declared-header-key
+providers:
+  exa:
+    turn_key: ["header:x-acme-key"]
+    turns:
+      - respond:
+          answer: only
+`
+
+// profileDeclaredBodyKeyYAML is profileDeclaredHeaderKeyYAML's body_json
+// sibling: "acme_token" is not in internal/redact's own vocabulary either.
+const profileDeclaredBodyKeyYAML = `
+version: 1
+name: profile-declared-body-key
+providers:
+  exa:
+    turn_key: ["body_json:acme_token"]
+    turns:
+      - respond:
+          answer: only
+`
+
+// TestTurnKeyProfileDeclaredCredentialHeaderIsFingerprinted is CLAUDE.md
+// house rule 4 applied to Deps.CredentialNames (Phase 10 unit 7): a
+// turn_key extractor naming a header the FRAMEWORK'S OWN vocabulary does not
+// recognise, but a profile declares via CredentialNames, must still be
+// fingerprinted — not written verbatim into FaultDecision.Key, then
+// journal.Entry.Outcome.FaultKey, retained in the ring and served by
+// GET /__admin/requests. Before this fix, fingerprintHeaderLaneValue and
+// pathHasCredentialSegment called redact.IsCredentialHeader/IsCredentialKey
+// with no extra vocabulary at all, so a profile-declared name — despite
+// being masked everywhere else in the journal — reached outcome.fault_key
+// (and the "fault attempt N on key ..." finding message) as plain text.
+func TestTurnKeyProfileDeclaredCredentialHeaderIsFingerprinted(t *testing.T) {
+	t.Parallel()
+
+	const secret = "SECRETSHIBBOLETH77"
+
+	j := journal.NewRing(8, 8192)
+	d := Deps{
+		Journal:         j,
+		Scenario:        mustScenario(t, profileDeclaredHeaderKeyYAML),
+		CredentialNames: []string{"x-acme-key"},
+	}
+	var key string
+	mux := NewMux(d, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
+		key = x.Lane().Key
+		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
+	}))
+
+	r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{}`))
+	r.Header.Set("X-Acme-Key", secret)
+	mux.ServeHTTP(httptest.NewRecorder(), r)
+
+	require.NotContains(t, key, secret, "the raw profile-declared credential must never reach the lane key")
+	want := "exa:search|header:x-acme-key=" + redact.Fingerprint(secret)
+	require.Equal(t, want, key)
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1)
+	require.NotContains(t, entries[0].Outcome.FaultKey, secret,
+		"the journaled outcome.fault_key must not carry the raw credential either")
+}
+
+// TestTurnKeyProfileDeclaredCredentialBodyJSONIsFingerprinted is
+// TestTurnKeyProfileDeclaredCredentialHeaderIsFingerprinted's body_json
+// sibling.
+func TestTurnKeyProfileDeclaredCredentialBodyJSONIsFingerprinted(t *testing.T) {
+	t.Parallel()
+
+	const secret = "SECRETSHIBBOLETH77"
+
+	j := journal.NewRing(8, 8192)
+	d := Deps{
+		Journal:         j,
+		Scenario:        mustScenario(t, profileDeclaredBodyKeyYAML),
+		CredentialNames: []string{"acme_token"},
+	}
+	var key string
+	mux := NewMux(d, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
+		key = x.Lane().Key
+		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
+	}))
+
+	r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{"acme_token":"`+secret+`"}`))
+	mux.ServeHTTP(httptest.NewRecorder(), r)
+
+	require.NotContains(t, key, secret, "the raw profile-declared credential must never reach the lane key")
+	want := "exa:search|body_json:acme_token=" + redact.Fingerprint(secret)
+	require.Equal(t, want, key)
+}
+
 // laneKeyFor posts one request against src carrying body against a
 // single-route mux and returns the lane key the request drew.
 func laneKeyFor(t *testing.T, src, body string) string {
 	t.Helper()
 
 	var got string
-	mux := NewMux(Deps{Scenario: mustScenario(t, src)}, Exa, laneSpec(func(x *Exchange) Response {
+	mux := NewMux(Deps{Scenario: mustScenario(t, src)}, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 		got = x.Lane().Key
 		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 	}))
@@ -1256,7 +1354,7 @@ providers:
           answer: only
 `
 		var got string
-		mux := NewMux(Deps{Scenario: mustScenario(t, traceYAML)}, Exa, laneSpec(func(x *Exchange) Response {
+		mux := NewMux(Deps{Scenario: mustScenario(t, traceYAML)}, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 			got = x.Lane().Key
 			return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 		}))
@@ -1309,7 +1407,7 @@ providers:
     turns:
       - respond:
           answer: only
-`)}, Exa, laneSpec(func(x *Exchange) Response {
+`)}, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 			got = x.Lane().Key
 			return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 		}))
@@ -1331,7 +1429,7 @@ providers:
     turns:
       - respond:
           answer: only
-`)}, Exa, laneSpec(func(x *Exchange) Response {
+`)}, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 			got = x.Lane().Key
 			return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 		}))
@@ -1352,7 +1450,7 @@ func TestTurnKeyWithoutRouteStillNamesTheRoute(t *testing.T) {
 	var keys []string
 	j := journal.NewRing(8, 8192)
 	d := Deps{Journal: j, Scenario: mustScenario(t, modelKeyYAML)}
-	mux := NewMux(d, Exa, laneSpec(func(x *Exchange) Response {
+	mux := NewMux(d, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 		keys = append(keys, x.Lane().Key)
 		return turnIndexHandler(x)
 	}))
@@ -1436,7 +1534,7 @@ func TestExplicitRouteInTurnKeyIsNotDoubled(t *testing.T) {
 			src += "    turns:\n      - respond:\n          answer: only\n"
 
 			var key string
-			mux := NewMux(Deps{Scenario: mustScenario(t, src)}, Exa, laneSpec(func(x *Exchange) Response {
+			mux := NewMux(Deps{Scenario: mustScenario(t, src)}, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 				key = x.Lane().Key
 				return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 			}))
@@ -1458,7 +1556,7 @@ func TestTwoRoutesAreNeverOneLane(t *testing.T) {
 
 	var keys []string
 	d := Deps{Scenario: mustScenario(t, modelKeyYAML)}
-	mux := NewMux(d, Exa, twoRouteSpec(func(x *Exchange) Response {
+	mux := NewMux(d, testProviderExa, testRefuse, twoRouteSpec(func(x *Exchange) Response {
 		keys = append(keys, x.Lane().Key)
 		return turnIndexHandler(x)
 	}))
@@ -1516,7 +1614,7 @@ func TestTurnKeyUnresolvedWarnsRatherThanMerging(t *testing.T) {
 			var key string
 			j := journal.NewRing(8, 8192)
 			d := Deps{Journal: j, Scenario: mustScenario(t, rolesYAML)}
-			mux := NewMux(d, Exa, laneSpec(func(x *Exchange) Response {
+			mux := NewMux(d, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 				key = x.Lane().Key
 				return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 			}))
@@ -1577,7 +1675,7 @@ func TestLaneIsResolvedBeforeTheHandlerRuns(t *testing.T) {
 	t.Parallel()
 
 	var seen Lane
-	h := Handle(Deps{Scenario: mustScenario(t, rolesYAML)}, Exa, testRoute, func(x *Exchange) Response {
+	h := Handle(Deps{Scenario: mustScenario(t, rolesYAML)}, testProviderExa, testRoute, func(x *Exchange) Response {
 		seen = x.Lane()
 		return Response{Status: http.StatusOK, Body: []byte(`{}`), Label: "test.ok", FaultEligible: true}
 	})
@@ -1603,7 +1701,7 @@ func TestFaultAndTurnDrawOnOneLaneCounter(t *testing.T) {
 
 	engine := &countingFaults{}
 	var key string
-	mux := NewMux(Deps{Faults: engine, Scenario: mustScenario(t, rolesYAML)}, Exa, laneSpec(func(x *Exchange) Response {
+	mux := NewMux(Deps{Faults: engine, Scenario: mustScenario(t, rolesYAML)}, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 		index := x.CallIndex()
 		key = x.Fault().Key
 		require.Equal(t, index, x.CallIndex(), "the claim is memoised, not repeated")
@@ -1639,7 +1737,7 @@ func TestTurnKeyUnparseableBodyResolvesNothing(t *testing.T) {
 	var key string
 	j := journal.NewRing(8, 4096)
 	d := Deps{Journal: j, Scenario: mustScenario(t, rolesYAML)}
-	mux := NewMux(d, Exa, laneSpec(func(x *Exchange) Response {
+	mux := NewMux(d, testProviderExa, testRefuse, laneSpec(func(x *Exchange) Response {
 		key = x.Lane().Key
 		return Response{Status: http.StatusBadRequest, Body: []byte(`{}`), Label: "test.error"}
 	}))

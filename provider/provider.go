@@ -9,14 +9,6 @@ import (
 // (Perplexity's Sonar and Agent surfaces are separate entries on one listener).
 type Name string
 
-// The simulated providers.
-const (
-	Exa        Name = "exa"
-	Tavily     Name = "tavily"
-	Perplexity Name = "perplexity"
-	MCP        Name = "mcp"
-)
-
 // Credential placements. This is the vocabulary that Route.Credentials and a
 // scenario's auth.headers are both written in, which is why it lives here rather
 // than in one provider package: a scenario author writing auth.headers should not
@@ -115,8 +107,8 @@ type Route struct {
 	// func(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, "exa") }
 	// (nil-safe on every hop). It exists so the fault engine never has to know
 	// which scenario field a key maps to: the package that declares the key
-	// declares the mapping next to it, and internal/faults stays at level 4 with no
-	// knowledge of provider/exa, provider/tavily or provider/perplexity. A nil
-	// Fault means the route declares no plan.
+	// declares the mapping next to it, and the fault engine (fault_engine.go)
+	// stays at level 4 with no knowledge of profiles/exa, profiles/tavily or
+	// profiles/perplexity. A nil Fault means the route declares no plan.
 	Fault func(*scenario.Scenario) *scenario.Fault
 }

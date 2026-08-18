@@ -1,15 +1,18 @@
 // Package testkit runs Servicesim's provider handlers in-process for Go consumer
 // tests, with no Docker and no credentials.
 //
-// The whole surface is meant to fit in three lines of a consumer's test:
+// The whole surface is meant to fit in four lines of a consumer's test:
 //
-//	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
-//	adapter := myrepo.New(sim.URL(provider.Exa), "test-key")
+//	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProfiles(exa.Profile()))
+//	adapter := myrepo.New(sim.URL(exa.Name), "test-key")
 //	docs, err := adapter.Search(ctx, "report a")
 //
 // After that the journal is the evidence: testkit.AssertNoErrors(t,
-// sim.Requests(provider.Exa)[0]) proves the adapter sent a correct vendor
-// request, not merely that it received a response.
+// sim.Requests(exa.Name)[0]) proves the adapter sent a correct vendor
+// request, not merely that it received a response. [WithProfiles] is how a
+// test says which simulated APIs it needs — required, not defaulted, so a
+// team simulating one vendor never pulls in every reference profile's
+// contracts and goldens (owner decision D-5).
 //
 // The defaults are the production ones on purpose — a real clock, real delays,
 // and a fault engine wired from the scenario over every declared route — so a

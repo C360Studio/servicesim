@@ -1,8 +1,14 @@
 # Servicesim
 
 A deterministic service-simulator framework — one binary, one image, one listener per provider profile — shipping
-four profiles out of the box: three research APIs — **Exa**, **Tavily**, **Perplexity** — and a **Model Context
-Protocol** server (Streamable HTTP, revision 2026-07-28).
+four **reference profiles** out of the box: three research APIs — **Exa**, **Tavily**, **Perplexity** — and a
+**Model Context Protocol** server (Streamable HTTP, revision 2026-07-28).
+
+Four is not the supported set. A profile for a vendor this repository does not ship is written **in your own
+repository** against the same exported packages these four use, and composed into your own binary and image —
+no PR here, no release here. [`docs/building-a-profile.md`](docs/building-a-profile.md) is the guide,
+[`examples/profile/`](examples/profile) is a fifth profile written as its own Go module and built by this
+repository's CI, and [Composing your own binary](#composing-your-own-binary) below is the short version.
 
 Point your code's base URLs at it instead of the real vendors. Your tests then run *fast, offline and for free* —
 and, more importantly, they can prove your client sent the **correct vendor request**, not merely that it got a
@@ -23,8 +29,9 @@ implement every field of every vendor — only the *consumed contract*.
 
 What is provider-neutral and what is not: the scenario schema and turn model, the fault engine and its catalogue,
 the redacted journal and admin surface, `testkit`, the built-in scenarios mechanism and the image are the
-framework — the same for every profile. A profile is one provider package (`provider/exa`, `provider/tavily`,
-`provider/perplexity`, `provider/mcp`) plus its verified contract under `contracts/`; that is where a vendor's
+framework — the same for every profile. A profile is one provider package (`profiles/exa`, `profiles/tavily`,
+`profiles/perplexity`, `profiles/mcp`) plus its own verified contract, embedded beside it
+(`profiles/<name>/contracts/`); that is where a vendor's
 routes, request validation and wire shapes live, and it is the part that grows when a profile is added. The fourth
 profile is a protocol, not a vendor — an MCP server whose contract is the specification and its machine-readable
 schema — and it needed no change to the scenario schema, the fault engine, the journal, the stream path or any
@@ -51,9 +58,11 @@ ghcr.io/c360studio/servicesim@sha256:5a7d6d055fa4d6f9662d538823e8f9274b28416fb41
 ```
 
 Working on Servicesim itself, or want the tip of `main`? `task image:build` produces `servicesim:dev` locally, and
-every example below works the same with that tag substituted. The MCP listener (`:8084`) ships in v0.5.0; on
-`v0.4.0` that port is not bound and `go get` resolves to a module without `provider.MCP` — until the tag lands,
-use `servicesim:dev` or a `replace` directive on this repository for the MCP examples below.
+every example below works the same with that tag substituted. Everything the framework seam names ships in
+v0.5.0, which is not tagged yet: on `v0.4.0` the MCP listener (`:8084`) is not bound, the profiles live under
+`provider/<name>` rather than `profiles/<name>`, and `testkit.WithProfiles` does not exist — so until the tag
+lands, every Go example below needs `servicesim:dev` or a `replace` directive on this repository, not just the
+MCP ones.
 
 In another terminal, ask Exa's listener for a search. Any fake key works:
 
@@ -208,15 +217,16 @@ That is the body (one line on the wire, wrapped here for width), and it is byte-
 entry for it carries one warning — `mcp.meta.client_info_missing`, because the curl sent no `clientInfo` — which
 is the profile telling you the request was accepted but was not the request a careful client sends. Every wire
 field — the response shapes `tools[]`, `content[]`, `structuredContent`, `isError`, `ttlMs`/`cacheScope`
-included — is recorded in [`contracts/mcp/README.md`](contracts/mcp/README.md), and
+included — is recorded in [`profiles/mcp/contracts/README.md`](profiles/mcp/contracts/README.md), and
 [`examples/mcpclient.go`](examples/mcpclient.go) declares the consumed subset as Go types; every simulator-chosen
-default (what the specification left open) is numbered in `provider/mcp/doc.go`.
+default (what the specification left open) is numbered in `profiles/mcp/doc.go`.
 
 ## In a Go test, with no container at all
 
 Requires Go 1.26, this repository's own `go.mod` version. Add it as a dependency —
 `go get github.com/c360studio/servicesim` — then import `github.com/c360studio/servicesim/testkit` and
-`github.com/c360studio/servicesim/provider`.
+`github.com/c360studio/servicesim/provider`, plus the profile package(s) your test simulates, for example
+`github.com/c360studio/servicesim/profiles/exa`.
 
 `testkit` starts one `httptest.Server` per provider in-process and registers its own cleanup, so there is nothing
 to defer, no port to pick and no Docker to wait for.
@@ -231,15 +241,15 @@ standard library). This is the shape of it, excerpted from
 func TestAdapterSendsACorrectExaRequest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile()), testkit.WithBuiltin("happy"))
 	adapter := newAdapter(sim.Client(), sim.BaseURLs())
 
 	results, err := adapter.SearchExa(t.Context(), "report a")
 	require.NoError(t, err)
 	require.Len(t, results, 2, "the happy scenario projects two canonical sources through Exa")
 
-	testkit.AssertRequestCount(t, sim, provider.Exa, 1)
-	entry := sim.Requests(provider.Exa)[0]
+	testkit.AssertRequestCount(t, sim, exa.Name, 1)
+	entry := sim.Requests(exa.Name)[0]
 
 	testkit.AssertAPIKeyHeader(t, entry)
 	testkit.AssertJSONBody(t, entry, map[string]any{
@@ -250,6 +260,16 @@ func TestAdapterSendsACorrectExaRequest(t *testing.T) {
 	testkit.AssertNoCredentialLeak(t, sim, exaKey, tavilyKey, perplexityKey)
 }
 ```
+
+`testkit.WithProfiles` names the simulated APIs a test needs — required, not defaulted, so a team simulating one
+vendor never pulls in every reference profile's contracts and goldens. The four in-tree profiles live at
+`profiles/exa`, `profiles/tavily`, `profiles/perplexity` and `profiles/mcp`, each exporting a typed `Name` and a
+`Profile()`. A profile of your own goes in the same call, beside ours or instead of them — that is what makes the
+guide's tests and [`examples/profile/`](examples/profile)'s work out of tree, with no privilege ours have.
+
+The module is pre-1.0, and that applies to everything you can import here — not only to profile composition. A
+`v0.x` pin means `testkit`'s assertions, the scenario schema and the built-in corpus may still move between minor
+releases; the written condition for 1.0 is in [Composing your own binary](#composing-your-own-binary) below.
 
 `sim.Client()` returns an `*http.Client` with keep-alives disabled and the proxy environment ignored, so a
 connection-abort fault is observed rather than absorbed by a pooled connection — the property the `hang-then-abort`
@@ -273,7 +293,7 @@ client sent the correct MCP request rather than merely got a `200`:
 func TestMCPClientSendsACorrectToolsCallRequest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(mcp.Profile()), testkit.WithBuiltin("happy"))
 	client := newMCPClient(sim.Client(), sim.BaseURLs(), examples.WithMCPBearerToken(mcpToken))
 
 	resp, err := client.CallTool(t.Context(), "search", map[string]any{"query": "report a"})
@@ -281,8 +301,8 @@ func TestMCPClientSendsACorrectToolsCallRequest(t *testing.T) {
 	require.NotNil(t, resp.Result)
 	assert.False(t, resp.Result.IsError)
 
-	testkit.AssertRequestCount(t, sim, provider.MCP, 1)
-	entry := sim.Requests(provider.MCP)[0]
+	testkit.AssertRequestCount(t, sim, mcp.Name, 1)
+	entry := sim.Requests(mcp.Name)[0]
 
 	headers := http.Header(entry.Headers)
 	assert.Equal(t, "2026-07-28", headers.Get("MCP-Protocol-Version"))
@@ -309,17 +329,18 @@ rotation actually switched to a new one, from two entries alone. The `credential
 scenario both exist to test against.
 
 `sim.BaseURLs()` returns the URLs keyed exactly as the environment variables above, so one helper configures your
-client from either a `*testkit.Sim` or a container. `sim.URL(provider.Exa)` returns one provider's base URL
+client from either a `*testkit.Sim` or a container. `sim.URL(exa.Name)` returns one provider's base URL
 directly, for a test that only needs the one. `testkit.WithScenarioYAML(yaml string)` keeps a single-purpose
 fixture inline next to the test; `testkit.WithScenarioFile(path string)` loads one from disk, and
 `testkit.WithScenario(s *scenario.Scenario)` takes one already parsed with the `scenario` package.
 
 For the async create-then-poll surfaces (Exa agent runs, Tavily research), `sim.Jobs()` returns every live job
-record across every namespace, and `testkit.AssertPollSequence(t, sim.Requests(provider.Exa), id, 200, 200, 200)`
+record across every namespace, and `testkit.AssertPollSequence(t, sim.Requests(exa.Name), id, 200, 200, 200)`
 asserts, from the journal alone, that a job's polls arrived in order from its own per-job lane — pass
 `ns.Requests(...)` when the test uses namespaces, because job identifiers repeat across namespaces by design.
-`testkit.NewJobs()` mirrors `testkit.NewFaults`: it is what a consumer wiring `provider.Deps` by hand passes as
-`Deps.Jobs`, and without it a create still answers but no poll can ever resolve.
+`testkit.NewJobs()` is what a consumer wiring `provider.Deps` by hand passes as `Deps.Jobs`, and without it a
+create still answers but no poll can ever resolve; `(*provider.Set).Faults(s)` is the equally hand-built
+`Deps.Faults` — the only exported fault-engine constructor, built from whichever profiles the Set registers.
 
 For a scripted SSE response, `testkit.AssertGoldenSSE(t, path, transcript)` regression-tests the reassembled
 stream frame by frame — an SSE transcript is not JSON, and a byte-for-byte comparison would flake on TCP read
@@ -411,7 +432,7 @@ t.Run(name, func(t *testing.T) {
 
 	ns := sim.NamespaceFor(t)
 	adapter := newAdapter(ns.Client(), ns.BaseURLs())
-	// ns.Requests(provider.Exa) sees this lane's traffic and nothing else.
+	// ns.Requests(exa.Name) sees this lane's traffic and nothing else.
 })
 ```
 
@@ -476,7 +497,7 @@ replicas by whatever balances them, and each replica counts only the calls it ha
 |---|---|
 | `call_index: 0`, then `call_index: 1` | Both replicas start at 0. The second call lands on the other replica and is served turn 0 again. |
 | `attempts: [{status: 429}, {status: 200}]` | Each replica owns a full budget, so the 429 is served **twice** — once per replica — before either succeeds. |
-| `AssertRequestCount(t, sim, provider.Exa, 3)` | The journal read reaches one replica and sees only its share: 1 or 2, varying run to run. |
+| `AssertRequestCount(t, sim, exa.Name, 3)` | The journal read reaches one replica and sees only its share: 1 or 2, varying run to run. |
 | `POST /__admin/reset?namespace=t1` | Resets the replica that answered. The others keep their cursors. |
 | `POST /agent/runs` then `GET /agent/runs/{id}` (or Tavily's `/research` equivalent) | The create lands on one replica; if the poll lands on another, it holds no record of the job and answers the vendor's 404 for a job that exists — "polls 404 intermittently". |
 
@@ -535,7 +556,7 @@ product-specific corpora belong in your own repository.
 
 Several rows below tell you to read the journal with `sim.AwaitRequests` rather than a bare `sim.Requests` call:
 `func (s *Sim) AwaitRequests(tb testing.TB, p provider.Name, n int) []Entry` blocks until `p` has recorded `n`
-entries, or fails `tb` after a short deadline, and returns them — `entries := sim.AwaitRequests(t, provider.Exa,
+entries, or fails `tb` after a short deadline, and returns them — `entries := sim.AwaitRequests(t, exa.Name,
 2)` is the shape. Use it instead of `sim.Requests` whenever a row below says the client sees the exchange end at
 the transport level (a reset, a client-side timeout, an off-goroutine retry): the server goroutine can still be
 completing the entry after your client already returned, and a bare `sim.Requests` call is a race that passes on a
@@ -584,23 +605,83 @@ so nothing outside the mount can be opened — symlinks included.
 The schema is documented in [`docs/scenario-schema.md`](docs/scenario-schema.md): the single-shot form that most
 authors ever need, and the multi-turn form for scripting an agentic loop.
 
+## Composing your own binary
+
+Your corpus is one thing; your *vendor* is another. When the API you need to simulate is not one of the four, the
+answer is not an issue here — it is a profile in your repository, served by your own binary. The four in-tree
+profiles are reference examples with no privilege yours lacks: they are registered through the same
+`provider.Profile` record, tested with the same `testkit`, and proven by the same `testkit.ValidateProfile` call
+you run in your own CI. [`docs/building-a-profile.md`](docs/building-a-profile.md) walks the whole path — contract
+first, `Profile()` field by field, the handler order, scenarios, tests — against
+[`examples/profile/`](examples/profile), a working module this repository builds and tests on every commit.
+
+Your `main.go` is the composition root `cmd/servicesim` itself uses, handed your own profile list:
+
+```go
+func main() {
+	os.Exit(servicesim.Main(
+		servicesim.Build{Program: "acmesim", Version: version},
+		provider.MustSet(acme.Profile(), exa.Profile()),
+	))
+}
+```
+
+Composing one of ours alongside your own is ordinary, not a special case. Everything else derives from that set:
+the port flag and `SERVICESIM_<NAME>_PORT` variable per listener, the usage banner, the `-providers` default and
+its fail-closed refusal of an unregistered name, the listeners, the journal, the admin surface and readiness.
+
+Three flags feed the surfaces *around* the binary, so your image and your documentation are checked against the
+registry rather than hand-kept from memory:
+
+```console
+$ servicesim --print-ports
+[{"name":"exa","port":8081,"default_auth":"required"},{"name":"tavily","port":8082,"default_auth":"required"},...]
+```
+
+`--print-ports` is the input to your `Dockerfile`'s `EXPOSE`, your Compose port map and the `<NAME>_BASE_URL` /
+`<NAME>_API_KEY` rows a consumer of *your* simulator reads; `--print-routes` prints every registered
+`METHOD /path`, which is what a docs guard like [`scripts/check-docs.sh`](scripts/check-docs.sh) reads; and
+`--print-hosts` prints every registered profile's real vendor hostnames, the seed for a live-host guard outside Go
+(inside Go it is `testkit.AssertNoLiveHosts`). [`examples/profile/Dockerfile`](examples/profile/Dockerfile) is the
+two-stage build over such a binary, in the shape of this repository's own; the image smoke probes are yours to
+write, as ours are.
+
+**What you get without asking us for anything:** the scenario schema and turn model, the fault engine and its
+catalogue, namespaces, the redacted journal and its admin surface, streaming, `testkit` and every assertion in it,
+the contract discipline as `contracts.Conform`, and `testkit.ValidateProfile` — the conformance suite that runs
+determinism, refusal-body, credential-placement and fault-key checks over your profile in your own CI.
+
+**What you do not get, on purpose:** an admin route of your own — `/healthz`, `/readyz` and `/__admin/*` are
+framework-owned and closed to composition, because a mutable admin API is hidden shared state between concurrent
+test suites; a built-in scenario naming your profile — `builtin:happy` must mean the same bytes in every build, so
+your scenario files are yours (the startup warning `scenario.profile.unscripted` names a registered profile the
+loaded scenario forgot); and the turn model's current limits, which are a design question here rather than a
+workaround there. [ADR 0003](docs/adr/0003-framework-seam.md) is the decision record;
+[`docs/proposals/framework-seam.md`](docs/proposals/framework-seam.md) is the design history behind it.
+
+**The seam is pre-1.0, and the condition for 1.0 is written down rather than felt:** at least one profile written
+by someone who has not read this repository has shipped and survived a framework minor release without source
+changes, and the `chat/completions` profile has landed. Until then a `v0.x` pin means the seam may still move, and
+a profile written today should expect to follow a release note once.
+
 ## Documentation
 
 ### If you are *using* Servicesim
 
 | Document | What it holds |
 |---|---|
-| This README | Quickstart, base URLs, namespaces, the admin surface, built-in scenarios, and what is provider-neutral versus profile-specific. |
+| This README | Quickstart, base URLs, namespaces, the admin surface, built-in scenarios, composing your own binary, and what is provider-neutral versus profile-specific. |
 | [`examples/`](examples) | A worked consumer, compiled and run by CI. The best thing to copy. |
+| [`docs/building-a-profile.md`](docs/building-a-profile.md) | Writing a profile for a vendor this repository does not ship, in your own repository: contract first, `Profile()` field by field, the handler order, scenarios, the tests and `testkit.ValidateProfile`, composing a binary and image. Its Go and YAML blocks are excerpts of [`examples/profile/`](examples/profile), a fifth profile built as its own module by CI, kept in sync by a test. |
 | [`docs/scenario-schema.md`](docs/scenario-schema.md) | The scenario YAML reference: single-shot form, multi-turn form, faults. |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptom-first answers: an unexpected 401, 404, 405, tests interfering, counts that differ per run under more than one replica, a container that will not become ready, and the MCP `400`s a legacy or hand-rolled client draws. |
-| [`contracts/`](contracts/README.md) | Per provider, the subset of the vendor API that is simulated, with the documentation URL and date each field was verified from — plus the golden fixtures the handlers are tested against. [`contracts/mcp/README.md`](contracts/mcp/README.md) is the MCP one: what the 2026-07-28 specification says, and every simulator-chosen default beside it. |
+| [`contracts/`](contracts/README.md) | The index and the shared discipline (`contracts.Read`/`Goldens`/`Provenance`/`ProviderSpec`/`OldestVerified`/`Conform`). Each vendor's own bundle — the documentation URL and date each field was verified from, plus the golden fixtures the handlers are tested against — lives beside its profile: [`profiles/mcp/contracts/README.md`](profiles/mcp/contracts/README.md) is the MCP one, what the 2026-07-28 specification says and every simulator-chosen default beside it. |
 
 ### If you are *changing* Servicesim
 
 | Document | What it holds |
 |---|---|
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Start here: the pre-push gate, lint expectations, and how to add a provider. |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Start here: the pre-push gate, lint expectations, and how to add a reference profile here (writing one in your own repository is [`docs/building-a-profile.md`](docs/building-a-profile.md), and needs no PR here). |
 | [`docs/adopter-backlog.md`](docs/adopter-backlog.md) | What is being built next, why, in what order, and the decisions already settled. |
 | [`CLAUDE.md`](CLAUDE.md) | The house rules — determinism, redaction, fail-closed, the dependency budget. |
 | [`docs/design/package-design.md`](docs/design/package-design.md) | The Go design of record: packages, import levels, the reasoning behind each seam (Go blocks illustrative). |
@@ -609,14 +690,17 @@ authors ever need, and the multi-turn form for scripting an agentic loop.
 | [`docs/design/streaming.md`](docs/design/streaming.md) | The SSE streaming design: the two grammars, journal-early append, pacing. |
 | [`docs/design/mcp-profile.md`](docs/design/mcp-profile.md) | The MCP profile as shipped: the era decision, the request lifecycle, the JSON-RPC and transport layers, status policy, SSE, redaction, the finding codes — and the composition-seam evidence for D9 tier 2. |
 | [`docs/architecture-and-implementation-plan.md`](docs/architecture-and-implementation-plan.md) | The product requirements the design implements. |
+| [`docs/adr/0003-framework-seam.md`](docs/adr/0003-framework-seam.md) | Why profiles are written out of tree and the four in-tree ones are examples: the seam as shipped, what stays internal, the eleven decisions, and the 1.0 trigger. |
 | [`docs/adr/`](docs/adr) | Decisions already taken, with the reasoning that forced them. |
 
 **`contracts/` outranks every other document here, including the design.** The plan was written from a snapshot and
 has already been wrong about Exa's `score` field, Tavily's `response_time` type and Perplexity's required `cost`
 object. Never write a wire field from memory — see [ADR 0002](docs/adr/0002-verified-contract-precedence.md).
 The five `docs/design/` documents are records of what shipped, not specifications: every Go block in them is
-illustrative, not a compiled contract, and where one disagrees with the source under `provider/`, `internal/`,
-`scenario/` or `testkit/`, the code wins.
+illustrative, not a compiled contract, and where one disagrees with the source under `provider/`, `profiles/`,
+`internal/`, `scenario/` or `testkit/`, the code wins. The framework seam moved several of their claims — the
+sections it superseded carry a dated "Superseded in part by Phase 10 (2026-08-17)" note pointing at
+[ADR 0003](docs/adr/0003-framework-seam.md).
 
 ## Working on Servicesim
 

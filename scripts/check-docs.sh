@@ -53,14 +53,26 @@ trap 'rm -rf "$tmp"' EXIT
 # Documents in scope. docs/design/ is deliberately excluded: it is the design of
 # record, written ahead of the code, so it legitimately names things that do not
 # exist yet. contracts/ is excluded because it documents the *vendors'* APIs,
-# not this binary's surface.
-DOC_GLOBS="README.md CONTRIBUTING.md docs/*.md docs/adr/*.md"
+# not this binary's surface. examples/*/README.md IS in scope: those files make
+# specific claims about this repository's machinery — which Taskfile tasks and
+# CI jobs run the nested module — and a renamed task should fail here rather
+# than leave a README quietly wrong.
+#
+# Two more exclusions are deliberate rather than accidental, and are recorded
+# here so the next rename does not discover them by surprise. `docs/*.md` is
+# non-recursive, so docs/proposals/ is out of scope: a proposal is read as a
+# dated snapshot of what was intended, and one that still names a symbol the
+# implementation renamed is telling the truth about its own moment. CLAUDE.md
+# is out of scope because it is instructions to an agent rather than a claim
+# about the binary's surface. Both name real symbols today, checked by hand;
+# neither is protected against the next rename.
+DOC_GLOBS="README.md CONTRIBUTING.md docs/*.md docs/adr/*.md examples/*/README.md"
 
 # Flags that appear in the docs but belong to other programs (go, docker, task,
 # curl). They are counted and reported as ignored rather than silently dropped,
 # so this list cannot quietly grow into a way of hiding a real miss.
 THIRD_PARTY_FLAGS="race count run bench cover rm it detach build no-cache
-env volume file list silent header data include location output"
+env volume file list silent header data include location output short"
 
 fail_count=0
 claim_count=0
@@ -178,23 +190,16 @@ claim_count=$((claim_count + builtins_checked))
 # 3. Routes
 # ---------------------------------------------------------------------------
 #
-# Provider patterns are read from the handler files that define Routes(); admin
-# routes from the route(mux, ...) registrations. This is a grep for the literal,
-# not proof the handler is reachable — an integration test proves that.
-
-# Every non-test file of a provider package, not just handler.go: a provider
-# large enough to split its routes across files (exa's async surface lives in
-# agentrun_handler.go) would otherwise have those routes read as unregistered,
-# and the contracts check below would report a true row in the index table as a
-# false one. Test files are excluded because their fixture patterns are not
-# registrations.
+# Provider patterns come from the built binary's own --print-routes (Phase 10
+# unit 3, docs/proposals/framework-seam.md: "servicesim --print-routes driven
+# by set.Routes() — works against a consumer's binary too"), not a
+# provider/*/*.go glob: a route only counts once it is actually registered in
+# a provider.Set, which is what the binary composes and this check now reads
+# instead of re-deriving. Admin routes still come from the route(mux, ...)
+# registrations below. This is a grep for the literal, not proof the handler
+# is reachable — an integration test proves that.
 known_provider_routes="$tmp/known_provider_routes"
-{
-	for f in provider/*/*.go; do
-		case "$f" in *_test.go) continue ;; esac
-		grep -hoE '"(HEAD|GET|POST|PUT|PATCH|DELETE) /[^"]*"' "$f" 2>/dev/null || true
-	done
-} | tr -d '"' | sort -u >"$known_provider_routes"
+"$bin" --print-routes 2>/dev/null | sort -u >"$known_provider_routes"
 require_nonempty "$known_provider_routes" "registered provider routes"
 
 known_routes="$tmp/known_routes"

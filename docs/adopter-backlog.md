@@ -6,15 +6,35 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-17 (early), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6) plus,
-unreleased on `main`: Phase 7 (`6a43316`) and **Phase 8, merged to `main` at `16c4688` (PR #4, merge commit)** —
-unit 1 (the MCP contract, `contracts/mcp/`, `f5dd08e`), unit 2 (the MCP profile, `provider/mcp/`, `39d5809`) and
-unit 3 (the docs sweep — README onboarding, `examples/mcpclient.go` + `examples/mcp_test.go`,
+Recorded 2026-08-17 (late), against **v0.4.0** (tagged from `main` at `b788f00`, the merge of Phase 6) plus,
+unreleased: Phase 7 (`6a43316`) and **Phase 8, merged to `main` at `16c4688` (PR #4, merge commit)** —
+unit 1 (the MCP contract, `contracts/mcp/`, `f5dd08e`), unit 2 (the MCP profile, `provider/mcp/`
+(now `profiles/mcp/`), `39d5809`) and unit 3 (the docs sweep — README onboarding, `examples/mcpclient.go` +
+`examples/mcp_test.go`,
 `docs/design/mcp-profile.md`, the D9 tier-2 evidence, the CONTRIBUTING checklist, troubleshooting, `02a0917`).
-The `phase-8` branch is merged and deleted. **Owner decisions the same morning: D11 — "modern only is a fine
+The `phase-8` branch is merged and deleted. **Owner decisions on 2026-08-17: D11 — "modern only is a fine
 start"; D9 tier 2 — YES, Servicesim is a framework and the four profiles are reference examples (the quote is in
-the D9 row). So Phase 8 was not the last feature phase after all: Phase 10, the framework seam, is next and gates
-the v0.5.0 release; its design proposal is being written first.**
+the D9 row).**
+
+**Phase 10 — the framework seam — is COMPLETE on branch `phase-10`, unmerged.** Units 0–9 shipped in nine commits
+(`4d10178`..`71a9a5e`; units 7 and 8 landed together) and unit 10, the documentation sweep, is the commit this
+paragraph is part of. What it did, in one sentence: `provider.Profile`/`Set` is the registration record, the root
+`servicesim` package is the composition entry point a consumer's own `main.go` calls, the four profiles moved to
+`profiles/<name>` as reference examples with their contract bundles beside them, `contracts` and `testkit` are
+generic over a set rather than four vendors, and the in-tree guards are library calls (`testkit.ValidateProfile`,
+`contracts.Conform`, `testkit.AssertNoLiveHosts`, `testkit.AssertCovers`) an out-of-tree profile runs in its own
+CI. [ADR 0003](adr/0003-framework-seam.md) is the record, [`proposals/framework-seam.md`](proposals/framework-seam.md)
+the design history (with its "Where it landed differently" list), and
+[`building-a-profile.md`](building-a-profile.md) + [`examples/profile/`](../examples/profile) the guide and the
+compiled proof.
+
+**The one step left is the release.** Merge `phase-10` and cut **v0.5.0** — the whole API break, Phase 8 and Phase
+7 in one tag. The note is drafted (Phase 10 section below, and the tag-message file the release commit lifts) and
+needs the owner's go-ahead; the procedure is `CONTRIBUTING.md` "Releasing": tag with the annotated note, publish,
+confirm both spellings resolve to one digest from the registry, then a follow-up commit moves the README/Compose
+pins to `v0.5.0` and its digest and drops README's interim "not tagged yet" paragraph (the one under the
+`servicesim:dev` note, which lists what `v0.4.0` lacks)
+(the docs guard fails on a pin that does not resolve, which is why publish comes first).
 
 | Phase | State |
 |---|---|
@@ -26,8 +46,9 @@ the v0.5.0 release; its design proposal is being written first.**
 | 5 — SSE streaming for the Perplexity deep-research path | **shipped** in v0.3.0 — units 1–4; concise mode and the reasoning events deliberately deferred |
 | 6 — G-3 depth: hostile content, oversized bodies, hangs after headers, resilience built-ins, pacing evidence | **shipped** in v0.4.0 — units 1–6, the closing docs sweep, D9 tier 1; the adopter's own guardrail vectors are still an append to `malicious-content` when they arrive |
 | 7 — packaging, deployment and the contract-fidelity process | **DONE (rescoped) and merged to `main` (`6a43316`, PR #3), unreleased** — items 1–2 (the Gitea mirror, the Kubernetes manifest) dropped 2026-08-16 (owner; D3 reworded: no replicas by design); item 3 shipped 2026-08-15; items 4 and 5b shipped: a `spec:` block (url/version/sha256/retrieved) for every vendor's OpenAPI document, `contracts.Spec`/`ProviderSpec`, `Record.APIVersion`, and the no-canary refresh procedure (D10) |
-| 8 — the MCP profile (in-tree per D6) | **COMPLETE — merged to `main` (`16c4688`, PR #4), unreleased; v0.5.0 is the release** — the last feature phase: unit 1 (contract verification, `contracts/mcp/`) DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp`, listener `mcp` on `POST /mcp` port 8084) DONE 2026-08-16; unit 3 (the docs sweep: README, `examples/` MCP client and tests, `docs/design/mcp-profile.md`, D9 tier-2 evidence, CONTRIBUTING, troubleshooting) DONE 2026-08-16. ODR is out per D12; D11 (era) pending owner — modern-only shipped, legacy only if needed; D9 tier 2 pending owner with the evidence now written |
-| 9 onward | **Phase 10 — the framework seam (D9 tier 2, owner 2026-08-17) is next and gates v0.5.0**: promote what a profile needs into exported packages, replace the 41 provider-name enumerations with a registry, an exported composition entry point so a consumer builds their own binary/image, the four profiles as reference examples, guards as library helpers a consumer runs in their own CI; the design proposal comes first. Then Phase 9 (the two doctrine-contradicting features), the shared-pipeline hardening follow-up from unit 2's review (folded into Phase 10 — a framework cannot rely on handler convention), the adopter's own guardrail vectors when they arrive |
+| 8 — the MCP profile (in-tree per D6) | **COMPLETE — merged to `main` (`16c4688`, PR #4), unreleased; v0.5.0 is the release** — the last feature phase: unit 1 (contract verification, `contracts/mcp/`) DONE 2026-08-16; unit 2 (the modern 2026-07-28 MCP profile, `provider/mcp` (now `profiles/mcp`), listener `mcp` on `POST /mcp` port 8084) DONE 2026-08-16; unit 3 (the docs sweep: README, `examples/` MCP client and tests, `docs/design/mcp-profile.md`, D9 tier-2 evidence, CONTRIBUTING, troubleshooting) DONE 2026-08-16. ODR is out per D12; D11 (era) pending owner — modern-only shipped, legacy only if needed; D9 tier 2 pending owner with the evidence now written |
+| 10 — the framework seam (D9 tier 2) | **COMPLETE on `phase-10`, pending merge and the v0.5.0 release** — units 0–9 in nine commits (`4d10178`..`71a9a5e`) plus unit 10, the docs; unit 11 is the release itself. `provider.Profile`/`Set`, the root `servicesim` composition package, `profiles/<name>` as reference examples, `contracts`/`testkit` generic over a set, the guards as library calls, and `examples/profile/` as an out-of-tree profile CI builds |
+| 9 onward | Phase 9 (the two doctrine-contradicting features) and the adopter's own guardrail vectors when they arrive. The shared-pipeline hardening follow-up from Phase 8 unit 2's review was folded into Phase 10 and closed by its unit 0 |
 
 **v0.4.0** is the last tag (2026-08-16, `b788f00`): Phase 6 end to end — `completed_at` observing every scripted
 hang, the `malicious-content`, `oversized-body`, `timeout`, `brownout`, `hang-then-abort` and `credential-rotation`
@@ -37,10 +58,10 @@ service-simulator framework shipping three research-API profiles). Two behaviour
 assertions could notice are in the tag note: Tavily's `faultBody` serves its error envelope for any kind paired with
 an error status, and `POST /research` warns `tavily.api_key.in_body` as `/search` does. The annotated tag message is
 the release note; every spelling resolves to one digest (`sha256:5a7d6d05…`) and the README/Compose pins follow it.
-`main` is where work lands now; `phase-6` and `phase-7` are merged and deleted. **Unreleased on `main` since
-v0.4.0:** Phase 7 (`df1eb64`). **Unmerged: `phase-8`** — three commits (`f5dd08e` unit 1, `39d5809` unit 2, unit 3
-on top). Merging it and cutting **v0.5.0** is the next release; the tag-note bullets are drafted in the Phase 8
-section below so the release commit can lift them.
+`phase-6`, `phase-7` and `phase-8` are merged and deleted. **Unreleased on `main` since v0.4.0:** Phase 7
+(`df1eb64`) and Phase 8 (`16c4688`). **Unmerged: `phase-10`** — ten commits (units 0–9 at `4d10178`..`71a9a5e`,
+plus this docs unit). Merging it and cutting **v0.5.0** is the next release; the tag-note bullets are drafted in
+the Phase 10 section below, and the full note in the tag-message draft, so the release commit can lift them.
 
 **Authority rule, reaffirmed by the owner 2026-08-15 evening:** vendor documentation decides every wire contract; the
 adopter's client code and remarks are not evidence ("we have no idea if their client works — we use the vendor
@@ -81,22 +102,30 @@ under this rule; the SSE contract was recorded from `docs.perplexity.ai` alone.
    section.
 4. ~~**Phase 8 — the MCP profile**~~ **COMPLETE — merged to `main` 2026-08-17 (`16c4688`, PR #4).** Unit 1 (contract
    verification: `contracts/mcp/README.md` + `provenance.yaml`, spec sha256 `ef70b61f…`, the D11 evidence), unit 2
-   (the modern 2026-07-28 profile: `provider/mcp`, listener `mcp` on `POST /mcp` port 8084,
+   (the modern 2026-07-28 profile: `provider/mcp` (now `profiles/mcp`), listener `mcp` on `POST /mcp` port 8084,
    `server/discover`/`tools/list`/`tools/call`, JSON and per-request SSE answers, strict request validation, 18
    goldens under `contracts.MCP`, every built-in's `mcp:` block) and unit 3 (the docs sweep: README's MCP
    onboarding with a real `curl` and a real test excerpt, `examples/mcpclient.go` + `examples/mcp_test.go` — nine
    tests, compiled and run by CI —, `docs/design/mcp-profile.md` the design record incl. the D9 tier-2 seam
    evidence, `docs/proposals/d9-framework-framing.md` "Evidence from Phase 8", the CONTRIBUTING "Adding a provider"
    checklist rewritten from the real diff, the troubleshooting MCP section, the small sweeps) are all done and
-   merged. **Next: cut v0.5.0 — needs the owner's go-ahead** (a full tag note is drafted from the three unit
-   commit bodies plus Phase 7's; the bullets are in the Phase 8 section; CONTRIBUTING "Releasing" order: tag,
-   publish, confirm one digest, then move the README/Compose pins and drop README's "ships in v0.5.0" sentence).
-   **ODR is out per D12.** **D11 (era) is pending owner** — modern-only shipped; a legacy 2025-11-25 follow-on
-   only if the adopter's client is pinned below go-sdk `v1.7.0` / TypeScript `2.0.0` / python-sdk `v2.0.0`.
-   **D9 tier 2 (export the provider seam) is pending owner** — the
-   evidence is written (`docs/design/mcp-profile.md` §12, the proposal's "Evidence from Phase 8"); it frames two
-   options and their cost and recommends nothing.
-5. Tell the adopter v0.3.0 and v0.4.0 exist; their questions in the two contract READMEs are still open; their
+   merged. **ODR is out per D12. D11 (era) decided 2026-08-17: "modern only is a fine start"** — a legacy
+   2025-11-25 follow-on only if the adopter's client turns out to be pinned below go-sdk `v1.7.0` / TypeScript
+   `2.0.0` / python-sdk `v2.0.0`. **D9 tier 2 decided 2026-08-17: yes, export the seam** — which became Phase 10.
+5. ~~**Phase 10 — the framework seam**~~ **COMPLETE on branch `phase-10`, unmerged.** Units 0–9 in nine commits
+   plus unit 10 (the docs); every unit, its commit and its review round are in the Phase 10 section below, and
+   [ADR 0003](adr/0003-framework-seam.md) is the decision record. Nothing in it is waiting on anything.
+6. **Cut v0.5.0 — the one remaining step, and it needs the owner's go-ahead.** The full note is drafted (the
+   framework release first, then Phase 8's MCP profile, then Phase 7); the bullets and the v0.4.0 → v0.5.0
+   migration table are in the Phase 10 section for the release commit to lift. The order is `CONTRIBUTING.md`
+   "Releasing", and it is publish-before-docs on purpose: merge `phase-10` to `main`; `git tag -a v0.5.0` with the
+   note as the tag message (no CHANGELOG, no GitHub Release object — v0.1.1 through v0.4.0 set that convention);
+   push the tag; wait for the publish workflow; confirm from the registry that both spellings (`v0.5.0` and
+   `0.5.0`, `v0.5`/`0.5`, `v0`/`0`) resolve to **one** digest and write that digest down; then one follow-up
+   commit moves the README and `docker-compose.example.yml` pins to `v0.5.0` and the new digest, drops README's
+   interim "not tagged yet" paragraph (under the `servicesim:dev` note), and re-runs `task check` (the docs guard
+   resolves every `ghcr.io` reference, so a pin written before the publish fails it).
+7. Tell the adopter v0.3.0 and v0.4.0 exist, and that v0.5.0 is the framework release they were blocked on; their
    own guardrail-classifier vectors are an append to `malicious-content` (add any new prefix to
    `hostileSourcePrefixes` in `scenarios/scenarios_test.go`).
 
@@ -181,7 +210,7 @@ These are settled. Re-open one only with new evidence, and record why.
 |  D6 | MCP and ODR are two new provider profiles for G-3. Build them in-tree, or make out-of-tree providers a supported path? | **Build MCP and ODR in-tree** (owner overrode the recommendation to export the seam instead). (ODR dropped from Phase 8 by D12, 2026-08-16.)  |
 |  D7 | Exa /contents, /findSimilar and Tavily /extract have no verified contract in this repository — contracts/exa/README.md:23 explicitly declines to as... | **Re-verify against vendor docs first** for `/contents`, `/findSimilar`, `/extract` — ADR-0002 holds as written.  |
 |  D8 | What should the adopter do about stream:true fixtures in the window before SSE ships (Phase 5)? | Tell the adopter **not to record `stream:true` fixtures** yet, and ship a `stream: reject` policy so their path fails loudly. **Reversed 2026-08-15: Phase 5 has shipped.** `stream: {when_requested: stream, deltas: [...]}` now serves a real, golden-tested SSE sequence on both Perplexity surfaces — the adopter can record `stream:true` fixtures today, against `testkit.AssertGoldenSSE`. `stream: reject` remains available for a suite that wants a hard failure instead. |
-|  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Decided 2026-08-16: tier 1 adopted** — README and CLAUDE.md led, as of tier 1, with "a deterministic service-simulator framework shipping three research-API profiles" (four profiles since Phase 8), the non-goals hold for any profile, README says what is provider-neutral versus profile-specific. **Tier 2 (export the seam, re-opening D6) is deferred until Phase 8's MCP/ODR have exercised the seam in-tree; tier 3 (positioning) stays open.** (ODR dropped from Phase 8 by D12, 2026-08-16 — tier 2 waits on the MCP profile alone.) The proposal, with the reasoning and the tier 2 shape, is [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md). **Evidence for tier 2 recorded 2026-08-16** (Phase 8 unit 3): the proposal's "Evidence from Phase 8" section and `docs/design/mcp-profile.md` §12 — what the fourth in-tree profile needed from the seam (nothing new), the one framework change (`internal/redact` mirrored headers), the 41 hand-maintained enumeration sites in 12 files it touched, and what an out-of-tree profile would need exported. Tier 2 awaits the owner. **Tier 2 DECIDED 2026-08-17 (owner, overriding the "defer until a concrete out-of-tree user exists" recommendation): YES — export the seam.** Verbatim: "as soon as you try to take over mocks for sem\* it's a framework. not to mention the three providers we started with are not even close to the number of providers our early adopter will end up with. so yes, we need to commit to being a proper framework so we do not need to babysit PRs — treat what we have as examples." Consequences: Servicesim is a framework; the four in-tree profiles are reference examples; an out-of-tree profile must be buildable and composable without a PR here; the v0.5.0 release is held until the seam ships ("1 depends on 3"); tier 3's sem\* mock-consolidation question is now inside the framing rather than beside it. The design proposal (three independent designs, judged, synthesised — `docs/proposals/framework-seam.md`) is the next step; Phase 10 is the work. |
+|  D9 | **Pending (owner, 2026-08-16).** "We lean hard on the first three services as the only thing we sim, and servicesim is quickly becoming a service-simulator framework." Does that reframing change how the repository describes itself (README / CLAUDE.md lead with the framework, Exa/Tavily/Perplexity as three shipped profiles; the "What Servicesim is not" section), and does it re-open D6 (export the provider seam so out-of-tree profiles are a supported path, with MCP/ODR still shippable in-tree as reference profiles)? | **Decided 2026-08-16: tier 1 adopted** — README and CLAUDE.md led, as of tier 1, with "a deterministic service-simulator framework shipping three research-API profiles" (four profiles since Phase 8), the non-goals hold for any profile, README says what is provider-neutral versus profile-specific. **Tier 2 (export the seam, re-opening D6) is deferred until Phase 8's MCP/ODR have exercised the seam in-tree; tier 3 (positioning) stays open.** (ODR dropped from Phase 8 by D12, 2026-08-16 — tier 2 waits on the MCP profile alone.) The proposal, with the reasoning and the tier 2 shape, is [`docs/proposals/d9-framework-framing.md`](proposals/d9-framework-framing.md). **Evidence for tier 2 recorded 2026-08-16** (Phase 8 unit 3): the proposal's "Evidence from Phase 8" section and `docs/design/mcp-profile.md` §12 — what the fourth in-tree profile needed from the seam (nothing new), the one framework change (`internal/redact` mirrored headers), the 41 hand-maintained enumeration sites in 12 files it touched, and what an out-of-tree profile would need exported. Tier 2 awaits the owner. **Tier 2 DECIDED 2026-08-17 (owner, overriding the "defer until a concrete out-of-tree user exists" recommendation): YES — export the seam.** Verbatim: "as soon as you try to take over mocks for sem\* it's a framework. not to mention the three providers we started with are not even close to the number of providers our early adopter will end up with. so yes, we need to commit to being a proper framework so we do not need to babysit PRs — treat what we have as examples." Consequences: Servicesim is a framework; the four in-tree profiles are reference examples; an out-of-tree profile must be buildable and composable without a PR here; the v0.5.0 release is held until the seam ships ("1 depends on 3"); tier 3's sem\* mock-consolidation question is now inside the framing rather than beside it. The design proposal (three independent designs, judged, synthesised — `docs/proposals/framework-seam.md`) was written and accepted the same day. **TIER 2 SHIPPED 2026-08-17 — Phase 10, branch `phase-10`, units 0–10:** `provider.Profile`/`Set` is the registration record, the root `servicesim` package is the composition entry point a consumer's own `main.go` calls, the four profiles are `profiles/<name>` reference examples with their contract bundles beside them and a test proving nothing in this repository may import one, `contracts` and `testkit` are generic over a registered set, and the in-tree guards are library calls (`testkit.ValidateProfile`, `contracts.Conform`, `testkit.AssertNoLiveHosts`, `testkit.AssertCovers`) an out-of-tree profile runs in its own CI; `examples/profile/` is a fifth profile built as its own module by CI and `docs/building-a-profile.md` is the guide. All eleven design decisions D-1…D-11 were taken as recommended; [ADR 0003](adr/0003-framework-seam.md) is the record and amends ADR 0001 rather than splitting the module (D-9, with tier 3's module question left open). This also answers **D6** — both: in-tree for the four reference profiles, out-of-tree as the supported path for everyone else. Tier 3's remaining half, where the sem\* `chat/completions` profile lands, was decided as **D-11: out of tree, in a sem\* repository**, sequenced against semstreams v1 by the owner. |
 |  D10 | How is contract drift detected without a canary? | **Dated, manual re-verification**, never a live canary — none is built or planned. Every provider's contract is generated with a machine-readable spec behind it — Exa's `exa-spec.yaml`, Tavily's `openapi.json` and Perplexity's `openapi.json`, each covering every route this repository simulates for that vendor — and each carries a RECORDED spec version and SHA-256 (`contracts.Spec`, `contracts/<provider>/provenance.yaml`'s `spec:` block) that a fresh fetch is compared against as the first, cheap step. That hash comparison is a drift SIGNAL, not a substitute for reading: most entries in every provider are still verified against the vendor's rendered prose pages (each entry's own `documentation_url`), which have no stable byte hash of their own — a page's bytes change with every site deploy independent of the content that matters — so a changed spec hash means a person re-reads the consumed fields against both the cited pages and the spec, never a hash of the prose itself. Only entries whose `documentation_url` IS the spec (all of Perplexity's, and Exa's three `/findSimilar` entries) were read from the spec directly and carry `api_version`; every other entry was read from prose and carries none. Reason for no canary: a canary is outbound infrastructure and a scheduled dependency on vendor availability, for a test simulator whose value is determinism; the recorded hash or the cited page gives a reviewer the same answer ("did the vendor change or did we?") on demand, without the outbound dependency. `contracts/README.md` "Keeping them honest" is the sanctioned procedure; ADR 0002 carries an "Amended 2026-08-16" section recording the same change. Owner, 2026-08-16.  |
 |  D11 | Which MCP protocol era(s) does the Phase 8 profile serve — **modern** (2026-07-28 only: stateless, per-request `_meta`, `server/discover`, no session, no handshake), **legacy** (2025-11-25 only: `initialize`/`notifications/initialized`, `MCP-Session-Id`, optional GET stream and `Last-Event-ID` resumability), or **dual-era** (both, selected per request by how the client opens)? The terms are the specification's own (`basic/versioning`, "Terminology"). | **Pending owner (recorded 2026-08-16).** Recommendation on record, from `contracts/mcp/README.md` "Protocol eras": **modern first** — 2026-07-28 is `latest` and the verified authority; it is stateless, which is exactly Servicesim's request/response model (nothing to hold between calls); and it is what every official SDK now sends by default (evidence via `gh api`, 2026-08-16: go-sdk `v1.7.0` 2026-07-28 — "full support for protocol version 2026-07-28", "enabled by default for new clients", Streamable HTTP serves 2026-07-28 only with `Stateless = true`; typescript-sdk `@modelcontextprotocol/server@2.0.0` 2026-07-27 — "Align the 2026-07-28 wire with the final revision" (note: `1.30.0` the same day is a v1.x maintenance release whose notes do not mention 2026-07-28); python-sdk `v2.0.0` 2026-07-28 — "supports the 2026-07-28 revision … and serves every earlier revision"). Every one of those clients falls back to `initialize` only when the server's answer to its first modern request (go-sdk: `server/discover`, per `mcp/client.go` on `main`) is not a recognised modern error, so a modern-only simulator is reachable from all of them. Build the **legacy 2025-11-25 path as a follow-on unit only if the adopter's mcp-adapter is pinned below** go-sdk `v1.7.0` / the TypeScript `2.0.0` packages / python-sdk `v2.0.0` — ask them (contract file, "Open questions for the adopter", Q1). A dual-era server is a superset and re-introduces the session state the profile would otherwise never hold. The legacy surface is recorded in the contract file's "Legacy revision 2025-11-25" subsection so the decision is made from a record, not a rebuild. **Unit 2 shipped modern-only per the recommendation; legacy is a follow-on if the owner decides dual-era.** **Decided 2026-08-17 (owner): "modern only is a fine start."** Modern 2026-07-28 only, as shipped; the legacy 2025-11-25 path is not planned — a follow-on only if the adopter's client turns out to be pinned to a pre-2026-07-28 SDK. |
 |  D12 | Is the ODR — "open-deep-research" — provider profile part of Phase 8? | **Owner, 2026-08-16: no.** "Let's not worry about Open Deep Research for P8 — we can make that an adopter problem for now." Phase 8 is the MCP profile alone; ODR is not built here and is not blocking anything. Recorded beside it, the reason it could not have been built from this tree anyway: the repository has no verifiable identity or wire surface for "open-deep-research" — the name matches several open-source projects with different or no HTTP APIs — and house rule 1 forbids writing a wire field from memory. If the adopter later wants it, the first step is theirs: name the project and its API documentation, and the contract-verification unit runs the way MCP's did before any handler. The audit table's ODR row below is the adopter's historical status and is left as written. |
@@ -531,10 +560,10 @@ that wired the built-ins, docs and image smoke once all three landed.
   only `completed` carries it. Fixed, golden and the one disagreeing README row corrected with citation and date.
 - costDollars.total on both new Exa routes from their first release — **DONE**, avoiding the expensive-later
   fixture rewrite A3 warned about.
-- Wire the stream_mode full|concise enum — **DONE.** `provider/perplexity/request.go`'s already-declared
-  `StreamModes` constant is now enforced on `/v1/sonar` and every alias, with the same enum-error style as
-  `search_mode`/`reasoning_effort`/`search_recency_filter`, unblocking Phase 5's need to validate it before adding
-  the streaming behaviour it selects between.
+- Wire the stream_mode full|concise enum — **DONE.** `provider/perplexity/request.go`'s (now
+  `profiles/perplexity/request.go`) already-declared `StreamModes` constant is now enforced on `/v1/sonar` and
+  every alias, with the same enum-error style as `search_mode`/`reasoning_effort`/`search_recency_filter`,
+  unblocking Phase 5's need to validate it before adding the streaming behaviour it selects between.
 
 `docs/scenario-schema.md` documents the three new sub-keys (`exa.contents`, `exa.find_similar`, `tavily.extract`),
 the D-a fetch-shaped-route echo rule and the D-b relevance-route distinction. Every built-in scenario under
@@ -806,7 +835,7 @@ troubleshooting, the Compose example, the startup log and `job.foreign_id`.
 - Note that the multi-replica README and troubleshooting text ships in Phase 3, not here — it must land with the job
   store that makes the divergence a hard 404.
 
-### Phase 8 — the MCP profile — COMPLETE, pending merge and v0.5.0
+### Phase 8 — the MCP profile — merged to `main` (`16c4688`), pending v0.5.0
 
 **Renamed 2026-08-16 (D12): Phase 8 is the MCP profile alone.** This is the adopter's G-3 second adapter and the
 largest single commitment in the backlog, which is why decision 6 recommends opening the seam before committing to
@@ -854,9 +883,10 @@ is theirs (D12); Servicesim does not unblock it.
   path, `405` on every method but POST, `202` no body for a notification, `200` — not `400` — for every ordinary
   method-level JSON-RPC error so the spec's client era-detection signal stays reserved). Registers `contracts.MCP`
   with 18 golden fixtures and a provenance entry each; every simulator-chosen point in the contract's "Simulation
-  decisions" section is recorded, with a matching `chosen:` line, in `provider/mcp/doc.go` and as a `note:` on the
-  golden it shapes. The composition-layer edits below, all 20 built-in scenarios' `mcp:` blocks, the image, and the
-  docs the guards force all shipped with it; `x-mcp-header`, `Origin` validation, resources, prompts, completion,
+  decisions" section is recorded, with a matching `chosen:` line, in `provider/mcp/doc.go` (now
+  `profiles/mcp/doc.go`) and as a `note:` on the golden it shapes. The composition-layer edits below, all 20
+  built-in scenarios' `mcp:` blocks, the image, and the docs the guards force all shipped with it; `x-mcp-header`,
+  `Origin` validation, resources, prompts, completion,
   `subscriptions/listen`, MRTR and the legacy 2025-11-25 era are NOT SIMULATED.
 - **Unit 3 — the docs sweep — DONE 2026-08-16**: README (lead and provider-neutral paragraph name the fourth
   profile as a protocol; a "Pointing your code at it → MCP" subsection with the headers, the optional-credential
@@ -872,16 +902,20 @@ is theirs (D12); Servicesim does not unblock it.
   the true checklist from the unit-2 diff; `docs/troubleshooting.md`'s MCP section (every entry reproduced with
   `curl` against the binary); the small sweeps (CLAUDE.md, `contracts/mcp/README.md`'s `x-mcp-header` row,
   `docs/scenario-schema.md`, the plan's dated one-liner, the "three → four" sentences). No behaviour change.
-- **What remains after Phase 8:** merge `phase-8`; cut **v0.5.0**; **D11** (owner) — a legacy follow-on only if
-  the adopter's client needs it; **D9 tier 2** (owner) — evidence written, decision open; the shared-pipeline
-  hardening follow-up below; Phase 9.
-- **v0.5.0 tag-note bullets (draft, for the release commit to lift):**
+- **What remained after Phase 8, and where it went:** `phase-8` is merged; **D11** was decided 2026-08-17
+  ("modern only is a fine start" — a legacy follow-on only if the adopter's client needs it); **D9 tier 2** was
+  decided the same day and became Phase 10, which also closed the shared-pipeline hardening follow-up below (its
+  unit 0); cutting **v0.5.0** is the one step left, and Phase 9 is after it.
+- **v0.5.0 tag-note bullets — the Phase 8 and Phase 7 halves (draft, for the release commit to lift; the
+  framework half and the v0.4.0 → v0.5.0 migration table are in the Phase 10 section below, and the whole
+  note is the tag-message draft). The Phase 10 unit bullets nested here were written as those units landed:**
   - Phase 8 unit 1: `contracts/mcp/` — the MCP contract recorded from the 2026-07-28 specification and its
     machine-readable schema (`spec:` block, sha256 `ef70b61f…`) before any handler; the D11 era record.
   - Phase 8 unit 2: the MCP profile — `provider/mcp`, a modern-era (2026-07-28) Streamable HTTP server: listener
     `mcp`, **new default port 8084 and flag `--mcp-port`** (`SERVICESIM_MCP_PORT`), `POST /mcp`,
     `server/discover`/`tools/list`/`tools/call`, JSON and per-request SSE answers, strict request validation with
-    JSON-RPC-shaped fail-closed errors, `contracts.MCP` with 18 goldens, `provider.MCP`, `testkit.MCPHandler`,
+    JSON-RPC-shaped fail-closed errors, `contracts.MCP` with 18 goldens, the `provider` package's `MCP` constant
+    and the `testkit` package's `MCPHandler` constructor (both since removed, Phase 10 unit 4),
     `MCP_BASE_URL` from `Sim.BaseURLs`, an `mcp:` block in every built-in, `EXPOSE 8084` in the image.
   - **Behaviour a v0.4.0 consumer could notice:** `DefaultProviders` now includes `mcp`, so a bare `servicesim`
     binary and the image bind a fourth listener on 8084 (`--providers exa,tavily,perplexity` keeps three), and
@@ -894,18 +928,237 @@ is theirs (D12); Servicesim does not unblock it.
     `docs/design/mcp-profile.md`, the D9 tier-2 evidence, the CONTRIBUTING checklist, troubleshooting's MCP section.
   - Phase 7 (unreleased since v0.4.0): `contracts.Spec`/`ProviderSpec`, `Record.APIVersion`, the `spec:` block per
     vendor, the D10 no-canary refresh procedure — from `df1eb64`'s body.
+  - **Phase 10 unit 1: exa's `omit_fields` now wins over `extra_fields`, as documented and as the other profiles
+    always did.** `provider/exa/response.go`'s `Result.MarshalJSON` used to apply omission before the merge ("so
+    an extra field can reinstate a key that was omitted"), the opposite of `docs/scenario-schema.md`'s documented
+    order ("the merge happens first and the omission second, so `omit_fields` can remove a key `extra_fields`
+    added") and of tavily's and perplexity's own renderers. A search result whose fixture both omits a key and
+    re-adds it via `extra_fields` now correctly drops it from the wire body; before this release the key survived.
+    Fixed by routing exa's per-result render through the new `provider.Render(v, extra, omit)`, which every
+    profile now calls instead of `internal/wire` directly (`provider/framework.go` — house rule 2's byte-fidelity
+    guarantee, unchanged bytes everywhere else, proven by the full golden suite passing with no golden
+    regenerated). See `provider/exa/render_test.go`'s (now `profiles/exa/render_test.go`)
+    `TestRender_OmitFieldsWinsOverExtraFields`.
+  - **Phase 10 unit 2: `provider.Profile`/`Set`, refusals by construction, the fault engine as a Set method, an
+    open SSE grammar.** `provider.Profile` (16 fields) + `Set`/`NewSet`/`MustSet`, each of the four in-tree
+    profiles gains `Profile()` and a typed `Name` (exa's and perplexity's are new); `<pkg>.New` becomes a
+    deprecated one-line wrapper over `Profile().Handler(d)`. Every framework-generated refusal (404, 405,
+    scenario-unknown, and now a handler **panic**) renders through the profile's own `ErrorBody` — house rule 3 by
+    construction — so `internal/server/listeners.go`'s `scenarioNotFoundBody` switch and its duplicated MCP
+    JSON-RPC envelope are deleted; a non-abort handler panic is now a `RefuseInternal` 500 with a `handler.panic`
+    ERROR finding, not a connection reset with no status and no body. The proposal names four `RefusalKind`s;
+    **a fifth, `RefuseRequest`, was added in this unit** for `Exchange.Reject(status, code, field, format, args
+    ...)`, the compiler-settled answer to "a rejection needs its own kind too" — recorded as a deviation from the
+    proposal, not a silent addition. `fault_exec.go`'s `Status < 400` guard (`Response.FaultBody` is now called
+    only when an attempt actually applies, matching its own doc comment) moves into the framework; the three
+    in-profile duplicates (`exa`, `tavily`, `perplexity`) are deleted, and MCP's own copy is left as a one-line
+    follow-up (not in the spec's named list, provably redundant, out of scope to touch silently). `Stream.Sentinel
+    []byte` + `SentinelPace time.Duration` replace `OmitDone`/`DonePace`: the `[DONE]` sentinel is now data a
+    profile sets (`provider.DoneSentinel`), never inferred from `Grammar == GrammarDelta` — perplexity's Sonar
+    renderer sets it, MCP's does not, and an empty `Grammar` is refused (`RefuseInternal` + `stream.grammar_missing`)
+    rather than silently defaulting to one dialect's framing. `Exchange.AuthPolicy()`/`EntryFor(kind)`/`Reject(...)`
+    close two nil traps (`Entry()` and `ProviderEntry.Auth` are both nilable) and give a rejection one shape;
+    `internal/server`'s `relaxAuth` is rewritten to consult each entry's OWNING PROFILE's `DefaultAuth` rather than
+    flattening every profile to one strict-auth behaviour — MCP's own optional default was already correct and is
+    now provably so under both `--strict-auth` settings, not by accident. `testkit.WithProfiles` (additive; required
+    in unit 4) and `testkit.NewJournal()` close AUDIT 1 gaps 7 and 8; the `testkit` package's `NewFaults` helper
+    is deprecated at this point, not yet deleted (that is unit 4's work). All four in-tree profiles still build
+    and pass; a fifteen-line out-of-tree profile, registered with
+    `provider.NewSet` and served through `Profile.Handler`, proves the seam end to end with no import of
+    `servicesim/internal` in its own source (Go's own internal-visibility rule makes that structural, not merely
+    tested) — `scratchpad/u2-outoftree/` at unit-2 time, not carried into the repository.
+- **Phase 10 unit 2, review-and-fix round (post-implementation, same unit):** an out-of-tree-consumer review
+  (`provider.Profile`/`Set` served bare and via `testkit.Start(WithProfiles(...))`) and a house-rules review each
+  ran against the merged tree; the confirmed findings were fixed in place, tests added per fix, rather than left
+  for a follow-up unit, since every one of them was inside this unit's own surface. Worth naming because none of
+  it changed a wire byte (a stat-only `git diff` against `contracts/` stayed empty) — only construction-time
+  refusals, journal findings and one preserved requestId derivation:
+  - `Set` is now genuinely immutable end to end, not only at the top level: `NewSet` deep-clones a profile's
+    `Handlers`/`Validators` (`maps.Clone`) and `Routes`/`Hosts`/`DerivedIDs`/`StreamDerivedIDs`/`CredentialNames`
+    (`slices.Clone`) on the way IN, and `All`/`Lookup` clone again on the way OUT, so mutating anything either
+    returns — or mutating the caller's own `Profile` after `NewSet` — can no longer reach what the `Set` serves.
+    Previously only the top-level `[]Profile` slice was cloned; a returned `Profile`'s own `Routes`/`Handlers`
+    still aliased the `Set`'s internal copy.
+  - `Profile.Validate` now refuses a `Route` with no matching `Handlers` entry, and a `Handlers` entry with no
+    matching `Route` — closing a rule-3 hole where the first case reached `handle.go`'s `noHandler` at request
+    time (a 500 with an EMPTY body, bypassing `ErrorBody` entirely, `NewSet` having raised no error at
+    registration) and the second was a handler `NewMux` never wires up, silently unreachable.
+  - `Exchange.EntryFor(kind)` now resolves through the LISTENER's own `Name` when `kind` names the effective
+    `Kind` this Exchange's profile was installed under, rather than treating `kind` as a scenario entry name
+    literally in every case. Without this, a single-entry instance (`Kind != Name`, the shape `NewSet` already
+    accepts this unit — see the `Kind` field's own doc comment below) whose handler calls
+    `x.EntryFor(string(sharedKindLiteral))` — the ordinary way to write it, mirroring `Route.Entry`'s static
+    style — read the PRIMARY instance's scenario block on every listener, never its own. `Name == Kind` for all
+    four in-tree profiles, so this changes nothing for them.
+  - `Profile.Kind`'s doc comment now says plainly what was previously undocumented: two instances of one `Kind`
+    (accepted by `NewSet` this unit) still share one fault counter and one fault plan per `Route`, because
+    `Route.FaultKey` is not yet Kind-scoped. A scenario author who wants independent budgets per instance must
+    give each instance's `Routes` distinct `FaultKey`s until unit 8 threads `Kind` through the fault engine.
+    **Recorded here as a unit 8 follow-up, not fixed this unit** — threading `Kind` into fault-key scoping is
+    exactly unit 8's migration-table scope, and a per-`Route`-`FaultKey` `NewSet` refusal across profiles would
+    make ordinary instancing (which is SUPPOSED to share Routes/Handlers/Validators) impossible to register at
+    all.
+  - MCP's `RefuseInternal` refusal body now carries a fixed "Internal error" message, matching exa/tavily/
+    perplexity, instead of echoing the recorded finding verbatim — which, for the two callers that raise
+    `RefuseInternal` (a handler panic's `%v`, and `stream.grammar_missing`'s route/profile text), could put
+    arbitrary author-controlled text on the wire without having passed through `redact.String` the way a journal
+    entry has.
+  - `internal/server/listeners.go`'s `refusalHandler` now warns `provider.CodeRefusalEmptyBody` per request when
+    its (startup-computed) refusal body is empty, not only at the one `Profile.Refuse` call made at startup
+    (which never journals, since its `Refusal.X` is nil by design — no request exists yet). Unreachable with the
+    four in-tree `ErrorBody`s today; becomes reachable the moment unit 3 wires an arbitrary `Set` into the server.
+  - `exa`'s and `tavily`'s new `ErrorBody` functions, used only from their own `Profile()`, are unexported to
+    `refusalBody`, matching `mcp`/`perplexity` — nothing outside either package referenced the exported spelling
+    (rule 7).
+  - `exa`'s `/x/<unknown>` `requestId` (the one case `Refusal.X` may be nil for) now hashes the literal
+    `"scenario.unknown"`, not `RefusalKind`'s own spelling (`"scenario_unknown"`) — preserving the exact bytes
+    `internal/server`'s deleted `scenarioNotFoundBody` produced pre-unit-2, since nothing forced that value to
+    change and an adopter reading it as a stable identifier had no reason to expect otherwise.
+  - The `provider` package's `Exa`/`Tavily`/`Perplexity`/`MCP` constants now carry a `// Deprecated:` doc line, as the
+    spec's DoD for every deferred deletion requires; two profile doc comments that said a constant was
+    "now-deleted" are corrected to "now-deprecated" (it is not deleted — that is unit 3's work, once
+    `internal/config`/`internal/server` stop naming it).
+  - `MustSet`'s panic message no longer double-prefixes `"provider: "` (every `NewSet`/`Validate` error already
+    starts with it).
+  - `Exchange.Reject`'s `Response` now carries a `Label` (`"<provider>.error.<code>"`, the same convention every
+    in-tree profile's own `errorResponse` already follows) instead of leaving it empty — the one `Response` kind
+    that convention had skipped.
+  - `Exchange.refuse`'s `CodeRefusalEmptyBody` warning now distinguishes "no `ErrorBody` was installed on this
+    Exchange" from "the installed `ErrorBody` returned no bytes" — two different bugs in two different places
+    that one message previously described identically.
+  - `Stream`'s executed write now gates on `len(Sentinel) > 0`, matching `Stream.Bytes`'s own gate, rather than
+    `Sentinel != nil`: a non-nil, zero-length `Sentinel` previously still slept `SentinelPace` and wrote a
+    zero-byte frame. Harmless for the two in-tree renderers (always nil or `DoneSentinel`), but the two readings
+    of "has a sentinel" could disagree for an out-of-tree profile.
+  - **An undisclosed, pre-existing behaviour change this fix round confirmed rather than reverted:** a tavily
+    fault attempt carrying `error:` with no error status (`- error: "..."` or `- {status: 200, error: "..."}`)
+    used to serve tavily's error envelope at 200; it now serves the scenario's own body, because the
+    `Status < 400` guard (moved into `provider/fault_exec.go` this unit) runs BEFORE `faultBody` is ever called,
+    where tavily's own now-deleted duplicate ran its `a.Status < 400` check AFTER the `a.Error` check — the
+    opposite order from exa's and perplexity's own (pre-existing) guards, which already served the scenario body
+    in this case. All three profiles now agree, matching `docs/scenario-schema.md`'s "a status below 400 means
+    no fault" reading. Pinned by
+    `provider/tavily/handler_test.go`'s (now `profiles/tavily/handler_test.go`)
+    `TestFaultWithErrorButNoErrorStatusServesTheScenarioBody`.
+  - **Confirmed, not fixed, journal-only (no wire byte changed):** every listener's 404/405 `outcome.label`
+    changed from a vendor-specific spelling (`exa.error.NOT_FOUND`, `tavily.error.405`,
+    `perplexity.sonar.error.404`, `mcp.error.not_found`) to the framework's own `route.not_found`/
+    `route.method_not_allowed`, because `Profile.ErrorBody`'s signature (`func(Refusal) []byte`) has no path for
+    a per-vendor `Label` to travel back to `provider/mux.go`'s `notFound`/`methodNotAllowed`, which now build the
+    `Response` themselves. `docs/design/mcp-profile.md` §10 is corrected to say so; MCP's now-dead
+    `mcp.error.not_found`/`mcp.error.method_not_allowed` literals are left in place with a comment explaining why
+    they are unreachable, since removing them would mean restructuring `Profile.ErrorBody`'s signature to return
+    more than bytes — out of this unit's scope.
 - Two Go doc comments still say "three": `provider/exchange.go`'s `AcceptedPlacements` ("the one precedence rule
   the three provider packages share") and `internal/redact/redact.go`'s `substringCredentialFragments` ("checked
   against the three providers' documented field names"). Not wire facts, no guard depends on them, and unit 3's
   sweep excluded Go outside `examples/` — a one-line tidy for the next unit that touches either file.
-- **Follow-up surfaced by unit 2's review (shared pipeline, not MCP-specific):** `provider/handle.go` reads the
-  memoised fault decision (`x.decision`) after the handler returns regardless of `Response.FaultEligible`, so
-  "validation has the last word" holds only by the convention that every handler validates before it claims an
-  attempt (`SelectTurnFor`/`CallIndex`). Every shipped handler follows the convention — MCP's method-level checks
-  were moved ahead of `selectProjection` for exactly this reason — but the gate itself does not gate an
-  already-claimed decision. Latent, not reachable today; worth a small hardening unit with its own test
-  (a handler that claims then fails must not have the claimed attempt applied to its rejection response), because
-  the next profile's author will not know the convention.
+- **Phase 10 unit 3: `internal/config`/`internal/server` derived from `*provider.Set`; the root `servicesim`
+  composition package; `cmd/servicesim` a thin wrapper.** `internal/config`'s ten hand-maintained enumeration
+  sites (AUDIT 2 #1–#10) collapsed to `Config.Listeners map[provider.Name]*Listener` + registration `order`,
+  one loop over `set.All()` registering each profile's own port flag (for example `-exa-port`) and its
+  `SERVICESIM_<NAME>_PORT` binding, and `Config.Listener(name)` as
+  the one fail-closed lookup; `internal/server`'s two four-arm switches (`newSurfaces`, `newProviderHandler`) are
+  `cfg.Listener(name)` and `set.Lookup(name).Handler(deps)`. `internal/config` and `internal/server` import no
+  `provider/{exa,tavily,perplexity,mcp}` package (`go list -f '{{.Imports}}'`, gated in CI). Three new mode
+  flags — `--print-routes`, `--print-ports`, `--print-hosts` — print from `Set.Routes()`/the resolved
+  `Listeners` map/`Set.LiveHosts()` and exit 0; they are what generates the Dockerfile's `EXPOSE` list,
+  `docker-compose.example.yml`'s port map, and what `scripts/check-docs.sh` §3/§6 and
+  `scripts/lint-no-live-hosts.sh` now read instead of a `provider/*/*.go` glob and a hand-edited hostname regex
+  (the union pattern still keeps a hand-kept base list — `api.openai.com` among them — so a vendor host is
+  guarded before any profile for it exists, per house rule 3's own reasoning in the proposal). The root package
+  `github.com/c360studio/servicesim` is new: `Build{Program, Version, Commit, BuiltAt}`, `Main(b, set) int`,
+  `Run(ctx, b, set, args, lookupEnv, stdout, stderr) int` — today's `cmd/servicesim.run`/`usage`/`versionText`/
+  `healthcheck`/`serve`/`usageExitCode` moved verbatim and parameterised by `Build` and `*provider.Set`, with
+  every literal `"servicesim"` in usage/help/error text replaced by `Build.Program` and the help banner built
+  from the set's own `Title`/`Summary` fields rather than naming a vendor. `Version`/`GitCommit`/`BuildTime` move
+  from `cmd/servicesim` to the root package; every build's `-X main.Version=…` linker flag in `Dockerfile`, `Taskfile.yml`
+  and `.github/workflows/ci.yml` becomes `-X github.com/c360studio/servicesim.Version=…` (`GitCommit`/`BuildTime`
+  likewise) — including the `image` CI job's `docker/build-push-action` step, which previously built with no
+  `VERSION`/`COMMIT_SHA` build-args at all and would otherwise have shipped `servicesim:ci` reporting the
+  unstamped `"dev"` default; `scripts/image-smoke.sh` now asserts `--version` does not report `dev` against the
+  running image, which is what surfaced that gap. `cmd/servicesim/main.go` is now nineteen lines: it registers
+  `exa.Profile()`, `tavily.Profile()`, `perplexity.Profile()`, `mcp.Profile()` into one `provider.MustSet(...)`
+  and calls `servicesim.Main`. `internal/faults` is deleted (unit 1b): `provider/fault_engine.go` — the copy
+  `(*Set).Faults` had to use in unit 2, since `internal/faults` imports `provider` — is now the only fault
+  engine; its 28 tests moved into `provider/fault_engine_test.go` with no drop in count, and the `testkit`
+  package's `NewFaults` becomes a wrapper over the four reference `Profile()`s and `set.Faults`. A new startup
+  finding, `scenario.profile.unscripted`, warns once per registered-and-enabled profile whose scenario declares
+  no block for any of its entry kinds, so a profile with nothing scripted answers with a diagnosed empty
+  response instead of a silent one. Proved end to end by an out-of-module consumer under `scratchpad/u3-consumer/`
+  (own `go.mod` + `replace`): a fifteen-line `acme` profile (a POST route at `/v1/answer`, port 8090,
+  `DefaultAuth: optional`) plus `exa.Profile()`/`tavily.Profile()` composed via `provider.MustSet` and served
+  through `servicesim.Main(servicesim.Build{Program: "acmesim"}, set)` — the help banner, `--print-routes` and
+  `--print-ports` all named `acmesim`/`acme` correctly, byte-identical 200s across `/`, `/n/<ns>/` and
+  `/x/<scenario>/n/<ns>/`, wrong path/method/scenario in acme's own shape, a scripted `429` then `200` with no
+  `fault.unknown_key`, a redacted bearer in `/__admin/requests`, and `go list -f '{{.Imports}}'` showing no
+  `servicesim/internal` — not carried into the repository. **After this unit a consumer composes their own
+  binary and image**; `testkit` still imports a profile package and `--print-routes`/`--print-ports` compose an
+  ad hoc `[]provider.Route`/`portRow` shape rather than reusing one type across the two, both unit 4's and later
+  units' territory, not regressions.
+- **Phase 10 unit 3, review-and-fix round (post-implementation, same unit):** an out-of-tree-consumer review
+  raised 20 findings; verified against the tree and fixed where in scope. Fixed: the config-error message for a
+  stray positional argument no longer names "servicesim" in its body (`internal/config/config.go`, was
+  `"...: servicesim takes flags only"`, now `"...: only flags are accepted"` — Run's prefix already used
+  `Build.Program`, only the body was a leftover literal); `serve`'s `server.starting` log now defaults an empty
+  `Build.Commit` to `"unknown"` the same way `--version` does (`servicesim.go`, new `stampedOrDefault` helper
+  shared by both), so the two no longer give different answers to "which build is this" from one `Build`; a
+  each profile's per-name port flag usage text now says "(0 for an ephemeral port)", matching the admin port
+  flag's existing wording; the print-routes/print-ports flags' usage text now says "every **registered**
+  route/listener" so
+  `--providers` not filtering their output is documented, not just implemented; `--print-ports`' usage text now
+  says it reports the *configured* port, not the bound one. `scripts/lint-no-live-hosts.sh`'s `SEARCH_PATHS`
+  never covered the repo-root Go package (`servicesim.go`, `doc.go`, `servicesim_test.go` — the exact file a
+  consumer's own `main.go` is written by reading) since it predated any Go source living at the repo root; fixed
+  by scanning `./*.go` alongside the existing directories (verified: planting a live host in `servicesim.go` now
+  fails the guard where it silently passed before; the fix required marking one pre-existing legitimate
+  `api.exa.ai` assertion in `TestPrintHostsListsEveryRegisteredHostSortedAndDeduplicated` with
+  `servicesim:allow-live-host`). Three `provider` package doc comments (`profile.go`, `doc.go`, `provider.go`)
+  still described fault selection as living in the now-deleted `internal/faults`, contradicting
+  `fault_engine.go`'s own (correct) doc comment in the same package; reworded to name `fault_engine.go`/
+  `newSetFaultEngine` as where selection now lives. Test-quality fixes (each was a mutation the existing suite did
+  not catch, verified in a throwaway rsync copy, not the working tree): `TestPrintRoutesListsEveryRegisteredRoute`
+  and `TestPrintPortsListsEveryRegisteredListenerAsJSON` moved from `require.Contains` spot checks to an exact
+  comparison against a golden built from `referenceSet(t)` — this is what pins registration order, the
+  within-profile pattern sort, no duplicate lines, and (for ports) the fallback where an empty
+  `Profile.DefaultAuth` resolves to `"required"`, which `docker-compose.example.yml`'s `<NAME>_API_KEY`
+  generation depends on; `testBuild()`'s
+  `Build.Program` changed from the literal `"servicesim"` to `"testsim"` (with `TestConfigurationErrorsExitTwo`
+  and `TestVersionReportsDefaultsForAnUnstampedBuild` now asserting the output actually starts with/contains that
+  name) because a test Build using the real product name cannot tell a correctly-parameterised `Program` from a
+  regression back to a hard-coded literal in `Run`'s error prefix, its help-flag hint, or `versionText`;
+  `TestBuildFilesInjectOnlyDeclaredVariables`'s `declared` map now holds pointers to the real `Version`/
+  `GitCommit`/`BuildTime` package vars instead of a hand-kept name list, so a future move of those vars out of
+  this package is a compile error in this test file rather than a silently-still-passing assertion (previously
+  only `scripts/image-smoke.sh`'s built-image `--version` check would have caught that regression, one release
+  stage later than necessary); `TestUnscriptedProfileIsWarnedOnce` (`internal/server/server_test.go`) gained
+  explicit `NotContains` assertions naming `providers.perplexity`/`providers.mcp`, so "the warning fires only for
+  a registered-and-*enabled* profile" is asserted directly rather than following incidentally from a bare
+  finding-count check. Not fixed, recorded for the owner: `--strict-auth=false` relaxes only scenario entries
+  already present in the loaded scenario (`relaxAuth` ranges `s.Providers.Names()`, the scenario's own entries) —
+  a profile with *no* block at all (the exact "unscripted" case this unit's new warning diagnoses) still 401s
+  under `--strict-auth=false`, because `Exchange.AuthPolicy`'s fallback to `Profile.DefaultAuth` never sees
+  `relaxAuth`'s effect. Verified pre-existing (the unit-3-built binary and a pre-Phase-10 build of `main` both
+  401 an unscripted `exa` under `--strict-auth=false`), not a regression, and a real design choice between two
+  readings of what `--strict-auth=false` promises — an architect/owner call, not this unit's to make silently.
+  Also not fixed, deferred to unit 9 per the review's own recommendation: no in-tree test composes a
+  non-reference-shaped profile (foreign port-0 listener, a `GET` route, `DefaultAuth: required` where the
+  reference profiles default to empty) through `servicesim.Main`/`Run`, so a regression specific to that shape is
+  provable only by the out-of-module `scratchpad/u3-consumer/` proof, which is not part of CI; and no test in
+  `internal/server` pins the max-namespaces flag's admission refusal in the profile's own error shape (today
+  covered only by `provider` package unit tests) — both optional follow-ups the review itself flagged as fine to
+  wait.
+- **Follow-up surfaced by unit 2's review (shared pipeline, not MCP-specific), closed by Phase 10 unit 0:**
+  `provider/handle.go` used to read the memoised fault decision (`x.decision`) after the handler returns
+  regardless of `Response.FaultEligible`, so "validation has the last word" held only by the convention that
+  every handler validates before it claims an attempt (`SelectTurnFor`/`CallIndex`). That was recorded here as
+  "latent, not reachable today" — wrongly: `SelectTurnFor` itself claims via `CallIndex` and then fails
+  `scenario.no_matching_turn`, and `MintJob` claims unconditionally and then fails `job.limit_reached`, so every
+  shipped handler that uses either one already followed this exact claim-then-reject shape. Unit 0 adds the gate
+  (`provider/handle.go`, `CodeAttemptOnRejection`/`fault.attempt_on_rejection`): a claimed attempt is never applied
+  to a rejection's wire response, while the journal keeps reporting the real claimed index and (namespaced) key,
+  because the counter genuinely advanced. The claimed index still is not released back to the counter — that half
+  is deliberately deferred, per the proposal (`docs/proposals/framework-seam.md` rule 5).
 - Two nits left as recorded, not fixed: the `202` for a notification carries a `Content-Type: application/json`
   header on an empty body (the contract only says "no body"); `extra-fields.yaml`'s `mcp:` block has envelope-level
   extras only — per-tool and per-content-block `extra_fields` would be a new projection field (unit 3 did not add
@@ -915,7 +1168,8 @@ is theirs (D12); Servicesim does not unblock it.
   profile builds omits the member (now omitted, pinned by exact bytes in `TestUnknownScenarioFailsClosed`); and
   `wantsStream` read the selected turn's `stream.when_requested` rather than turn 0's, honouring at request time
   a value the load-time WARNING `scenario.stream.policy.ignored` had just said was ignored (now turn 0, as
-  `provider/mcp/doc.go` item 5, the contract and `provider/perplexity` all have it; pinned by
+  `provider/mcp/doc.go` (now `profiles/mcp/doc.go`) item 5, the contract and `provider/perplexity`
+  (now `profiles/perplexity`) all have it; pinned by
   `TestStreamPolicyIsReadFromTurnZero`, which fails against the earlier draft).
 - The hostile-behaviour pack for their mcp-adapter defence kit: tool-schema drift between calls (turn model, free),
   oversized results and injection-bearing output (projection bytes, free), **per-request version and header
@@ -942,6 +1196,431 @@ is theirs (D12); Servicesim does not unblock it.
   projection-body section). The `scenario` package needs nothing: `providers:` is an open registry and
   `when.body_json` already takes nested dotted paths. Note testkit derives the base-URL env var from the provider
   name, so MCP_BASE_URL arrives with no mapping table.
+- **Phase 10 unit 4 (2026-08-17): `testkit` generalised over the `Set`.** `WithProfiles` is REQUIRED — `Start` and
+  the new generic `Handler(tb, name, opts...)` fail `tb`, named, with the one-line fix when it is omitted, closing
+  D-5; the four `XHandler` constructors, `NewFaults`, and the `Finding`/`Severity` aliases (now `provider.Finding`/
+  `provider.Severity`, one name per concept) are deleted, and `testkit` imports no profile package.
+  `derivedIDPaths`/`streamDerivedIDPaths` stop being package globals: `GoldenDerivedIDs(paths ...string)` is the
+  caller-declared replacement, and `Sim.DerivedIDs()` hands back the registered set's own so a caller need not name
+  a vendor's field by hand. `AssertCovers(tb, fsys, kinds...)` is the library form of
+  `TestBuiltins_CoverEveryImplementedProvider`. The deletions whose last in-tree caller was `testkit` land here too:
+  `provider/{exa,tavily,perplexity,mcp}.New` and the `provider` package's four `Exa`/`Tavily`/`Perplexity`/`MCP`
+  constants — every profile's typed `Name` (`exa.Name`, `tavily.Name`, `perplexity.Name`, `mcp.Name`) is the sole
+  surviving spelling. The mechanical sweep the guard forces followed: every `examples/*.go` `testkit.Start` gained
+  the minimal `WithProfiles` its test needs, and every reference to one of the deleted constants was rewritten to
+  the matching profile's typed `Name` tree-wide
+  (`scenarios/scenarios_test.go`, `provider`'s own in-package tests, which needed two local `Name` constants —
+  `testProviderExa`/`testProviderPerplexity` — since they never named a vendor package to begin with), README,
+  `docs/troubleshooting.md`, `docs/scenario-schema.md` and `CONTRIBUTING.md` re-copied from the changed examples.
+  The out-of-tree module from unit 2 (`scratchpad/u2-outoftree/`) moved to `WithProfiles`/`Handler` and gained a
+  `GoldenDerivedIDs("acme_id")` golden test, proving the pruning really is caller-declared rather than
+  testkit-assumed.
+
+- **Phase 10 unit 6 (2026-08-17): `contracts` genericised over `fs.FS`; `contracts.Conform`;
+  `testkit.ValidateProfile` with `AssertDeterministic` and `AssertRenderShape`.** `contracts.Read`/`Goldens`/
+  `Provenance`/`ProviderSpec`/`OldestVerified` all take an `fs.FS` now instead of a closed `Provider` enum; the
+  enum, `Providers()`, `FS()` and the global `VerifiedOn` constant are gone. Each reference profile's contract
+  bundle moved from `contracts/<name>` to `profiles/<name>/contracts` (`git mv`, wire bytes byte-identical: a
+  rename-only `git diff -M` against `main` shows every golden and `provenance.yaml` unchanged byte for byte) and
+  is embedded beside its own package, exactly the shape an out-of-tree profile uses. `contracts.Conform(tb,
+  fsys)` is the nine old `contracts_test.go` loops that iterated `Providers()` plus the two
+  `provenance_internal_test.go` checks as one call,
+  ten named subtests; the vendor-specific wire pins (Exa's no-`score` rule, Tavily's numeric `response_time`, and
+  the rest) moved to each profile's own `profiles/<name>/contract_test.go`, reading through
+  `contracts.Read(Profile().Contracts, name)`.
+  `testkit.ValidateProfile(tb, p)` is the conformance suite an adopter's own CI runs against their profile — the
+  same call each reference profile's new `profiles/<name>/conformance_test.go` makes. Its subtests: `provider.
+  NewSet(p)` succeeds; `p.Contracts` is non-nil (house rule 1, no exception) and conforms; every `RefusalKind`
+  renders a non-empty body through `p.Refuse`, with a request and without one; an unknown path answers 404 +
+  `route.unmatched`; a wrong method answers 405 + `Allow`; a wrong `Content-Type` on at least one POST route
+  records a finding naming it (not every route — Tavily's `/research` create checks neither JSON shape nor
+  content type, a real, pre-existing gap this unit surfaced rather than papered over); a missing credential
+  answers 401 when `DefaultAuth` is required, skipped and named (a real `t.Skip`, not a silent no-op) when it is
+  optional (MCP's own default); every `Route.FaultKey` resolves against the profile's own `Set`; a malformed-JSON
+  request never claims a fault attempt, and the first request afterward that IS accepted claims attempt 0.
+  `AssertDeterministic(tb, p, scenarioYAML, reqs...)` is a REQUIRED step — two independent, freshly started
+  `Sim`s, the same requests, byte-compared bodies and every profile-controlled header (all but `Date`) — the
+  mechanical defence against a `time.Now()` or `math/rand` on a response path, proven to actually catch one in
+  this unit's own tests. `AssertRenderShape(tb, bodies...)` is a documented heuristic, not a proof: it fails a
+  JSON body carrying a literal `<`/`>`/`&` escape sequence (default `json.Marshal`'s HTML
+  escaping — `provider.Render` turns it off) or a bare exponent-form numeral for what looks like an integral
+  value (a `float64` round trip's signature); a body that is not valid JSON is skipped, since neither divergence
+  is expressible outside one. `ValidateProfile` runs it over every JSON golden in `p.Contracts` and every
+  response its own conformance requests produced. Proven failing-then-passing, through a stub `testing.TB`, on
+  four deliberately broken fixtures (`testkit/conformance_test.go`): a contract bundle missing a provenance
+  record, a handler that reaches for `encoding/json.Marshal` directly on a value containing `&`, an `ErrorBody`
+  returning no bytes for one `RefusalKind`, and a handler that stamps `time.Now()` into its body — and passing on
+  all four reference profiles. The out-of-tree module from units 2/4 (`scratchpad/u2-outoftree/`) gained its own
+  embedded `contracts/` bundle (one happy, one empty, two error goldens, a `provenance.yaml` with a `spec:`
+  block) and the same fail-then-pass proof, independently: `go list -f '{{join .Imports "\n"}}' ./acme` still
+  names only `provider`, `scenario` and the standard library — no direct `internal/...` import, even with a real
+  contract bundle and a conformance test wired in.
+
+- **Phase 10 unit 7 (2026-08-17): guards as libraries — `testkit.AssertNoLiveHosts`; `Profile.CredentialNames`
+  merged into redaction.** `testkit.AssertNoLiveHosts(tb, fsys, skip, hosts...)` scans every file under `fsys` —
+  Go source included, mirroring `scripts/lint-no-live-hosts.sh`'s own `SEARCH_PATHS` — for the framework's base
+  paid-host list (new `internal/paidhosts.Base`, api.openai.com among them) union `hosts`, skipping only `skip`
+  and honouring the same `servicesim:allow-live-host` line escape hatch the script does. The base list is one Go
+  source now: `internal/paidhosts/paidhosts_test.go`'s `TestBaseMatchesGuardScript` parses the script's own
+  `BASE_PATTERN='...'` line and fails if it and `paidhosts.Base` have drifted, since a shell script cannot import
+  a Go package and the two were always going to be two literals — this is what keeps them one *decided* list
+  rather than two maintained ones. The two in-tree guards share the library form where the properties they check
+  actually agree: `TestMaliciousContent_CredentialBaitNeverReachesTheJournal` (`scenarios/scenarios_test.go`)
+  already called `testkit.AssertNoCredentialLeak` before this unit, so nothing there needed to change.
+  `TestBuiltins_UseReservedHostsOnly` keeps its own whitelist logic (every host found must be a *reserved*
+  domain) — strictly stronger than the library's blacklist (no host may be a *known paid* one) for scenario data,
+  since it also catches a host that is neither reserved nor on any paid list, which `AssertNoLiveHosts` would
+  silently pass — and gained a `t.Run("library-guard", ...)` subtest calling `testkit.AssertNoLiveHosts` over the
+  same embedded corpus with the four reference profiles' own hosts folded in, so the library code path is
+  exercised in-tree too. **`AssertNoCredentialInJournal` decision: not added.** `testkit.AssertNoCredentialLeak`
+  already scans every retained field for a literal — headers (names and values), body, query, path,
+  `Outcome.Label`, `Outcome.FaultKey` and every finding message — which is exactly what the framework-seam
+  proposal's guards-as-libraries table describes for the new name; adding a second symbol for one existing
+  behaviour would violate rule 7. The table's row resolves to `testkit.AssertNoCredentialLeak`, not a new
+  `AssertNoCredentialInJournal`.
+  `Profile.CredentialNames` (already declared as a field since unit 2) is now merged into redaction as DATA, at
+  two independent points, with `internal/redact`'s own tables (`exactCredentialNames`,
+  `substringCredentialFragments`) untouched: `internal/redact`'s exported functions (`Headers`, `HeaderValue`,
+  `Query`, `JSON`, `JSONBytes`, `String`, `IsCredentialKey`, `IsCredentialHeader`) gained a variadic
+  `extra ...string` parameter, matched as a whole normalised name exactly like the fixed tables — never a
+  substring rule, so a profile cannot invent a looser match than the framework's own. `journal.Redact(e Entry,
+  extraCredentialNames ...string) Entry` threads it to every masking call; `journal.Limits` gained a
+  `CredentialNames []string` field a `Ring` bakes in at construction and reads in `Append`; `provider.Deps`
+  gained a `CredentialNames []string` field `Handle` passes to `journal.Redact` before logging; `(*provider.Set)
+  CredentialNames() []string` returns the registration-order union, the same shape as the existing `LiveHosts`
+  and `DerivedIDs`. `internal/server.New` and `testkit`'s `Start`/`Handler` both bake `set.CredentialNames()`
+  into the `Ring`'s `Limits` at construction and into `Deps.CredentialNames`, so a header or JSON property under
+  any registered profile's vendor-declared name is masked whether a reader looks at the per-request log line or
+  a later `/__admin/requests` (or `sim.Journal()`) read. `internal/server` has a *second* production `Deps`
+  construction site — `refusalHandler` (`listeners.go`), built once per listener at startup for the
+  unknown-scenario refusal path, separate from the per-scenario `Deps` `Server.add` builds — found by grepping
+  every `provider.Deps{` construction rather than trusting the two sites the spec named; it gained the same
+  `CredentialNames: s.cfg.Set.CredentialNames()` line, because a request that never resolves a scenario still
+  carries whatever headers and body a real client sent
+  (`internal/server/credentialnames_test.go`). Proven at three layers: `internal/redact`,
+  `internal/journal` (`TestRedact_MasksProfileDeclaredCredentialNames`,
+  `TestRing_AppendMasksLimitsCredentialNames` — each with a baseline subtest proving nothing masks without the
+  extra name), and end-to-end through `testkit.Start` (`testkit/credentialnames_test.go`), all using a name and a
+  value shaped like neither an in-tree vendor's vocabulary nor `internal/redact`'s vendor-key pattern, so masking
+  is attributable only to the declared vocabulary. `go doc -short ./provider` shows no *top-level* diff (Go's
+  package-level short listing does not enumerate struct fields or methods); the real surface added is
+  `(*provider.Set).CredentialNames()` and the `provider.Deps.CredentialNames` field, both doc-commented at their
+  declarations. `go doc -short ./testkit` gains exactly one line: `AssertNoLiveHosts`. The out-of-tree module
+  (`scratchpad/u2-outoftree/`) gained a module-root `guards_test.go` calling `testkit.AssertNoLiveHosts(t,
+  os.DirFS("."), []string{"acme/contracts"}, set.LiveHosts()...)` and `acme/acme_credentialnames_test.go`:
+  `acme.Profile()` now declares `CredentialNames: []string{"x-acme-key", "acme_token"}`, and a request through
+  `testkit.Start` with that header and that body property comes back masked in the per-request entry, in
+  `sim.Journal()`, and passes `testkit.AssertNoCredentialLeak` — with no redaction code anywhere in the `acme`
+  package.
+
+- **Phase 10 unit 8 (2026-08-17): `Profile.Kind` threaded — one handler shape, many listeners.** Two profiles of
+  one `Kind` on two ports now draw on INDEPENDENT fault counters and fault plans, with no authoring change: the
+  cursor key and the fault key are namespaced by the LISTENER's own `Name`, never by the shared `Kind`, whenever
+  `Kind != Name`, and left byte-for-byte untouched — proven against `main`'s own binary, not merely asserted —
+  when `Kind == Name` (every profile registered before `Kind` existed, and all four reference profiles today).
+  `namespacedFaultKey(name, kind, key)` (`provider/profile.go`) is the one rule both composition points compute
+  identically: `(*Set).Routes`, which is what `newSetFaultEngine` registers a plan and counter under, and the new
+  `namespacedRoutes(p)`, which `Profile.Handler` now builds its `MuxSpec.Routes` from instead of `p.Routes`
+  verbatim. That second call site is the load-bearing discovery of this unit: `resolveLane` (`lane.go`) runs
+  BEFORE the handler — and therefore before `installProfile`'s wrapper, which is what sets `Exchange.kind` — ever
+  runs, so a fix that read `x.kind` at lane-resolution time (the first design tried) silently namespaced nothing,
+  passing every test except the one instancing test that actually checked the SECOND request's fault key. The
+  fix that shipped needs no `Handle`/`NewMux` signature change and no `Exchange.kind` involvement at all: by the
+  time a request reaches `resolveLane`, `x.Route.FaultKey` (from `Handle`'s own `route Route` parameter) already
+  IS the namespaced key, because `Profile.Handler` built the mux from `namespacedRoutes(p)` rather than `p.Routes`.
+  `turnLaneKey` and `Exchange.cursorKey()`'s fallback are therefore unchanged code (`x.Route.FaultKey`), now
+  reading an already-correct value — the smallest path the spec asked for, once the actual timing constraint was
+  found. `Exchange.EntryFor`/`Entry()` already resolved an instanced listener's own block by `Name` (unit 2); this
+  unit did not need to touch them, and a pre-existing test
+  (`TestExchangeEntryForOnAnInstancedListenerResolvesToItsOwnBlock`) already pinned it.
+  `internal/server.unscriptedProfileFindings` had a real bug this unit's own instancing test caught: it decided
+  "scripted" by scanning the WHOLE scenario for any entry declaring a profile's Kind, so a scenario scripting
+  only the primary's block ("acme") read the unscripted FALLBACK ("acme_fallback", Kind "acme") as scripted too,
+  merely because they share a Kind. Rewritten as `profileHasAScriptedBlock(sc, p)`: a profile's PRIMARY entry is
+  checked by its OWN Name (exactly how `Exchange.Entry()` itself resolves it), and every SECONDARY entry-kind key
+  `p.Validators` claims (Perplexity's Agent kind is the shipped example) is checked by that literal kind string as
+  a NAME — safe because `NewSet` refuses instancing a multi-entry profile outright, so a secondary entry's
+  `Route.Entry` is always a static string, never subject to renaming. Behaviour-preserving for every existing
+  test (Name == Kind everywhere before this unit, so by-Name and by-kind agreed by coincidence); the instancing
+  case is the one it was actually wrong about.
+  `Validator.ProjectionKeys() []string` is a new REQUIRED method on the `Validator` interface (not a RouteLister-
+  style optional side interface: every validator decodes some struct and can always name its keys, even if nil) —
+  seven in-tree implementations across the four reference packages (exa's own + `exa_agent_runs`, tavily's own +
+  `tavily_research`, perplexity's Sonar + Agent, mcp's own), each returning the exact literal key list
+  `scenarios/scenarios_test.go` used to hand-mirror, plus `provider.noopValidator` (nil) and the two test-only
+  stand-ins (`stubValidator`, `recordingValidator`). `scenarios_test.go`'s `documentedProjectionKeys` is now
+  `derivedProjectionKeys(profiles.Reference())`, reading each validator's own `ProjectionKeys()` instead of a
+  parallel hand-kept map — `profiles/no_privilege_test.go`'s no-privilege rule does not reach `scenarios` (only
+  `provider`, `internal`, `testkit`, `scenario`, `contracts`) and exempts every `_test.go` file besides, so this
+  import is not a privilege gap. `go test` on the derived map still passes byte-for-byte against the same
+  built-ins, proving the seven literals were transcribed correctly.
+  Config/server/testkit needed NO changes to thread `Name`/`Kind` through registration, ports, flags or the
+  scenario router: all of it was already derived from `Set` and keyed on `Name` (unit 3), so two profiles differing
+  only in `Name`/`Port`/`Kind` were already two ordinary listeners as far as `internal/config` and
+  `internal/server`'s routing are concerned — confirmed, not assumed, by the new instancing tests below serving
+  real HTTP through them.
+  **Tests**: in-tree, `provider/kind_test.go` (`Set.Routes()` namespacing, `namespacedFaultKey`'s three no-op
+  guards, the fault engine's own counter isolation via `newSetFaultEngine` directly, and one full HTTP-level test
+  building two hand-registered listeners over one `Set`/journal/fault engine); `testkit/kind_test.go`
+  (`testkit.Start` with `Profile{Name: "acme", Kind: "acme"}` + `Profile{Name: "acme_fallback", Kind: "acme"}`
+  from one profile literal, a scenario scripting `acme` and `acme_fallback: {kind: acme}` with distinct turns,
+  proving own-block resolution and budget independence over `sim.Client()`); `internal/server/kind_test.go`
+  (`TestUnscriptedInstanceIsWarnedByItsOwnName` — the regression test for the `unscriptedProfileFindings` bug
+  above — and `TestValidateScenarioAcceptsAnInstanceBlockAddressedByItsOwnName`); root `kind_test.go`
+  (`--print-ports` lists both instances, each under its own `Name`). Out of tree,
+  `scratchpad/u78-consumer/` (module `example.com/acmesim`, `replace` to this checkout): package `acme` exports
+  one `Profile()`; `main.go` registers it twice (`Name: "acme"` and `Name: "acme_fallback", Port: 8091, Kind:
+  "acme"`) through `servicesim.Main`; `go list -f '{{join .Imports "\n"}}' ./acme` names only `provider`,
+  `scenario` and `net/http`; run against a scenario scripting only `acme` — the primary's first call draws the
+  scripted 429, the fallback's OWN first call ALSO draws 429 (its own fresh budget, not the plan's second,
+  unfaulted attempt a shared counter would have handed it), `/__admin/scenario` shows
+  `scenario.profile.unscripted` at `"path":"providers.acme_fallback"` only, and `--print-ports` lists both; run
+  again against a scenario scripting both blocks (`acme_fallback: {kind: acme}`) — zero findings, each listener's
+  second call renders its own block's `turn`, and `/__admin/requests` shows `fault_key: "acme:answer"` for the
+  primary and `fault_key: "acme_fallback:acme:answer"` for the instance.
+  **Four-reference-profiles-unchanged proof**: `main`'s own binary (`13f70ca`, built in a worktree) and this
+  tree's binary, both served `builtin:happy`, one request to each of the four with `--strict-auth=false`: status
+  codes (200, 200, 200, 400 for MCP's `initialize` body on this particular request) and `outcome.fault_key`
+  (`exa:search`, `tavily:search`, `perplexity:completions`, `mcp:mcp`) are identical byte-for-byte between the two
+  binaries.
+
+- **Phase 10 units 7+8, review-and-fix round (post-implementation, same units):** an adversarial house-rule-4
+  review (a hand-built out-of-tree profile declaring `CredentialNames`, instanced twice) and a
+  keys/instancing review each ran against the merged tree; confirmed findings were fixed in place with tests
+  added per fix, since every one was inside these units' own surface. No fixture or golden file changed (a
+  stat-only `git diff` against fixture/golden paths stayed renames-only), so wire bytes and journal keys for
+  the four reference profiles are unchanged by construction:
+  - **Blocker, house rule 4:** a `turn_key` extractor naming a profile-declared credential name was NOT
+    fingerprinted — only the framework's own fixed vocabulary was. `fingerprintHeaderLaneValue`,
+    `pathHasCredentialSegment` and `laneValueLooksLikeCredential` (`provider/lane.go`) called
+    `redact.IsCredentialHeader`/`IsCredentialKey`/`String` with no extra names at all, so
+    `turn_key: ["header:x-acme-key"]` on a profile declaring `CredentialNames: ["x-acme-key"]` wrote the raw
+    secret into `FaultDecision.Key`, then `journal.Entry.Outcome.FaultKey` — retained in the ring, served by
+    `GET /__admin/requests`, logged as `fault_key`, and interpolated into the "fault attempt N on key ..."
+    finding message. Fixed by threading `x.Deps.CredentialNames` through all three functions (tests:
+    `provider/lane_test.go`'s `TestTurnKeyProfileDeclaredCredentialHeaderIsFingerprinted`/
+    `...BodyJSONIsFingerprinted`).
+  - **House rule 4, free-text pass:** the SAME extra vocabulary reached the top-level entry point of every
+    masking function (`String`, `HeaderValue`, `Query`, `JSON`) but not the recursive, unnamed free-text pass
+    those functions fall through to for a value under a name that is not itself credential-shaped —
+    `redactValue`'s JSON string case, `headerValue`'s non-credential branch, and `encodeQuery`'s value/key
+    branches all called `String(x)` with no extras. A profile-declared name embedded as `"acme_token=<value>"`
+    inside an unrelated JSON string, header value or query value therefore survived untouched while the
+    identical shape under the framework's own vocabulary (`token=<value>`) was masked. Fixed with a new
+    `stringWith(s, extra map[string]bool)` internal form of `String` that every recursive call site now uses
+    (tests: `internal/redact/redact_test.go`'s new `TestExtraCredentialNames_*` section, including spelling
+    variants — `X_Acme_Key`, `xAcmeKey`, `acme.token` — that a case-fold-only implementation would still pass).
+  - **House rule 4, findings:** `Exchange.journalFindings` (`provider/exchange.go`) masked `Message` with no
+    extras and never masked `Field` at all — both reachable in three of the four reference profiles, where an
+    unrecognised JSON property becomes a finding addressed at that property's own (client-chosen) name. This was
+    wire-visible (a served 4xx body), not only journal-visible: `Findings()` and the journal entry's `Findings`
+    are built from the same call. Fixed by threading `x.Deps.CredentialNames` and masking `Field` alongside
+    `Message`; `internal/journal.Redact` gained the matching `Findings[].Field -> redact.String` pass for
+    defense in depth at the storage boundary, and `testkit.AssertNoCredentialLeak`'s field scan now includes
+    `Finding.Field` (tests: `provider/profile_test.go`'s `TestExchangeFindingsMaskProfileDeclaredCredentialNames`).
+  - **House rule 4, hand-built `Deps`:** `Profile.Handler` had `p.CredentialNames` in hand but never merged it
+    into `d.CredentialNames`, so the documented hand-built idiom `testkit/server.go`'s own doc comments show
+    (`p.Handler(provider.Deps{Scenario: s, Faults: set.Faults(s), Journal: testkit.NewJournal()})`) served a
+    profile whose own vocabulary was dropped entirely — header, body property and query parameter all retained
+    raw. Fixed: `Profile.Handler` now merges `p.CredentialNames` into whatever `Deps.CredentialNames` the caller
+    supplied (additive, not replacing — harmless when composition through a `Set` already supplied the same
+    names via the union) (tests: `provider/profile_test.go`'s
+    `TestProfileHandlerMergesItsOwnCredentialNamesIntoHandBuiltDeps`/`...AreAdditiveNotReplacing`).
+  - **Instancing, fault plans:** an instanced listener's OWN scenario block `fault:` was silently ignored. A
+    route's `Fault` closure is authored once, in the Kind's own package, against the Kind's own primary entry
+    name (`func(s) *scenario.Fault { return provider.TurnFault(s, "acme") }`) and copied byte-for-byte to every
+    instance's registration, so `acme_fallback: {kind: acme, fault: {...}}` was never read — only the fault
+    COUNTER was independent per instance, not the PLAN, contradicting `Profile.Kind`'s own doc comment. The
+    canonical failover shape instancing exists for (the primary fails per its own script, the fallback succeeds,
+    or fails differently, per its own) could not be authored. Fixed with `instanceFault` (`provider/profile.go`),
+    applied by `namespacedRoutes` only to an instanced route's `Fault`: it resolves the plan through the
+    instance's OWN scenario block first (`TurnFault(sc, string(p.Name))`), falling back to the Kind's shared
+    closure only when the instance declares no fault of its own — so a scenario that scripts only the Kind's
+    primary block keeps working unchanged for an instance that scripts nothing (tests: `provider/kind_test.go`'s
+    `TestInstanceFault*`, `TestKindInstancingHonoursTheInstanceOwnFaultBlockOverHTTP`).
+  - **Instancing, qualified route predicates:** the documented fully-qualified `when.route` spelling
+    (`<kind>:<name>`, `docs/scenario-schema.md`'s "matched exactly") never matched on an instanced listener,
+    because the request's route key there carries a third, leading qualifier (the listener's own `Name`:
+    `"acme_fallback:acme:answer"`) that `scenario.RouteMatches` refused to reduce for any authored value
+    containing `:`. Fixed: a qualified predicate is now also compared against the key with a leading
+    `<listener-Name>:` qualifier stripped, so the one documented spelling matches an instanced listener exactly
+    as it matches every other one — still never reduced to its own bare suffix, still refused outright when it
+    does not match (tests: `scenario/model_test.go`'s extended `TestRouteMatches` table,
+    `provider/kind_test.go`'s `TestQualifiedRoutePredicateSelectsATurnOnAnInstancedListener`).
+  - **`Validator.ProjectionKeys()` drift:** `profiles/perplexity/handler.go`'s `agentValidator.ProjectionKeys()`
+    omitted `created_at`, which the decode struct accepts and `docs/scenario-schema.md`'s `perplexity_agent`
+    table documents — the method's own contract ("the top-level keys this validator's own decode struct
+    accepts") was not true of this one. Fixed by adding it, plus a reflection-based regression test
+    (`profiles/perplexity/agent_test.go`'s `TestAgentValidatorProjectionKeysMatchesTheDecodeStruct`, asserting
+    set-equality against `perplexityAgent`'s own yaml tags) so this specific literal cannot drift silently again;
+    the other six validators' literals were re-verified against their structs by hand but do not yet have the
+    same reflection guard — **recorded as a follow-up**, not fixed here, since generalising the pattern touches
+    seven packages for a drift class only one of them currently has.
+  - Two stale doc comments in `provider/profile.go` (`Profile.Kind`'s own doc comment and `namespacedFaultKey`'s)
+    named `Exchange.routeFaultKey (lane.go)` as the request-time counterpart of `(*Set).Routes` — that design was
+    tried and reverted during unit 8's own implementation (see unit 8's entry above) in favour of
+    `namespacedRoutes(p)` inside `Profile.Handler`, and the comments were never updated to say so. Corrected to
+    name the real mechanism.
+  - `testkit.AssertNoLiveHosts`'s documented root-of-module idiom (`skip: []string{"myprofile/contracts"}`) does
+    not run clean over a real checkout unmodified: `.git` (a commit message or reflog entry naming a paid host is
+    not scenario, fixture or Go-source data) is walked and can fail a consumer's suite on history the guard was
+    never meant to scan. Fixed: `.git` is now always skipped, whether or not the caller names it — the one path a
+    caller cannot meaningfully choose to exempt itself (test:
+    `testkit/guards_test.go`'s `TestAssertNoLiveHosts_GitDirIsAlwaysSkipped`). The doc comment also now says a
+    caller whose own `docs/` cites real vendor URLs (the same legitimate citation a contracts provenance record
+    makes) should list it in `skip` too, mirroring `lint-no-live-hosts.sh`'s own exemption.
+  - **Confirmed, not fixed — recorded as follow-ups:**
+    - `testkit.AssertNoCredentialLeak` takes `*Sim`, so it cannot be run against the hand-built-`Deps` path
+      (a `Journal` built via `testkit.NewJournal` with no `Sim` around it) — exactly the path the hand-built-Deps
+      fix above closes a masking gap in. Widening it to accept a `Journal` (or an interface exposing one) instead
+      of `*Sim` is an exported-signature question for the next unit that touches `testkit/assertions.go`, not a
+      minimal fix.
+    - An instance block written with no `kind:` (`acme_fallback: {respond: ...}`) IS served at runtime (resolved
+      by `Name`, unaffected by this), but `ValidateScenario` still raises `scenario.provider.unimplemented`
+      naming the wrong reason (`handlers` there is keyed by `Kind`, and `ValidateScenario` has no access to the
+      registered listener `Name`s a `Set` knows to tell the two apart). Correcting the message precisely needs
+      `ValidateScenario`'s signature to carry more than `map[string]Validator`, which is an exported-surface
+      change beyond a minimal fix for what is, today, a misleading load-time warning rather than a functional
+      defect.
+- **Phase 10 unit 9 (2026-08-17): a fifth profile out of tree, built by CI; the guide whose code is that
+  module.** `examples/profile/` is a SEPARATE Go module (`example.test/acmesim`, `replace ../..` for this
+  checkout) holding the fictional Acme profile written against nothing but the exported packages — `Profile()`
+  with every field a real one sets, two routes on distinct fault keys, a `Validator` with `ProjectionKeys`,
+  `ErrorBody` for all five kinds, `DefaultAuth: required`, an embedded contract bundle with an honest placeholder
+  `spec:` block, `CredentialNames`, `DerivedIDs` — plus the tests an adopter writes (`testkit.Start` +
+  `WithProfiles`, journal-proven correct request, rejection in the vendor's shape, 401, scripted 429→200 with no
+  `fault.unknown_key`, isolated namespaces, `GoldenDerivedIDs`, `AssertNoCredentialLeak`, `AssertNoLiveHosts` over
+  the module tree, `ValidateProfile`), a `main.go` composing Acme with `profiles/exa` through `servicesim.Main`, a
+  `Dockerfile`, and an `imports_test.go` (no `internal/` import; the go.mod budget). `task test`/`task check` and
+  CI build, vet, revive and race-test the module (`test:profile`, `lint:revive:profile`);
+  `scripts/lint-no-live-hosts.sh` now walks `examples/`. `docs/building-a-profile.md` is the first-time author's
+  guide: every Go and YAML block in it is a line-range excerpt of `examples/profile/**` (an
+  `<!-- excerpt: path#La-Lb -->` marker on the line before each fence), and the root module's `docs_test.go`
+  (`TestBuildingAProfileExcerptsMatchTheModule`) fails on any drift — proven failing in a scratch copy — and on
+  any Go/YAML block without a marker. Nothing in the framework changed to make the module compile.
+
+- **Phase 10 unit 9, review round (2026-08-17).** Three reviewers read the unit as a first-time author, as the
+  repo's gates, and as a maintainer asked to see `acme` copied twenty times. What their findings changed:
+  the guide now documents that **authentication is entirely the handler's** (`ValidateProfile`'s
+  `MissingCredential` covers the no-credential case and nothing else) and excerpts `checkAuth` in full; that
+  the misspelled-key protection comes from `DecodeProjection`'s strict decode, not from `ProjectionKeys`, which
+  out of tree is read by nothing at runtime; that a content-type finding is **mandatory** and its code must
+  contain `content_type`/`content-type`; the real `contracts.Conform` coverage minimum (one 2xx whose file
+  name omits `empty`, one whose file name carries it, **two or more** error goldens — the classification is
+  by FILE NAME) and the bundle's
+  goldens-plus-provenance-plus-README-only rule; the `note:` field; module bootstrap and the six importable
+  packages; and `errorResponse`, `ValidateProjections` and the projection struct as excerpts rather than
+  prose references. In the module: `handleAnswer` now records its required-field finding with `x.Fail` before
+  a single `x.Failed()` gate (`Exchange.Reject` returns its status whatever `validation.demote` says, so the
+  documented policy was a no-op and the journal disagreed with the wire); `checkAuth` warns on a non-Bearer
+  scheme and on a credential in the declared-but-unaccepted `x-acme-key`; `faultBody` renders symbolic codes
+  from one table rather than the decimal status; `doc.go`'s fault claim is corrected (the routes share one
+  plan and keep independent **cursors**); goldens for 400 and 405 were added; and every golden is now driven
+  from a live response by `TestAcmeGoldensMatchTheWire` — `Conform` never inspects content, so nothing was
+  comparing them. The Validator, the auth modes and the per-route fault cursors all gained tests.
+  Gates: `docs_test.go` also checks the module-layout tree against the filesystem, and its unmarked-block
+  check no longer misses a fence spelled `golang` or `YAML`, or an indented one; `examples/*/README.md`
+  joined `DOC_GLOBS`; CI checks
+  the nested module's own `go.mod`/`go.sum` tidiness; the `Dockerfile`'s documented build command names the
+  repository root as context (its `replace` needs the checkout inside it, verified with a real build).
+  One residual gap, deliberately left: nothing proves a projection struct field that `ProjectionKeys()`
+  forgot, because that needs reflection over an unexported type and therefore an in-package test file — the
+  reverse direction is pinned, and `profiles/perplexity/agent_test.go` is the in-tree shape to copy.
+
+### Phase 10 — the framework seam — COMPLETE, pending merge and v0.5.0
+
+**Owner, 2026-08-17 (D9 tier 2, the quote is in the D9 row): "we need to commit to being a proper framework so we
+do not need to babysit PRs — treat what we have as examples."** Phase 10 is that decision built. The design is
+[`proposals/framework-seam.md`](proposals/framework-seam.md) — three independent designs, judged and synthesised,
+each backed by a compile spike, with its own "Where it landed differently" list read back from the commits — and
+[ADR 0003](adr/0003-framework-seam.md) is the record of what shipped. The eleven decisions D-1…D-11 were taken as
+recommended on 2026-08-17.
+
+After it, a consumer writes a profile for a vendor this repository does not ship, in their own repository, against
+`provider`/`scenario`/`testkit`/`contracts`, composes it into their own binary and image through the root
+`servicesim` package, and proves it with `testkit.ValidateProfile` plus `contracts.Conform` in their own CI. No PR
+here, no release here. [`building-a-profile.md`](building-a-profile.md) is the guide and
+[`examples/profile/`](../examples/profile) is a fifth profile, its own Go module, built and tested by this
+repository's CI — the guide's code blocks are excerpts of it, kept honest by a sync test.
+
+| Unit | What shipped | Commit |
+|---|---|---|
+| 0 | The memoised-fault gate: an attempt claimed before validation failed is no longer applied to the rejection; `fault.attempt_on_rejection` records it, the claimed index and namespaced key stay truthful | `4d10178` |
+| 1 | The seam widened so no profile imports `internal/*`: `provider.Render` (one ordering, fixing exa's inverted extra/omit), `Hex32`/`UUIDv5`/`FloatIn`, `Credential`/`Finding`/`Severity`, `Exchange.Credentials`/`ObserveCredential`/`HasJSONContentType`, narrowed `MintJob`/`ResolveJob` | `8524fc3` |
+| 2 | `provider.Profile` (16 fields) and `Set`/`NewSet`/`MustSet`; every refusal — 404, 405, unknown scenario, handler panic, and the fifth kind `RefuseRequest` — through the profile's own `ErrorBody`; the `Status < 400` fault-body guard framework-owned; the SSE grammar set opened (`Sentinel`/`SentinelPace`, `provider.DoneSentinel`) | `67053f6` |
+| 3 | The composition root: `servicesim.Main`/`Run`/`Build`, `internal/config` and `internal/server` derived from the `*Set`, `cmd/servicesim` a 19-line wrapper, one fault engine (`internal/faults` deleted), `--print-routes`/`--print-ports`/`--print-hosts`, `scenario.profile.unscripted` | `92008a3` |
+| 4 | `testkit` generalised over the `Set`: `WithProfiles` required, one generic `Handler`, caller-declared golden pruning (`GoldenDerivedIDs`), `AssertCovers`, `NewJournal`; the four per-vendor handler constructors, `NewFaults` and the `Finding`/`Severity` aliases deleted | `e8cb6a7` |
+| 5 | The four profiles moved to `profiles/<name>` as reference examples, `profiles.Reference()`, the no-privilege import test, and the per-profile surface trim (exa 47→5, tavily 44→12, perplexity 83→10, mcp 19→6 top-level declarations) | `9f08da0` |
+| 6 | The contract discipline as a library: `contracts` over `fs.FS`, `Conform` as ten named subtests, `OldestVerified`, the closed `Provider` enum deleted, the four bundles moved to `profiles/<name>/contracts/`, and `testkit.ValidateProfile` with `AssertDeterministic` and `AssertRenderShape` | `cfc5e19` |
+| 7+8 | Guards as libraries (`testkit.AssertNoLiveHosts` with the paid-host base list in Go; `Profile.CredentialNames` threaded into redaction as data) and `Profile.Kind` threaded — one handler shape, many listeners, with the lane cursor and fault key namespaced by listener name; `Validator.ProjectionKeys()` | `7261093` |
+| 9 | `examples/profile/` — an out-of-tree profile CI builds and tests as its own module, with its own `Dockerfile`, `main.go` and `imports_test.go` — and `docs/building-a-profile.md`, whose 23 code blocks are excerpts of that module | `71a9a5e` |
+| 10 | The docs: ADR 0001 amended, ADR 0003 written, CONTRIBUTING split in two, `CLAUDE.md` line 132 re-earned, README's composition section and the 1.0 trigger, the design records annotated, the proposal and D9 closed, this section | this commit |
+| 11 | The v0.5.0 release — tag, publish, confirm the digest, move the pins | not started |
+
+Each unit was implemented test-first, reviewed by three or four independent lenses (including one told to break a
+house rule and one mutation lens working in a scratch copy), fixed in place and verified with an independent
+`task check` before its commit. The full per-unit implementation and review records — every finding, every fix,
+every "recorded, not done" — were written as the units landed and sit above, inside the Phase 8 section, each
+headed "Phase 10 unit N": units 1–4 and 6–9 have one there. Unit 0 appears only as the follow-up it closed
+("closed by Phase 10 unit 0", above) and unit 5 has no separate record; for those two the commit bodies are the
+record. The commit bodies (`git log main..phase-10`) carry the same reasoning in shorter form for all of them.
+
+**What remains:** the release, and nothing else. Merge `phase-10`, cut v0.5.0 with the note below (the procedure is
+in "Start here" item 6), then tell the adopter. The follow-ups Phase 10 recorded rather than did, none of them
+blocking: `testkit.AssertNoCredentialLeak` takes a `*Sim` only, so a hand-built journal cannot be scanned with it;
+an instance block with no `kind:` draws a misnamed `scenario.provider.unimplemented`; MCP's own `Status < 400`
+fault-body check is a redundant duplicate of the framework's; and the CAS release of a claimed fault lane waits
+for a real out-of-tree profile to trip `fault.attempt_on_rejection`.
+
+#### v0.5.0 tag-note bullets — the framework release
+
+The full drafted note is the tag-message file; these are its Phase 10 half. Phase 8's and Phase 7's halves are the
+bullets in the Phase 8 section above, and they ship in the same tag.
+
+- **The seam is public.** `provider.Profile` is the registration record — name, kind, title, port, routes,
+  handlers, validators, the required `ErrorBody`, default auth, contracts, hosts, derived ids, credential names —
+  and `provider.NewSet`/`MustSet` build the ordered, validated, immutable `*Set` that is the only input to
+  composition. `servicesim.Main`/`Run`/`Build` is the composition root a consumer's own `main.go` calls with their
+  own profile list; `--print-ports`, `--print-routes` and `--print-hosts` feed their image, their docs and their
+  live-host guard.
+- **The four shipped profiles are reference examples.** They live at `profiles/{exa,tavily,perplexity,mcp}` with
+  their contract bundles beside them, and a test refuses any import of a profile package from anywhere else in the
+  repository: a reference profile has no privilege an out-of-tree one lacks.
+- **The discipline travels.** `testkit.ValidateProfile` runs the conformance suite (registration, contract
+  provenance, an error body for every refusal kind, unknown path / wrong method / wrong content type / missing
+  credential, fault-key resolution, byte determinism and render shape) in *your* CI; `contracts.Conform`,
+  `testkit.AssertNoLiveHosts`, `testkit.AssertNoCredentialLeak` and `testkit.AssertCovers` are the rest of the
+  in-tree guards as library calls.
+- **Behaviour a v0.4.0 consumer could notice, beyond the API break:** exa's `omit_fields` now wins over
+  `extra_fields`, matching the documented order and the other profiles; a handler panic is now a profile-shaped
+  500 with a `handler.panic` finding instead of a connection reset; and a scripted fault attempt claimed before a
+  request was rejected is no longer applied to the rejection (`fault.attempt_on_rejection`), so a resilience test
+  that depended on the old behaviour will see its rejection status rather than the scripted one.
+
+**Migration, v0.4.0 → v0.5.0.** Everything below is a compile error rather than a silent change, except the three
+rows marked **Silent:**. No scenario file changes: the schema is backward compatible.
+
+| v0.4.0 | v0.5.0 | Why |
+|---|---|---|
+| `testkit.Start(t, testkit.WithBuiltin("happy"))` | add `testkit.WithProfiles(exa.Profile(), …)` — required | A default of four would pull four vendors' contracts and goldens into the build graph of a team simulating one API (D-5) |
+| `import ".../provider/exa"` | `import ".../profiles/exa"` | The four are reference examples, not part of the core (D-4) |
+| each profile's wire, projection and validator types — `exa.SearchResponse`/`Result`/`Citation`/`Validator`/`Route*`, `exa.Categories`/`SearchTypes`/`Tag*`/`Status*`/`Stop*`, and tavily's and perplexity's equivalents | unexported — decode against your own structs, and read the shape from the profile's `contracts/` goldens | Rule 7: each reference profile is trimmed to what a consumer legitimately names — its typed `Name`, entry-kind names, `Profile()`, `Routes()`, the `Pattern*`/`FaultKey*`/`Code*` constants, and the wire types `docs/scenario-schema.md` names by Go type. Measured with `go doc -short` against v0.4.0: exa 46→5, tavily 44→12, perplexity 82→10, mcp 19→6 top-level declarations, 249 identifiers unexported (unit 5, `9f08da0`; the unit-5 row above counts from its own starting point one unit later, which is why exa and perplexity differ by one) |
+| the `provider` package's `Exa`/`Tavily`/`Perplexity`/`MCP` constants | `exa.Name`, `tavily.Name`, `perplexity.Name`, `mcp.Name` | A framework core has no business naming four vendors |
+| `testkit`'s `ExaHandler`/`TavilyHandler`/`PerplexityHandler`/`MCPHandler` | `testkit.Handler(tb, exa.Name, opts…)` | One generic constructor an out-of-tree profile can also use |
+| `exa.New(deps)` and the other three | `exa.Profile().Handler(deps)` | `Profile()` is the registration record; `New` was a wrapper for one unit |
+| `testkit`'s `NewFaults(s)` | `provider.MustSet(…).Faults(s)` | An engine that does not know a registered route is now unconstructible |
+| `testkit`'s `Finding`/`Severity` aliases and their consts | `provider.Finding`/`provider.Severity` | One name per concept; an alias into an internal package is a godoc dead end |
+| goldens pruned derived ids by default | pass `testkit.GoldenDerivedIDs(sim.DerivedIDs()…)` | Three vendors' knowledge was a package-global default; it is caller-declared now. **Silent:** an un-pruned compare fails on an id that used to be ignored |
+| `contracts.Provider`, `Providers()`, `FS()`, `AllGoldens()`, `VerifiedOn`, and `Golden`'s `Provider` field | `contracts.Read`/`Goldens`/`Provenance`/`ProviderSpec` over an `fs.FS`, `contracts.OldestVerified(fsys)`; each profile's bundle is `Profile.Contracts`, and a `Golden` carries `Name`/`Path`/`Data` only | A framework cannot enumerate profiles it does not know, and a fixture read out of a caller's own `fs.FS` has no provider enum to belong to |
+| `contracts/exa/…` paths | `profiles/exa/contracts/…` | The bundle lives beside its profile, exactly as an out-of-tree one does |
+| `provider.MuxSpec`'s `NotFound`/`MethodNotAllowed`; `provider.NewMux(d, name, spec)` | the two fields are deleted and `Profile.ErrorBody` (required) replaces them; `provider.NewMux(d, name, refuse, spec)` takes the refusal renderer directly | Fail-closed by construction: `NewSet` refuses a profile without one, and a mux cannot be built without a way to render a refusal |
+| `Exchange.Auth` (writable field) | `Exchange.ObserveCredential(c)` / `Exchange.Credentials()` | The only write path into a retained credential (rule 4) |
+| `provider.MintJob` → `(jobs.Job, bool)`, `ResolveJob` → `(jobs.Job, bool)` | `(id string, ok bool)` and `bool` | An unnameable internal type left every exported signature |
+| `Stream`'s `OmitDone`/`DonePace` | `Stream.Sentinel`/`SentinelPace`, with `provider.DoneSentinel` as the value | The `[DONE]` frame is data a profile sets, never inferred from the grammar |
+| the build stamps `main.Version` (ldflags `X` symbol path) | `github.com/c360studio/servicesim.Version` | The flag and serve code moved to the root package; the old symbol path silently leaves a release binary stamped `dev` |
+| exa `extra_fields` could reinstate an `omit_fields` key | `omit_fields` wins | **Silent:** the documented order, and what tavily and perplexity always did |
+| `-providers` defaulted to `exa,tavily,perplexity` (the `DefaultProviders` constant) | the default is every registered profile, derived from the `*Set` — so the shipped binary and image enable `exa,tavily,perplexity,mcp` and bind 8084; the constant is gone | A hand-kept default drifts from the registry; `-providers exa,tavily,perplexity` still keeps three |
+| journal assertions on `Mcp-Param-*` / `Mcp-Session-Id` header values | those headers are masked (Phase 8) | **Silent:** redaction now covers credentials mirrored under a wrapper name, on every profile |
 
 ### Phase 9 — The two doctrine-contradicting features
 

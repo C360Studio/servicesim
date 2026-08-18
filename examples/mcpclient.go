@@ -22,7 +22,7 @@ import (
 // section names in the comments below name where in that file to look.
 //
 // It speaks protocol revision 2026-07-28 only — the one revision
-// provider/mcp simulates (contracts/mcp/README.md "Protocol eras") — and
+// profiles/mcp simulates (contracts/mcp/README.md "Protocol eras") — and
 // implements exactly the three methods that profile serves:
 // server/discover, tools/list and tools/call. It is deliberately small: no
 // retries, no backoff, no pagination beyond a bare tools/list call, no
@@ -174,7 +174,7 @@ type MCPResourceContents struct {
 
 // MCPContentBlock is one entry of a CallToolResult's content array
 // (contracts/mcp/README.md "tools/call", the ContentBlock table). One
-// struct for all five wire shapes, on the same terms provider/mcp's own
+// struct for all five wire shapes, on the same terms profiles/mcp's own
 // wireContent uses server-side: Type selects which fields are meaningful.
 type MCPContentBlock struct {
 	Type string `json:"type"`
@@ -441,7 +441,7 @@ func mcpResultOrError(env mcpEnvelope, status int) (json.RawMessage, error) {
 
 // decodeMCPStream reads an SSE response body frame by frame — unnamed
 // "data:" lines, one or more per frame, a blank line closing each
-// (contracts/mcp/README.md "SSE response streams"; provider/mcp/doc.go
+// (contracts/mcp/README.md "SSE response streams"; profiles/mcp/doc.go
 // decision 5's framing choice) — classifying each decoded frame as a
 // notifications/progress notification or the final response, and
 // returning as soon as the final one arrives.

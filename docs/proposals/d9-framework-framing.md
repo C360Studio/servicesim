@@ -2,9 +2,14 @@
 
 ## Status
 
-**Decided 2026-08-16: tier 1 adopted and applied (README and CLAUDE.md leads, the non-goals, the Documentation
-table); tier 2 deferred until Phase 8's MCP/ODR have exercised the seam; tier 3 open. Evidence recorded 2026-08-16
-(Phase 8, the MCP profile in-tree — see "Evidence from Phase 8" at the end); tier 2 awaits the owner.** The text
+**Tier 1 decided and applied 2026-08-16 (README and CLAUDE.md leads, the non-goals, the Documentation table).
+Tier 2 DECIDED 2026-08-17 (owner) and SHIPPED in Phase 10 — the provider seam is exported, a profile is written
+and composed out of tree without a release here, and the four in-tree profiles are reference examples:
+[`framework-seam.md`](framework-seam.md) is the design, [ADR 0003](../adr/0003-framework-seam.md) the record, and
+`docs/building-a-profile.md` the guide. Tier 3 (positioning, and where the sem\* `chat/completions` profile lands)
+stays open — D-11 put that profile out of tree, in a sem\* repository, sequenced against semstreams v1 by the
+owner. Evidence recorded 2026-08-16 (Phase 8, the MCP profile in-tree — see "Evidence from Phase 8" at the end);
+it is the before picture, and every enumeration site it counts now derives from a registered `provider.Set`.** The text
 below is the proposal as the owner read it, kept for the reasoning and for tier 2's shape. It was written to make
 decision D9 in [`docs/adopter-backlog.md`](../adopter-backlog.md) concrete enough to decide in one sitting: what
 the observation means literally, what the code already is, three independently choosable tiers of what could

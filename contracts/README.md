@@ -1,17 +1,18 @@
 # Consumed contracts
 
-Each provider directory records the subset of its vendor API that Servicesim simulates and that C360 consumers
-parse — the *consumed contract*, not the whole vendor surface. Every file carries the documentation URLs it was
-derived from and the date the shape was verified.
+Each provider's bundle under `profiles/<name>/contracts/` records the subset of its vendor API that Servicesim
+simulates and that C360 consumers parse — the *consumed contract*, not the whole vendor surface. Every file
+carries the documentation URLs it was derived from and the date the shape was verified.
 
 | Provider | Contract | Verified | Base URL simulated |
 |---|---|---|---|
-| Exa | [`exa/README.md`](exa/README.md) | 2026-08-15 | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
-| Tavily | [`tavily/README.md`](tavily/README.md) | 2026-08-15 | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
-| Perplexity | [`perplexity/README.md`](perplexity/README.md) | 2026-08-15 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
-| MCP | [`mcp/README.md`](mcp/README.md) | 2026-08-16 | `POST /mcp` |
+| Exa | [`../profiles/exa/contracts/README.md`](../profiles/exa/contracts/README.md) | 2026-08-15 | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
+| Tavily | [`../profiles/tavily/contracts/README.md`](../profiles/tavily/contracts/README.md) | 2026-08-15 | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
+| Perplexity | [`../profiles/perplexity/contracts/README.md`](../profiles/perplexity/contracts/README.md) | 2026-08-15 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
+| MCP | [`../profiles/mcp/contracts/README.md`](../profiles/mcp/contracts/README.md) | 2026-08-16 | `POST /mcp` |
 
-Every route in that column has golden fixtures in this directory, except the two `HEAD` routes: `HEAD` carries no
+Every route in that column has golden fixtures in that provider's own bundle (`profiles/<name>/contracts/`),
+except the two `HEAD` routes: `HEAD` carries no
 body, so it has no fixture to pin — its behaviour is covered by the provider tests instead. Treat the column as the
 complete list of what is simulated, not as a summary of the interesting parts.
 
@@ -24,8 +25,9 @@ request/response only" inventory partly from this table, which is why an omissio
 concludes a capability does not exist.
 
 `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/responses` and `POST /responses` are the
-SDK-routing aliases described in [`perplexity/README.md`](perplexity/README.md); each pair shares the shapes of
-`/v1/sonar` and `/v1/agent` respectively.
+SDK-routing aliases described in
+[`../profiles/perplexity/contracts/README.md`](../profiles/perplexity/contracts/README.md); each pair shares the
+shapes of `/v1/sonar` and `/v1/agent` respectively.
 
 ## Vendor endpoints that are NOT simulated
 
@@ -61,7 +63,7 @@ Tavily and Perplexity each publish a machine-readable OpenAPI document — `exa-
 `openapi.json` respectively — covering every route this repository simulates for that vendor, and the Model Context
 Protocol publishes a machine-readable `schema.json` per revision (a JSON Schema of every message shape, not an
 OpenAPI document — MCP is JSON-RPC over one POST endpoint, so there are no paths to describe); each provider's
-`contracts/<provider>/provenance.yaml` records that document's URL, version and `sha256` in a `spec:` block.
+`profiles/<provider>/contracts/provenance.yaml` records that document's URL, version and `sha256` in a `spec:` block.
 Comparing a fresh fetch's hash against the recorded one is mechanical and answers "did the vendor's machine-readable
 surface move at all?" in seconds. It does **not** by itself answer "did anything we consume change?": a provider's
 consumed fields are still verified mostly against the vendor's rendered prose pages (each entry's own
@@ -80,11 +82,13 @@ same reason: an entry's date moves because that golden's shape was re-checked; t
 whole-contract verification cannot be older than a fixture that was individually re-checked since. See the header of
 any `provenance.yaml` for how the two relate. Every provider's `provenance.yaml` also carries a `spec:` block —
 `url`, `version`, `sha256`, `retrieved` — recording the bytes its consumed contract's machine-readable source was
-generated from, readable from Go via `contracts.ProviderSpec(p)`; `contracts/contracts_test.go`'s
-`TestEveryProviderHasSpecRecorded` fails the build if a provider drops one. The fourth profile did exactly
-this ahead of its handler: [`mcp/provenance.yaml`](mcp/provenance.yaml)'s `spec:` block and provider-level
-`verified:` date were recorded in Phase 8 unit 1, before `mcp` was a registered provider at all, so that when
-unit 2 registered it the guards found the record already in place rather than an empty directory. It is the
+generated from, readable from Go via `contracts.ProviderSpec(bundleFS)`; each reference profile's own
+`TestHasASpecBlock` (`profiles/<provider>/contract_test.go`) fails the build if it drops one — `contracts.Conform`
+itself only checks the block is well-formed WHEN present, because an out-of-tree profile's vendor may publish no
+machine-readable specification at all. The fourth profile did exactly this ahead of its handler:
+[`../profiles/mcp/contracts/provenance.yaml`](../profiles/mcp/contracts/provenance.yaml)'s `spec:` block and
+provider-level `verified:` date were recorded in Phase 8 unit 1, before `mcp` was a registered provider at all, so
+that when unit 2 registered it the guards found the record already in place rather than an empty directory. It is the
 example of a contract recorded before its provider registers, and any later profile should start the same way.
 
 ### The sanctioned refresh procedure
@@ -97,7 +101,7 @@ example of a contract recorded before its provider registers, and any later prof
      and the spec itself, comparing against the provider's README tables, then continue to steps 2–4 below. A
      changed hash is not itself a diff: most entries were verified against prose, not the spec, so the hash change
      alone does not say which of them moved.
-2. Update the affected `contracts/<provider>/README.md` tables and the golden fixtures for whatever changed, and
+2. Update the affected `profiles/<provider>/contracts/README.md` tables and the golden fixtures for whatever changed, and
    each re-checked entry's own `verified:` date — a re-read that finds no change still moves it, because that is
    what the date means; only entries you did not re-read keep their date — and its `api_version`, if the document
    it came from is versioned, in the same change.
@@ -112,17 +116,21 @@ example of a contract recorded before its provider registers, and any later prof
 4. Cut a Servicesim release — provider handler and contract changes are release-worthy; product-specific scenario
    changes in consuming repositories are not.
 
-After a refresh, `contracts.VerifiedOn` reads the oldest per-entry `verified:` date across every provider. A
-hash-only check that finds a provider's spec unchanged re-checks no fixture, so nothing moves and `VerifiedOn` still
-reads whatever it read before. A check that finds the spec changed re-checks every entry step 1 sends it to re-read,
-so `VerifiedOn` moves to the oldest entry that pass did not cover — it moves only because step 2 actually
-re-checked and re-dated the entries that were holding it down, never merely because a check ran and found nothing.
+After a refresh, `contracts.OldestVerified(bundleFS)` reads the oldest per-entry `verified:` date in ONE provider's
+bundle — there is no whole-repository equivalent (a framework package handed an arbitrary `fs.FS` cannot declare a
+single constant answering for every bundle a caller might ever pass it; see the function's doc comment). A
+hash-only check that finds a provider's spec unchanged re-checks no fixture, so nothing moves and that provider's
+`OldestVerified` still reads whatever it read before. A check that finds the spec changed re-checks every entry
+step 1 sends it to re-read, so `OldestVerified` moves to the oldest entry that pass did not cover — it moves only
+because step 2 actually re-checked and re-dated the entries that were holding it down, never merely because a check
+ran and found nothing.
 
 ## Known upstream deprecations
 
 These were observed during the 2026-08-14 verification and affect what new consumer code should emit or parse.
 
-- **Perplexity Sonar has an announced end date.** [`perplexity/README.md`](perplexity/README.md) records it as
+- **Perplexity Sonar has an announced end date.**
+  [`../profiles/perplexity/contracts/README.md`](../profiles/perplexity/contracts/README.md) records it as
   supported until 2026-09-27, per the banner on every Sonar documentation page, with `POST /v1/agent` as its
   announced successor and `/v1/responses` as that route's OpenAI-compatible alias. Simulating Sonar remains
   correct for existing adapters, but new adapter work should be scoped against the Agent API.

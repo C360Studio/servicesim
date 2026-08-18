@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/c360studio/servicesim/internal/jobs"
-	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/scenario"
 )
 
@@ -19,7 +18,7 @@ func mintExchange(t *testing.T, store jobs.Store, attempt *scenario.FaultAttempt
 	t.Helper()
 	x := &Exchange{
 		Deps:     Deps{Jobs: store}.Normalized(),
-		Provider: Exa,
+		Provider: testProviderExa,
 		Route:    Route{Pattern: "POST /agent/runs", FaultKey: "exa:agent_runs.create"},
 		claimed:  true,
 		decision: FaultDecision{Index: 0, Key: "exa:agent_runs.create", Attempt: attempt},
@@ -56,10 +55,10 @@ func TestMintJobRecordsAServingCreate(t *testing.T) {
 	if !ok {
 		t.Fatalf("MintJob refused a clean create: %+v", x.Findings())
 	}
-	if !strings.HasPrefix(job.ID, "run_") {
-		t.Errorf("id = %q, want the prefix applied", job.ID)
+	if !strings.HasPrefix(job, "run_") {
+		t.Errorf("id = %q, want the prefix applied", job)
 	}
-	if _, found := store.Lookup(job.Namespace, job.ID); !found {
+	if _, found := store.Lookup(DefaultNamespace, job); !found {
 		t.Error("a serving create must leave a record a poll can resolve")
 	}
 	if f := x.Findings(); len(f) != 0 {
@@ -75,13 +74,13 @@ func TestMintJobDerivationIsDeterministic(t *testing.T) {
 	first, _ := MintJob(mintExchange(t, jobs.NewRegistry(jobs.Limits{}), nil), "exa_agent_runs", "run_", stubEncode)
 	second, _ := MintJob(mintExchange(t, jobs.NewRegistry(jobs.Limits{}), nil), "exa_agent_runs", "run_", stubEncode)
 
-	if first.ID != second.ID {
-		t.Errorf("identifiers differ across runs: %q vs %q", first.ID, second.ID)
+	if first != second {
+		t.Errorf("identifiers differ across runs: %q vs %q", first, second)
 	}
 	// The call index is part of the tuple, which is what makes two creates in one
 	// lane distinguishable.
-	if !strings.Contains(first.ID, "_job_0") {
-		t.Errorf("id = %q, want the domain separator and the call index in the tuple", first.ID)
+	if !strings.Contains(first, "_job_0") {
+		t.Errorf("id = %q, want the domain separator and the call index in the tuple", first)
 	}
 }
 
@@ -198,14 +197,14 @@ func TestMintJobCommitsOnlyWhenTheBodyIsDelivered(t *testing.T) {
 				t.Fatalf("MintJob refused: %+v", x.Findings())
 			}
 
-			_, found := store.Lookup(job.Namespace, job.ID)
+			_, found := store.Lookup(DefaultNamespace, job)
 			if found != tc.wantRecord {
 				t.Errorf("record present = %v, want %v — %s", found, tc.wantRecord, tc.why)
 			}
 
 			// The identifier is returned either way: the handler renders a body
 			// whether or not Handle is about to replace it.
-			if job.ID == "" {
+			if job == "" {
 				t.Error("MintJob must derive an identifier even when it records nothing")
 			}
 		})
@@ -265,7 +264,7 @@ func TestMintJobReportsACollision(t *testing.T) {
 	if !strings.Contains(findings[0].Message, "reset") {
 		t.Errorf("the collision message must name its usual cause: %q", findings[0].Message)
 	}
-	if _, found := store.Lookup(first.Namespace, first.ID); !found {
+	if _, found := store.Lookup(DefaultNamespace, first); !found {
 		t.Error("the refused create must not disturb the live record")
 	}
 }
@@ -303,8 +302,8 @@ func TestMintJobWithNoStore(t *testing.T) {
 	x := mintExchange(t, nil, nil)
 	job, ok := MintJob(x, "exa_agent_runs", "run_", stubEncode)
 
-	if !ok || job.ID == "" {
-		t.Errorf("a nil store must still answer: ok=%v id=%q", ok, job.ID)
+	if !ok || job == "" {
+		t.Errorf("a nil store must still answer: ok=%v id=%q", ok, job)
 	}
 	if f := x.Findings(); len(f) != 0 {
 		t.Errorf("unexpected findings: %+v", f)
@@ -323,9 +322,8 @@ func TestResolveJob(t *testing.T) {
 
 	// A resolved job records no finding of its own.
 	found := mintExchange(t, store, nil)
-	got, ok := ResolveJob(found, job.ID)
-	if !ok || got.ID != job.ID {
-		t.Errorf("ResolveJob = (%+v, %v), want the minted job", got, ok)
+	if ok := ResolveJob(found, job); !ok {
+		t.Errorf("ResolveJob = %v, want true for the minted job", ok)
 	}
 	if f := found.Findings(); len(f) != 0 {
 		t.Errorf("a resolved job must record no findings of its own: %+v", f)
@@ -336,7 +334,7 @@ func TestResolveJob(t *testing.T) {
 	// and it raises CodeJobForeignID. TestResolveJobForeignID covers the full
 	// table; this only pins that the basic miss path still reaches it.
 	unknown := mintExchange(t, store, nil)
-	if _, ok := ResolveJob(unknown, "run_unknown"); ok {
+	if ResolveJob(unknown, "run_unknown") {
 		t.Error("an unknown identifier must not resolve")
 	}
 	if f := unknown.Findings(); len(f) != 1 || f[0].Code != CodeJobForeignID {
@@ -348,7 +346,7 @@ func TestResolveJob(t *testing.T) {
 	// the foreign-id finding either: it was never shaped like one of this
 	// process's own identifiers to begin with.
 	malformed := mintExchange(t, store, nil)
-	if _, ok := ResolveJob(malformed, "run/../other"); ok {
+	if ResolveJob(malformed, "run/../other") {
 		t.Error("a malformed identifier must not resolve")
 	}
 	if f := malformed.Findings(); len(f) != 0 {
@@ -431,7 +429,7 @@ func TestValidJobIDRejectsEverySeparator(t *testing.T) {
 func resolveExchange(store jobs.Store, namespace string, capture *capturingLogger) *Exchange {
 	return &Exchange{
 		Deps:     Deps{Jobs: store, Logger: capture.logger}.Normalized(),
-		Provider: Exa,
+		Provider: testProviderExa,
 		Route:    Route{Pattern: "GET /agent/runs/{id}", FaultKey: "exa:agent_runs.poll"},
 		lane:     Lane{Namespace: namespace, Key: "exa:agent_runs.poll"},
 	}
@@ -472,7 +470,7 @@ func TestResolveJobForeignID(t *testing.T) {
 			capture := newCapturingLogger()
 			x := resolveExchange(store, namespace, capture)
 
-			if _, found := ResolveJob(x, tc.id); found {
+			if ResolveJob(x, tc.id) {
 				t.Fatalf("an id nothing minted must never resolve")
 			}
 
@@ -492,9 +490,9 @@ func TestResolveJobForeignID(t *testing.T) {
 			if len(findings) != 1 || findings[0].Code != CodeJobForeignID {
 				t.Fatalf("findings = %+v, want exactly one %s", findings, CodeJobForeignID)
 			}
-			if findings[0].Severity != journal.SeverityWarning {
+			if findings[0].Severity != SeverityWarning {
 				t.Errorf("severity = %v, want %v — a typo'd fixture id must not read as a deployment problem",
-					findings[0].Severity, journal.SeverityWarning)
+					findings[0].Severity, SeverityWarning)
 			}
 			for _, want := range []string{"another replica", "reset", "fixture"} {
 				if !strings.Contains(findings[0].Message, want) {
@@ -527,11 +525,11 @@ func TestResolveJobFoundRecordsNoForeignIDFinding(t *testing.T) {
 	}
 
 	capture := newCapturingLogger()
-	poll := resolveExchange(store, job.Namespace, capture)
+	poll := resolveExchange(store, DefaultNamespace, capture)
 
-	got, found := ResolveJob(poll, job.ID)
-	if !found || got.ID != job.ID {
-		t.Fatalf("ResolveJob = (%+v, %v), want the minted job", got, found)
+	found := ResolveJob(poll, job)
+	if !found {
+		t.Fatalf("ResolveJob = %v, want true for the minted job", found)
 	}
 	if f := poll.Findings(); len(f) != 0 {
 		t.Errorf("a resolved job must record no finding: %+v", f)

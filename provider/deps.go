@@ -135,8 +135,8 @@ func (f *noopFaults) Reset() {
 }
 
 // Deps is everything a provider handler is constructed with. The zero value is
-// usable: exa.New(provider.Deps{}) serves well-shaped empty successes with no
-// journal, no faults and a real clock.
+// usable: exa.Profile().Handler(provider.Deps{}) serves well-shaped empty
+// successes with no journal, no faults and a real clock.
 type Deps struct {
 	// Scenario is the loaded, validated, resolved corpus. nil means scenario.Empty().
 	Scenario *scenario.Scenario
@@ -151,7 +151,8 @@ type Deps struct {
 	// almost always a wiring mistake rather than an intent, Normalized logs a
 	// deps.faults_ignored warning when Scenario.HasFaults() is true and Faults is
 	// nil. testkit.Start and internal/server always wire it; a consumer building
-	// Deps by hand gets one from testkit.NewFaults(s).
+	// Deps by hand gets one from a Set's own (*Set).Faults(s) — the only
+	// exported fault-engine constructor.
 	//
 	// Normalized substitutes a no-op implementation for nil: it claims attempt
 	// indices, because the turn cursor reads them, and never returns an attempt.
@@ -198,6 +199,20 @@ type Deps struct {
 	// the storage boundary where redaction happens, not by the request path: a
 	// body clipped before redaction is a body redaction can no longer parse.
 	MaxJournalBodyBytes int
+
+	// CredentialNames widens the credential-name vocabulary the journal masks
+	// by, beyond internal/redact's own fixed tables (house rule 4). It is the
+	// union of every registered profile's Profile.CredentialNames — sourced
+	// from (*Set) CredentialNames() at composition, not authored by hand —
+	// merged in as DATA: no exported call reaches internal/redact, and its
+	// tables stay untouched. Handle passes it to journal.Redact before
+	// logging; internal/server and testkit bake the same union into the
+	// Ring's own Limits.CredentialNames so storage-time redaction
+	// ([journal.Ring.Append]) sees it too, on the same terms as
+	// MaxJournalBodyBytes and MaxNamespaces below — a number or a vocabulary
+	// the seam records, for the store that actually applies it. Nil widens
+	// nothing: only internal/redact's own fixed tables apply.
+	CredentialNames []string
 
 	// MaxNamespaces is the bound on live namespaces this process was configured
 	// with. Zero means DefaultMaxNamespaces.
@@ -268,7 +283,7 @@ func (d Deps) Normalized() Deps {
 		if d.Scenario.HasFaults() {
 			d.Logger.Warn("deps.faults_ignored",
 				slog.String("scenario", d.Scenario.Name),
-				slog.String("hint", "the scenario declares faults but Deps.Faults is nil; pass testkit.NewFaults(s)"))
+				slog.String("hint", "the scenario declares faults but Deps.Faults is nil; pass NewSet(ps...).Faults(s)"))
 		}
 		d.Faults = &noopFaults{}
 	}

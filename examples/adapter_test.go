@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	"github.com/c360studio/servicesim/examples"
+	"github.com/c360studio/servicesim/profiles/exa"
+	"github.com/c360studio/servicesim/profiles/perplexity"
+	"github.com/c360studio/servicesim/profiles/tavily"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
@@ -55,15 +58,15 @@ func newAdapter(client *http.Client, baseURLs map[string]string) *examples.Adapt
 func TestAdapterSendsACorrectExaRequest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile()), testkit.WithBuiltin("happy"))
 	adapter := newAdapter(sim.Client(), sim.BaseURLs())
 
 	results, err := adapter.SearchExa(t.Context(), "report a")
 	require.NoError(t, err)
 	require.Len(t, results, 2, "the happy scenario projects two canonical sources through Exa")
 
-	testkit.AssertRequestCount(t, sim, provider.Exa, 1)
-	entry := sim.Requests(provider.Exa)[0]
+	testkit.AssertRequestCount(t, sim, exa.Name, 1)
+	entry := sim.Requests(exa.Name)[0]
 
 	testkit.AssertAPIKeyHeader(t, entry)
 	testkit.AssertJSONBody(t, entry, map[string]any{
@@ -95,15 +98,15 @@ func TestAdapterSendsACorrectExaRequest(t *testing.T) {
 func TestAdapterSendsACorrectTavilyRequest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(tavily.Profile()), testkit.WithBuiltin("happy"))
 	adapter := newAdapter(sim.Client(), sim.BaseURLs())
 
 	results, err := adapter.SearchTavily(t.Context(), "report a")
 	require.NoError(t, err)
 	require.Len(t, results, 2)
 
-	testkit.AssertRequestCount(t, sim, provider.Tavily, 1)
-	entry := sim.Requests(provider.Tavily)[0]
+	testkit.AssertRequestCount(t, sim, tavily.Name, 1)
+	entry := sim.Requests(tavily.Name)[0]
 
 	testkit.AssertBearerAuth(t, entry)
 	testkit.AssertJSONBody(t, entry, map[string]any{
@@ -119,15 +122,15 @@ func TestAdapterSendsACorrectTavilyRequest(t *testing.T) {
 func TestAdapterSendsACorrectPerplexityRequest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(perplexity.Profile()), testkit.WithBuiltin("happy"))
 	adapter := newAdapter(sim.Client(), sim.BaseURLs())
 
 	results, err := adapter.SearchPerplexity(t.Context(), "report a")
 	require.NoError(t, err)
 	require.Len(t, results, 2)
 
-	testkit.AssertRequestCount(t, sim, provider.Perplexity, 1)
-	entry := sim.Requests(provider.Perplexity)[0]
+	testkit.AssertRequestCount(t, sim, perplexity.Name, 1)
+	entry := sim.Requests(perplexity.Name)[0]
 
 	testkit.AssertBearerAuth(t, entry)
 	testkit.AssertJSONBody(t, entry, map[string]any{
@@ -147,7 +150,7 @@ func TestAdapterSendsACorrectPerplexityRequest(t *testing.T) {
 func TestAdapterNormalisesEveryProvider(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile(), tavily.Profile(), perplexity.Profile()), testkit.WithBuiltin("happy"))
 	adapter := newAdapter(sim.Client(), sim.BaseURLs())
 
 	fromExa, err := adapter.SearchExa(t.Context(), "report a")

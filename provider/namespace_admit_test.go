@@ -72,7 +72,7 @@ func TestHandleRefusesUnadmittedNamespaceBeforeTheHandlerRuns(t *testing.T) {
 			}
 
 			deps := Deps{Faults: faults}.Normalized()
-			mux := NewMux(deps, Exa, MuxSpec{
+			mux := NewMux(deps, testProviderExa, testRefuse, MuxSpec{
 				Routes:   []Route{{Pattern: "POST /search", FaultKey: "exa:search"}},
 				Handlers: map[string]Handler{"POST /search": h},
 			})
@@ -122,7 +122,7 @@ func TestHandleAdmitsEveryNamespaceWhenFaultsDoesNotBound(t *testing.T) {
 
 	handlerRan := false
 	deps := Deps{Faults: plainFaults{}}.Normalized()
-	mux := NewMux(deps, Exa, MuxSpec{
+	mux := NewMux(deps, testProviderExa, testRefuse, MuxSpec{
 		Routes: []Route{{Pattern: "POST /search", FaultKey: "exa:search"}},
 		Handlers: map[string]Handler{
 			"POST /search": func(*Exchange) Response {

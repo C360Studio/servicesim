@@ -7,19 +7,51 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/c360studio/servicesim/profiles/exa"
+	"github.com/c360studio/servicesim/profiles/mcp"
+	"github.com/c360studio/servicesim/profiles/perplexity"
+	"github.com/c360studio/servicesim/profiles/tavily"
 	"github.com/c360studio/servicesim/provider"
-	"github.com/c360studio/servicesim/provider/exa"
-	"github.com/c360studio/servicesim/provider/perplexity"
 	"github.com/c360studio/servicesim/scenario"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// referenceProfiles is the four in-tree profiles' registration list, shared
+// across this package's tests so [testkit.WithProfiles] has one thing to say
+// instead of four calls repeated at every [testkit.Start] site — until Phase
+// 10 unit 5 promotes it to profiles.Reference().
+func referenceProfiles() []provider.Profile {
+	return []provider.Profile{exa.Profile(), tavily.Profile(), perplexity.Profile(), mcp.Profile()}
+}
+
+// referenceSet builds the provider.Set a hand-built-Deps test in this file
+// constructs a handler and a fault engine from, replacing the deleted
+// <pkg>.New constructors and testkit.NewFaults: Lookup(name).Handler(deps)
+// and Faults(sc) are what a consumer outside this module does instead.
+func referenceSet(tb testing.TB) *provider.Set {
+	tb.Helper()
+	set, err := provider.NewSet(referenceProfiles()...)
+	require.NoError(tb, err)
+	return set
+}
+
+// handlerFor looks up name's handler in set, the pattern every hand-built
+// Deps test below now uses in place of the deleted <pkg>.New(deps).
+func handlerFor(tb testing.TB, set *provider.Set, name provider.Name, deps provider.Deps) http.Handler {
+	tb.Helper()
+	p, ok := set.Lookup(name)
+	require.True(tb, ok, "%s is not in referenceProfiles", name)
+	return p.Handler(deps)
+}
 
 // delayScenario delays the first attempt against Exa and Tavily and then serves
 // the ordinary response. Both surfaces are needed because the overlap assertion
@@ -103,7 +135,7 @@ providers:
 func createAgentRun(tb testing.TB, sim *testkit.Sim, base string) string {
 	tb.Helper()
 
-	req := newRequest(context.Background(), tb, base+"/agent/runs", provider.Exa, `{"query":"report a"}`)
+	req := newRequest(context.Background(), tb, base+"/agent/runs", exa.Name, `{"query":"report a"}`)
 	resp, err := sim.Client().Do(req)
 	require.NoError(tb, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -136,7 +168,7 @@ func newRequest(ctx context.Context, tb testing.TB, url string, p provider.Name,
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
 	require.NoError(tb, err)
 	req.Header.Set("Content-Type", "application/json")
-	if p == provider.Exa {
+	if p == exa.Name {
 		req.Header.Set("x-api-key", "test-key")
 	} else {
 		req.Header.Set("Authorization", "Bearer test-key")
@@ -172,12 +204,12 @@ func newMCPDiscoverRequest(ctx context.Context, tb testing.TB, url string) *http
 func TestStartIsThreeLines(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"))
 
-	resp := search(t, sim, provider.Exa, "/search", `{"query":"report a"}`)
+	resp := search(t, sim, exa.Name, "/search", `{"query":"report a"}`)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	entries := sim.Requests(provider.Exa)
+	entries := sim.Requests(exa.Name)
 	require.Len(t, entries, 1)
 	testkit.AssertNoErrors(t, entries[0])
 	testkit.AssertAPIKeyHeader(t, entries[0])
@@ -186,7 +218,7 @@ func TestStartIsThreeLines(t *testing.T) {
 func TestStartServesEveryProvider(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"))
 
 	tests := []struct {
 		name     string
@@ -194,10 +226,10 @@ func TestStartServesEveryProvider(t *testing.T) {
 		path     string
 		body     string
 	}{
-		{"exa search", provider.Exa, "/search", `{"query":"report a"}`},
-		{"exa answer", provider.Exa, "/answer", `{"query":"report a"}`},
-		{"tavily search", provider.Tavily, "/search", `{"query":"report a"}`},
-		{"perplexity sonar", provider.Perplexity, "/chat/completions",
+		{"exa search", exa.Name, "/search", `{"query":"report a"}`},
+		{"exa answer", exa.Name, "/answer", `{"query":"report a"}`},
+		{"tavily search", tavily.Name, "/search", `{"query":"report a"}`},
+		{"perplexity sonar", perplexity.Name, "/chat/completions",
 			`{"model":"sonar","messages":[{"role":"user","content":"report a"}]}`},
 	}
 	for _, tc := range tests {
@@ -210,7 +242,7 @@ func TestStartServesEveryProvider(t *testing.T) {
 	}
 
 	t.Run("mcp server/discover", func(t *testing.T) {
-		resp, err := sim.Client().Do(newMCPDiscoverRequest(context.Background(), t, sim.URL(provider.MCP)+"/mcp"))
+		resp, err := sim.Client().Do(newMCPDiscoverRequest(context.Background(), t, sim.URL(mcp.Name)+"/mcp"))
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = resp.Body.Close() })
 
@@ -226,16 +258,16 @@ func TestStartServesEveryProvider(t *testing.T) {
 func TestBaseURLsAreEnvironmentShaped(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa, provider.Tavily))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name, tavily.Name))
 
 	urls := sim.BaseURLs()
 
-	assert.Equal(t, sim.URL(provider.Exa), urls["EXA_BASE_URL"])
-	assert.Equal(t, sim.URL(provider.Tavily), urls["TAVILY_BASE_URL"])
+	assert.Equal(t, sim.URL(exa.Name), urls["EXA_BASE_URL"])
+	assert.Equal(t, sim.URL(tavily.Name), urls["TAVILY_BASE_URL"])
 	assert.NotContains(t, urls, "PERPLEXITY_BASE_URL", "WithProviders excluded Perplexity")
 	assert.NotContains(t, urls, "MCP_BASE_URL", "WithProviders excluded MCP")
-	assert.Empty(t, sim.URL(provider.Perplexity))
-	assert.Empty(t, sim.URL(provider.MCP))
+	assert.Empty(t, sim.URL(perplexity.Name))
+	assert.Empty(t, sim.URL(mcp.Name))
 }
 
 // TestBaseURLsIncludesMCP proves MCP_BASE_URL appears once the MCP
@@ -244,10 +276,10 @@ func TestBaseURLsAreEnvironmentShaped(t *testing.T) {
 func TestBaseURLsIncludesMCP(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"))
 
 	urls := sim.BaseURLs()
-	assert.Equal(t, sim.URL(provider.MCP), urls["MCP_BASE_URL"])
+	assert.Equal(t, sim.URL(mcp.Name), urls["MCP_BASE_URL"])
 	assert.NotEmpty(t, urls["MCP_BASE_URL"])
 }
 
@@ -260,11 +292,11 @@ func TestAssertOverlapped(t *testing.T) {
 	t.Run("concurrent requests overlap", func(t *testing.T) {
 		t.Parallel()
 
-		sim := testkit.Start(t, testkit.WithScenarioYAML(delayScenario))
+		sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(delayScenario))
 
 		var wg sync.WaitGroup
 		wg.Add(2)
-		for _, p := range []provider.Name{provider.Exa, provider.Tavily} {
+		for _, p := range []provider.Name{exa.Name, tavily.Name} {
 			go func() {
 				defer wg.Done()
 				search(t, sim, p, "/search", `{"query":"report a"}`)
@@ -272,18 +304,18 @@ func TestAssertOverlapped(t *testing.T) {
 		}
 		wg.Wait()
 
-		testkit.AssertOverlapped(t, sim.Requests(provider.Exa)[0], sim.Requests(provider.Tavily)[0])
+		testkit.AssertOverlapped(t, sim.Requests(exa.Name)[0], sim.Requests(tavily.Name)[0])
 	})
 
 	t.Run("serial requests do not overlap", func(t *testing.T) {
 		t.Parallel()
 
-		sim := testkit.Start(t, testkit.WithScenarioYAML(delayScenario))
-		search(t, sim, provider.Exa, "/search", `{"query":"report a"}`)
-		search(t, sim, provider.Tavily, "/search", `{"query":"report a"}`)
+		sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(delayScenario))
+		search(t, sim, exa.Name, "/search", `{"query":"report a"}`)
+		search(t, sim, tavily.Name, "/search", `{"query":"report a"}`)
 
 		stub := &stubTB{}
-		testkit.AssertOverlapped(stub, sim.Requests(provider.Exa)[0], sim.Requests(provider.Tavily)[0])
+		testkit.AssertOverlapped(stub, sim.Requests(exa.Name)[0], sim.Requests(tavily.Name)[0])
 
 		assert.True(t, stub.Failed(), "serial requests must not be reported as overlapping")
 		assert.Contains(t, stub.Message(), "did not overlap")
@@ -296,12 +328,12 @@ func TestAssertOverlapped(t *testing.T) {
 func TestClientDeadlineObservesRealDelay(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(delayScenario))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(delayScenario))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	req := newRequest(ctx, t, sim.URL(provider.Exa)+"/search", provider.Exa, `{"query":"report a"}`)
+	req := newRequest(ctx, t, sim.URL(exa.Name)+"/search", exa.Name, `{"query":"report a"}`)
 	resp, err := sim.Client().Do(req) //nolint:bodyclose // err is non-nil, so there is no body
 	if err == nil {
 		_ = resp.Body.Close()
@@ -316,15 +348,15 @@ func TestClientDeadlineObservesRealDelay(t *testing.T) {
 func TestSkippedDelaysStillRecordTheRequest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(delayScenario), testkit.WithSkippedDelays())
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(delayScenario), testkit.WithSkippedDelays())
 
 	started := time.Now()
-	resp := search(t, sim, provider.Exa, "/search", `{"query":"report a"}`)
+	resp := search(t, sim, exa.Name, "/search", `{"query":"report a"}`)
 	elapsed := time.Since(started)
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Less(t, elapsed, 150*time.Millisecond, "the delay must not have been paid")
-	assert.Equal(t, int64(150), sim.Requests(provider.Exa)[0].Outcome.DelayMS)
+	assert.Equal(t, int64(150), sim.Requests(exa.Name)[0].Outcome.DelayMS)
 }
 
 // TestAwaitRequestsAfterAbortingFault is the third mandatory test: an entry
@@ -333,16 +365,16 @@ func TestSkippedDelaysStillRecordTheRequest(t *testing.T) {
 func TestAwaitRequestsAfterAbortingFault(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(abortScenario), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(abortScenario), testkit.WithProviders(exa.Name))
 
-	req := newRequest(context.Background(), t, sim.URL(provider.Exa)+"/search", provider.Exa, `{"query":"report a"}`)
+	req := newRequest(context.Background(), t, sim.URL(exa.Name)+"/search", exa.Name, `{"query":"report a"}`)
 	resp, err := sim.Client().Do(req) //nolint:bodyclose // the connection was closed before any header
 	if err == nil {
 		_ = resp.Body.Close()
 		t.Fatalf("the request returned %d, want a transport error", resp.StatusCode)
 	}
 
-	entries := sim.AwaitRequests(t, provider.Exa, 1)
+	entries := sim.AwaitRequests(t, exa.Name, 1)
 	require.Len(t, entries, 1)
 	assert.True(t, entries[0].Outcome.Aborted, "the aborting fault must be journaled as aborted")
 	assert.Equal(t, testkit.OutcomeFault, entries[0].Outcome.Kind)
@@ -352,9 +384,9 @@ func TestAwaitRequestsAfterAbortingFault(t *testing.T) {
 func TestResetClearsTheJournalAndTheFaultCounters(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(retryScenario), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(retryScenario), testkit.WithProviders(exa.Name))
 
-	first := search(t, sim, provider.Exa, "/search", `{"query":"report a"}`)
+	first := search(t, sim, exa.Name, "/search", `{"query":"report a"}`)
 	require.Equal(t, http.StatusTooManyRequests, first.StatusCode)
 
 	sim.Reset()
@@ -362,7 +394,7 @@ func TestResetClearsTheJournalAndTheFaultCounters(t *testing.T) {
 
 	// The counter is the turn cursor too, so a reset replays the plan from its
 	// first attempt rather than continuing into the success.
-	again := search(t, sim, provider.Exa, "/search", `{"query":"report a"}`)
+	again := search(t, sim, exa.Name, "/search", `{"query":"report a"}`)
 	assert.Equal(t, http.StatusTooManyRequests, again.StatusCode)
 }
 
@@ -375,7 +407,7 @@ func TestResetClearsTheJournalAndTheFaultCounters(t *testing.T) {
 func TestSimJobsAndNamespaceJobs(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(jobsScenario), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(jobsScenario), testkit.WithProviders(exa.Name))
 	alpha := sim.Namespace(t, "alpha")
 	beta := sim.Namespace(t, "beta")
 
@@ -386,8 +418,8 @@ func TestSimJobsAndNamespaceJobs(t *testing.T) {
 	// assertions below never compare alphaID with betaID for that reason; do
 	// not add a require.NotEqual here, it would fail for a reason unrelated
 	// to whatever this test is meant to pin.
-	alphaID := createAgentRun(t, sim, alpha.URL(provider.Exa))
-	betaID := createAgentRun(t, sim, beta.URL(provider.Exa))
+	alphaID := createAgentRun(t, sim, alpha.URL(exa.Name))
+	betaID := createAgentRun(t, sim, beta.URL(exa.Name))
 	require.Equal(t, alphaID, betaID, "same call index, same lane key, no namespace component: ids collide by design")
 
 	all := sim.Jobs()
@@ -410,8 +442,8 @@ func TestSimJobsAndNamespaceJobs(t *testing.T) {
 	// prove the namespace key sorts ascending; gamma proves that within one
 	// namespace, declared order follows creation order too.
 	gamma := sim.Namespace(t, "gamma")
-	gammaFirst := createAgentRun(t, sim, gamma.URL(provider.Exa))
-	gammaSecond := createAgentRun(t, sim, gamma.URL(provider.Exa))
+	gammaFirst := createAgentRun(t, sim, gamma.URL(exa.Name))
+	gammaSecond := createAgentRun(t, sim, gamma.URL(exa.Name))
 	require.NotEqual(t, gammaFirst, gammaSecond, "distinct call indices in one lane mint distinct ids")
 
 	gammaJobs := gamma.Jobs()
@@ -427,26 +459,29 @@ func TestSimJobsAndNamespaceJobs(t *testing.T) {
 	// The cursor Reset rewound and the record it dropped move together, so the
 	// next create in the same namespace re-mints the SAME identifier rather
 	// than colliding with a record that should no longer exist.
-	again := createAgentRun(t, sim, alpha.URL(provider.Exa))
+	again := createAgentRun(t, sim, alpha.URL(exa.Name))
 	assert.Equal(t, alphaID, again, "identifiers derive from the call index, which Reset also rewound")
 	require.Len(t, sim.Jobs(), 1)
 }
 
-// TestNewFaultsWiresAConsumerBuiltDeps is why NewFaults exists: without it the
-// scenario's declared 429 never fires and the consumer sees a silent 200.
-func TestNewFaultsWiresAConsumerBuiltDeps(t *testing.T) {
+// TestSetFaultsWiresAConsumerBuiltDeps is why (*provider.Set).Faults exists —
+// the only exported fault-engine constructor since testkit.NewFaults was
+// deleted (Phase 10 unit 4): without it the scenario's declared 429 never
+// fires and the consumer sees a silent 200.
+func TestSetFaultsWiresAConsumerBuiltDeps(t *testing.T) {
 	t.Parallel()
 
 	s, _, err := scenario.Parse([]byte(retryScenario))
 	require.NoError(t, err)
 
-	srv := httptest.NewServer(exa.New(provider.Deps{Scenario: s, Faults: testkit.NewFaults(s)}))
+	set := referenceSet(t)
+	srv := httptest.NewServer(handlerFor(t, set, exa.Name, provider.Deps{Scenario: s, Faults: set.Faults(s)}))
 	t.Cleanup(srv.Close)
 
 	client := srv.Client()
 	statuses := []int{}
 	for range 2 {
-		req := newRequest(context.Background(), t, srv.URL+"/search", provider.Exa, `{"query":"report a"}`)
+		req := newRequest(context.Background(), t, srv.URL+"/search", exa.Name, `{"query":"report a"}`)
 		resp, err := client.Do(req)
 		require.NoError(t, err)
 		statuses = append(statuses, resp.StatusCode)
@@ -456,72 +491,312 @@ func TestNewFaultsWiresAConsumerBuiltDeps(t *testing.T) {
 	assert.Equal(t, []int{http.StatusTooManyRequests, http.StatusOK}, statuses)
 }
 
-// TestExaHandlerReturnsItsSim covers the handler constructors: the Sim is
-// returned because the journal is the only source of an Entry, and a bare
-// handler could only prove that a response arrived.
-func TestExaHandlerReturnsItsSim(t *testing.T) {
+// acmeProfile is the same fifteen-line hand-built profile shape
+// provider/profile_test.go and scratchpad/u2-outoftree/ use — an
+// out-of-tree profile author's registration record, built with no import
+// this package could not equally reach from another module.
+func acmeProfile() provider.Profile {
+	return provider.Profile{
+		Name:    "acme",
+		Title:   "Acme",
+		Summary: "a fifteen-line test profile",
+		Handlers: map[string]provider.Handler{
+			"POST /v1/answer": func(_ *provider.Exchange) provider.Response {
+				return provider.Response{
+					Status: http.StatusOK, Body: []byte(`{"ok":true}`),
+					Label: "acme.ok", FaultEligible: true,
+				}
+			},
+		},
+		Routes: []provider.Route{{
+			Pattern:  "POST /v1/answer",
+			FaultKey: "acme:answer",
+			Fault:    func(s *scenario.Scenario) *scenario.Fault { return provider.TurnFault(s, "acme") },
+		}},
+		ErrorBody:   func(provider.Refusal) []byte { return []byte(`{"error":"acme refused"}`) },
+		DefaultAuth: scenario.AuthOptional,
+	}
+}
+
+// TestStartRequiresWithProfiles pins D-5: Start (and Handler) with no
+// profiles registered must fail tb, named, with a message that shows the
+// one-line fix rather than a bare panic three calls later.
+func TestStartRequiresWithProfiles(t *testing.T) {
 	t.Parallel()
 
-	handler, sim := testkit.ExaHandler(t, testkit.WithBuiltin("happy"))
+	stub := newFatalTB(t.Name())
+	sim := testkit.Start(stub, testkit.WithBuiltin("happy"))
+
+	require.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), "WithProfiles")
+	assert.Contains(t, stub.Message(), "testkit.WithProfiles(exa.Profile()",
+		"the message must show the one-line fix, naming a reference profile")
+	assert.NotNil(t, sim, "Start must return a usable zero value rather than nil, for a caller whose tb does not halt")
+}
+
+// TestHandlerRequiresWithProfiles is TestStartRequiresWithProfiles for the
+// generic Handler constructor.
+func TestHandlerRequiresWithProfiles(t *testing.T) {
+	t.Parallel()
+
+	stub := newFatalTB(t.Name())
+	handler, sim := testkit.Handler(stub, exa.Name, testkit.WithBuiltin("happy"))
+
+	require.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), "WithProfiles")
+	assert.Nil(t, handler)
+	assert.NotNil(t, sim)
+}
+
+// TestWithProfilesBuildsFromTheSet proves Start derives routes, the fault
+// engine and the handler from a provider.Set when WithProfiles is passed,
+// exactly as it would for one of the four in-tree defaults: a scripted fault
+// on the out-of-tree route applies (proving set.Faults registered it — AUDIT
+// 1's "no exported fault-engine constructor" gap, closed), and an unknown
+// path answers in the profile's own ErrorBody shape (proving the handler came
+// from Lookup(name).Handler(deps), not a hardcoded switch that has never
+// heard of "acme").
+func TestWithProfilesBuildsFromTheSet(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithProfiles(acmeProfile()), testkit.WithScenarioYAML(`
+version: 1
+name: acme-scenario
+providers:
+  acme:
+    fault:
+      attempts:
+        - status: 429
+        - {}
+`))
+
+	addr := sim.URL(provider.Name("acme"))
+	require.NotEmpty(t, addr, "WithProfiles alone (no WithProviders) must start every registered profile")
+
+	resp1, err := http.Post(addr+"/v1/answer", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusTooManyRequests, resp1.StatusCode, "the scripted fault reached the out-of-tree route")
+	require.NoError(t, resp1.Body.Close())
+
+	resp2, err := http.Post(addr+"/v1/answer", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+	require.NoError(t, resp2.Body.Close())
+
+	resp3, err := http.Post(addr+"/nope", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp3.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp3.Body.Close())
+	require.Equal(t, http.StatusNotFound, resp3.StatusCode)
+	require.Equal(t, `{"error":"acme refused"}`, string(body), "the 404 rendered through the profile's own ErrorBody")
+
+	entries := sim.Requests(provider.Name("acme"))
+	require.Len(t, entries, 3)
+}
+
+// TestWithProfilesRejectsAnInvalidSet proves profileSet does not swallow
+// provider.NewSet's own refusal (a duplicate name, here) and serve a
+// truncated set instead: the caller must see the same tb.Fatalf as an
+// empty WithProfiles, naming what NewSet rejected.
+func TestWithProfilesRejectsAnInvalidSet(t *testing.T) {
+	t.Parallel()
+
+	stub := newFatalTB(t.Name())
+	sim := testkit.Start(stub, testkit.WithProfiles(exa.Profile(), exa.Profile()))
+
+	require.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), "WithProfiles")
+	assert.NotNil(t, sim, "Start must return a usable zero value rather than nil")
+}
+
+// TestWithProvidersRejectsANameOutsideTheSet proves WithProviders still
+// fails tb, named, for a name outside the set WithProfiles registered — the
+// same guard TestHandlerRejectsANameOutsideTheSet exercises through the
+// generic Handler constructor.
+func TestWithProvidersRejectsANameOutsideTheSet(t *testing.T) {
+	t.Parallel()
+
+	stub := newFatalTB(t.Name())
+	sim := testkit.Start(stub, testkit.WithProfiles(exa.Profile()), testkit.WithProviders(tavily.Name))
+
+	require.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), `"tavily"`)
+	assert.Contains(t, stub.Message(), "exa", "the message must name the set WithProfiles actually registered")
+	assert.NotNil(t, sim)
+}
+
+// TestHandlerRejectsANameOutsideTheSet is
+// TestWithProvidersRejectsANameOutsideTheSet for the generic Handler
+// constructor, whose name argument narrows the set through the same
+// enabled() guard.
+func TestHandlerRejectsANameOutsideTheSet(t *testing.T) {
+	t.Parallel()
+
+	stub := newFatalTB(t.Name())
+	handler, sim := testkit.Handler(stub, tavily.Name, testkit.WithProfiles(exa.Profile()))
+
+	require.True(t, stub.Failed())
+	assert.Contains(t, stub.Message(), `"tavily"`)
+	assert.Nil(t, handler)
+	assert.NotNil(t, sim)
+}
+
+// TestHandlerDrivesTheOptionsItWasGiven proves the generic Handler
+// constructor applies every Option a caller passes, not only WithProfiles:
+// every other in-tree Handler call site uses WithBuiltin("happy"), which is
+// also build's own default, so a Handler that silently dropped every other
+// option before applying opts would still pass them.
+func TestHandlerDrivesTheOptionsItWasGiven(t *testing.T) {
+	t.Parallel()
+
+	handler, sim := testkit.Handler(t, exa.Name,
+		testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(retryScenario))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, newRequest(context.Background(), t, "http://sim.test/search", exa.Name, `{"query":"report a"}`))
+
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code,
+		"Handler must serve the scenario it was given, not build's default builtin")
+	assert.Equal(t, "testkit-retry", sim.Scenario().Name)
+}
+
+// TestSimDerivedIDsMatchesTheRegisteredSetAndPrunesGoldens proves two
+// things together: Sim.DerivedIDs() reports exactly what the registered
+// profiles declared (provider.Set.DerivedIDs, reached through set.Faults'
+// same Set rather than recomputed), and that value is what
+// testkit.GoldenDerivedIDs needs to prune a call-index-derived field —
+// AssertGoldenJSON prunes nothing by default (Phase 10 unit 4's chosen
+// shape, in place of the old package-global derivedIDPaths), so this is
+// also the in-tree proof of that default, not only prose in a doc.
+func TestSimDerivedIDsMatchesTheRegisteredSetAndPrunesGoldens(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithProviders(exa.Name))
+
+	firstResp := search(t, sim, exa.Name, "/search", `{"query":"report a"}`)
+	firstBody, err := io.ReadAll(firstResp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, firstResp.StatusCode)
+
+	secondResp := search(t, sim, exa.Name, "/search", `{"query":"report a"}`)
+	secondBody, err := io.ReadAll(secondResp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, secondResp.StatusCode)
+
+	var first, second struct {
+		RequestID string `json:"requestId"`
+	}
+	require.NoError(t, json.Unmarshal(firstBody, &first))
+	require.NoError(t, json.Unmarshal(secondBody, &second))
+	require.NotEqual(t, first.RequestID, second.RequestID, "requestId is call-index-derived")
+
+	paths, streamPaths := sim.DerivedIDs()
+	set := referenceSet(t)
+	wantPaths, wantStreamPaths := set.DerivedIDs()
+	assert.Equal(t, wantPaths, paths, "Sim.DerivedIDs must report the registered Set's own declared paths")
+	assert.Equal(t, wantStreamPaths, streamPaths)
+	assert.Contains(t, paths, "requestId")
+
+	golden := filepath.Join(t.TempDir(), "exa-happy.json")
+	require.NoError(t, os.WriteFile(golden, firstBody, 0o600))
+
+	withoutPruning := &stubTB{}
+	testkit.AssertGoldenJSON(withoutPruning, golden, secondBody)
+	assert.True(t, withoutPruning.Failed(), "AssertGoldenJSON must prune nothing by default")
+
+	withPruning := &stubTB{}
+	testkit.AssertGoldenJSON(withPruning, golden, secondBody, testkit.GoldenDerivedIDs(paths...))
+	assert.False(t, withPruning.Failed(),
+		"GoldenDerivedIDs(sim.DerivedIDs()...) must prune exactly what the registered profile declared: %s",
+		withPruning.Message())
+}
+
+// TestNewJournalClosesTheHandBuiltDepsGap proves testkit.NewJournal wires a
+// real, per-Deps journal for a consumer building provider.Deps by hand
+// outside Start — AUDIT 1 gap 7, "no journal constructor outside Start".
+func TestNewJournalClosesTheHandBuiltDepsGap(t *testing.T) {
+	t.Parallel()
+
+	s, _, err := scenario.Parse([]byte(retryScenario))
+	require.NoError(t, err)
+
+	j := testkit.NewJournal()
+	set := referenceSet(t)
+	srv := httptest.NewServer(handlerFor(t, set, exa.Name, provider.Deps{Scenario: s, Faults: set.Faults(s), Journal: j}))
+	t.Cleanup(srv.Close)
+
+	req := newRequest(context.Background(), t, srv.URL+"/search", exa.Name, `{"query":"report a"}`)
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	entries := j.Snapshot()
+	require.Len(t, entries, 1, "the journal built by hand recorded the request Deps sent through it")
+}
+
+// TestHandlerReturnsItsSim covers the generic Handler constructor: the Sim
+// is returned because the journal is the only source of an Entry, and a bare
+// handler could only prove that a response arrived.
+func TestHandlerReturnsItsSim(t *testing.T) {
+	t.Parallel()
+
+	handler, sim := testkit.Handler(t, exa.Name, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"))
 	require.NotNil(t, handler)
-	assert.Empty(t, sim.URL(provider.Exa), "the handler constructors start no servers")
+	assert.Empty(t, sim.URL(exa.Name), "the handler constructor starts no servers")
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	req := newRequest(context.Background(), t, srv.URL+"/search", provider.Exa, `{"query":"report a"}`)
+	req := newRequest(context.Background(), t, srv.URL+"/search", exa.Name, `{"query":"report a"}`)
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	entries := sim.Requests(provider.Exa)
+	entries := sim.Requests(exa.Name)
 	require.Len(t, entries, 1)
 	testkit.AssertNoErrors(t, entries[0])
 }
 
-func TestHandlerConstructorsCoverEveryProvider(t *testing.T) {
+// TestHandlerConstructorCoversEveryProvider is what collapsing four
+// XHandler constructors into one testkit.Handler(tb, name, opts...) buys: a
+// single table rather than a three-way loop plus a bespoke "mcp" subtest.
+func TestHandlerConstructorCoversEveryProvider(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		build   func(testing.TB, ...testkit.Option) (http.Handler, *testkit.Sim)
-		wanted  provider.Name
-		path    string
-		payload string
+		name   string
+		wanted provider.Name
+		req    func(testing.TB) *http.Request
 	}{
-		{"exa", testkit.ExaHandler, provider.Exa, "/search", `{"query":"report a"}`},
-		{"tavily", testkit.TavilyHandler, provider.Tavily, "/search", `{"query":"report a"}`},
-		{"perplexity", testkit.PerplexityHandler, provider.Perplexity, "/v1/sonar",
-			`{"model":"sonar","messages":[{"role":"user","content":"report a"}]}`},
+		{"exa", exa.Name, func(tb testing.TB) *http.Request {
+			return newRequest(context.Background(), tb, "http://sim.test/search", exa.Name, `{"query":"report a"}`)
+		}},
+		{"tavily", tavily.Name, func(tb testing.TB) *http.Request {
+			return newRequest(context.Background(), tb, "http://sim.test/search", tavily.Name, `{"query":"report a"}`)
+		}},
+		{"perplexity", perplexity.Name, func(tb testing.TB) *http.Request {
+			return newRequest(context.Background(), tb, "http://sim.test/v1/sonar", perplexity.Name,
+				`{"model":"sonar","messages":[{"role":"user","content":"report a"}]}`)
+		}},
+		{"mcp", mcp.Name, func(tb testing.TB) *http.Request {
+			return newMCPDiscoverRequest(context.Background(), tb, "http://sim.test/mcp")
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			handler, sim := tc.build(t, testkit.WithBuiltin("happy"))
+			handler, sim := testkit.Handler(t, tc.wanted, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"))
 			require.NotNil(t, handler)
 
-			req := newRequest(context.Background(), t, "http://sim.test"+tc.path, tc.wanted, tc.payload)
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
+			handler.ServeHTTP(rec, tc.req(t))
 
 			assert.Equal(t, http.StatusOK, rec.Code)
 			assert.Equal(t, handler, sim.Handler(tc.wanted))
 			testkit.AssertRequestCount(t, sim, tc.wanted, 1)
 		})
 	}
-
-	t.Run("mcp", func(t *testing.T) {
-		handler, sim := testkit.MCPHandler(t, testkit.WithBuiltin("happy"))
-		require.NotNil(t, handler)
-
-		req := newMCPDiscoverRequest(context.Background(), t, "http://sim.test/mcp")
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		assert.Equal(t, http.StatusOK, rec.Code)
-		assert.Equal(t, handler, sim.Handler(provider.MCP))
-		testkit.AssertRequestCount(t, sim, provider.MCP, 1)
-	})
 }
 
 func TestScenarioSelectionOptions(t *testing.T) {
@@ -544,7 +819,7 @@ func TestScenarioSelectionOptions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			sim := testkit.Start(t, tc.opt, testkit.WithProviders(provider.Exa))
+			sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), tc.opt, testkit.WithProviders(exa.Name))
 			assert.Equal(t, tc.want, sim.Scenario().Name)
 		})
 	}
@@ -555,11 +830,11 @@ func TestScenarioSelectionOptions(t *testing.T) {
 func TestJournalCapacityBoundsRetention(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"),
-		testkit.WithProviders(provider.Exa), testkit.WithJournalCapacity(1))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"),
+		testkit.WithProviders(exa.Name), testkit.WithJournalCapacity(1))
 
 	for range 3 {
-		resp := search(t, sim, provider.Exa, "/search", `{"query":"report a"}`)
+		resp := search(t, sim, exa.Name, "/search", `{"query":"report a"}`)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 	}
 
@@ -573,7 +848,7 @@ func TestJournalCapacityBoundsRetention(t *testing.T) {
 func TestClientDisablesKeepAlives(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 	transport, ok := sim.Client().Transport.(*http.Transport)
 
 	require.True(t, ok, "the client's transport is an *http.Transport")
@@ -586,7 +861,7 @@ func TestClientDisablesKeepAlives(t *testing.T) {
 func TestCloseIsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 	sim.Close()
 	sim.Close()
 }
@@ -596,50 +871,53 @@ func TestCloseIsIdempotent(t *testing.T) {
 func TestUnmatchedRouteFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 
-	resp := search(t, sim, provider.Exa, "/nope", `{"query":"report a"}`)
+	resp := search(t, sim, exa.Name, "/nope", `{"query":"report a"}`)
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 	assert.Contains(t, string(body), "{", "the 404 is provider-shaped JSON, not text/plain")
 
-	entries := sim.Requests(provider.Exa)
+	entries := sim.Requests(exa.Name)
 	require.Len(t, entries, 1)
 	assert.Equal(t, testkit.OutcomeUnmatched, entries[0].Outcome.Kind)
 }
 
 // TestErrorsSurviveAsAliases is the compile-time half of the alias set: a
-// consumer must be able to name every type reachable from an Entry. The runtime
-// half is that these values come out of a real request.
+// consumer must be able to name every KEPT type reachable from an Entry. The
+// runtime half is that these values come out of a real request.
+//
+// Finding and Severity are deliberately NOT in that set (Phase 10 unit 4):
+// one name per concept means provider.Finding/provider.Severity, and
+// journal.Finding stays unnameable outside this module. entry.Errors()[0]
+// below is read through type inference, never a named var, which is the
+// point being proved.
 func TestErrorsSurviveAsAliases(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
-	search(t, sim, provider.Exa, "/search", `{}`)
+	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile()), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
+	search(t, sim, exa.Name, "/search", `{}`)
 
 	var (
-		entry    testkit.Entry
-		outcome  testkit.Outcome
-		kind     testkit.OutcomeKind
-		auth     testkit.AuthObservation
-		finding  testkit.Finding
-		severity testkit.Severity
-		stats    testkit.Stats
+		entry   testkit.Entry
+		outcome testkit.Outcome
+		kind    testkit.OutcomeKind
+		auth    testkit.AuthObservation
+		stats   testkit.Stats
 	)
-	entry = sim.Requests(provider.Exa)[0]
+	entry = sim.Requests(exa.Name)[0]
 	outcome = entry.Outcome
 	kind = outcome.Kind
 	auth = entry.Auth
 	require.NotEmpty(t, entry.Errors())
-	finding = entry.Errors()[0]
-	severity = finding.Severity
+	severity := entry.Errors()[0].Severity
 	stats = testkit.Stats{Capacity: 1}
 
 	assert.Equal(t, testkit.OutcomeError, kind)
 	assert.True(t, auth.Present)
-	assert.Equal(t, testkit.SeverityError, severity)
+	assert.Equal(t, "error", string(severity))
 	assert.Equal(t, 1, stats.Capacity)
 }
 
@@ -692,10 +970,11 @@ func TestJournalAliasIsImplementable(t *testing.T) {
 	require.NoError(t, err)
 
 	own := &countingJournal{}
-	srv := httptest.NewServer(exa.New(provider.Deps{Scenario: s, Journal: own, Faults: testkit.NewFaults(s)}))
+	set := referenceSet(t)
+	srv := httptest.NewServer(handlerFor(t, set, exa.Name, provider.Deps{Scenario: s, Journal: own, Faults: set.Faults(s)}))
 	t.Cleanup(srv.Close)
 
-	req := newRequest(context.Background(), t, srv.URL+"/search", provider.Exa, `{"query":"report a"}`)
+	req := newRequest(context.Background(), t, srv.URL+"/search", exa.Name, `{"query":"report a"}`)
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
@@ -757,10 +1036,12 @@ providers:
 	require.NoError(t, err)
 
 	own := &countingStreamJournal{}
-	srv := httptest.NewServer(perplexity.New(provider.Deps{Scenario: s, Journal: own, Faults: testkit.NewFaults(s)}))
+	set := referenceSet(t)
+	srv := httptest.NewServer(handlerFor(t, set, perplexity.Name,
+		provider.Deps{Scenario: s, Journal: own, Faults: set.Faults(s)}))
 	t.Cleanup(srv.Close)
 
-	req := newRequest(context.Background(), t, srv.URL+"/v1/sonar", provider.Perplexity,
+	req := newRequest(context.Background(), t, srv.URL+"/v1/sonar", perplexity.Name,
 		`{"model":"sonar","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
@@ -862,10 +1143,11 @@ func TestJobsAliasIsImplementable(t *testing.T) {
 	require.NoError(t, err)
 
 	own := &ownJobs{}
-	srv := httptest.NewServer(exa.New(provider.Deps{Scenario: s, Faults: testkit.NewFaults(s), Jobs: own}))
+	set := referenceSet(t)
+	srv := httptest.NewServer(handlerFor(t, set, exa.Name, provider.Deps{Scenario: s, Faults: set.Faults(s), Jobs: own}))
 	t.Cleanup(srv.Close)
 
-	createReq := newRequest(context.Background(), t, srv.URL+"/agent/runs", provider.Exa, `{"query":"report a"}`)
+	createReq := newRequest(context.Background(), t, srv.URL+"/agent/runs", exa.Name, `{"query":"report a"}`)
 	createResp, err := srv.Client().Do(createReq)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, createResp.StatusCode)
@@ -933,23 +1215,23 @@ func newFatalTB(name string) *fatalTB {
 func TestNamespaceIsolatesFaultCursors(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(retryScenario), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(retryScenario), testkit.WithProviders(exa.Name))
 	alpha := sim.Namespace(t, "alpha")
 	beta := sim.Namespace(t, "beta")
 
-	first := searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	first := searchIn(t, sim, alpha.URL(exa.Name), exa.Name, `{"query":"report a"}`)
 	require.Equal(t, http.StatusTooManyRequests, first.StatusCode)
 
 	// beta's first call is beta's first call.
-	betaFirst := searchIn(t, sim, beta.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	betaFirst := searchIn(t, sim, beta.URL(exa.Name), exa.Name, `{"query":"report a"}`)
 	assert.Equal(t, http.StatusTooManyRequests, betaFirst.StatusCode,
 		"a second namespace must start the fault plan from its first attempt")
 
 	// alpha's own cursor advanced, and only alpha's.
-	second := searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	second := searchIn(t, sim, alpha.URL(exa.Name), exa.Name, `{"query":"report a"}`)
 	assert.Equal(t, http.StatusOK, second.StatusCode)
 
-	betaSecond := searchIn(t, sim, beta.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	betaSecond := searchIn(t, sim, beta.URL(exa.Name), exa.Name, `{"query":"report a"}`)
 	assert.Equal(t, http.StatusOK, betaSecond.StatusCode)
 
 	testkit.AssertNamespacesIsolated(t, alpha, beta)
@@ -960,29 +1242,29 @@ func TestNamespaceIsolatesFaultCursors(t *testing.T) {
 func TestNamespaceScopesTheJournal(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 	alpha := sim.Namespace(t, "alpha")
 	beta := sim.Namespace(t, "beta")
 
-	searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
-	searchIn(t, sim, beta.URL(provider.Exa), provider.Exa, `{"query":"report b"}`)
-	searchIn(t, sim, alpha.URL(provider.Exa), provider.Exa, `{"query":"report c"}`)
-	search(t, sim, provider.Exa, "/search", `{"query":"unprefixed"}`)
+	searchIn(t, sim, alpha.URL(exa.Name), exa.Name, `{"query":"report a"}`)
+	searchIn(t, sim, beta.URL(exa.Name), exa.Name, `{"query":"report b"}`)
+	searchIn(t, sim, alpha.URL(exa.Name), exa.Name, `{"query":"report c"}`)
+	search(t, sim, exa.Name, "/search", `{"query":"unprefixed"}`)
 
 	assert.Len(t, alpha.Journal(), 2)
 	assert.Len(t, beta.Journal(), 1)
 	assert.Len(t, sim.Journal(), 4, "the Sim still sees every namespace")
 
-	entries := alpha.Requests(provider.Exa)
+	entries := alpha.Requests(exa.Name)
 	require.Len(t, entries, 2)
 	for _, e := range entries {
 		assert.Equal(t, "alpha", e.Namespace)
 		testkit.AssertNoErrors(t, e)
 	}
-	assert.Equal(t, "beta", beta.Requests(provider.Exa)[0].Namespace)
+	assert.Equal(t, "beta", beta.Requests(exa.Name)[0].Namespace)
 
 	// The provider filter still applies inside a namespace.
-	assert.Empty(t, alpha.Requests(provider.Tavily))
+	assert.Empty(t, alpha.Requests(tavily.Name))
 }
 
 // TestNamespaceBaseURLsCarryThePrefix is the one-line adoption path: the same
@@ -990,7 +1272,7 @@ func TestNamespaceScopesTheJournal(t *testing.T) {
 func TestNamespaceBaseURLsCarryThePrefix(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"))
 	ns := sim.Namespace(t, "t-42")
 
 	base := sim.BaseURLs()
@@ -999,7 +1281,7 @@ func TestNamespaceBaseURLsCarryThePrefix(t *testing.T) {
 	for name, url := range base {
 		assert.Equal(t, url+"/n/t-42", scoped[name], "%s must carry the namespace prefix", name)
 	}
-	assert.Equal(t, sim.URL(provider.Exa)+"/n/t-42", ns.URL(provider.Exa))
+	assert.Equal(t, sim.URL(exa.Name)+"/n/t-42", ns.URL(exa.Name))
 	assert.Equal(t, "t-42", ns.Name())
 	assert.Same(t, sim.Client(), ns.Client())
 }
@@ -1009,10 +1291,10 @@ func TestNamespaceBaseURLsCarryThePrefix(t *testing.T) {
 func TestNamespaceURLIsEmptyWithoutAServer(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 	ns := sim.Namespace(t, "t-42")
 
-	assert.Empty(t, ns.URL(provider.Tavily))
+	assert.Empty(t, ns.URL(tavily.Name))
 	assert.NotContains(t, ns.BaseURLs(), "TAVILY_BASE_URL")
 }
 
@@ -1021,13 +1303,13 @@ func TestNamespaceURLIsEmptyWithoutAServer(t *testing.T) {
 func TestNamespaceChangesStateNotBehaviour(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 
-	plain := search(t, sim, provider.Exa, "/search", `{"query":"report a"}`)
+	plain := search(t, sim, exa.Name, "/search", `{"query":"report a"}`)
 	plainBody, err := io.ReadAll(plain.Body)
 	require.NoError(t, err)
 
-	scoped := searchIn(t, sim, sim.Namespace(t, "t-42").URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+	scoped := searchIn(t, sim, sim.Namespace(t, "t-42").URL(exa.Name), exa.Name, `{"query":"report a"}`)
 	scopedBody, err := io.ReadAll(scoped.Body)
 	require.NoError(t, err)
 
@@ -1041,7 +1323,7 @@ func TestNamespaceChangesStateNotBehaviour(t *testing.T) {
 func TestNamespaceForIsOneLinePerSubtest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(retryScenario), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(retryScenario), testkit.WithProviders(exa.Name))
 
 	for _, name := range []string{"first caller", "second caller", "third caller", "fourth caller"} {
 		t.Run(name, func(t *testing.T) {
@@ -1049,13 +1331,13 @@ func TestNamespaceForIsOneLinePerSubtest(t *testing.T) {
 
 			ns := sim.NamespaceFor(t)
 
-			rateLimited := searchIn(t, sim, ns.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+			rateLimited := searchIn(t, sim, ns.URL(exa.Name), exa.Name, `{"query":"report a"}`)
 			require.Equal(t, http.StatusTooManyRequests, rateLimited.StatusCode)
 
-			retried := searchIn(t, sim, ns.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
+			retried := searchIn(t, sim, ns.URL(exa.Name), exa.Name, `{"query":"report a"}`)
 			require.Equal(t, http.StatusOK, retried.StatusCode)
 
-			entries := ns.Requests(provider.Exa)
+			entries := ns.Requests(exa.Name)
 			require.Len(t, entries, 2, "the namespace sees its own two requests and no others")
 			assert.Equal(t, 0, entries[0].Outcome.AttemptIndex)
 			assert.Equal(t, 1, entries[1].Outcome.AttemptIndex)
@@ -1068,7 +1350,7 @@ func TestNamespaceForIsOneLinePerSubtest(t *testing.T) {
 func TestNamespaceForSanitisesTheTestName(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 
 	t.Run("a name with slashes, spaces and a dot.", func(t *testing.T) {
 		t.Parallel()
@@ -1078,9 +1360,9 @@ func TestNamespaceForSanitisesTheTestName(t *testing.T) {
 		assert.NotContains(t, ns.Name(), "/")
 		assert.Equal(t, ns.Name(), sim.NamespaceFor(t).Name(), "deriving twice for one test is stable")
 
-		searchIn(t, sim, ns.URL(provider.Exa), provider.Exa, `{"query":"report a"}`)
-		require.Len(t, ns.Requests(provider.Exa), 1)
-		assert.Equal(t, ns.Name(), ns.Requests(provider.Exa)[0].Namespace)
+		searchIn(t, sim, ns.URL(exa.Name), exa.Name, `{"query":"report a"}`)
+		require.Len(t, ns.Requests(exa.Name), 1)
+		assert.Equal(t, ns.Name(), ns.Requests(exa.Name)[0].Namespace)
 	})
 }
 
@@ -1090,7 +1372,7 @@ func TestNamespaceForSanitisesTheTestName(t *testing.T) {
 func TestNamespaceForKeepsTheTailOfALongName(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 	shared := strings.Repeat("Long", 30)
 
 	first := sim.NamespaceFor(newFatalTB(shared + "/case-one"))
@@ -1108,7 +1390,7 @@ func TestNamespaceForKeepsTheTailOfALongName(t *testing.T) {
 func TestNamespaceForRejectsCollidingTestNames(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 
 	first := newFatalTB("TestCollide/case a")
 	require.NotNil(t, sim.NamespaceFor(first))
@@ -1126,7 +1408,7 @@ func TestNamespaceForRejectsCollidingTestNames(t *testing.T) {
 func TestNamespaceForRejectsANamelessTest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 
 	stub := newFatalTB("")
 	assert.Nil(t, sim.NamespaceFor(stub))
@@ -1138,7 +1420,7 @@ func TestNamespaceForRejectsANamelessTest(t *testing.T) {
 func TestNamespaceRejectsAnUnusableName(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("happy"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("happy"), testkit.WithProviders(exa.Name))
 
 	for _, name := range []string{"", "has/slash", "has space", strings.Repeat("a", provider.MaxNamespaceNameLen+1)} {
 		stub := newFatalTB("TestNamespaceRejectsAnUnusableName")
@@ -1153,17 +1435,17 @@ func TestNamespaceRejectsAnUnusableName(t *testing.T) {
 func TestNamespaceAwaitRequestsAfterAbortingFault(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(abortScenario), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(abortScenario), testkit.WithProviders(exa.Name))
 	ns := sim.Namespace(t, "t-42")
 
-	req := newRequest(context.Background(), t, ns.URL(provider.Exa)+"/search", provider.Exa, `{"query":"report a"}`)
+	req := newRequest(context.Background(), t, ns.URL(exa.Name)+"/search", exa.Name, `{"query":"report a"}`)
 	resp, err := sim.Client().Do(req) //nolint:bodyclose // the connection was closed before any header
 	if err == nil {
 		_ = resp.Body.Close()
 		t.Fatalf("the request returned %d, want a transport error", resp.StatusCode)
 	}
 
-	entries := ns.AwaitRequests(t, provider.Exa, 1)
+	entries := ns.AwaitRequests(t, exa.Name, 1)
 	require.Len(t, entries, 1)
 	assert.True(t, entries[0].Outcome.Aborted)
 	assert.Equal(t, "t-42", entries[0].Namespace)

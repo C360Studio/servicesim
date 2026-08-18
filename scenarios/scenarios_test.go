@@ -18,11 +18,23 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	"github.com/c360studio/servicesim/profiles"
+	"github.com/c360studio/servicesim/profiles/exa"
+	"github.com/c360studio/servicesim/profiles/perplexity"
+	"github.com/c360studio/servicesim/profiles/tavily"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 	"github.com/c360studio/servicesim/scenarios"
 	"github.com/c360studio/servicesim/testkit"
 )
+
+// referenceProfiles is the four in-tree profiles' registration list, shared
+// across this package's tests so testkit.WithProfiles has one thing to say
+// instead of four calls repeated at every testkit.Start site — profiles.
+// Reference() itself (Phase 10 unit 5).
+func referenceProfiles() []provider.Profile {
+	return profiles.Reference()
+}
 
 // builtins is the set this build ships. Naming them here rather than deriving
 // them from the directory is deliberate: deleting a file would otherwise delete
@@ -58,23 +70,37 @@ var implementedProviders = []string{
 	"exa", "tavily", "perplexity", "perplexity_agent", "exa_agent_runs", "tavily_research", "mcp",
 }
 
-// documentedProjectionKeys is the projection body key set docs/scenario-schema.md
-// documents per provider, minus the reserved envelope keys the scenario package
-// strips. The scenario package cannot check these — a projection body is an
-// undecoded node whose type only its provider package knows — so a typo in a
-// built-in would otherwise survive until provider.ValidateScenario runs.
-var documentedProjectionKeys = map[string]map[string]bool{
-	"exa": keySet("request_id", "results", "cost_dollars", "output", "answer", "contents", "find_similar",
-		"stream", "resolved_search_type", "context", "extra_fields"),
-	"tavily": keySet("request_id", "answer", "images", "results", "response_time",
-		"auto_parameters", "usage", "extract", "extra_fields"),
-	"perplexity": keySet("completion_id", "created", "model", "answer", "finish_reason",
-		"citations", "search_results", "usage", "images", "related_questions", "stream", "extra_fields"),
-	"perplexity_agent": keySet("response_id", "message_id", "model", "status", "answer", "queries",
-		"search_results", "annotations", "error", "usage", "stream", "extra_fields"),
-	"exa_agent_runs":  keySet("status", "stop_reason", "output", "error", "cost_dollars", "usage", "extra_fields"),
-	"tavily_research": keySet("status", "content", "sources", "response_time", "extra_fields"),
-	"mcp":             keySet("instructions", "ttl_ms", "cache_scope", "tools", "results", "stream", "extra_fields"),
+// documentedProjectionKeys is the projection body key set every reference
+// validator's own [provider.Validator.ProjectionKeys] documents, minus the
+// reserved envelope keys the scenario package strips. The scenario package
+// cannot check these — a projection body is an undecoded node whose type
+// only its provider package knows — so a typo in a built-in would otherwise
+// survive until provider.ValidateScenario runs.
+//
+// Derived from profiles.Reference() (Phase 10 unit 8) rather than
+// hand-mirrored a second time: each reference profile's own validator is the
+// one place that knows its decode struct's keys, and this cross-check reads
+// them from there instead of keeping a parallel literal that could drift.
+// This package is exempt from profiles/no_privilege_test.go's no-privilege
+// rule — that rule holds provider/, internal/, testkit/, scenario/ and
+// contracts/ to "no privilege an out-of-tree profile lacks"; scenarios is
+// none of those, and this is a _test.go file besides, which the rule
+// exempts everywhere it applies.
+var documentedProjectionKeys = derivedProjectionKeys(profiles.Reference())
+
+// derivedProjectionKeys builds the same shape the hand-mirrored map used to
+// be, keyed by scenario entry kind, from every profile's own Validators —
+// exactly what internal/server's provider.ValidateScenario and
+// (*provider.Set).Validators already key on, so this cross-check asks the
+// same question those do.
+func derivedProjectionKeys(ps []provider.Profile) map[string]map[string]bool {
+	out := make(map[string]map[string]bool)
+	for _, p := range ps {
+		for kind, v := range p.Validators {
+			out[kind] = keySet(v.ProjectionKeys()...)
+		}
+	}
+	return out
 }
 
 // refListKeys are the projection keys whose list elements may be the scalar
@@ -179,7 +205,7 @@ func TestBuiltins_ProjectionKeysAreDocumented(t *testing.T) {
 				for i := range entry.Turns {
 					for _, key := range mappingKeys(&entry.Turns[i].Respond) {
 						assert.Truef(t, allowed[key],
-							"%s: providers.%s.turns[%d].respond declares %q, which docs/scenario-schema.md does not document for %s",
+							"%s: providers.%s.turns[%d].respond declares %q, which %s's own Validator.ProjectionKeys() does not list",
 							name, provider, i, key, provider)
 					}
 				}
@@ -230,6 +256,18 @@ var reservedSuffixes = []string{".test", ".example", ".invalid", "example.com", 
 // TestBuiltins_UseReservedHostsOnly is the same guard scripts/lint-no-live-hosts.sh
 // applies, run where the failure is cheap. A scenario URL that resolves to a real
 // host is one copy-paste from a consumer's base URL pointing at a paid API.
+//
+// It stays a whitelist (every host found must be RESERVED), not the library's
+// blacklist (no host may be a known PAID one), because the two check different
+// properties and the whitelist is strictly the stronger one for scenario data:
+// it also catches a host that is neither reserved nor on any paid list — a
+// typo, or a vendor no one has registered a profile for yet — which
+// [testkit.AssertNoLiveHosts]'s blacklist would silently pass. That is the
+// "where feasible" boundary Phase 10 unit 7 recorded: the two guards share one
+// implementation for the blacklist half (below, over the same embedded
+// corpus, with the four reference profiles' own real hostnames folded in),
+// and this test's own whitelist logic is the part that cannot fold into it
+// without losing coverage.
 func TestBuiltins_UseReservedHostsOnly(t *testing.T) {
 	t.Parallel()
 	for _, name := range builtins {
@@ -244,6 +282,17 @@ func TestBuiltins_UseReservedHostsOnly(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("library-guard", func(t *testing.T) {
+		t.Parallel()
+		set, err := provider.NewSet(referenceProfiles()...)
+		require.NoError(t, err)
+		// scenarios.FS holds only the embedded protocol/*.yaml files, so this
+		// is the built-in corpus's half of the two-line idiom
+		// AssertNoLiveHosts documents — the same call an out-of-tree
+		// adopter's CI makes over their own scenario fixtures.
+		testkit.AssertNoLiveHosts(t, scenarios.FS, nil, set.LiveHosts()...)
+	})
 }
 
 func isReserved(host string) bool {
@@ -542,7 +591,7 @@ func scalarsContain(n *yaml.Node, substr string) bool {
 func TestMaliciousContent_WireResponsesCarryMarkersVerbatim(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("malicious-content"))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("malicious-content"))
 
 	cases := []struct {
 		name    string
@@ -558,29 +607,29 @@ func TestMaliciousContent_WireResponsesCarryMarkersVerbatim(t *testing.T) {
 	}{
 		{
 			name:    "exa search",
-			p:       provider.Exa,
+			p:       exa.Name,
 			path:    "/search",
 			body:    `{"query":"malicious content probe","numResults":20}`,
 			headers: map[string]string{"x-api-key": "test-exa-key"},
 		},
 		{
 			// text:true is what makes /answer's citations carry the source's
-			// full text (provider/exa/render.go renderAnswer), not only titles.
+			// full text (profiles/exa/render.go renderAnswer), not only titles.
 			name:    "exa answer",
-			p:       provider.Exa,
+			p:       exa.Name,
 			path:    "/answer",
 			body:    `{"query":"malicious content probe","text":true}`,
 			headers: map[string]string{"x-api-key": "test-exa-key"},
 		},
 		{
 			// include_raw_content:true is what makes /search's raw_content field
-			// carry markup-script's override sentence (provider/tavily/render.go
+			// carry markup-script's override sentence (profiles/tavily/render.go
 			// renderRawContent) — the one string on this surface that reaches the
 			// wire ONLY through raw_content, since content already falls back
 			// through snippet then text and would carry every other marker even
 			// without this flag.
 			name: "tavily search",
-			p:    provider.Tavily,
+			p:    tavily.Name,
 			path: "/search",
 			body: `{"query":"malicious content probe","max_results":20,` +
 				`"include_raw_content":true,"include_answer":true}`,
@@ -589,14 +638,14 @@ func TestMaliciousContent_WireResponsesCarryMarkersVerbatim(t *testing.T) {
 		},
 		{
 			name:    "perplexity sonar",
-			p:       provider.Perplexity,
+			p:       perplexity.Name,
 			path:    "/v1/sonar",
 			body:    `{"model":"sonar","messages":[{"role":"user","content":"malicious content probe"}]}`,
 			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
 		},
 		{
 			name:    "perplexity agent",
-			p:       provider.Perplexity,
+			p:       perplexity.Name,
 			path:    "/v1/agent",
 			body:    `{"input":"malicious content probe"}`,
 			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
@@ -654,12 +703,12 @@ func TestMaliciousContent_WireResponsesCarryMarkersVerbatim(t *testing.T) {
 func TestMaliciousContent_CredentialBaitNeverReachesTheJournal(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("malicious-content"), testkit.WithProviders(provider.Exa))
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithBuiltin("malicious-content"), testkit.WithProviders(exa.Name))
 
 	// An ordinary probe first, so the journal holds real traffic to scan —
 	// the bait is response-side and must never appear in it.
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
-		sim.URL(provider.Exa)+"/search", strings.NewReader(`{"query":"malicious content probe","numResults":20}`))
+		sim.URL(exa.Name)+"/search", strings.NewReader(`{"query":"malicious content probe","numResults":20}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-exa-key")
@@ -675,7 +724,7 @@ func TestMaliciousContent_CredentialBaitNeverReachesTheJournal(t *testing.T) {
 	// journal redaction of request text still works in the presence of bait.
 	echoed := maliciousContentBaitTokens[0] // sk-live-FAKE0000000000000000EXAMPLE
 	echoReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
-		sim.URL(provider.Exa)+"/search", strings.NewReader(`{"query":"`+echoed+`"}`))
+		sim.URL(exa.Name)+"/search", strings.NewReader(`{"query":"`+echoed+`"}`))
 	require.NoError(t, err)
 	echoReq.Header.Set("Content-Type", "application/json")
 	echoReq.Header.Set("x-api-key", "test-exa-key")
@@ -685,7 +734,7 @@ func TestMaliciousContent_CredentialBaitNeverReachesTheJournal(t *testing.T) {
 	_ = echoResp.Body.Close()
 	require.Equal(t, http.StatusOK, echoResp.StatusCode)
 
-	entries := sim.AwaitRequests(t, provider.Exa, 2)
+	entries := sim.AwaitRequests(t, exa.Name, 2)
 	last := entries[len(entries)-1]
 	// Positive half first: the journal actually masked something (internal/
 	// redact.Mask, quoted literally so this fails loudly if that constant's
@@ -789,9 +838,9 @@ const oversizedBodyMinBytes = 4194304
 func TestOversizedBody_FirstAttemptPadsThenCleanRetry(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t,
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
 		testkit.WithBuiltin("oversized-body"),
-		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+		testkit.WithProviders(exa.Name, tavily.Name, perplexity.Name))
 
 	cases := []struct {
 		name    string
@@ -802,7 +851,7 @@ func TestOversizedBody_FirstAttemptPadsThenCleanRetry(t *testing.T) {
 	}{
 		{
 			name:    "exa search",
-			p:       provider.Exa,
+			p:       exa.Name,
 			path:    "/search",
 			body:    `{"query":"report"}`,
 			headers: map[string]string{"x-api-key": "test-exa-key"},
@@ -813,28 +862,28 @@ func TestOversizedBody_FirstAttemptPadsThenCleanRetry(t *testing.T) {
 			// rate-limited does, so a consumer whose adapter uses any of them
 			// gets the same first-call padding.
 			name:    "exa answer",
-			p:       provider.Exa,
+			p:       exa.Name,
 			path:    "/answer",
 			body:    `{"query":"report"}`,
 			headers: map[string]string{"x-api-key": "test-exa-key"},
 		},
 		{
 			name:    "exa contents",
-			p:       provider.Exa,
+			p:       exa.Name,
 			path:    "/contents",
 			body:    `{"urls":["https://example.test/report-a"]}`,
 			headers: map[string]string{"x-api-key": "test-exa-key"},
 		},
 		{
 			name:    "exa findSimilar",
-			p:       provider.Exa,
+			p:       exa.Name,
 			path:    "/findSimilar",
 			body:    `{"url":"https://example.test/report-a"}`,
 			headers: map[string]string{"x-api-key": "test-exa-key"},
 		},
 		{
 			name:    "tavily search",
-			p:       provider.Tavily,
+			p:       tavily.Name,
 			path:    "/search",
 			body:    `{"query":"report"}`,
 			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
@@ -842,14 +891,14 @@ func TestOversizedBody_FirstAttemptPadsThenCleanRetry(t *testing.T) {
 		{
 			// /extract is its own route with its own budget, Bearer-only.
 			name:    "tavily extract",
-			p:       provider.Tavily,
+			p:       tavily.Name,
 			path:    "/extract",
 			body:    `{"urls":"https://example.test/report-a"}`,
 			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
 		},
 		{
 			name:    "perplexity sonar",
-			p:       provider.Perplexity,
+			p:       perplexity.Name,
 			path:    "/v1/sonar",
 			body:    `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
 			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
@@ -861,7 +910,7 @@ func TestOversizedBody_FirstAttemptPadsThenCleanRetry(t *testing.T) {
 			// journal entries by Route rather than assume ordinal position —
 			// see filterByRoute below.
 			name:    "perplexity agent",
-			p:       provider.Perplexity,
+			p:       perplexity.Name,
 			path:    "/v1/agent",
 			body:    `{"input":"report"}`,
 			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
@@ -1021,42 +1070,42 @@ type syncRouteCase struct {
 func syncRouteCases() []syncRouteCase {
 	return []syncRouteCase{
 		{
-			name: "exa search", p: provider.Exa, path: "/search",
+			name: "exa search", p: exa.Name, path: "/search",
 			body:    `{"query":"report"}`,
 			headers: map[string]string{"x-api-key": "test-exa-key"},
 		},
 		{
-			name: "exa answer", p: provider.Exa, path: "/answer",
+			name: "exa answer", p: exa.Name, path: "/answer",
 			body:    `{"query":"report"}`,
 			headers: map[string]string{"x-api-key": "test-exa-key"},
 		},
 		{
-			name: "exa contents", p: provider.Exa, path: "/contents",
+			name: "exa contents", p: exa.Name, path: "/contents",
 			body:    `{"urls":["https://example.test/report-a"]}`,
 			headers: map[string]string{"x-api-key": "test-exa-key"},
 		},
 		{
-			name: "exa findSimilar", p: provider.Exa, path: "/findSimilar",
+			name: "exa findSimilar", p: exa.Name, path: "/findSimilar",
 			body:    `{"url":"https://example.test/report-a"}`,
 			headers: map[string]string{"x-api-key": "test-exa-key"},
 		},
 		{
-			name: "tavily search", p: provider.Tavily, path: "/search",
+			name: "tavily search", p: tavily.Name, path: "/search",
 			body:    `{"query":"report"}`,
 			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
 		},
 		{
-			name: "tavily extract", p: provider.Tavily, path: "/extract",
+			name: "tavily extract", p: tavily.Name, path: "/extract",
 			body:    `{"urls":"https://example.test/report-a"}`,
 			headers: map[string]string{"authorization": "Bearer test-tavily-key"},
 		},
 		{
-			name: "perplexity sonar", p: provider.Perplexity, path: "/v1/sonar",
+			name: "perplexity sonar", p: perplexity.Name, path: "/v1/sonar",
 			body:    `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
 			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
 		},
 		{
-			name: "perplexity agent", p: provider.Perplexity, path: "/v1/agent",
+			name: "perplexity agent", p: perplexity.Name, path: "/v1/agent",
 			body:    `{"input":"report"}`,
 			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
 		},
@@ -1081,9 +1130,9 @@ func syncRouteCases() []syncRouteCase {
 func TestTimeout_ClientDeadlineAbandonsTheHangThenRetrySucceeds(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t,
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
 		testkit.WithBuiltin("timeout"),
-		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+		testkit.WithProviders(exa.Name, tavily.Name, perplexity.Name))
 
 	for _, tc := range syncRouteCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1177,9 +1226,9 @@ var brownoutLadderMS = []int64{50, 100, 200, 400}
 func TestBrownout_LadderThenOutageThenRecovery(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t,
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
 		testkit.WithBuiltin("brownout"),
-		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+		testkit.WithProviders(exa.Name, tavily.Name, perplexity.Name))
 
 	for _, tc := range syncRouteCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1258,9 +1307,9 @@ func brownoutPost(
 func TestHangThenAbort_ThreeAbortShapesThenSuccess(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t,
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
 		testkit.WithBuiltin("hang-then-abort"),
-		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+		testkit.WithProviders(exa.Name, tavily.Name, perplexity.Name))
 
 	const hang = 700 * time.Millisecond
 
@@ -1371,31 +1420,31 @@ type credentialRotationCase struct {
 func TestCredentialRotation_OldKeyRejectedRotatedKeyAccepted(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t,
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
 		testkit.WithBuiltin("credential-rotation"),
-		testkit.WithProviders(provider.Exa, provider.Tavily, provider.Perplexity))
+		testkit.WithProviders(exa.Name, tavily.Name, perplexity.Name))
 
 	cases := []credentialRotationCase{
 		{
-			name: "exa x-api-key", p: provider.Exa, path: "/search",
+			name: "exa x-api-key", p: exa.Name, path: "/search",
 			oldBody: `{"query":"report"}`, newBody: `{"query":"report"}`,
 			oldHdrs: map[string]string{"x-api-key": "old-key-EXAMPLE"},
 			newHdrs: map[string]string{"x-api-key": "rotated-key-EXAMPLE"},
 		},
 		{
-			name: "tavily bearer", p: provider.Tavily, path: "/search",
+			name: "tavily bearer", p: tavily.Name, path: "/search",
 			oldBody: `{"query":"report"}`, newBody: `{"query":"report"}`,
 			oldHdrs: map[string]string{"authorization": "Bearer old-key-EXAMPLE"},
 			newHdrs: map[string]string{"authorization": "Bearer rotated-key-EXAMPLE"},
 		},
 		{
-			name: "tavily body api_key", p: provider.Tavily, path: "/search",
+			name: "tavily body api_key", p: tavily.Name, path: "/search",
 			oldBody: `{"query":"report","api_key":"old-key-EXAMPLE"}`,
 			newBody: `{"query":"report","api_key":"rotated-key-EXAMPLE"}`,
 			oldHdrs: nil, newHdrs: nil,
 		},
 		{
-			name: "perplexity bearer", p: provider.Perplexity, path: "/v1/sonar",
+			name: "perplexity bearer", p: perplexity.Name, path: "/v1/sonar",
 			oldBody: `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
 			newBody: `{"model":"sonar","messages":[{"role":"user","content":"report"}]}`,
 			oldHdrs: map[string]string{"authorization": "Bearer old-key-EXAMPLE"},
@@ -1540,14 +1589,14 @@ providers:
 func TestCredentialRotation_ExpectKeyPlusFaultPlanFiresOnFirstAuthenticatedCall(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t,
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
 		testkit.WithScenarioYAML(credentialRotationTrapScenario),
-		testkit.WithProviders(provider.Exa))
+		testkit.WithProviders(exa.Name))
 
 	post := func(key string) int {
 		t.Helper()
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
-			sim.URL(provider.Exa)+"/search", strings.NewReader(`{"query":"report"}`))
+			sim.URL(exa.Name)+"/search", strings.NewReader(`{"query":"report"}`))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", key)
@@ -1565,7 +1614,7 @@ func TestCredentialRotation_ExpectKeyPlusFaultPlanFiresOnFirstAuthenticatedCall(
 		"the fault plan's first attempt must claim the first AUTHENTICATED call, not the first call overall")
 	require.Equal(t, http.StatusOK, post("rotated-key-EXAMPLE"))
 
-	entries := sim.AwaitRequests(t, provider.Exa, 4)
+	entries := sim.AwaitRequests(t, exa.Name, 4)
 	require.Len(t, entries, 4)
 	assert.Equal(t, -1, entries[0].Outcome.AttemptIndex, "an auth rejection claims no attempt")
 	assert.Equal(t, -1, entries[1].Outcome.AttemptIndex, "an auth rejection claims no attempt")
@@ -1621,9 +1670,9 @@ func TestNamespaced_DeclaresOneLanePerModel(t *testing.T) {
 func TestNamespaced_EachLaneAdvancesItsOwnCursor(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t,
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
 		testkit.WithBuiltin("namespaced"),
-		testkit.WithProviders(provider.Perplexity))
+		testkit.WithProviders(perplexity.Name))
 
 	// Interleaved deliberately: sonar, sonar-pro, sonar. A shared cursor is
 	// invisible when each caller runs to completion before the next one starts.
@@ -1647,7 +1696,7 @@ func sonarAnswer(t *testing.T, sim *testkit.Sim, model string) string {
 
 	body := `{"model":"` + model + `","messages":[{"role":"user","content":"report"}]}`
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
-		sim.URL(provider.Perplexity)+"/v1/sonar", strings.NewReader(body))
+		sim.URL(perplexity.Name)+"/v1/sonar", strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer test-perplexity-key")
@@ -1679,29 +1728,29 @@ func sonarAnswer(t *testing.T, sim *testkit.Sim, model string) string {
 func TestAsyncFailed_BothSurfacesReachATerminalFailure(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t,
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
 		testkit.WithBuiltin("async-failed"),
-		testkit.WithProviders(provider.Exa, provider.Tavily))
+		testkit.WithProviders(exa.Name, tavily.Name))
 
 	exaHeaders := map[string]string{"x-api-key": "test-exa-key"}
-	exaID := asyncCreate(t, sim, provider.Exa, "/agent/runs", `{"query":"find the finding"}`, exaHeaders)
+	exaID := asyncCreate(t, sim, exa.Name, "/agent/runs", `{"query":"find the finding"}`, exaHeaders)
 
-	running := asyncPoll(t, sim, provider.Exa, "/agent/runs/"+exaID, exaHeaders)
+	running := asyncPoll(t, sim, exa.Name, "/agent/runs/"+exaID, exaHeaders)
 	assert.Equal(t, "running", running["status"], "the first poll is still running")
 
-	failed := asyncPoll(t, sim, provider.Exa, "/agent/runs/"+exaID, exaHeaders)
+	failed := asyncPoll(t, sim, exa.Name, "/agent/runs/"+exaID, exaHeaders)
 	assert.Equal(t, "failed", failed["status"])
 	errObj, ok := failed["error"].(map[string]any)
 	require.True(t, ok, "a failed run must carry an error object: %v", failed)
 	assert.Equal(t, "AGENT_RUN_FAILED", errObj["code"])
 
 	tavilyHeaders := map[string]string{"authorization": "Bearer test-tavily-key"}
-	tavilyID := asyncCreate(t, sim, provider.Tavily, "/research", `{"input":"find the finding"}`, tavilyHeaders)
+	tavilyID := asyncCreate(t, sim, tavily.Name, "/research", `{"input":"find the finding"}`, tavilyHeaders)
 
-	pending := asyncPoll(t, sim, provider.Tavily, "/research/"+tavilyID, tavilyHeaders)
+	pending := asyncPoll(t, sim, tavily.Name, "/research/"+tavilyID, tavilyHeaders)
 	assert.Equal(t, "pending", pending["status"], "the first poll is still pending")
 
-	taskFailed := asyncPoll(t, sim, provider.Tavily, "/research/"+tavilyID, tavilyHeaders)
+	taskFailed := asyncPoll(t, sim, tavily.Name, "/research/"+tavilyID, tavilyHeaders)
 	assert.Equal(t, "failed", taskFailed["status"])
 	// Verified 2026-08-15 against the vendor's research-get reference: a failed
 	// poll carries ONLY the three common fields. content and sources are gated
@@ -1717,21 +1766,21 @@ func TestAsyncFailed_BothSurfacesReachATerminalFailure(t *testing.T) {
 func TestAsyncStuck_NeitherSurfaceEverTerminates(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t,
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
 		testkit.WithBuiltin("async-stuck"),
-		testkit.WithProviders(provider.Exa, provider.Tavily))
+		testkit.WithProviders(exa.Name, tavily.Name))
 
 	exaHeaders := map[string]string{"x-api-key": "test-exa-key"}
-	exaID := asyncCreate(t, sim, provider.Exa, "/agent/runs", `{"query":"q"}`, exaHeaders)
+	exaID := asyncCreate(t, sim, exa.Name, "/agent/runs", `{"query":"q"}`, exaHeaders)
 	for i := range 3 {
-		got := asyncPoll(t, sim, provider.Exa, "/agent/runs/"+exaID, exaHeaders)
+		got := asyncPoll(t, sim, exa.Name, "/agent/runs/"+exaID, exaHeaders)
 		assert.Equalf(t, "running", got["status"], "poll %d", i)
 	}
 
 	tavilyHeaders := map[string]string{"authorization": "Bearer test-tavily-key"}
-	tavilyID := asyncCreate(t, sim, provider.Tavily, "/research", `{"input":"q"}`, tavilyHeaders)
+	tavilyID := asyncCreate(t, sim, tavily.Name, "/research", `{"input":"q"}`, tavilyHeaders)
 	for i := range 3 {
-		got := asyncPoll(t, sim, provider.Tavily, "/research/"+tavilyID, tavilyHeaders)
+		got := asyncPoll(t, sim, tavily.Name, "/research/"+tavilyID, tavilyHeaders)
 		assert.Equalf(t, "pending", got["status"], "poll %d", i)
 	}
 }

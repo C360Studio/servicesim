@@ -79,19 +79,19 @@ func TestStreamBytes(t *testing.T) {
 		chunkBytes += len(c.Bytes)
 	}
 
-	t.Run("GrammarDelta counts DONE's bytes even though it is never a chunk", func(t *testing.T) {
+	t.Run("a set Sentinel counts its bytes even though it is never a chunk", func(t *testing.T) {
+		t.Parallel()
+		s := &Stream{Grammar: GrammarDelta, Chunks: EncodeSSE(events), Sentinel: DoneSentinel}
+		require.Equal(t, chunkBytes+len(DoneSentinel), s.Bytes())
+	})
+
+	t.Run("a nil Sentinel adds nothing to the total, on either grammar", func(t *testing.T) {
 		t.Parallel()
 		s := &Stream{Grammar: GrammarDelta, Chunks: EncodeSSE(events)}
-		require.Equal(t, chunkBytes+len(doneChunk().Bytes), s.Bytes())
+		require.Equal(t, chunkBytes, s.Bytes(), "Sentinel is data now: the framework infers nothing from Grammar")
 	})
 
-	t.Run("OmitDone drops DONE's bytes from the total", func(t *testing.T) {
-		t.Parallel()
-		s := &Stream{Grammar: GrammarDelta, Chunks: EncodeSSE(events), OmitDone: true}
-		require.Equal(t, chunkBytes, s.Bytes())
-	})
-
-	t.Run("GrammarTyped never adds DONE's bytes", func(t *testing.T) {
+	t.Run("GrammarTyped never implies a Sentinel", func(t *testing.T) {
 		t.Parallel()
 		s := &Stream{Grammar: GrammarTyped, Chunks: EncodeSSE(events)}
 		require.Equal(t, chunkBytes, s.Bytes())
@@ -118,6 +118,7 @@ func twoChunkStream() *Stream {
 	return &Stream{
 		Grammar:   GrammarDelta,
 		Chunks:    EncodeSSE(events),
+		Sentinel:  DoneSentinel,
 		Usage:     json.RawMessage(`{}`),
 		CostTotal: func() *float64 { v := 0.5; return &v }(),
 	}
@@ -192,7 +193,7 @@ func TestHandleStreamsAndJournalsBeforeTheFirstByte(t *testing.T) {
 	costTotal := 0.5
 	stream.CostTotal = &costTotal
 	j := journal.NewRing(8, 4096)
-	hf := Handle(Deps{Journal: j}, Exa, testRoute, streamHandler(stream))
+	hf := Handle(Deps{Journal: j}, testProviderExa, testRoute, streamHandler(stream))
 
 	var sawBeforeFirstByte bool
 	w := &capturingWriter{}
@@ -243,7 +244,7 @@ func TestHandleStreamDeterministicAcrossRuns(t *testing.T) {
 
 	run := func() []byte {
 		j := journal.NewRing(8, 4096)
-		srv := httptest.NewServer(Handle(Deps{Journal: j}, Exa, testRoute, streamHandler(twoChunkStream())))
+		srv := httptest.NewServer(Handle(Deps{Journal: j}, testProviderExa, testRoute, streamHandler(twoChunkStream())))
 		defer srv.Close()
 		resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
 		require.NoError(t, err)
@@ -265,7 +266,7 @@ func TestHandleSuppressesStreamOnAFaultThatPrecedesTheStream(t *testing.T) {
 
 	j := journal.NewRing(8, 4096)
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{{Status: http.StatusTooManyRequests}}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(twoChunkStream())))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, streamHandler(twoChunkStream())))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -299,7 +300,7 @@ func TestHandleStreamAppliesAttemptHeaders(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Status: http.StatusCreated, Headers: map[string]string{"X-Custom": "yes"}, RetryAfter: &retryAfter},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(twoChunkStream())))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, streamHandler(twoChunkStream())))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -329,7 +330,7 @@ func TestHandleStreamAbortUnreachable(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultTruncateBody, TruncateAfterBytes: 5},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, streamHandler(stream)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -374,7 +375,7 @@ func TestHandleStreamAbortUnreachableOversizedBody(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultOversizedBody, BodyBytes: 4 << 20},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, streamHandler(stream)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -423,7 +424,7 @@ func TestHandleStreamAbortUnreachableDelayAfterHeaders(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{DelayAfterHeaders: scenario.Duration(50 * time.Millisecond)},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, streamHandler(stream)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -476,7 +477,7 @@ func TestHandleStreamClientGone(t *testing.T) {
 
 	stream := twoChunkStream()
 	j := journal.NewRing(8, 4096)
-	hf := Handle(Deps{Journal: j}, Exa, testRoute, streamHandler(stream))
+	hf := Handle(Deps{Journal: j}, testProviderExa, testRoute, streamHandler(stream))
 
 	w := &capturingWriter{}
 	w.onWrite = func(call int) error {
@@ -508,7 +509,7 @@ func TestHandleStreamFalseServesOrdinaryJSON(t *testing.T) {
 	h := func(_ *Exchange) Response {
 		return Response{Status: http.StatusOK, Body: []byte(`{"ok":true}`), Label: "test.ok", FaultEligible: true}
 	}
-	srv := httptest.NewServer(Handle(Deps{Journal: j}, Exa, testRoute, h))
+	srv := httptest.NewServer(Handle(Deps{Journal: j}, testProviderExa, testRoute, h))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -536,7 +537,7 @@ func pacedThreeChunkStream() *Stream {
 		{Data: []byte(`{"i":1}`), Pace: 10 * time.Millisecond},
 		{Data: []byte(`{"i":2}`), Pace: 5 * time.Millisecond, Terminal: true},
 	}
-	return &Stream{Grammar: GrammarDelta, Chunks: EncodeSSE(events), DonePace: 7 * time.Millisecond}
+	return &Stream{Grammar: GrammarDelta, Chunks: EncodeSSE(events), SentinelPace: 7 * time.Millisecond}
 }
 
 func TestPlanStream(t *testing.T) {
@@ -549,7 +550,7 @@ func TestPlanStream(t *testing.T) {
 		require.Equal(t, -1, p.truncateAt)
 		require.Equal(t, -1, p.stallAt)
 		require.Equal(t, []int64{40, 10, 5}, p.paceMS())
-		require.Equal(t, 7*time.Millisecond, p.donePace)
+		require.Equal(t, 7*time.Millisecond, p.sentinelPace)
 	})
 
 	t.Run("a non-stream_* attempt behaves exactly like nil", func(t *testing.T) {
@@ -644,7 +645,7 @@ func TestHandleStreamDisconnect(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultStreamDisconnect, AfterChunk: 1, Reset: true},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, streamHandler(stream)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -681,7 +682,7 @@ func TestHandleStreamDisconnectAtChunkZero(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultStreamDisconnect, AfterChunk: 0},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, streamHandler(stream)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -729,7 +730,7 @@ func TestHandleStreamTruncateChunk(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultStreamTruncateChunk, AfterChunk: 0, TruncateAfterBytes: 5},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, streamHandler(stream)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -769,7 +770,7 @@ func TestHandleStreamTruncateChunkZeroBytesHalvesTheChunk(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultStreamTruncateChunk, AfterChunk: 0},
 	}}
-	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream)))
+	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, streamHandler(stream)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -796,7 +797,7 @@ func TestHandleStreamDisconnectAbortedIsTrueBeforeTheFirstByte(t *testing.T) {
 	engine := &scriptedFaults{attempts: []scenario.FaultAttempt{
 		{Kind: scenario.FaultStreamDisconnect, AfterChunk: 1},
 	}}
-	hf := Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream))
+	hf := Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, streamHandler(stream))
 
 	var sawBeforeFirstByte bool
 	w := &capturingWriter{}
@@ -845,7 +846,7 @@ func TestHandleStreamCancelledPreDispatchDelayLeavesAbortedFalse(t *testing.T) {
 	cancel()
 	r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{}`)).WithContext(ctx)
 
-	hf := Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, streamHandler(stream))
+	hf := Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, streamHandler(stream))
 	w := httptest.NewRecorder()
 	hf(w, r)
 
@@ -883,7 +884,7 @@ func TestHandleStreamPaceIsHonouredUnderDelayReal(t *testing.T) {
 	cancel()
 	r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{}`)).WithContext(ctx)
 
-	hf := Handle(Deps{Journal: j, DelayMode: DelayReal}, Exa, testRoute, streamHandler(stream))
+	hf := Handle(Deps{Journal: j, DelayMode: DelayReal}, testProviderExa, testRoute, streamHandler(stream))
 	w := httptest.NewRecorder()
 	hf(w, r)
 
@@ -899,22 +900,22 @@ func TestHandleStreamPaceIsHonouredUnderDelayReal(t *testing.T) {
 
 // TestHandleStreamDonePaceIsHonouredUnderDelayReal is the DONE-sentinel
 // sibling of the test above: [DONE] is never an indexed chunk (§3.2), so its
-// gap is Stream.DonePace, slept once — through plan.donePace — after the loop
-// over plan.chunks completes, never through plan.paceOf. A build that slept 0
-// there regardless of DonePace would still pass every PaceMS assertion, since
-// PaceMS never includes DONE.
+// gap is Stream.SentinelPace, slept once — through plan.sentinelPace — after
+// the loop over plan.chunks completes, never through plan.paceOf. A build
+// that slept 0 there regardless of SentinelPace would still pass every
+// PaceMS assertion, since PaceMS never includes the sentinel.
 func TestHandleStreamDonePaceIsHonouredUnderDelayReal(t *testing.T) {
 	t.Parallel()
 
-	stream := twoChunkStream() // both chunks pace 0; only DonePace is nonzero
-	stream.DonePace = time.Hour
+	stream := twoChunkStream() // both chunks pace 0; only SentinelPace is nonzero
+	stream.SentinelPace = time.Hour
 
 	j := journal.NewRing(8, 4096)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{}`)).WithContext(ctx)
 
-	hf := Handle(Deps{Journal: j, DelayMode: DelayReal}, Exa, testRoute, streamHandler(stream))
+	hf := Handle(Deps{Journal: j, DelayMode: DelayReal}, testProviderExa, testRoute, streamHandler(stream))
 	w := httptest.NewRecorder()
 	hf(w, r)
 
@@ -949,7 +950,7 @@ func TestHandleStreamStallFoldsIntoPaceMS(t *testing.T) {
 		{Kind: scenario.FaultStreamStall, AfterChunk: 1, Delay: scenario.Duration(65 * time.Second)},
 	}}
 	srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine, DelayMode: DelaySkip},
-		Exa, testRoute, streamHandler(stream)))
+		testProviderExa, testRoute, streamHandler(stream)))
 	defer srv.Close()
 
 	resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))
@@ -995,7 +996,7 @@ func TestHandleStreamStallSkipsThePreDispatchDelayCarveOut(t *testing.T) {
 	cancel()
 	r := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{}`)).WithContext(ctx)
 
-	hf := Handle(Deps{Journal: j, Faults: engine, DelayMode: DelayReal}, Exa, testRoute, streamHandler(stream))
+	hf := Handle(Deps{Journal: j, Faults: engine, DelayMode: DelayReal}, testProviderExa, testRoute, streamHandler(stream))
 	w := httptest.NewRecorder()
 	hf(w, r)
 
@@ -1036,7 +1037,7 @@ func TestHandleStreamFaultKindClaimedOnNonStreamingExchange(t *testing.T) {
 			h := func(_ *Exchange) Response {
 				return Response{Status: http.StatusOK, Body: []byte(`{"ok":true}`), Label: "test.ok", FaultEligible: true}
 			}
-			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, Exa, testRoute, h))
+			srv := httptest.NewServer(Handle(Deps{Journal: j, Faults: engine}, testProviderExa, testRoute, h))
 			defer srv.Close()
 
 			resp, err := srv.Client().Post(srv.URL+"/search", "application/json", strings.NewReader(`{}`))

@@ -1,0 +1,20 @@
+# Configuration for the four reference profiles' contract bundles
+# (profiles/<name>/contracts/*.md). Before Phase 10 unit 6 (contracts
+# genericised over fs.FS; each reference profile now embeds its own bundle)
+# a single contracts/.markdownlint.yaml covered all four sibling bundles at
+# once, from contracts/. profiles/ is the nearest common ancestor of the
+# four bundles' new locations, so one file here still covers all four the
+# same way. No other .md file lives directly under profiles/ today, so this
+# is not yet relaxing anything it should not.
+#
+# markdownlint-cli2 resolves the NEAREST config rather than merging with
+# ancestors, so this must extend the repository defaults explicitly or it
+# silently drops every rule tuned there.
+extends: ../.markdownlint.yaml
+
+# These files are GENERATED from vendor documentation — the Perplexity one
+# directly from the vendor's OpenAPI document. Their content is wide reference
+# tables and verbatim evidence quotes, where reflowing to 120 columns would
+# either corrupt a table row or silently edit a quotation. Line length is the
+# wrong constraint for generated reference data.
+MD013: false

@@ -31,7 +31,7 @@ func sseTranscript(id, secondDeltaText string) []byte {
 // carry a call-index-derived response id nested under "response", while the
 // output_item/output_text events carry a call-index-derived message id under
 // "item" or "item_id" — respId and msgID stand in for both, matching
-// renderAgentIdentity's shape (provider/perplexity/agent.go) closely enough
+// renderAgentIdentity's shape (profiles/perplexity/agent.go) closely enough
 // to exercise AssertGoldenSSE's default id pruning without a live Sim.
 func agentTranscript(respID, msgID string) []byte {
 	var b strings.Builder
@@ -73,13 +73,18 @@ func TestAssertGoldenSSE(t *testing.T) {
 		testkit.AssertGoldenSSE(t, path, body)
 	})
 
-	t.Run("derived identifiers are ignored inside every frame by default", func(t *testing.T) {
+	t.Run("GoldenDerivedIDs prunes a named path inside every frame", func(t *testing.T) {
 		varied := sseTranscript("call-9", "finds that X.")
-		testkit.AssertGoldenSSE(t, path, varied)
 
 		stub := &stubTB{}
-		testkit.AssertGoldenSSE(stub, path, varied, testkit.GoldenExactIDs())
-		assert.True(t, stub.Failed(), "GoldenExactIDs opts back into comparing each frame's id")
+		testkit.AssertGoldenSSE(stub, path, varied)
+		assert.True(t, stub.Failed(), "no GoldenDerivedIDs was passed, so \"id\" is compared exactly")
+
+		testkit.AssertGoldenSSE(t, path, varied, testkit.GoldenDerivedIDs("id"))
+
+		stub2 := &stubTB{}
+		testkit.AssertGoldenSSE(stub2, path, varied, testkit.GoldenDerivedIDs("id"), testkit.GoldenExactIDs())
+		assert.True(t, stub2.Failed(), "GoldenExactIDs opts back out of every path GoldenDerivedIDs named")
 	})
 
 	t.Run("GoldenIgnore excludes a dotted path inside a frame's data", func(t *testing.T) {
@@ -115,19 +120,23 @@ func TestAssertGoldenSSE(t *testing.T) {
 		assert.Contains(t, stub.Message(), "got 2 frames, want 3")
 	})
 
-	t.Run("Agent (GrammarTyped) derived ids are ignored inside response and item by default", func(t *testing.T) {
+	t.Run("Agent (GrammarTyped) derived ids named via GoldenDerivedIDs are pruned inside response and item", func(t *testing.T) {
 		typedPath := filepath.Join(t.TempDir(), "typed-ids.sse")
 		t.Setenv(testkit.UpdateGoldenEnv, "1")
 		testkit.AssertGoldenSSE(t, typedPath, agentTranscript("resp_A", "msg_A"))
 		require.NoError(t, os.Unsetenv(testkit.UpdateGoldenEnv))
 
-		// response.id, item.id, item_id and response.output[].id all advance
-		// with call index; none of them should fail the comparison by
-		// default, exactly as the top-level id already does not for Sonar.
-		testkit.AssertGoldenSSE(t, typedPath, agentTranscript("resp_B", "msg_B"))
+		agentDerivedIDs := []string{"response.id", "item.id", "item_id"}
+
+		// response.id, item.id and item_id are named through GoldenDerivedIDs;
+		// response.output[].id is pruned unconditionally whenever any pruning
+		// applies (see AssertGoldenSSE's own doc comment). None of them should
+		// fail the comparison.
+		testkit.AssertGoldenSSE(t, typedPath, agentTranscript("resp_B", "msg_B"), testkit.GoldenDerivedIDs(agentDerivedIDs...))
 
 		stub := &stubTB{}
-		testkit.AssertGoldenSSE(stub, typedPath, agentTranscript("resp_B", "msg_B"), testkit.GoldenExactIDs())
+		testkit.AssertGoldenSSE(stub, typedPath, agentTranscript("resp_B", "msg_B"),
+			testkit.GoldenDerivedIDs(agentDerivedIDs...), testkit.GoldenExactIDs())
 		assert.True(t, stub.Failed(), "GoldenExactIDs opts back into comparing the Agent grammar's ids too")
 	})
 

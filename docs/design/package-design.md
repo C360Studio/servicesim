@@ -56,13 +56,19 @@ point of use, and the four that change the design are:
 
 ### 1.1 Responsibilities
 
+> **Superseded in part by Phase 10 (2026-08-17).** `internal/faults` no longer exists — fault *selection* moved to
+> `provider/fault_engine.go` and `(*provider.Set).Faults` is its only constructor; the four provider packages are
+> `profiles/<name>`; and a root `servicesim` package (`Main`/`Run`/`Build`) owns composition. The responsibility
+> split the table reasons about is unchanged — where a package lives is not.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 | Package | Visibility | Single responsibility |
 |---|---|---|
 | `scenario` | exported | The versioned YAML scenario schema: parse, validate, resolve source references, apply defaults. Knows nothing about HTTP. |
 | `provider` | exported | The handler seam. Provider identity, routes, `Deps`, `Clock`, the fault-selection *interface*, fault *execution*, the mux builder, the per-request `Exchange`, and the shared request lifecycle wrapper. |
-| `provider/exa` | exported | Exa wire contract: routing, request validation, response/error encoding for `POST /search` and `POST /answer`. |
-| `provider/tavily` | exported | Tavily wire contract for `POST /search`. |
-| `provider/perplexity` | exported | Perplexity Sonar wire contract for `POST /v1/sonar` and `POST /chat/completions`. |
+| `profiles/exa` | exported | Exa wire contract: routing, request validation, response/error encoding for `POST /search` and `POST /answer`. |
+| `profiles/tavily` | exported | Tavily wire contract for `POST /search`. |
+| `profiles/perplexity` | exported | Perplexity Sonar wire contract for `POST /v1/sonar` and `POST /chat/completions`. |
 | `testkit` | exported | In-process consumer helpers: start `httptest` servers, read the journal, assert on it. |
 | `scenarios` | exported | `embed.FS` of the built-in protocol scenarios plus a lookup by name. |
 | `contracts` | exported (test data) | Golden wire fixtures and their provenance records, plus an `embed.FS` over them and a provenance lookup used by this repository's own contract test. Imports `embed` and nothing else; no provider logic, and nothing in the module imports it except `contracts/contracts_test.go`. |
@@ -89,6 +95,12 @@ Deviations from the plan's layout, both additive:
 
 ### 1.2 Import edges and the acyclicity proof
 
+> **Superseded in part by Phase 10 (2026-08-17).** Level 4 (`internal/faults`) is gone: the engine is a `provider`
+> file, built from the registered `*provider.Set`, so the cycle this section proves absent is now avoided by there
+> being one package rather than two. The handler packages sit at `profiles/<name>` and the root `servicesim`
+> package composes them. The direction of every remaining edge is as proved here.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 Assign every package a level. An import is legal only from a strictly higher level to a strictly lower one. A directed
 graph that admits a strictly decreasing integer labelling on every edge cannot contain a cycle, because a cycle would
 require a level to be strictly less than itself. The table below is that labelling, and it is complete: no package
@@ -106,9 +118,9 @@ imports anything not listed.
 | 2 | `scenarios` | `scenario` |
 | 3 | `provider` | `scenario`, `internal/journal`, `internal/httpx`, `internal/redact` |
 | 4 | `internal/faults` | `scenario`, `provider` |
-| 5 | `provider/exa` | `scenario`, `provider`, `internal/httpx`, `internal/wire`, `internal/ids`, `internal/journal` |
-| 5 | `provider/tavily` | same as `provider/exa` |
-| 5 | `provider/perplexity` | same as `provider/exa` |
+| 5 | `profiles/exa` | `scenario`, `provider`, `internal/httpx`, `internal/wire`, `internal/ids`, `internal/journal` |
+| 5 | `profiles/tavily` | same as `profiles/exa` |
+| 5 | `profiles/perplexity` | same as `profiles/exa` |
 | 5 | `internal/config` | `provider` |
 | 5 | `internal/admin` | `scenario`, `provider`, `internal/journal` |
 | 6 | `internal/server` | `scenario`, `scenarios`, `provider`, `provider/{exa,tavily,perplexity}`, `internal/{admin,faults,journal,config}` |
@@ -130,7 +142,7 @@ because they are the ones a reviewer will want to check:
 - **`internal/faults` &rarr; `provider`, and never the reverse.** The seam declares the `Faults` *interface*; the
   engine implements it, and the engine does **selection only**. Fault *execution* lives in `provider` itself
   (`provider/fault_exec.go`), because `Handle` calls it and a package `Handle` calls cannot import `provider`. Provider
-  handler packages therefore never import `internal/faults`, so a consumer importing `provider/exa` does not drag in
+  handler packages therefore never import `internal/faults`, so a consumer importing `profiles/exa` does not drag in
   the engine's mutable state.
 - **`provider/*` never imports `provider/*`.** The three provider packages are siblings with no edges between them.
   Everything they share lives in `provider`, `internal/httpx` or `internal/wire`.
@@ -141,6 +153,12 @@ because they are the ones a reviewer will want to check:
   only by U5's own contract test. See §2.10.
 
 ### 1.3 Exported versus internal, and how the seam stays usable
+
+> **Superseded in part by Phase 10 (2026-08-17).** The public API is now `provider`, `scenario`, `testkit`,
+> `contracts`, `scenarios` and the root `servicesim` composition package, with `profiles/<name>` as reference
+> examples an out-of-tree profile may compose beside its own. The alias reasoning below still holds for the
+> journal and jobs types; `Finding` and `Severity` left the alias set (the paragraph that closes this section
+> records it). [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 `provider/*`, `scenario`, `testkit`, `scenarios` and `contracts` are the public API. Everything under `internal/` is
 invisible to consuming repositories.
@@ -207,9 +225,13 @@ The aliases live in `testkit`, not in `provider`, because putting them in `provi
 
 Nothing in the compiler keeps this set complete, so **U19's `examples/adapter` module — already a separate module —
 owns the guard**: `examples/adapter/journal_test.go` declares a type implementing `testkit.Journal` (all five methods,
-`Stats() testkit.Stats` included), passes it as `provider.Deps{Journal: ...}`, and reads `e.Outcome.Kind`,
-`e.Auth.Fingerprint` and `e.Findings[0].Severity` through the aliased types. If an alias is missing, that module stops
-compiling; without it, the gap is invisible until a consumer hits it.
+`Stats() testkit.Stats` included), passes it as `provider.Deps{Journal: ...}`, and reads `e.Outcome.Kind` and
+`e.Auth.Fingerprint` through the aliased types. If an alias is missing, that module stops compiling; without it, the
+gap is invisible until a consumer hits it. `Finding` and `Severity` are deliberately NOT in this set (Phase 10 unit
+4): they are `provider.Finding`/`provider.Severity`, converted at the boundary rather than aliased, because
+`journal.Finding` prints as a documentation dead end (`go doc testkit Entry` showed no fields, no methods, an
+unreachable target) — `e.Findings[0].Severity` is still readable off a real `Entry`, through type inference rather
+than a named `testkit.Finding`/`testkit.Severity` variable.
 
 ---
 
@@ -947,6 +969,13 @@ func Render(ref SourceRef) RenderedSource
 ```
 
 ### 2.2 `provider` — the seam every handler is built on
+
+> **Superseded in part by Phase 10 (2026-08-17).** `provider` gained the registration half of the seam —
+> `Profile`, `Set`/`NewSet`/`MustSet`, `Refusal`/`RefusalKind` (five kinds, `RefuseRequest` included),
+> `Render`/`Hex32`/`UUIDv5`/`FloatIn`, `Credential`/`Finding`/`Severity`, and `Exchange.AuthPolicy`/`EntryFor`/
+> `Reject`/`Credentials`/`ObserveCredential`. `MuxSpec.NotFound`/`MethodNotAllowed` were deleted in favour of the
+> required `Profile.ErrorBody` (`NewMux` takes the refusal renderer instead), `Exchange.Auth` is unexported, and
+> `MintJob`/`ResolveJob` return `(string, bool)`/`bool`. [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 This is the answer to "how a handler gets its scenario projection, the journal, the fault engine, and the clock".
 
@@ -1768,9 +1797,16 @@ Three named tests are mandatory:
 
 ### 2.5 Fault selection (`internal/faults`) and fault execution (`provider`)
 
+> **Superseded in part by Phase 10 (2026-08-17).** `internal/faults` is deleted; selection lives in
+> `provider/fault_engine.go` beside execution, and `(*provider.Set).Faults(s, opts...)` — built from the composed
+> route set — is the only constructor, so an engine that does not know a registered route cannot be built at all.
+> `testkit.NewFaults` is gone with it. The selection/execution distinction below still describes the code; the
+> import-cycle argument for keeping them in two packages no longer applies.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 Two responsibilities, two packages, and the split is forced rather than stylistic. **Selection** — which attempt index
 this request claims and what that attempt declares — is stateful, and its state must not be reachable from a consumer
-importing `provider/exa`; it lives in `internal/faults` at level 4, which imports `provider`. **Execution** — how those
+importing `profiles/exa`; it lives in `internal/faults` at level 4, which imports `provider`. **Execution** — how those
 bytes reach the socket, or fail to — is called by `provider.Handle`, so it must live at or below `provider`; it lives
 in `provider/fault_exec.go` (§2.2). Putting execution in `internal/faults` would require
 `provider` &rarr; `internal/faults` &rarr; `provider`, which does not compile.
@@ -1914,6 +1950,14 @@ Two consequences worth stating once:
 
 ### 2.6 `internal/httpx`, `internal/wire`, `internal/ids`
 
+> **Superseded in part by Phase 10 (2026-08-17).** All three stay internal, but their capability is now reachable
+> from `provider`: `provider.Render(v, extra, omit)` is the one entry point that replaced `wire.Render`+`Omit`+
+> `MergeJSON` (making a third extra/omit ordering unrepresentable), `provider.Hex32`/`UUIDv5`/`FloatIn` are the
+> `ids` derivations, and `provider.Credential` plus `Exchange.Credentials`/`ObserveCredential` are the `httpx`
+> credential path. No profile's non-test code imports these packages any more, and an out-of-tree profile cannot
+> import them at all.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 ```go
 // Package httpx holds the request-side checks every provider shares.
 package httpx
@@ -2004,6 +2048,11 @@ func Float(lo, hi float64, parts ...string) float64
 ```
 
 ### 2.7 `internal/config`
+
+> **Superseded in part by Phase 10 (2026-08-17).** `internal/config` names no provider: `Listeners` is a map keyed
+> by `provider.Name` with a registration order, and the port flags, `SERVICESIM_<NAME>_PORT` bindings, the
+> `-providers` default and the fail-closed `Listener(name)` lookup are one loop over the `*provider.Set` the root
+> package hands it. [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 ```go
 // Package config resolves Servicesim's runtime configuration from flags,
@@ -2122,6 +2171,13 @@ environment would silently override an explicit flag.
 server into a health probe would be a footgun.
 
 ### 2.8 Provider packages
+
+> **Superseded in part by Phase 10 (2026-08-17).** These four are `profiles/{exa,tavily,perplexity,mcp}` now, each
+> exporting `Profile()` (and a typed `Name`) instead of `New(deps)`, each embedding its own contract bundle at
+> `profiles/<name>/contracts/`, and each trimmed to the exported surface a consumer actually names. Nothing under
+> `provider/`, `internal/`, `testkit/`, `scenario/`, `contracts/` or the repository root may import one — a test
+> enforces it, so a reference profile has no privilege an out-of-tree one lacks.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 All three follow the same file shape: `doc.go`, `handler.go` (routing and lifecycle wiring), `request.go` (validation),
 `response.go` (wire types), `render.go` (projection to wire types), `errors.go` (provider-shaped error bodies).
@@ -2511,6 +2567,13 @@ var SunsetDate = time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
 
 ### 2.9 `internal/admin` and `internal/server`
 
+> **Superseded in part by Phase 10 (2026-08-17).** `internal/server` imports no profile package: its listener,
+> handler, route, validator and fault-engine switches are `set.Lookup(name).Handler(deps)`, `set.Routes()`,
+> `set.Validators(...)` and `set.Faults(...)`, and `scenarioNotFoundBody` (with its duplicated MCP envelope) is
+> deleted in favour of each profile's own `ErrorBody`. The root `servicesim` package (`Main`/`Run`/`Build`) is
+> what `cmd/servicesim` and a consumer's own binary call. `internal/admin` is unchanged and deliberately closed to
+> composition (D-3). [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 ```go
 // Package admin serves health, readiness and the redacted request journal.
 package admin
@@ -2587,6 +2650,13 @@ func (s *Server) Shutdown(ctx context.Context) error
 ```
 
 ### 2.10 `testkit`
+
+> **Superseded in part by Phase 10 (2026-08-17).** `testkit` imports no profile package: `WithProfiles(...)` is
+> required, one generic `Handler(tb, name, opts...)` replaces the four per-vendor constructors, `NewFaults` and the
+> `Finding`/`Severity` aliases are deleted (`provider` owns those types), golden pruning is caller-declared through
+> `GoldenDerivedIDs`, and `ValidateProfile`, `AssertNoLiveHosts`, `AssertCovers` and `NewJournal` were added so a
+> consumer runs this repository's own discipline in their CI.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 ```go
 // Package testkit runs Servicesim's provider handlers in-process for Go consumer
@@ -2866,6 +2936,11 @@ derives from the scenario's stable keys.
 
 ### 3.1 Identifiers
 
+> **Superseded in part by Phase 10 (2026-08-17).** The derivations are exported as `provider.Hex32`,
+> `provider.UUIDv5` and `provider.FloatIn` — byte-identical to the `internal/ids` functions named below, which is
+> pinned by a test — so an out-of-tree profile derives identifiers the same way rather than reaching for
+> `math/rand`. [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 All three identifiers come from `internal/ids` over the same tuple, and the tuple has **two shapes**:
 
 ```text
@@ -3102,11 +3177,17 @@ and journaled.
 
 ### 5.1 Mux construction
 
+> **Superseded in part by Phase 10 (2026-08-17).** `MuxSpec` no longer carries `NotFound`/`MethodNotAllowed`:
+> `NewMux` takes the refusal renderer built from the profile's required `ErrorBody`, so a registered profile
+> cannot ship a bodyless 404 — `NewSet` refuses one without it, and a handler panic renders through the same path
+> as a `RefuseInternal` 500 rather than resetting the connection.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 Each provider listener gets its own `http.ServeMux` carrying **only** that provider's patterns. This is what preserves
 the `POST /search` collision between Exa and Tavily without a host-based hack. Three registrations per route.
 
 This logic has **one home**: `provider.NewMux` (§2.2), owned by U9 in `provider/mux.go`. It is not reimplemented in
-`provider/exa`, `provider/tavily`, `provider/perplexity` or `internal/server`. Those three provider packages are
+`profiles/exa`, `profiles/tavily`, `profiles/perplexity` or `internal/server`. Those three provider packages are
 written in parallel by different agents against this document; any one of them that registered only `POST /search` plus
 `/` would return 404 for `GET /search`, `scripts/image-smoke.sh` asserts 405, and before CI caught it the in-process
 handler and the container would disagree on a documented status code — precisely the divergence `testkit` exists to
@@ -3160,6 +3241,11 @@ against three copies of the registration logic.
 path, never a proxy, so failing closed still holds.
 
 ### 5.2 Error bodies
+
+> **Superseded in part by Phase 10 (2026-08-17).** These bodies are rendered by each profile's own
+> `Profile.ErrorBody` — one function per profile covering all five `RefusalKind`s — not by a `MuxSpec` field or by
+> `internal/server`. The bodies themselves are unchanged, and `testkit.ValidateProfile` now requires a non-empty
+> one for every kind. [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 Because unmatched routing goes through `provider.Handle` like everything else, it is journaled with
 `Outcome.Kind = OutcomeUnmatched` and `Findings` carrying `route.unmatched` or `route.method_not_allowed`. Bodies are
@@ -3362,9 +3448,9 @@ Two tree-wide rules that make this safe:
 | **U8** Request helpers | `internal/httpx/doc.go`, `internal/httpx/body.go`, `internal/httpx/auth.go`, `internal/httpx/contenttype.go`, `internal/httpx/body_test.go`, `internal/httpx/auth_test.go` | U6 |
 | **U9** Provider seam | `provider/doc.go`, `provider/provider.go`, `provider/clock.go`, `provider/deps.go`, `provider/exchange.go`, `provider/response.go`, `provider/handle.go`, `provider/mux.go`, `provider/fault_exec.go`, `provider/clock_test.go`, `provider/handle_test.go`, `provider/exchange_test.go`, `provider/mux_test.go`, `provider/fault_exec_test.go` | U4, U6 |
 | **U10** Fault selection | `internal/faults/doc.go`, `internal/faults/engine.go`, `internal/faults/engine_test.go` | U9 |
-| **U11** Exa provider | `provider/exa/doc.go`, `provider/exa/handler.go`, `provider/exa/request.go`, `provider/exa/response.go`, `provider/exa/render.go`, `provider/exa/errors.go`, `provider/exa/handler_test.go`, `provider/exa/request_test.go`, `provider/exa/render_test.go`, `provider/exa/testdata/**` | U9, U8, U3, U2, U5 |
-| **U12** Tavily provider | `provider/tavily/doc.go`, `provider/tavily/handler.go`, `provider/tavily/request.go`, `provider/tavily/response.go`, `provider/tavily/render.go`, `provider/tavily/errors.go`, `provider/tavily/handler_test.go`, `provider/tavily/request_test.go`, `provider/tavily/render_test.go`, `provider/tavily/testdata/**` | U9, U8, U3, U2, U5 |
-| **U13** Perplexity provider | `provider/perplexity/doc.go`, `provider/perplexity/handler.go`, `provider/perplexity/request.go`, `provider/perplexity/response.go`, `provider/perplexity/render.go`, `provider/perplexity/errors.go`, `provider/perplexity/handler_test.go`, `provider/perplexity/request_test.go`, `provider/perplexity/render_test.go`, `provider/perplexity/testdata/**` | U9, U8, U3, U2, U5 |
+| **U11** Exa provider | `profiles/exa/doc.go`, `profiles/exa/handler.go`, `profiles/exa/request.go`, `profiles/exa/response.go`, `profiles/exa/render.go`, `profiles/exa/errors.go`, `profiles/exa/handler_test.go`, `profiles/exa/request_test.go`, `profiles/exa/render_test.go`, `profiles/exa/testdata/**` | U9, U8, U3, U2, U5 |
+| **U12** Tavily provider | `profiles/tavily/doc.go`, `profiles/tavily/handler.go`, `profiles/tavily/request.go`, `profiles/tavily/response.go`, `profiles/tavily/render.go`, `profiles/tavily/errors.go`, `profiles/tavily/handler_test.go`, `profiles/tavily/request_test.go`, `profiles/tavily/render_test.go`, `profiles/tavily/testdata/**` | U9, U8, U3, U2, U5 |
+| **U13** Perplexity provider | `profiles/perplexity/doc.go`, `profiles/perplexity/handler.go`, `profiles/perplexity/request.go`, `profiles/perplexity/response.go`, `profiles/perplexity/render.go`, `profiles/perplexity/errors.go`, `profiles/perplexity/handler_test.go`, `profiles/perplexity/request_test.go`, `profiles/perplexity/render_test.go`, `profiles/perplexity/testdata/**` | U9, U8, U3, U2, U5 |
 | **U14** Configuration | `internal/config/doc.go`, `internal/config/config.go`, `internal/config/scenario.go`, `internal/config/config_test.go`, `internal/config/scenario_test.go` | U9 |
 | **U15** Admin surface | `internal/admin/doc.go`, `internal/admin/handler.go`, `internal/admin/requests.go`, `internal/admin/handler_test.go` | U9, U6 |
 | **U16** Server composition | `internal/server/doc.go`, `internal/server/server.go`, `internal/server/listeners.go`, `internal/server/logging.go`, `internal/server/server_test.go` | U10, U11, U12, U13, U14, U15 |
@@ -3470,6 +3556,12 @@ for 400, 401, 403, 404, 429 or 500. Those bodies are recorded as `simulator-chos
 
 ## Rejected review findings
 
+> **Superseded in part by Phase 10 (2026-08-17).** One row below was overtaken: the engine constructor *is*
+> exported now, as `(*provider.Set).Faults`, and the objection it was rejected on no longer applies — the
+> selection state hangs off the composed `Set` at the composition root, not off a profile package, so importing
+> `profiles/exa` still drags in no mutable engine state. `testkit.NewFaults` is deleted.
+> [ADR 0003](../adr/0003-framework-seam.md) is the record.
+
 Every *defect* raised against this design is fixed in the body above. Four proposed *remedies* were not adopted,
 because a different fix in the same section covers the same defect at lower cost. They are recorded here so they are
 not re-proposed in a later review.
@@ -3479,4 +3571,4 @@ not re-proposed in a later review.
 | Break the `provider` &harr; `internal/faults` cycle by declaring a `FaultExecutor` interface and injecting it through `Deps` | Adds a nil-able seam and a second `Response` type for behaviour that will only ever have one implementation, and leaves "who sets `entry.Outcome`" split across two packages | Moving execution into `provider/fault_exec.go`; `internal/faults` keeps selection only (§2.2, §2.5) |
 | Keep `FakeClock` but have `Now()` advance a fixed tick per call so instants are strictly increasing | A fake whose correctness depends on being *called* often enough is a trap, and it still cannot make a client deadline fire — a deadline is observed by bytes not arriving | `Clock` reduced to `Now()`, defaulting to real time everywhere; delays governed by `Deps.DelayMode` (§2.2, §3.2) |
 | Make `AssertOverlapped` use non-strict comparisons | With real timestamps, strict comparison is exactly right; the non-strict form also passes for strictly serial calls, which is the one thing the assertion exists to reject | Real-time journal timestamps by default (§2.10, §3.2) |
-| Export `provider.NewFaults` so the direct `exa.New(Deps{...})` path can build an engine | Would pull selection state into `provider`, so a consumer importing `provider/exa` drags in the engine's mutable state — the property the level table is built to preserve | `testkit.NewFaults`, plus the `deps.faults_ignored` warning from `Deps.Normalized` (§2.2, §2.10) |
+| Export `provider.NewFaults` so the direct `exa.New(Deps{...})` path can build an engine | Would pull selection state into `provider`, so a consumer importing `profiles/exa` drags in the engine's mutable state — the property the level table is built to preserve | `testkit.NewFaults`, plus the `deps.faults_ignored` warning from `Deps.Normalized` (§2.2, §2.10) |

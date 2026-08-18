@@ -87,6 +87,51 @@ func TestRedact_MasksEveryTextField(t *testing.T) {
 	}
 }
 
+// TestRedact_MasksProfileDeclaredCredentialNames is Phase 10 unit 7's
+// threading proof at the smallest layer: a name no in-tree vendor uses and
+// that is not itself vendor-shaped (no "sk-"/"pplx-"/"tvly-" prefix,
+// vendorKeyPattern's own trigger) is masked only when Redact is given it as
+// an extra name — exactly what a profile's own CredentialNames supplies at
+// composition (house rule 4) — never by widening internal/redact's own
+// tables, which this test never touches.
+func TestRedact_MasksProfileDeclaredCredentialNames(t *testing.T) {
+	t.Parallel()
+
+	const value = "not-vendor-shaped-1234"
+	entry := journal.Entry{
+		Headers: map[string][]string{"X-Acme-Key": {value}},
+		Body:    json.RawMessage(`{"acme_token":"` + value + `","query":"weather"}`),
+		// A finding about a credential-named field states presence, never the
+		// value (entry.go's own doc comment on Finding.Message: "a finding
+		// raised about a credential-named field must never interpolate the
+		// value at all"), so there is nothing to leak here — this proves
+		// Redact leaves an unrelated finding untouched either way.
+		Findings: []journal.Finding{
+			{Severity: journal.SeverityWarning, Code: "acme.credential.in_body", Field: "acme_token",
+				Message: "credential present in body"},
+		},
+	}
+
+	t.Run("baseline: unmasked with no extra names", func(t *testing.T) {
+		got := journal.Redact(entry)
+		if strings.Contains(string(got.Body), redact.Mask) {
+			t.Fatalf("body was masked with no extra names given: %s", got.Body)
+		}
+		if strings.Join(got.Headers["X-Acme-Key"], ",") != value {
+			t.Fatalf("header was masked with no extra names given: %v", got.Headers["X-Acme-Key"])
+		}
+	})
+
+	t.Run("masked once x-acme-key and acme_token are named", func(t *testing.T) {
+		got := journal.Redact(entry, "x-acme-key", "acme_token")
+		assertMasked(t, "headers.x-acme-key", strings.Join(got.Headers["X-Acme-Key"], ","), value)
+		assertMasked(t, "body", string(got.Body), value)
+		if got.Findings[0].Message != entry.Findings[0].Message {
+			t.Errorf("findings[0].message = %q, want the unrelated finding untouched", got.Findings[0].Message)
+		}
+	})
+}
+
 // TestRedact_PreservesEvidence checks that redaction masks values without
 // destroying the placement evidence an adapter contract test asserts on.
 func TestRedact_PreservesEvidence(t *testing.T) {

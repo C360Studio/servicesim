@@ -159,10 +159,21 @@ func AddPlacement(obs journal.AuthObservation, c Credential) journal.AuthObserva
 
 // placementOf renders one credential as a journal placement, fingerprinting the
 // value rather than carrying it.
+//
+// Header and Scheme are passed through redact.String before retention. For a
+// Credential built by this package's own header scan that is a no-op — the
+// header is always one of credentialHeaders and the scheme, if any, is always
+// a canonicalSchemes value, neither of which is credential-shaped. It matters
+// for provider.ObserveCredential (provider/framework.go), the exported write
+// path a profile author reaches with a hand-built Credential: nothing stops
+// them from passing the raw token itself as Header or Scheme, and Placements
+// are never masked by journal.Redact ("Placements hold fingerprints, never
+// values, so there is nothing here to mask" — true only if these two fields
+// are safe by construction, which is what this call now guarantees).
 func placementOf(c Credential) journal.AuthPlacement {
 	return journal.AuthPlacement{
-		Header:      strings.ToLower(c.Header),
-		Scheme:      c.Scheme,
+		Header:      redact.String(strings.ToLower(c.Header)),
+		Scheme:      redact.String(c.Scheme),
 		Fingerprint: redact.Fingerprint(c.Value),
 	}
 }

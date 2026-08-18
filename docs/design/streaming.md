@@ -21,7 +21,7 @@
 > unconditional `perplexity.agent.stream.unsupported` warning this surface always raised is retired in favour of the
 > same `warn`/`reject`/`stream` switch, under the renamed code `perplexity.stream.agent_unsupported`
 > (`CodeAgentStreamUnsupported`, unchanged Go identifier, changed string value — §9's rename, now live). The Agent
-> renderer (`renderAgentStream`, `provider/perplexity/agent.go`) emits six of the fourteen `EventType` members, for a
+> renderer (`renderAgentStream`, `profiles/perplexity/agent.go`) emits six of the fourteen `EventType` members, for a
 > turn scripting N deltas: `response.created` (the `ResponsesResponse` in its initial `in_progress` state — empty
 > `output`, zero `usage`), `response.output_item.added` (the message item, `in_progress`, empty `content`), N ×
 > `response.output_text.delta`, `response.output_text.done` (the aggregate text), `response.output_item.done` (the
@@ -185,7 +185,7 @@
 >   frames while §2, §7, §9 and §10 all pinned one; the Go block was always illustrative and prose already won, but
 >   the drift is now gone).
 > - §7 now says each Perplexity surface has **three** route spellings, not two — `SonarRoutes()` and `AgentRoutes()`
->   each list three, verified in `provider/perplexity/handler.go`.
+>   each list three, verified in `profiles/perplexity/handler.go`.
 > - §5.1 now states explicitly that `StreamOutcome.PaceMS[AfterChunk]` includes the stall and `StallBeforeMS` is the
 >   same duration lifted back out, so `AssertStreamPacing` on a stall scenario needs no separate addition.
 > - §4.2's mirror-case bullet now spells out the `truncate_body`-claimed-while-streaming direction of
@@ -196,7 +196,7 @@
 >   said the opposite of what the code does.
 > - §7 now states explicitly that landing `GrammarTyped` is what gives the Agent entry a `stream:` key at all: the
 >   Agent surface has no `Stream` field today and warns `CodeAgentStreamUnsupported` unconditionally
->   (`provider/perplexity/agent.go`), which is what the preamble's "no policy knob" claim was resting on without
+>   (`profiles/perplexity/agent.go`), which is what the preamble's "no policy knob" claim was resting on without
 >   saying so.
 >
 > **OPEN — owner decision:** none. The re-review found no conceptual arbitration left to the owner; every finding it
@@ -230,7 +230,7 @@
 > - **The "one entry, two grammars" premise was checked against the current route table and does not hold.**
 >   `Route.Entry`, a Phase 1/3 change, already gives Sonar (`NameSonar`) and the Agent API (`NameAgent`) independent
 >   scenario entries, independent validators and independent turn cursors — confirmed in
->   `provider/perplexity/handler.go` and `provider/perplexity/doc.go`. Grammar is fixed per entry with no case left
+>   `profiles/perplexity/handler.go` and `profiles/perplexity/doc.go`. Grammar is fixed per entry with no case left
 >   to reconcile; §9's "the grammar is fixed by the provider entry" now says why. See
 >   [§9](#9-validation-findings-this-adds).
 > - **The exported projection field this design needs to change type on is now named as a breaking change**, not
@@ -313,8 +313,8 @@
 > >   This is the async blocker's shape, reintroduced by the streaming fix.
 > > - **Major — the preamble and §4.1 disagree about which policies are per turn.** The preamble says `warn` and
 > >   `reject` stay provider-level; §4.1 switches on the *selected* turn's projection. Shipped code is turn-0-only
-> >   for both policies that ship today (`streamPolicy` in `provider/exa/handler.go` and
-> >   `provider/perplexity/handler.go`).
+> >   for both policies that ship today (`streamPolicy` in `profiles/exa/handler.go` and
+> >   `profiles/perplexity/handler.go`).
 > > - Minors: `warnOnce` does not exist; §3.1 cites a non-existent `decodeRefOrMapping`; §2's `DecodeStrict` line
 > >   reference is wrong; §4.2's `defer` references variables declared after the existing defer and the required
 > >   hoist is unstated.
@@ -366,7 +366,7 @@ Streaming currently produces a journal warning and an ordinary JSON body: `CodeS
 
 A `stream:` scalar in a `respond:` body already chooses between that default (`warn`) and a provider-shaped rejection
 (`reject`) on Exa's `/search` and `/answer` routes and on Sonar. On both it is read from the provider block's **first
-turn only** (`streamPolicy` in `provider/exa/handler.go` and `provider/perplexity/handler.go`), because rejection has
+turn only** (`streamPolicy` in `profiles/exa/handler.go` and `profiles/perplexity/handler.go`), because rejection has
 to happen before turn selection claims a fault attempt; Sonar warns `perplexity.stream.policy.ignored` at startup for
 a `stream:` written on any later turn. The Agent surface has no policy knob and always warns — Exa's `/agent/runs`
 routes are a separate surface again and are out of scope for this design either way.
@@ -515,7 +515,7 @@ Rules that make this shape work:
   itself minus its reserved envelope keys (`scenario/model.go`'s single-shot normalisation), which is the shape
   `providers.exa.stream: reject` uses today. Neither shape is exercised by a shipped `scenarios/` fixture as of this
   writing — the only `stream: warn`/`stream: reject` fixtures in the tree are inline YAML strings inside
-  `provider/exa/request_test.go` and `provider/perplexity/handler_test.go` — so the compatibility claim rests on the
+  `profiles/exa/request_test.go` and `profiles/perplexity/handler_test.go` — so the compatibility claim rests on the
   decoder accepting the key today, not on an existing fixture exercising it. §9's required regression fixture is
   what turns that claim into a checked one.
 - **Declaring `deltas:` implies `when_requested: stream` — on turn 0, which is the turn the policy is read from.**
@@ -741,7 +741,7 @@ this section already gives for the check itself) — today Perplexity's `SonarVa
 since Exa is untouched this unit, but the type has to be exported the moment the function that takes it is.
 
 Similarly, `provider.StreamHeader()` (§3.2 below) is exported where earlier prose in this document and §4.3's
-sketch call it the unexported `streamHeader()`. It lives in `provider`, not `provider/perplexity` — a
+sketch call it the unexported `streamHeader()`. It lives in `provider`, not `profiles/perplexity` — a
 Perplexity-only home would not help Exa or Tavily when their turn comes (unit 4) — and a provider package's own
 handler is what decides to stream and sets `Response.Header`, so the constructor has to be reachable from
 outside `provider` itself.
@@ -806,6 +806,13 @@ means time-to-first-byte for every kind that has one — and reports the mid-str
 scripted first-chunk `pace`, exactly as the field comment above says.
 
 ### 3.2 `provider` — transport
+
+> **Superseded in part by Phase 10 (2026-08-17).** The SSE grammar set is open: `Stream.Sentinel []byte` and
+> `Stream.SentinelPace` replaced `OmitDone`/`DonePace`, the `[DONE]` frame is data a profile sets
+> (`provider.DoneSentinel`) rather than behaviour the framework infers from `Grammar == GrammarDelta`, and a
+> `Stream` with an empty `Grammar` is refused (`stream.grammar_missing`) instead of silently inheriting one
+> dialect's framing. `GrammarDelta` and `GrammarTyped` remain the two reference values, and the scenario-side
+> `terminal.omit_done` key is unchanged. [ADR 0003](../adr/0003-framework-seam.md) is the record.
 
 ```go
 // SSEGrammar names the Server-Sent Events dialect a stream is written in. The two
@@ -892,7 +899,7 @@ func EncodeSSE(events []SSEEvent) []StreamChunk
 
 **Shipped as (Phase 5 unit 1): `Stream` gains a fifth field, `OmitDone bool`.** This illustrative struct
 has nowhere for a scripted `terminal.omit_done` to live: `executeStream` is grammar- and provider-blind (it
-is in `provider`, not `provider/perplexity`), so it cannot reach into a Perplexity-specific
+is in `provider`, not `profiles/perplexity`), so it cannot reach into a Perplexity-specific
 `StreamTerminal` to decide whether to write `[DONE]`. `renderSonarStream` copies
 `p.Stream.Terminal.OmitDone` onto `Stream.OmitDone` when building the plan, and `executeStream` reads it
 directly. `Stream.Bytes()` and `EncodeSSE` are otherwise exactly as illustrated here.
@@ -1431,7 +1438,7 @@ slice, whenever every chunk is unnamed, which is how a reader tells the two gram
 alone: `GrammarDelta` streams (Sonar) still produce `nil`, `GrammarTyped` streams (the Agent surface) produce the
 six-or-more names in wire order. Grammar-blind by construction — `eventNames()` reads `StreamChunk.Name`, which
 `EncodeSSE` already populated from `SSEEvent.Name` since unit 1 — so no branch anywhere in `provider` had to learn
-that a second grammar exists. `TestAgentStreamJournalOutcome` (`provider/perplexity/stream_test.go`) pins it
+that a second grammar exists. `TestAgentStreamJournalOutcome` (`profiles/perplexity/stream_test.go`) pins it
 end-to-end through the real Agent handler; `TestPlanStream`'s two `eventNames` subtests (`provider/stream_test.go`)
 pin the pure function against both a `nil`-producing unnamed stream and a hand-built named one.
 
@@ -1745,7 +1752,7 @@ exactly the kind of field a mode split could plausibly change. Not a contradicti
 confidence than the other vendor-pinned fields in this list, worth naming rather than leaving implicit.
 
 **Shipped as (Phase 5 unit 1):** this section names no Go type for the chunk payload; the shipped one is
-`provider/perplexity/response.go`'s `ChatCompletionChunkResponse` (plus `ChatCompletionChunkChoice` and the
+`profiles/perplexity/response.go`'s `ChatCompletionChunkResponse` (plus `ChatCompletionChunkChoice` and the
 `ObjectChatCompletionChunk` constant), following this package's existing convention of exporting every wire
 type it renders (`CompletionResponse` and friends). They are a compatibility obligation from this point on,
 same as any other exported type in this package (CLAUDE.md house rule 7).
@@ -1839,7 +1846,7 @@ they are not an extension the implementing unit invented, only ones this illustr
 sketch's minimalism DID settle correctly, per its own reading here: `response.in_progress` — a member the
 `ResponseCreatedEvent`/`ResponseInProgressEvent`/`ResponseCompletedEvent` schemas make optional and structurally
 interchangeable — is NOT emitted; this sketch's own choice to go straight from `created` to the first `delta` is
-the minimal sequence the shipped renderer (`renderAgentStream`, `provider/perplexity/agent.go`) keeps, rather than
+the minimal sequence the shipped renderer (`renderAgentStream`, `profiles/perplexity/agent.go`) keeps, rather than
 inventing a fourth envelope-only event nothing in this document ever asked for. `sequence_number` starts at 0 and
 is monotonic across every frame, matching the numbers shown here. `response.completed`'s `response` is not
 hand-assembled the way this sketch's elided `output: [...]` suggests: it is the byte-identical `ResponsesResponse`
@@ -1887,7 +1894,7 @@ corrected basis (see A4 in "Resolved 2026-08-15" above), not vendor-pinned eithe
 
 **One mechanism serves both, and landing `GrammarTyped` is what gives the Agent entry a `stream:` key at all.**
 `PerplexityAgentProjection` carries no `Stream` field today — the Agent surface warns `CodeAgentStreamUnsupported`
-unconditionally (`provider/perplexity/agent.go`), which is why the preamble can say "the Agent surface has no policy
+unconditionally (`profiles/perplexity/agent.go`), which is why the preamble can say "the Agent surface has no policy
 knob" without contradiction. `GrammarTyped` landing second is what adds `Stream *scenario.StreamScript` to that
 projection and retires the unconditional warn in favour of the same `when_requested`/`StreamServe` switch Sonar
 already has; until then, `perplexity_agent` entries have no way to opt into streaming at all. The split is the one
@@ -1932,7 +1939,7 @@ than a pointer field on the shared `ResponsesResponse` type (the banner's resolv
 `/v1/responses` lands second, before their migration rather than before their adoption. Exa's deferred SSE on
 `/search` and `/answer` stays deferred: no adopter code calls it, and unlike the `/agent/runs` claim in
 `contracts/exa/README.md`, that one is still true. Exa also now serves `/agent/runs` routes for the async-job design
-(`provider/exa/handler.go`); those are a different surface again and are untouched by this document.
+(`profiles/exa/handler.go`); those are a different surface again and are untouched by this document.
 
 **This split is not incidental — it is the route table's own boundary.** `GrammarDelta`'s three route spellings are
 exactly `NameSonar`'s (`"perplexity"`) `SonarRoutes()`, and `GrammarTyped`'s three route spellings are exactly
@@ -2047,7 +2054,7 @@ re-walking the entry. `perplexity.stream.done_ignored` remains unshipped: it is 
 untouched by this unit.
 
 **Shipped as (Phase 5 unit 3):** `perplexity.stream.done_ignored` (`CodeStreamDoneIgnored`,
-`provider/perplexity/agent.go`) is live: `AgentValidator.ValidateProjections` raises it, addressed at
+`profiles/perplexity/agent.go`) is live: `AgentValidator.ValidateProjections` raises it, addressed at
 `.stream.terminal.omit_done`, whenever a turn's decoded `Stream.Terminal.OmitDone` is true — unconditionally on
 whether the entry's effective policy is `stream`, because the key is meaningless for this GRAMMAR, not merely
 inert for this particular turn's transport. `perplexity.agent.stream.unsupported`'s rename (this section's table
@@ -2073,8 +2080,8 @@ This is the correction that matters most for compatibility, and an earlier draft
 have surfaced in consumer repositories on upgrade day.
 
 That draft raised the error on the **presence** of a `stream:` key. But `stream:` is not a new key — Exa's shipped
-projection already carries a `Stream scenario.StreamPolicy` field on every turn that uses it (`provider/exa/render.go`),
-and so does `PerplexityProjection.Stream` (`provider/perplexity/render.go`). Under presence-keying, this
+projection already carries a `Stream scenario.StreamPolicy` field on every turn that uses it (`profiles/exa/render.go`),
+and so does `PerplexityProjection.Stream` (`profiles/perplexity/render.go`). Under presence-keying, this
 **already-valid v1 fixture** stops loading:
 
 ```yaml
@@ -2089,7 +2096,7 @@ providers:
 
 *Shipped as (Phase 5 unit 1, verified against `scenario.FaultAttempt`): the YAML key is
 `truncate_after_bytes`, not `bytes` — this block's earlier draft named a key the schema does not have. The
-shipped regression test is `provider/exa/stream_regression_test.go`'s
+shipped regression test is `profiles/exa/stream_regression_test.go`'s
 `TestStreamWarnWithTruncateBodyStillLoads`, run through Exa's own unmodified `provider.Validator`.*
 
 Nothing about that scenario streams. `warn` and `reject` both produce an ordinary JSON body — that is their entire
@@ -2129,9 +2136,9 @@ worth calling out because it is the one place in this design where an existing v
 finding it did not produce before, even though nothing about its *response* changes.
 
 **Shipped as (Phase 5 unit 1): the Exa half of this paragraph has not landed. Exa is untouched.** The P5U1
-unit scope is `scenario`, `provider`, `internal/journal` and `provider/perplexity` only —
-`provider/exa` is explicitly out of scope ("Exa/Tavily streaming: unit 4 / never"). Concretely: Exa's own
-`codeStreamPolicy` (`exa.stream.policy.unknown`, `provider/exa/render.go`) is **not** retired yet and keeps
+unit scope is `scenario`, `provider`, `internal/journal` and `profiles/perplexity` only —
+`profiles/exa` is explicitly out of scope ("Exa/Tavily streaming: unit 4 / never"). Concretely: Exa's own
+`codeStreamPolicy` (`exa.stream.policy.unknown`, `profiles/exa/render.go`) is **not** retired yet and keeps
 firing exactly as it does today; Exa's `Stream` field stays `scenario.StreamPolicy`, never becomes
 `scenario.StreamScript`, and therefore cannot decode the mapping form at all — `stream: {when_requested:
 ...}` under `providers.exa` is a decode error on Exa, not a `scenario.stream.policy.*` finding; and Exa
@@ -2144,12 +2151,12 @@ half: `CodeStreamPolicyUnknown`/`CodeStreamPolicyIgnored` (`perplexity.stream.po
 favour of `scenario.CodeStreamPolicyUnknown`/`scenario.CodeStreamPolicyIgnored`
 (`scenario.stream.policy.*`), exactly as this section says — see `scenario/stream.go`'s
 `ValidateStreamScripts` and its caller, `SonarValidator.ValidateProjections`
-(`provider/perplexity/handler.go`). The mechanism differs from this section's own claim in one respect:
+(`profiles/perplexity/handler.go`). The mechanism differs from this section's own claim in one respect:
 validation does not happen inside `StreamScript.UnmarshalYAML` (a decode-time rejection there could only
 surface as a generic `perplexity.projection.invalid` addressed at the whole projection body, not at
 `.stream.when_requested` specifically) — `UnmarshalYAML` decodes permissively and
 `scenario.ValidateStreamScripts` is what raises the specific codes, called once per entry from each
-provider's own `ValidateProjections`. `provider/exa/stream_regression_test.go`'s
+provider's own `ValidateProjections`. `profiles/exa/stream_regression_test.go`'s
 `TestStreamWarnWithTruncateBodyStillLoads` proves the compatibility half of this claim end-to-end, through
 Exa's real, unmodified validator.
 

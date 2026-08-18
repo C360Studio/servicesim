@@ -446,6 +446,19 @@ func TestRouteMatches(t *testing.T) {
 		{"bare", "bare", true},
 		{"bare", "other", false},
 		{"", "exa:search", false},
+
+		// Phase 10 unit 8: an instanced listener's key carries a third,
+		// leading qualifier — its own Name — that the documented
+		// "<kind>:<name>" spelling says nothing about. The one documented
+		// qualified spelling still matches, with that leading qualifier
+		// stripped; it is still never reduced to its own bare suffix, and a
+		// qualified predicate that does not match the stripped remainder
+		// exactly is still refused outright, the same as for any other key.
+		{"acme:answer", "acme-fallback:acme:answer", true},
+		{"answer", "acme-fallback:acme:answer", true},
+		{"acme-fallback:acme:answer", "acme-fallback:acme:answer", true},
+		{"other:answer", "acme-fallback:acme:answer", false},
+		{"acme:answer", "acme-other:acme:answer", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.authored+"/"+tc.key, func(t *testing.T) {

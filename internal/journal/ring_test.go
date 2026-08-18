@@ -703,6 +703,61 @@ func TestRing_RedactsInEveryNamespace(t *testing.T) {
 	assertMasked(t, "unfiltered snapshot", string(encoded), secret)
 }
 
+// TestRing_AppendMasksLimitsCredentialNames is the storage-boundary half of
+// Phase 10 unit 7's two-redaction-points proof (TestRedact_
+// MasksProfileDeclaredCredentialNames, in entry_test.go, is the Handle-time
+// half): a name that is not in internal/redact's own tables, and a value
+// that is not vendor-shaped, is masked once — and only once —
+// Limits.CredentialNames names it, baked into the Ring at construction the
+// way internal/server and testkit bake in (*provider.Set).CredentialNames().
+func TestRing_AppendMasksLimitsCredentialNames(t *testing.T) {
+	t.Parallel()
+
+	const value = "not-vendor-shaped-1234"
+	entry := func() journal.Entry {
+		return journal.Entry{
+			Provider: "acme", Namespace: "default",
+			Headers: map[string][]string{"X-Acme-Key": {value}},
+			Body:    json.RawMessage(`{"acme_token":"` + value + `"}`),
+		}
+	}
+
+	t.Run("baseline Ring: unmasked", func(t *testing.T) {
+		r := journal.NewRing(4, bigBody)
+		r.Append(entry())
+		got := r.SnapshotIn("default")
+		if len(got) != 1 {
+			t.Fatalf("SnapshotIn(default) has %d entries, want 1", len(got))
+		}
+		if strings.Contains(string(got[0].Body), redact.Mask) {
+			t.Fatalf("body was masked with no Limits.CredentialNames given: %s", got[0].Body)
+		}
+	})
+
+	t.Run("Ring built with CredentialNames: masked", func(t *testing.T) {
+		r := journal.NewRingWithLimits(journal.Limits{
+			Capacity: 4, MaxBodyBytes: bigBody,
+			CredentialNames: []string{"x-acme-key", "acme_token"},
+		})
+		r.Append(entry())
+		got := r.SnapshotIn("default")
+		if len(got) != 1 {
+			t.Fatalf("SnapshotIn(default) has %d entries, want 1", len(got))
+		}
+		assertMasked(t, "body", string(got[0].Body), value)
+		assertMasked(t, "headers.x-acme-key", strings.Join(got[0].Headers["X-Acme-Key"], ","), value)
+
+		// The unfiltered admin view (Snapshot) reads the same stored, already
+		// masked entry — proving "masked in the journal (entry, admin JSON)"
+		// is one fact, not two redaction paths to keep in sync.
+		all := r.Snapshot()
+		if len(all) != 1 {
+			t.Fatalf("Snapshot() has %d entries, want 1", len(all))
+		}
+		assertMasked(t, "snapshot body", string(all[0].Body), value)
+	})
+}
+
 // TestRing_ConcurrentNamespaces is the -race test for the shared-container case
 // this feature exists for: many namespaces appending at once while readers scan
 // the journal. The per-lane assertions afterwards are exact, because one writer

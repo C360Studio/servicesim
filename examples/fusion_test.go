@@ -6,6 +6,9 @@ import (
 	"time"
 
 	"github.com/c360studio/servicesim/examples"
+	"github.com/c360studio/servicesim/profiles/exa"
+	"github.com/c360studio/servicesim/profiles/perplexity"
+	"github.com/c360studio/servicesim/profiles/tavily"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
@@ -23,7 +26,7 @@ import (
 func TestSearchFusesOverlappingSources(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithBuiltin("fusion-overlap"))
+	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile(), tavily.Profile(), perplexity.Profile()), testkit.WithBuiltin("fusion-overlap"))
 	adapter := newAdapter(sim.Client(), sim.BaseURLs())
 
 	results, err := adapter.Search(t.Context(), "report a")
@@ -42,7 +45,7 @@ func TestSearchFusesOverlappingSources(t *testing.T) {
 
 	// Each provider was asked exactly once, and each request was one the vendor
 	// would have accepted.
-	for _, p := range []provider.Name{provider.Exa, provider.Tavily, provider.Perplexity} {
+	for _, p := range []provider.Name{exa.Name, tavily.Name, perplexity.Name} {
 		testkit.AssertRequestCount(t, sim, p, 1)
 		testkit.AssertNoErrors(t, sim.Requests(p)[0])
 	}
@@ -106,16 +109,16 @@ providers:
 func TestSearchQueriesProvidersConcurrently(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(concurrentScenario))
+	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile(), tavily.Profile(), perplexity.Profile()), testkit.WithScenarioYAML(concurrentScenario))
 	adapter := newAdapter(sim.Client(), sim.BaseURLs())
 
 	results, err := adapter.Search(t.Context(), "report a")
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 
-	exa := sim.Requests(provider.Exa)[0]
-	tavily := sim.Requests(provider.Tavily)[0]
-	perplexity := sim.Requests(provider.Perplexity)[0]
+	exa := sim.Requests(exa.Name)[0]
+	tavily := sim.Requests(tavily.Name)[0]
+	perplexity := sim.Requests(perplexity.Name)[0]
 
 	testkit.AssertOverlapped(t, exa, tavily)
 	testkit.AssertOverlapped(t, exa, perplexity)
@@ -134,8 +137,9 @@ func TestSearchExaClassifiesARateLimitAndRetriesIt(t *testing.T) {
 	t.Parallel()
 
 	sim := testkit.Start(t,
+		testkit.WithProfiles(exa.Profile()),
 		testkit.WithBuiltin("rate-limited"),
-		testkit.WithProviders(provider.Exa))
+		testkit.WithProviders(exa.Name))
 	adapter := newAdapter(sim.Client(), sim.BaseURLs())
 
 	_, err := adapter.SearchExa(t.Context(), "report a")
@@ -154,7 +158,7 @@ func TestSearchExaClassifiesARateLimitAndRetriesIt(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
 
-	entries := sim.Requests(provider.Exa)
+	entries := sim.Requests(exa.Name)
 	require.Len(t, entries, 2)
 
 	// Both requests were well formed. The 429 was the scenario's declared fault,
@@ -181,8 +185,9 @@ func TestSearchExaDoesNotRetryARejectedCredential(t *testing.T) {
 	t.Parallel()
 
 	sim := testkit.Start(t,
+		testkit.WithProfiles(exa.Profile()),
 		testkit.WithBuiltin("unauthorized"),
-		testkit.WithProviders(provider.Exa))
+		testkit.WithProviders(exa.Name))
 	adapter := newAdapter(sim.Client(), sim.BaseURLs())
 
 	_, err := adapter.SearchExa(t.Context(), "report a")
@@ -192,8 +197,8 @@ func TestSearchExaDoesNotRetryARejectedCredential(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, apiErr.StatusCode)
 	assert.False(t, apiErr.Retryable(), "a rejected credential is not a transient failure")
 
-	testkit.AssertRequestCount(t, sim, provider.Exa, 1)
-	entry := sim.Requests(provider.Exa)[0]
+	testkit.AssertRequestCount(t, sim, exa.Name, 1)
+	entry := sim.Requests(exa.Name)[0]
 
 	// The finding names the cause. Asserting on it rather than on the status is
 	// what distinguishes "the scenario rejects this key" from any other 401 the

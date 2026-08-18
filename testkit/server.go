@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -13,14 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/c360studio/servicesim/internal/faults"
 	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
-	"github.com/c360studio/servicesim/provider/exa"
-	"github.com/c360studio/servicesim/provider/mcp"
-	"github.com/c360studio/servicesim/provider/perplexity"
-	"github.com/c360studio/servicesim/provider/tavily"
 	"github.com/c360studio/servicesim/scenario"
 	"github.com/c360studio/servicesim/scenarios"
 )
@@ -31,48 +25,127 @@ import (
 // of its own.
 
 // Entry is one recorded request in the journal. It aliases the internal journal
-// entry so consumers outside this module can name it in assertions.
+// entry so consumers outside this module can name it in assertions. Its
+// fields, name and type, one clause each (go doc cannot follow the alias to
+// print these):
+//
+//	Provider       string               the provider name
+//	Namespace      string               the state lane served ("" means default)
+//	Seq            uint64               one-based arrival sequence within Namespace
+//	Method         string               the request method
+//	Path           string               r.URL.Path, nothing else
+//	Query          string               RawQuery, credential-named values masked
+//	Route          string               the matched route pattern
+//	RemoteAddr     string               the client address
+//	ArrivedAt      time.Time            when the request arrived
+//	CompletedAt    time.Time            when the response finished
+//	Headers        map[string][]string  request headers, credential values masked
+//	Body           json.RawMessage      the decoded, redacted request body
+//	BodyTruncated  bool                 Body was clipped to the size limit
+//	BodyParseError string               set when the body was not valid JSON
+//	Auth           AuthObservation      what was observed about credentials
+//	Outcome        Outcome              what the client received
+//	Findings       []journal.Finding    validation findings; the element type
+//	                                    is not nameable outside this module —
+//	                                    read it through [Entry.Errors] and
+//	                                    [Entry.Warnings], or by field through
+//	                                    type inference (see [provider.Finding]
+//	                                    for the boundary type a profile uses)
+//
+// Entry.Errors() and Entry.Warnings() filter Findings by severity.
 type Entry = journal.Entry
-
-// Finding is one validation warning or error recorded against a request.
-type Finding = journal.Finding
 
 // Journal is the append-only request journal contract. A consumer that wants to
 // stream entries somewhere of its own implements this and passes it as
-// provider.Deps{Journal: ...}.
+// provider.Deps{Journal: ...}. Its methods:
+//
+//	Next() uint64      claim the next arrival-ordered sequence number
+//	Append(e Entry)    store a completed entry, redacting it first
+//	Snapshot() []Entry return stored entries in append order
+//	Reset()            clear stored entries and the sequence counter
+//	Stats() Stats      report retention counters
 type Journal = journal.Journal
 
 // Stats describes journal retention. It is part of the Journal method set, so a
-// consumer cannot implement Journal without naming it.
+// consumer cannot implement Journal without naming it. Fields:
+//
+//	Capacity int    entries retained before the oldest is dropped
+//	Stored   int    entries currently retained
+//	Appended uint64 total entries ever appended
+//	Dropped  uint64 entries evicted because Capacity was reached
 type Stats = journal.Stats
 
-// Outcome is what a recorded request produced.
+// Outcome is what a recorded request produced. Fields:
+//
+//	Kind                OutcomeKind    what the client received
+//	Label               string         the scenario label served, if any
+//	Status              int            the HTTP status written
+//	FaultKind           string         the declared fault kind, if any
+//	FaultKey            string         the turn lane the request was served in
+//	AttemptIndex        int            zero-based fault attempt, or -1 if none
+//	DelayMS             int64          the requested pre-response delay
+//	DelayAfterHeadersMS int64          the requested after-headers delay
+//	BytesWritten        int            response bytes written
+//	Aborted             bool           the response was aborted mid-write
+//	Stream              *StreamOutcome non-nil only for a streamed exchange
 type Outcome = journal.Outcome
 
-// OutcomeKind classifies what the client received.
+// OutcomeKind classifies what the client received. See the OutcomeScenario,
+// OutcomeError, OutcomeFault and OutcomeUnmatched constants below.
 type OutcomeKind = journal.OutcomeKind
 
 // AuthObservation is what was observed about a request's credentials. It never
-// holds a credential value.
+// holds a credential value. Fields:
+//
+//	Present     bool   whether any recognised placement carried a value
+//	Header      string the first placement used, lower-cased
+//	Scheme      string the Authorization scheme, if any
+//	Fingerprint string first eight hex characters of a SHA-256 of the credential
+//	Placements  []journal.AuthPlacement  every placement that carried a value,
+//	                   in order; the element type is not nameable outside this
+//	                   module — read its Header/Scheme/Fingerprint fields
+//	                   through type inference
 type AuthObservation = journal.AuthObservation
-
-// Severity classifies a validation finding.
-type Severity = journal.Severity
 
 // StreamOutcome is what a streamed exchange planned and then delivered,
 // reachable as Entry.Outcome.Stream. It aliases the internal journal type so
-// a consumer can name it in assertions and in helper signatures.
+// a consumer can name it in assertions and in helper signatures. Fields above
+// the "observed" line are planned and final when the entry is appended;
+// fields below it are observed, filled in by CloseStreamIn once the exchange
+// closes:
+//
+//	Grammar         string          the SSE dialect, as plain text
+//	ChunkCount      int             how many indexed chunks the plan writes
+//	BytesPlanned    int             total bytes the plan will write
+//	PaceMS          []int64         the planned gap before each indexed chunk
+//	EventNames      []string        each frame's "event:" value, if any
+//	TerminalIndex   int             the chunk carrying usage/cost, or -1
+//	Usage           json.RawMessage the terminal chunk's usage object, if any
+//	CostTotal       *float64        the same number, provider-neutral
+//	AbortAfterChunk *int            the scripted abort point, if any
+//	TruncatedAtByte *int            the scripted truncation point, if any
+//	StallBeforeMS   *int64          a scripted stream_stall's extra delay, if any
+//	---- observed ----
+//	State           StreamState     how far the exchange got
+//	ChunksSent      int             chunks actually sent
 type StreamOutcome = journal.StreamOutcome
 
-// StreamState is how far a streamed exchange got.
+// StreamState is how far a streamed exchange got. See the StreamOpen,
+// StreamCompleted, StreamAborted and StreamClientGone constants below.
 type StreamState = journal.StreamState
 
 // StreamClose is the observed reality of a streamed exchange, the argument a
 // consumer's own Journal implementation of journal.StreamCloser receives.
+// Fields:
+//
+//	CompletedAt  time.Time   when the exchange closed
+//	BytesWritten int         total bytes written
+//	ChunksSent   int         chunks actually sent
+//	State        StreamState how the exchange ended
 type StreamClose = journal.StreamClose
 
 // Stream states, re-exported as constants of the aliased type for the same
-// reason the outcome kinds and severities above are.
+// reason the outcome kinds below are.
 const (
 	// StreamOpen means the entry was appended and has not closed yet.
 	StreamOpen = journal.StreamOpen
@@ -99,26 +172,31 @@ const (
 	OutcomeUnmatched = journal.OutcomeUnmatched
 )
 
-// Finding severities, re-exported for the same reason.
-const (
-	// SeverityWarning is a finding that does not fail the request.
-	SeverityWarning = journal.SeverityWarning
-	// SeverityError is a finding that produced a provider-shaped error.
-	SeverityError = journal.SeverityError
-)
-
 // The job alias set. A job is the create-then-poll record an async surface
 // mints, and a consumer needs to name it wherever [Sim.Jobs] hands one back or
 // its own provider.Deps.Jobs implementation has to satisfy the store contract.
 
 // Job is one create-then-poll record: what a create minted, and what a later
 // poll in the same namespace resolves. [Sim.Jobs] and [Namespace.Jobs] return
-// these.
+// these. Fields:
+//
+//	ID          string    the identifier a create returned and a poll presents
+//	Namespace   string    the state lane this record belongs to
+//	Entry       string    the scenario provider entry that minted this job
+//	LaneKey     string    the turn lane the create was served in
+//	CreateIndex int       the call index the create claimed
+//	CreatedAt   time.Time when the record was created (never rendered into a response)
 type Job = jobs.Job
 
 // Jobs is the job-store contract the provider seam consumes. A consumer
 // wiring provider.Deps by hand passes one, and an implementation of its own is
-// nameable through this alias, on the same terms as [Journal].
+// nameable through this alias, on the same terms as [Journal]. Its methods:
+//
+//	Create(j Job) (JobStats, error)          record j, or ErrLimit/ErrDuplicate
+//	Lookup(namespace, id string) (Job, bool) find a record
+//	StatsIn(namespace string) JobStats       report one namespace's occupancy
+//	ResetIn(namespace string)                drop one namespace's records
+//	Reset()                                  drop every namespace's records
 //
 // The two failure sentinels Create can report — a duplicate id, and a
 // namespace at its bound — are not reachable from outside this module: they
@@ -131,7 +209,12 @@ type Jobs = jobs.Store
 
 // JobStats reports one namespace's job occupancy against its bound. It is
 // part of the [Jobs] method set — Create and StatsIn both return it — so a
-// consumer cannot implement Jobs without naming it.
+// consumer cannot implement Jobs without naming it. Fields:
+//
+//	Count int live records in the namespace
+//	Bound int the effective MaxJobs, after defaults are applied
+//
+// JobStats.Full() and JobStats.Near() report against Bound.
 type JobStats = jobs.Stats
 
 // NewJobs returns an in-process job store bounded to 256 live jobs per
@@ -143,7 +226,9 @@ type JobStats = jobs.Stats
 // Jobs field.
 //
 //	s, _, _ := scenario.Parse(src)
-//	h := exa.New(provider.Deps{Scenario: s, Faults: testkit.NewFaults(s), Jobs: testkit.NewJobs()})
+//	set := provider.MustSet(exa.Profile())
+//	p, _ := set.Lookup(exa.Name)
+//	h := p.Handler(provider.Deps{Scenario: s, Faults: set.Faults(s), Jobs: testkit.NewJobs()})
 func NewJobs() Jobs {
 	return jobs.NewRegistry(jobs.Limits{})
 }
@@ -163,47 +248,20 @@ const awaitTimeout = 5 * time.Second
 // implement — so this is a poll, kept short enough to be invisible.
 const awaitPoll = 250 * time.Microsecond
 
-// allProviders is the listener set, in the stable order BaseURLs and Close walk.
-// It is a function rather than a package-level slice so no consumer can mutate
-// the order a package it merely imported serves in.
-func allProviders() []provider.Name {
-	return []provider.Name{provider.Exa, provider.Tavily, provider.Perplexity, provider.MCP}
-}
-
-// routes returns every route all four provider packages declare. The fault
-// engine registers all of them regardless of which listeners a Sim starts, so a
-// key set never depends on the subset under test: a missing key would make its
-// route report fault.unknown_key instead of serving the scenario's fault.
-func routes() []provider.Route {
-	return slices.Concat(exa.Routes(), tavily.Routes(), perplexity.Routes(), mcp.Routes())
-}
-
-// validators returns the projection validators for every provider kind this
-// module implements, keyed as provider.ValidateScenario expects.
-func validators() map[string]provider.Validator {
-	out := map[string]provider.Validator{
-		string(provider.Exa): exa.Validator{},
-		exa.NameAgentRuns:    exa.AgentRunValidator{},
-		tavily.Name:          tavily.Validator{},
-		tavily.NameResearch:  tavily.ResearchValidator{},
-		mcp.Name:             mcp.Validator{},
-	}
-	maps.Copy(out, perplexity.Validators())
-	return out
-}
-
-// NewFaults returns the fault engine for a scenario, wired to every route all
-// four provider packages declare. It exists because internal/faults is not
+// NewJournal returns a fresh, unbounded-capacity in-process journal, wired the
+// way [Start] already wires one. It exists because internal/journal is not
 // importable from another module, and without it a consumer building
-// provider.Deps by hand gets silently fault-free behaviour from a scenario that
-// declares faults:
+// provider.Deps by hand — provider.Deps{Scenario: s, Faults: set.Faults(s)},
+// registering an out-of-tree profile through [WithProfiles] rather than
+// calling [Start] — has no journal constructor to reach for at all (AUDIT 1
+// gap 7): [NewJobs] already exists for the same shape and this closes the
+// journal's own gap.
 //
-//	s, _, _ := scenario.Parse(src)
-//	h := exa.New(provider.Deps{Scenario: s, Faults: testkit.NewFaults(s)})
-//
-// [Start] does this for you.
-func NewFaults(s *scenario.Scenario) provider.Faults {
-	return faults.New(s, routes())
+//	set := provider.MustSet(acme.Profile())
+//	p, _ := set.Lookup(acme.Name)
+//	h := p.Handler(provider.Deps{Scenario: s, Faults: set.Faults(s), Journal: testkit.NewJournal()})
+func NewJournal() Journal {
+	return journal.NewRing(defaultJournalCapacity, provider.DefaultMaxJournalBodyBytes)
 }
 
 // options is the resolved configuration a Sim is built from.
@@ -215,9 +273,14 @@ type options struct {
 	load   func() (*scenario.Scenario, scenario.Report, error)
 	source string
 
-	providers []provider.Name
-	clock     provider.Clock
-	delayMode provider.DelayMode
+	providers    []provider.Name
+	setProviders bool
+	clock        provider.Clock
+	delayMode    provider.DelayMode
+
+	// profiles is what [WithProfiles] registered. Required (D-5): build fails
+	// tb, named, when it is empty — see [WithProfiles].
+	profiles []provider.Profile
 
 	capacity    int
 	setCapacity bool
@@ -266,6 +329,31 @@ func WithBuiltin(name string) Option {
 func WithProviders(names ...provider.Name) Option {
 	return func(o *options) {
 		o.providers = slices.Clone(names)
+		o.setProviders = true
+	}
+}
+
+// WithProfiles registers the profile set a Sim is built from. It is
+// REQUIRED: [Start] and [Handler] fail tb, named, when it is omitted or
+// passed with no profiles — a default that pulled in every reference
+// profile's contracts and goldens for a team simulating one API is the cost
+// owner decision D-5 (docs/proposals/framework-seam.md) refused to pay.
+//
+//	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile(), tavily.Profile()))
+//
+// The four in-tree profiles live at profiles/exa, profiles/tavily,
+// profiles/perplexity and profiles/mcp, each exporting its own Profile().
+//
+// [Start] and [Handler] derive routes, validators (unfiltered — every
+// registered profile's, not only the enabled subset) and the fault engine
+// from provider.NewSet(ps...).{Routes,Validators,Faults}, and each enabled
+// listener's handler from Lookup(name).Handler(deps) — closing AUDIT 1 gap
+// 8, "testkit cannot host a fifth profile at all". NewSet's own refusal
+// fails tb immediately, named, rather than surfacing as an inscrutable
+// panic three calls later.
+func WithProfiles(ps ...provider.Profile) Option {
+	return func(o *options) {
+		o.profiles = slices.Clone(ps)
 	}
 }
 
@@ -319,6 +407,13 @@ type Sim struct {
 	handlers map[provider.Name]http.Handler
 	servers  map[provider.Name]*httptest.Server
 
+	// derivedIDPaths and streamDerivedIDPaths are the registered profile
+	// set's own DerivedIDs — set.DerivedIDs() at build time — the paths
+	// [GoldenDerivedIDs] prunes for a caller that sources them from
+	// [Sim.DerivedIDs] instead of naming them by hand.
+	derivedIDPaths       []string
+	streamDerivedIDPaths []string
+
 	// derived maps a namespace name [Sim.NamespaceFor] produced to the test name
 	// it was produced from, so two tests whose names sanitise to one namespace
 	// fail loudly instead of silently sharing a lane. It is a sync.Map because
@@ -354,51 +449,20 @@ func Start(tb testing.TB, opts ...Option) *Sim {
 	return s
 }
 
-// ExaHandler returns the Exa handler for a consumer wiring one provider into its
-// own httptest.Server, together with the Sim that owns its journal and fault
+// Handler returns one profile's handler for a consumer wiring it into its own
+// httptest.Server, together with the Sim that owns its journal and fault
 // engine. The Sim is returned rather than discarded because every assertion in
 // this package needs an Entry, and the only source of an Entry is the Sim: a
 // bare http.Handler lets a consumer assert "I got a response" and nothing about
 // the vendor request it sent, which is the whole point of the journal.
 //
-// The Sim's provider servers are not started; only the handler is built. Close is
-// still registered on tb.
-func ExaHandler(tb testing.TB, opts ...Option) (http.Handler, *Sim) {
+// name must be registered through [WithProfiles] — see its doc comment; it is
+// required here on the same terms as [Start]. The Sim's provider servers are
+// not started; only the handler is built. Close is still registered on tb.
+func Handler(tb testing.TB, name provider.Name, opts ...Option) (http.Handler, *Sim) {
 	tb.Helper()
-	return handlerOnly(tb, provider.Exa, opts)
-}
-
-// TavilyHandler returns the Tavily handler and its Sim, on the same terms as
-// [ExaHandler].
-func TavilyHandler(tb testing.TB, opts ...Option) (http.Handler, *Sim) {
-	tb.Helper()
-	return handlerOnly(tb, provider.Tavily, opts)
-}
-
-// PerplexityHandler returns the Perplexity handler and its Sim, on the same terms
-// as [ExaHandler]. The one handler serves both the Sonar and Agent surfaces,
-// which are separate scenario entries on one listener.
-func PerplexityHandler(tb testing.TB, opts ...Option) (http.Handler, *Sim) {
-	tb.Helper()
-	return handlerOnly(tb, provider.Perplexity, opts)
-}
-
-// MCPHandler returns the MCP handler and its Sim, on the same terms as
-// [ExaHandler].
-func MCPHandler(tb testing.TB, opts ...Option) (http.Handler, *Sim) {
-	tb.Helper()
-	return handlerOnly(tb, provider.MCP, opts)
-}
-
-// handlerOnly builds a Sim serving exactly one provider and starts nothing.
-//
-// The provider set is forced rather than taken from WithProviders: a caller that
-// asked for ExaHandler wants the Exa handler, and honouring a WithProviders that
-// excluded it would return nil for no reason a reader could see.
-func handlerOnly(tb testing.TB, p provider.Name, opts []Option) (http.Handler, *Sim) {
-	tb.Helper()
-	s := build(tb, []provider.Name{p}, opts)
-	return s.handlers[p], s
+	s := build(tb, []provider.Name{name}, opts)
+	return s.handlers[name], s
 }
 
 // build resolves the options, validates the scenario and constructs every
@@ -411,7 +475,6 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 	o := options{
 		load:      func() (*scenario.Scenario, scenario.Report, error) { return scenarios.Load(scenarios.Default) },
 		source:    scenarios.Prefix + scenarios.Default,
-		providers: allProviders(),
 		clock:     provider.SystemClock{},
 		delayMode: provider.DelayReal,
 		capacity:  defaultJournalCapacity,
@@ -421,46 +484,100 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 	}
 	if force != nil {
 		o.providers = force
+		o.setProviders = true
 	}
 	if !o.setCapacity {
 		o.capacity = defaultJournalCapacity
 	}
 
-	sc := loadScenario(tb, o)
+	set := profileSet(tb, o.profiles)
+	if set == nil {
+		// WithProfiles was omitted, empty, or refused; profileSet already
+		// failed tb, named. Returning a harmless zero Sim rather than
+		// continuing lets a test double for tb that does not halt on
+		// Fatalf (this package's own fatalTB) inspect the failure message
+		// without a nil *provider.Set panicking the next line — a real
+		// testing.T never reaches here at all, because its own Fatalf
+		// already stopped the goroutine.
+		return &Sim{
+			handlers: map[provider.Name]http.Handler{},
+			servers:  map[provider.Name]*httptest.Server{},
+			client:   newClient(),
+		}
+	}
+
+	// requested defaults to every name the registered set serves, so a
+	// caller that passes WithProfiles alone — no WithProviders — gets
+	// every profile it registered started.
+	available := set.Names()
+	requested := available
+	if o.setProviders {
+		requested = o.providers
+	}
+
+	sc := loadScenario(tb, o, set.Validators())
+	derivedIDs, streamDerivedIDs := set.DerivedIDs()
+	credentialNames := set.CredentialNames()
 	s := &Sim{
 		scenario: sc,
-		journal:  journal.NewRing(o.capacity, provider.DefaultMaxJournalBodyBytes),
-		faults:   NewFaults(sc),
-		jobs:     jobs.NewRegistry(jobs.Limits{}),
-		names:    enabled(tb, o.providers),
-		handlers: map[provider.Name]http.Handler{},
-		client:   newClient(),
+		journal: journal.NewRingWithLimits(journal.Limits{
+			Capacity:        o.capacity,
+			MaxBodyBytes:    provider.DefaultMaxJournalBodyBytes,
+			CredentialNames: credentialNames,
+		}),
+		faults:               set.Faults(sc),
+		jobs:                 jobs.NewRegistry(jobs.Limits{}),
+		names:                enabled(tb, requested, available),
+		handlers:             map[provider.Name]http.Handler{},
+		client:               newClient(),
+		derivedIDPaths:       derivedIDs,
+		streamDerivedIDPaths: streamDerivedIDs,
 	}
 
 	deps := provider.Deps{
-		Scenario:  sc,
-		Journal:   s.journal,
-		Faults:    s.faults,
-		Clock:     o.clock,
-		DelayMode: o.delayMode,
-		Logger:    slog.New(slog.DiscardHandler),
-		Jobs:      s.jobs,
+		Scenario:        sc,
+		Journal:         s.journal,
+		Faults:          s.faults,
+		Clock:           o.clock,
+		DelayMode:       o.delayMode,
+		Logger:          slog.New(slog.DiscardHandler),
+		Jobs:            s.jobs,
+		CredentialNames: credentialNames,
 	}
 	for _, name := range s.names {
-		switch name {
-		case provider.Exa:
-			s.handlers[name] = exa.New(deps)
-		case provider.Tavily:
-			s.handlers[name] = tavily.New(deps)
-		case provider.Perplexity:
-			s.handlers[name] = perplexity.New(deps)
-		case provider.MCP:
-			s.handlers[name] = mcp.New(deps)
-		}
+		// enabled already proved name is in set.Names(), so the miss branch
+		// Lookup offers is unreachable here.
+		p, _ := set.Lookup(name)
+		s.handlers[name] = p.Handler(deps)
 	}
 
 	tb.Cleanup(s.Close)
 	return s
+}
+
+// profileSet resolves ps into a validated provider.Set, failing tb — named,
+// with the one-line fix — when ps is empty ([WithProfiles] was never passed)
+// or when the set itself refuses (NewSet's own error: a duplicate name, a
+// missing ErrorBody, and the rest of provider.NewSet's validation).
+func profileSet(tb testing.TB, ps []provider.Profile) *provider.Set {
+	tb.Helper()
+	if len(ps) == 0 {
+		tb.Fatalf("testkit: WithProfiles is required and none was given. Fix: " +
+			`testkit.WithProfiles(<yourpkg>.Profile()) — any provider.Profile, yours or a reference one; ` +
+			`for example testkit.WithProfiles(exa.Profile(), tavily.Profile(), perplexity.Profile(), mcp.Profile()) ` +
+			"(or whichever of them your test needs) — the four reference profiles live at " +
+			"profiles/exa, profiles/tavily, profiles/perplexity and profiles/mcp, each exporting Profile(). " +
+			"A default profile set was deliberately removed: it would pull every reference profile's " +
+			"contracts and goldens into the build graph of a team simulating one other API (owner decision D-5, " +
+			"docs/proposals/framework-seam.md).")
+		return nil
+	}
+	set, err := provider.NewSet(ps...)
+	if err != nil {
+		tb.Fatalf("testkit: WithProfiles: %v", err)
+		return nil
+	}
+	return set
 }
 
 // loadScenario resolves and validates the configured scenario, failing tb with
@@ -468,7 +585,7 @@ func build(tb testing.TB, force []provider.Name, opts []Option) *Sim {
 // for the same reason internal/server checks them before readiness: the scenario
 // package leaves a respond body as a raw YAML node, so nothing before this point
 // has looked inside it.
-func loadScenario(tb testing.TB, o options) *scenario.Scenario {
+func loadScenario(tb testing.TB, o options, vals map[string]provider.Validator) *scenario.Scenario {
 	tb.Helper()
 
 	sc, report, err := o.load()
@@ -481,7 +598,7 @@ func loadScenario(tb testing.TB, o options) *scenario.Scenario {
 		return nil
 	}
 
-	report.Findings = append(report.Findings, provider.ValidateScenario(sc, validators())...)
+	report.Findings = append(report.Findings, provider.ValidateScenario(sc, vals)...)
 	if !report.OK() {
 		tb.Fatalf("testkit: validating %s:%s", o.source, formatFindings(report.Errors()))
 		return nil
@@ -499,23 +616,23 @@ func formatFindings(findings []scenario.Finding) string {
 	return b.String()
 }
 
-// enabled returns the requested provider set in the stable listener order,
-// failing tb on a name no listener serves. Duplicates collapse, so
+// enabled returns the requested provider set in available's stable order,
+// failing tb on a name available does not list. Duplicates collapse, so
 // WithProviders("exa", "exa") starts one server rather than two sharing a port.
-func enabled(tb testing.TB, requested []provider.Name) []provider.Name {
+func enabled(tb testing.TB, requested, available []provider.Name) []provider.Name {
 	tb.Helper()
 
 	want := make(map[provider.Name]bool, len(requested))
 	for _, name := range requested {
-		if !slices.Contains(allProviders(), name) {
-			tb.Fatalf("testkit: unknown provider %q; this build serves %v", name, allProviders())
+		if !slices.Contains(available, name) {
+			tb.Fatalf("testkit: unknown provider %q; WithProfiles registered %v", name, available)
 			return nil
 		}
 		want[name] = true
 	}
 
 	var out []provider.Name
-	for _, name := range allProviders() {
+	for _, name := range available {
 		if want[name] {
 			out = append(out, name)
 		}
@@ -525,8 +642,7 @@ func enabled(tb testing.TB, requested []provider.Name) []provider.Name {
 
 // URL returns the base URL for a provider, suitable for an adapter's base-URL
 // configuration. It is empty for a provider this Sim does not serve, and for
-// every provider of a Sim returned by [ExaHandler] and its siblings, which start
-// no servers.
+// every provider of a Sim returned by [Handler], which starts no servers.
 func (s *Sim) URL(p provider.Name) string {
 	if srv, ok := s.servers[p]; ok {
 		return srv.URL
@@ -535,9 +651,10 @@ func (s *Sim) URL(p provider.Name) string {
 }
 
 // BaseURLs returns the environment-variable-shaped base URLs, keyed
-// EXA_BASE_URL, TAVILY_BASE_URL, PERPLEXITY_BASE_URL and MCP_BASE_URL, so a
-// test can configure
-// a consumer exactly as Compose would. Only running servers appear.
+// <NAME>_BASE_URL — the registered provider.Name upper-cased, whatever
+// profiles [WithProfiles] registered, not a fixed vendor list — so a test
+// can configure a consumer exactly as Compose would. Only running servers
+// appear.
 func (s *Sim) BaseURLs() map[string]string {
 	out := make(map[string]string, len(s.servers))
 	for _, name := range s.names {
@@ -584,6 +701,18 @@ func (s *Sim) Requests(p provider.Name) []Entry {
 // index, then id.
 func (s *Sim) Jobs() []Job {
 	return s.jobs.List()
+}
+
+// DerivedIDs returns the response-body and SSE-frame JSON paths this Sim's
+// registered profiles declare as call-index-derived — provider.Set.DerivedIDs
+// for the set [WithProfiles] built. Pass the combined result to
+// [GoldenDerivedIDs] to prune exactly what this Sim's own profiles can vary,
+// no more, without a golden test having to name a vendor's field by hand:
+//
+//	paths, streamPaths := sim.DerivedIDs()
+//	testkit.AssertGoldenJSON(t, "testdata/happy.json", body, testkit.GoldenDerivedIDs(paths...))
+func (s *Sim) DerivedIDs() (paths, streamPaths []string) {
+	return slices.Clone(s.derivedIDPaths), slices.Clone(s.streamDerivedIDPaths)
 }
 
 // requestsOf filters entries to one provider and orders them by arrival
@@ -768,13 +897,13 @@ func namespaceForTest(test string) string {
 // and each see attempt 0 first, which is the property that lets a retry test and
 // a fan-out test share one Sim:
 //
-//	sim := testkit.Start(t, testkit.WithBuiltin("rate-limited"))
+//	sim := testkit.Start(t, testkit.WithProfiles(exa.Profile()), testkit.WithBuiltin("rate-limited"))
 //	t.Run("adapter retries", func(t *testing.T) {
 //	    t.Parallel()
 //	    ns := sim.NamespaceFor(t)
-//	    adapter := myrepo.New(ns.URL(provider.Exa), "test-key")
+//	    adapter := myrepo.New(ns.URL(exa.Name), "test-key")
 //	    ...
-//	    testkit.AssertNoErrors(t, ns.Requests(provider.Exa)[0])
+//	    testkit.AssertNoErrors(t, ns.Requests(exa.Name)[0])
 //	})
 //
 // There is deliberately no per-namespace Reset. The journal can be dropped per

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/c360studio/servicesim/provider"
+	"github.com/c360studio/servicesim/profiles/perplexity"
 	"github.com/c360studio/servicesim/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,10 +54,10 @@ providers:
 func TestAdapterReceivesAStreamedPerplexityResponse(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithScenarioYAML(streamScenario), testkit.WithProviders(provider.Perplexity))
+	sim := testkit.Start(t, testkit.WithProfiles(perplexity.Profile()), testkit.WithScenarioYAML(streamScenario), testkit.WithProviders(perplexity.Name))
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
-		sim.URL(provider.Perplexity)+"/v1/sonar", strings.NewReader(
+		sim.URL(perplexity.Name)+"/v1/sonar", strings.NewReader(
 			`{"model":"sonar-deep-research","messages":[{"role":"user","content":"report a"}],"stream":true}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -76,8 +76,8 @@ func TestAdapterReceivesAStreamedPerplexityResponse(t *testing.T) {
 	require.NoError(t, err)
 	testkit.AssertGoldenSSE(t, "testdata/stream-happy.sse", transcript)
 
-	testkit.AssertRequestCount(t, sim, provider.Perplexity, 1)
-	entry := sim.Requests(provider.Perplexity)[0]
+	testkit.AssertRequestCount(t, sim, perplexity.Name, 1)
+	entry := sim.Requests(perplexity.Name)[0]
 	testkit.AssertNoErrors(t, entry)
 	testkit.AssertBearerAuth(t, entry)
 	testkit.AssertNoCredentialLeak(t, sim, exaKey, tavilyKey, perplexityKey)

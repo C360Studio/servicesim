@@ -9,7 +9,7 @@ to look and the place people forget:
 curl -s 'http://localhost:8080/__admin/requests?pretty=1' | less
 ```
 
-In a Go test the same data is `sim.Requests(provider.Exa)`, and `testkit.AssertNoErrors(t, entry)` turns "my
+In a Go test the same data is `sim.Requests(exa.Name)`, and `testkit.AssertNoErrors(t, entry)` turns "my
 adapter sent a valid request" into an assertion instead of a hope. Two fields on an entry answer most questions
 before you read anything else: `findings` says what was wrong with the request, and `outcome.fault_key` says which
 state lane served it.
@@ -371,14 +371,18 @@ stream. Use `testkit.AssertGoldenSSE(tb, path, transcript, opts...)` instead: it
 names the one frame that changed. Each frame's `data` line is decoded as JSON and compared semantically, exactly
 as `AssertGoldenJSON` compares a body; the bare `[DONE]` token is compared as the literal string it is.
 
-Derived identifiers are pruned from every frame by default, the same convention `AssertGoldenJSON` uses and for
-the same reason: an id advances with call index by design, so a golden bound to one call position would fail on
-every other one. For the Sonar grammar that is the top-level `requestId`/`request_id`/`id`, exactly as
-`AssertGoldenJSON` prunes a non-streaming body; for the Agent grammar, whose frames wrap a typed event payload,
-it is also `response.id`, `item.id`, `item_id`, and every element of `response.completed`'s `response.output`
-array. `testkit.GoldenExactIDs()` opts back into comparing all of the above — worth it for a test that always
-asserts at the same call position, where the identifiers stay the same run to run, but not otherwise: ids
-advance with call index on every call, whether or not the route has a declared fault plan.
+Derived identifiers are pruned from every frame only when you ask, exactly as `AssertGoldenJSON` works: pass
+`testkit.GoldenDerivedIDs(paths...)`, most often sourced from `sim.DerivedIDs()` so the pruned paths always match
+what the registered profile actually derives rather than a vendor field named by hand. An id advances with call
+index by design, so a golden bound to one call position would otherwise fail on every other one. For the Sonar
+grammar that is the top-level `requestId`/`request_id`/`id`; for the Agent grammar, whose frames wrap a typed
+event payload, it is also `response.id`, `item.id` and `item_id` — declare whichever of these this golden's own
+vendor derives. One shape needs no declaring at all: every element's `id` inside `response.completed`'s
+`response.output` array is stripped whenever any pruning applies (`testkit.GoldenExactIDs()` was not passed),
+because a dotted `GoldenDerivedIDs`/`GoldenIgnore` path cannot address an array element.
+`testkit.GoldenExactIDs()` opts back into comparing every declared path (and that one array shape) — worth it for
+a test that always asserts at the same call position, where the identifiers stay the same run to run, but not
+otherwise: ids advance with call index on every call, whether or not the route has a declared fault plan.
 `SERVICESIM_UPDATE_GOLDEN=1` rewrites the golden from the observed transcript, verbatim — unlike
 `AssertGoldenJSON`, the bytes are not re-encoded, because SSE framing is itself part of the wire contract being
 pinned.
@@ -464,8 +468,8 @@ the request. See [`turn_key`](scenario-schema.md#turn_key--what-the-cursor-count
 
 ## Two tests interfere with each other
 
-Servicesim's default and recommended concurrency boundary is **one simulator per test** — in Go, `testkit.Start(t)`
-per test, which is cheap because it is in-process.
+Servicesim's default and recommended concurrency boundary is **one simulator per test** — in Go,
+`testkit.Start(t, testkit.WithProfiles(...))` per test, which is cheap because it is in-process.
 
 If you are sharing one container across tests, isolate them with a namespace prefix on the base URL:
 
@@ -551,8 +555,10 @@ Two cases legitimately repeat an identifier:
   position to derive from. Its identifier is the tuple with no index, which is distinct from every served response
   and shared with the other rejections in its lane.
 
-Golden helpers already account for this: `testkit.AssertGoldenJSON` ignores `requestId`, `request_id` and the
-top-level `id` unless you pass `testkit.GoldenExactIDs()`.
+Golden helpers can account for this, but only when told to: `testkit.AssertGoldenJSON` prunes nothing by
+default, so pass `testkit.GoldenDerivedIDs("requestId", "request_id", "id")` — or, sourced from the registered
+profile rather than named by hand, `testkit.GoldenDerivedIDs(sim.DerivedIDs()...)` — and `testkit.GoldenExactIDs()`
+opts back out of whatever `GoldenDerivedIDs` named.
 
 ## `task check` fails on revive but the code looks fine
 

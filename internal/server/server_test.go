@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,6 +21,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/internal/config"
+	"github.com/c360studio/servicesim/profiles/exa"
+	"github.com/c360studio/servicesim/profiles/mcp"
+	"github.com/c360studio/servicesim/profiles/perplexity"
+	"github.com/c360studio/servicesim/profiles/tavily"
 	"github.com/c360studio/servicesim/provider"
 )
 
@@ -58,6 +63,19 @@ func (b *logBuffer) String() string {
 	return b.buf.String()
 }
 
+// referenceSet builds the Set every test in this file composes a Server
+// from: the four reference profiles, exactly what cmd/servicesim registers.
+// Phase 10 unit 3 moved internal/server's provider knowledge out of this
+// package entirely, so every test that used to enumerate
+// provider.Exa/Tavily/Perplexity/MCP now builds a Set from the profiles'
+// own Profile() constructors instead.
+func referenceSet(t *testing.T) *provider.Set {
+	t.Helper()
+	set, err := provider.NewSet(exa.Profile(), tavily.Profile(), perplexity.Profile(), mcp.Profile())
+	require.NoError(t, err)
+	return set
+}
+
 // testConfig resolves a configuration with every listener on an ephemeral port,
 // which is what lets these tests run in parallel with each other and with any
 // other package's tests.
@@ -72,7 +90,7 @@ func testConfig(t *testing.T, args ...string) config.Config {
 		"--mcp-port", "0",
 		"--shutdown-grace", "10s",
 	}
-	cfg, err := config.Load(append(base, args...), nil)
+	cfg, err := config.Load(referenceSet(t), append(base, args...), nil)
 	require.NoError(t, err)
 	return cfg
 }
@@ -239,11 +257,11 @@ type surfaceRequest struct {
 // and both Perplexity surfaces are here, because "every listener answers" is not
 // the same claim as "every route answers".
 var everySurface = []surfaceRequest{
-	{string(provider.Exa), "/search", `{"query":"report a"}`},
-	{string(provider.Exa), "/answer", `{"query":"report a"}`},
-	{string(provider.Tavily), "/search", `{"query":"report a"}`},
-	{string(provider.Perplexity), "/v1/sonar", `{"model":"sonar","messages":[{"role":"user","content":"report a"}]}`},
-	{string(provider.Perplexity), "/v1/agent", `{"input":"report a","model":"openai/gpt-5"}`},
+	{string(exa.Name), "/search", `{"query":"report a"}`},
+	{string(exa.Name), "/answer", `{"query":"report a"}`},
+	{string(tavily.Name), "/search", `{"query":"report a"}`},
+	{string(perplexity.Name), "/v1/sonar", `{"model":"sonar","messages":[{"role":"user","content":"report a"}]}`},
+	{string(perplexity.Name), "/v1/agent", `{"input":"report a","model":"openai/gpt-5"}`},
 }
 
 // -----------------------------------------------------------------------------
@@ -302,12 +320,12 @@ func TestOnlySelectedProvidersAreBound(t *testing.T) {
 	h := start(t, testConfig(t, "--providers", "exa"), discard())
 
 	require.NotEmpty(t, h.Addr(SurfaceAdmin))
-	require.NotEmpty(t, h.Addr(string(provider.Exa)))
-	require.Empty(t, h.Addr(string(provider.Tavily)), "tavily was not selected and must not be bound")
-	require.Empty(t, h.Addr(string(provider.Perplexity)), "perplexity was not selected and must not be bound")
+	require.NotEmpty(t, h.Addr(string(exa.Name)))
+	require.Empty(t, h.Addr(string(tavily.Name)), "tavily was not selected and must not be bound")
+	require.Empty(t, h.Addr(string(perplexity.Name)), "perplexity was not selected and must not be bound")
 
 	require.Equal(t, http.StatusOK,
-		post(t, h.Addr(string(provider.Exa)), "/search", `{"query":"report a"}`).StatusCode)
+		post(t, h.Addr(string(exa.Name)), "/search", `{"query":"report a"}`).StatusCode)
 
 	unimplemented := map[string]bool{}
 	for _, f := range h.Report().Warnings() {
@@ -381,7 +399,7 @@ func TestUnknownProviderIsAWarningNotAFailure(t *testing.T) {
 	h := start(t, cfg, NewLogger(cfg, &logs))
 
 	require.Equal(t, http.StatusOK,
-		post(t, h.Addr(string(provider.Exa)), "/search", `{"query":"report a"}`).StatusCode)
+		post(t, h.Addr(string(exa.Name)), "/search", `{"query":"report a"}`).StatusCode)
 
 	status, body := get(t, h.Addr(SurfaceAdmin), "/__admin/scenario")
 	require.Equal(t, http.StatusOK, status)
@@ -390,6 +408,56 @@ func TestUnknownProviderIsAWarningNotAFailure(t *testing.T) {
 
 	require.Contains(t, logs.String(), provider.CodeProviderUnimplemented,
 		"an unimplemented provider must be visible in the startup log, not only on the admin surface")
+}
+
+// TestUnscriptedProfileIsWarnedOnce covers the reverse direction from
+// TestUnknownProviderIsAWarningNotAFailure above: that test is a scenario
+// BLOCK naming a provider this build does not implement; this is a
+// registered, ENABLED profile whose scenario has no block naming it. tavily
+// is enabled but the scenario scripts only exa, so every request tavily
+// receives renders the well-shaped empty answer forever — the accommodation
+// docs/proposals/framework-seam.md makes for reference-only built-ins — and
+// [codeProfileUnscripted] is the startup diagnosis, once, not once per
+// request.
+func TestUnscriptedProfileIsWarnedOnce(t *testing.T) {
+	t.Parallel()
+
+	var logs logBuffer
+	args := writeScenario(t, `
+version: 1
+name: exa-only
+time:
+  base: 2026-01-01T00:00:00Z
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa:
+    results:
+      - source: source-a
+`)
+	cfg := testConfig(t, append(args, "--providers", "exa,tavily")...)
+	h := start(t, cfg, NewLogger(cfg, &logs))
+
+	require.Equal(t, http.StatusOK,
+		post(t, h.Addr(string(exa.Name)), "/search", `{"query":"report a"}`).StatusCode)
+
+	status, body := get(t, h.Addr(SurfaceAdmin), "/__admin/scenario")
+	require.Equal(t, http.StatusOK, status)
+	require.Contains(t, string(body), codeProfileUnscripted)
+	require.Contains(t, string(body), `"path":"providers.tavily"`)
+	require.NotContains(t, string(body), `"path":"providers.exa"`,
+		"exa has a block in the scenario and must not be warned as unscripted")
+	require.NotContains(t, string(body), `"path":"providers.perplexity"`,
+		"perplexity is disabled by --providers and must not be warned as unscripted")
+	require.NotContains(t, string(body), `"path":"providers.mcp"`,
+		"mcp is disabled by --providers and must not be warned as unscripted")
+
+	require.Equal(t, 1, strings.Count(logs.String(), codeProfileUnscripted),
+		"the warning belongs in the startup log once per registered-and-enabled unscripted profile "+
+			"(tavily only, given --providers exa,tavily), not once per request and not for a disabled profile")
+	require.Contains(t, logs.String(), `"scenario":"exa-only"`)
 }
 
 // TestSunsetIsAnnouncedOnceAtStartup covers the Perplexity Sonar sunset notice.
@@ -438,7 +506,7 @@ func TestScenarioPrefixSelectsBehaviourPerRequest(t *testing.T) {
 		"alpha.yaml":   scenarioNamed("alpha-behaviour", "Alpha Report"),
 	})
 	h := start(t, testConfig(t, args...), discard())
-	exa := h.Addr(string(provider.Exa))
+	exaAddr := h.Addr(string(exa.Name))
 
 	require.Equal(t, []string{"alpha", "default"}, h.ScenarioNames(),
 		"the registry is keyed on the file name, in a fixed order")
@@ -454,7 +522,7 @@ func TestScenarioPrefixSelectsBehaviourPerRequest(t *testing.T) {
 		{name: "a namespace does not change behaviour", path: "/x/alpha/n/t-1/search", want: "Alpha Report"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			status, body := postBody(t, exa, tc.path, `{"query":"report a"}`)
+			status, body := postBody(t, exaAddr, tc.path, `{"query":"report a"}`)
 			require.Equal(t, http.StatusOK, status)
 			require.Contains(t, body, tc.want)
 		})
@@ -469,6 +537,49 @@ func TestScenarioPrefixSelectsBehaviourPerRequest(t *testing.T) {
 // The answer is provider-shaped, because a consumer's error decoder is written
 // against the vendor's envelope and a simulator-shaped body would make it fail to
 // parse rather than to report.
+// TestRefusalHandlerWarnsOnAnEmptyBody proves the per-request half of the
+// scenario-unknown refusal: refusalHandler renders its body once, at
+// startup, from a Profile it looks up by name — today, always one of the
+// four in-tree profiles, whose ErrorBody is never empty for
+// RefuseScenarioUnknown. Phase 10 unit 3 wires an arbitrary out-of-tree Set
+// into the server, at which point an ErrorBody that returns nothing for
+// this refusal kind must not silently serve an empty body forever with no
+// finding at all — refusalHandler must warn CodeRefusalEmptyBody per
+// request, not only (as Profile.Refuse already does) at the startup call
+// that has no Exchange to journal through.
+//
+// A name absent from the registered Set (an unregistered name is exactly
+// the shape an out-of-tree profile's name would be before it is composed
+// in) reproduces the empty-body case without needing a real out-of-tree
+// Profile: Lookup misses, body stays nil, exactly as it would for a
+// registered profile whose ErrorBody chose to return nothing.
+func TestRefusalHandlerWarnsOnAnEmptyBody(t *testing.T) {
+	t.Parallel()
+
+	args := writeScenarioDir(t, map[string]string{
+		"default.yaml": scenarioNamed("default-behaviour", "Default Report"),
+	})
+	cfg := testConfig(t, args...)
+	h := start(t, cfg, discard())
+
+	handler := h.refusalHandler(provider.Name("ghost"), "test reason")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/anything", nil))
+
+	require.Empty(t, w.Body.Bytes(), "an unregistered name renders no body, by construction")
+
+	entries := h.journal.Snapshot()
+	require.NotEmpty(t, entries)
+	last := entries[len(entries)-1]
+	var found bool
+	for _, f := range last.Findings {
+		if f.Code == provider.CodeRefusalEmptyBody {
+			found = true
+		}
+	}
+	require.True(t, found, "an empty refusal body must be journaled per request, not silently served")
+}
+
 func TestUnknownScenarioFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -488,37 +599,37 @@ func TestUnknownScenarioFailsClosed(t *testing.T) {
 		want    string
 	}{
 		{
-			name: "exa", surface: string(provider.Exa),
+			name: "exa", surface: string(exa.Name),
 			path: "/x/nope/search", body: `{"query":"report a"}`,
 			want: `"tag":"NOT_FOUND"`,
 		},
 		{
-			name: "tavily", surface: string(provider.Tavily),
+			name: "tavily", surface: string(tavily.Name),
 			path: "/x/nope/search", body: `{"query":"report a"}`,
 			want: `{"detail":{"error":"Not Found"}}`,
 		},
 		{
-			name: "perplexity", surface: string(provider.Perplexity),
+			name: "perplexity", surface: string(perplexity.Name),
 			path: "/x/nope/v1/sonar", body: `{"model":"sonar","messages":[{"role":"user","content":"q"}]}`,
 			want: `{"detail":"Not Found"}`,
 		},
 		{
 			// The JSON-RPC-shaped refusal omits the id member: schema.json's
 			// RequestId admits no null, and JSONRPCErrorResponse.id is optional
-			// (provider/mcp/doc.go, decision 6). Pinned by exact bytes.
-			name: "mcp", surface: string(provider.MCP),
+			// (profiles/mcp/doc.go, decision 6). Pinned by exact bytes.
+			name: "mcp", surface: string(mcp.Name),
 			path: "/x/nope/mcp", body: `{"jsonrpc":"2.0","id":1,"method":"server/discover"}`,
 			want: `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Not Found"}}`,
 		},
 		{
 			name:    "an invalid name is refused, not sanitised into a lookup",
-			surface: string(provider.Exa),
+			surface: string(exa.Name),
 			path:    "/x/no.pe/search", body: `{"query":"report a"}`,
 			want: `"tag":"NOT_FOUND"`,
 		},
 		{
 			name:    "a namespace does not rescue an unknown scenario",
-			surface: string(provider.Exa),
+			surface: string(exa.Name),
 			path:    "/x/nope/n/t-1/search", body: `{"query":"report a"}`,
 			want: `"tag":"NOT_FOUND"`,
 		},
@@ -559,13 +670,13 @@ func TestUnprefixedRequestFailsClosedWithoutADefaultScenario(t *testing.T) {
 		"beta.yaml":  scenarioNamed("beta-behaviour", "Beta Report"),
 	})
 	h := start(t, testConfig(t, args...), discard())
-	exa := h.Addr(string(provider.Exa))
+	exaAddr := h.Addr(string(exa.Name))
 
-	status, body := postBody(t, exa, "/search", `{"query":"report a"}`)
+	status, body := postBody(t, exaAddr, "/search", `{"query":"report a"}`)
 	require.Equal(t, http.StatusNotFound, status)
 	require.Contains(t, body, `"tag":"NOT_FOUND"`)
 
-	status, body = postBody(t, exa, "/x/beta/search", `{"query":"report a"}`)
+	status, body = postBody(t, exaAddr, "/x/beta/search", `{"query":"report a"}`)
 	require.Equal(t, http.StatusOK, status, "naming a scenario still works")
 	require.Contains(t, body, "Beta Report")
 }
@@ -625,7 +736,7 @@ func TestNamespacesIsolateConcurrentTestsInOneProcess(t *testing.T) {
 	t.Parallel()
 
 	h := start(t, testConfig(t, "--scenario", "builtin:rate-limited"), discard())
-	exa := h.Addr(string(provider.Exa))
+	exaAddr := h.Addr(string(exa.Name))
 
 	namespaces := []string{"t-alpha", "t-beta"}
 	got := make([][]int, len(namespaces))
@@ -639,7 +750,7 @@ func TestNamespacesIsolateConcurrentTestsInOneProcess(t *testing.T) {
 			// under test is that another caller's traffic does not move this
 			// caller's cursor.
 			for range 2 {
-				resp := post(t, exa, "/n/"+ns+"/search", `{"query":"report a"}`)
+				resp := post(t, exaAddr, "/n/"+ns+"/search", `{"query":"report a"}`)
 				got[i] = append(got[i], resp.StatusCode)
 			}
 		}()
@@ -744,7 +855,7 @@ providers:
 	active := make(chan struct{}, 1)
 	h := newHarness(t, testConfig(t, args...), discard(), func(s *Server) {
 		s.connState = func(name string, _ net.Conn, state http.ConnState) {
-			if name == string(provider.Exa) && state == http.StateActive {
+			if name == string(exa.Name) && state == http.StateActive {
 				select {
 				case active <- struct{}{}:
 				default:
@@ -761,7 +872,7 @@ providers:
 	results := make(chan result, 1)
 	go func() {
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-			"http://"+h.Addr(string(provider.Exa))+"/search", strings.NewReader(`{"query":"report a"}`))
+			"http://"+h.Addr(string(exa.Name))+"/search", strings.NewReader(`{"query":"report a"}`))
 		if err != nil {
 			results <- result{err: err}
 			return
@@ -840,7 +951,7 @@ func TestRequestLogIsStructuredAndCredentialFree(t *testing.T) {
 	h := start(t, cfg, NewLogger(cfg, &logs))
 
 	require.Equal(t, http.StatusOK,
-		post(t, h.Addr(string(provider.Exa)), "/search", `{"query":"report a"}`).StatusCode)
+		post(t, h.Addr(string(exa.Name)), "/search", `{"query":"report a"}`).StatusCode)
 
 	var event map[string]any
 	for line := range strings.Lines(logs.String()) {
@@ -874,7 +985,7 @@ func TestRequestLogIsStructuredAndCredentialFree(t *testing.T) {
 // presented (turn_key: [header:authorization]), and the raw token composed into
 // the lane key must not survive by ANY path — not the structured log line, and
 // not GET /__admin/requests, which serves the journal this process retained.
-// provider/exa's TestAgentRunCreateCredentialTurnKeyNeverLeaksTheToken covers the
+// profiles/exa's TestAgentRunCreateCredentialTurnKeyNeverLeaksTheToken covers the
 // journal entry and the job registry directly; this is the whole-process path
 // for the two surfaces that only exist once a real Server is running.
 func TestCredentialTurnKeyNeverReachesLogsOrAdmin(t *testing.T) {
@@ -900,7 +1011,7 @@ providers:
 	h := start(t, cfg, NewLogger(cfg, &logs))
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		"http://"+h.Addr(string(provider.Exa))+"/search", strings.NewReader(`{"query":"report a"}`))
+		"http://"+h.Addr(string(exa.Name))+"/search", strings.NewReader(`{"query":"report a"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", sentinel)
@@ -968,7 +1079,7 @@ func TestLogLevelIsHonoured(t *testing.T) {
 // docs/design/async-jobs.md §2.4: a single-shot block normalises into one
 // unconditional turn, so the first poll is already terminal. That is all these
 // tests need — they exercise the create/reset/poll wiring, not the poll
-// cursor's own turn selection, which provider/exa/agentrun_test.go covers.
+// cursor's own turn selection, which profiles/exa/agentrun_test.go covers.
 const asyncAgentRunScenario = `
 version: 1
 name: async-reset
@@ -1039,22 +1150,22 @@ func TestResetDropsJobRecordsWithTheCursors(t *testing.T) {
 	t.Parallel()
 
 	h := start(t, testConfig(t, writeScenario(t, asyncAgentRunScenario)...), discard())
-	exa := h.Addr(string(provider.Exa))
+	exaAddr := h.Addr(string(exa.Name))
 	admin := h.Addr(SurfaceAdmin)
 
-	first := createAgentRun(t, exa, "/n/t-x/agent/runs")
+	first := createAgentRun(t, exaAddr, "/n/t-x/agent/runs")
 
 	// Resetting a DIFFERENT namespace first must not disturb t-x's job: it is
 	// still pollable afterwards.
 	require.Equal(t, http.StatusOK, resetScope(t, admin, "namespace=t-y"))
-	require.Equal(t, http.StatusOK, pollAgentRun(t, exa, "/n/t-x/agent/runs/"+first),
+	require.Equal(t, http.StatusOK, pollAgentRun(t, exaAddr, "/n/t-x/agent/runs/"+first),
 		"another namespace's reset must not touch t-x's job")
 
 	// Resetting t-x itself must drop the cursor AND the record together, or the
 	// next create collides with the record the reset was supposed to clear.
 	require.Equal(t, http.StatusOK, resetScope(t, admin, "namespace=t-x"))
 
-	second := createAgentRun(t, exa, "/n/t-x/agent/runs")
+	second := createAgentRun(t, exaAddr, "/n/t-x/agent/runs")
 	assert.Equal(t, first, second,
 		"the call index reset to 0, so the SAME identifier must come back — a different one, or a "+
 			"job.id_collision 500, would mean the reset dropped only the cursor or only the record")
@@ -1065,7 +1176,7 @@ func TestResetDropsJobRecordsWithTheCursors(t *testing.T) {
 	// second` assertion above actually proves: a different identifier (or a
 	// job.id_collision 500) would mean the reset dropped only the cursor or
 	// only the record.
-	require.Equal(t, http.StatusOK, pollAgentRun(t, exa, "/n/t-x/agent/runs/"+second))
+	require.Equal(t, http.StatusOK, pollAgentRun(t, exaAddr, "/n/t-x/agent/runs/"+second))
 }
 
 // TestMaxJobsBoundsJobsPerNamespace is the flag-to-registry wiring assertion:
@@ -1077,15 +1188,15 @@ func TestMaxJobsBoundsJobsPerNamespace(t *testing.T) {
 	t.Parallel()
 
 	h := start(t, testConfig(t, append(writeScenario(t, asyncAgentRunScenario), "--max-jobs", "1")...), discard())
-	exa := h.Addr(string(provider.Exa))
+	exaAddr := h.Addr(string(exa.Name))
 
 	require.Len(t, h.scenarios, 1)
 	assert.Equal(t, 1, h.scenarios[0].deps.MaxJobs, "--max-jobs must reach Deps.MaxJobs, not just the registry")
 
-	status, body := postBody(t, exa, "/n/t-1/agent/runs", `{"query":"first"}`)
+	status, body := postBody(t, exaAddr, "/n/t-1/agent/runs", `{"query":"first"}`)
 	require.Equal(t, http.StatusCreated, status, "the first create in a fresh namespace must succeed: %s", body)
 
-	status, body = postBody(t, exa, "/n/t-1/agent/runs", `{"query":"second"}`)
+	status, body = postBody(t, exaAddr, "/n/t-1/agent/runs", `{"query":"second"}`)
 	assert.Equal(t, http.StatusServiceUnavailable, status, "a create past --max-jobs must be refused with the "+
 		"provider-shaped 5xx, not treated as a malformed client request: %s", body)
 	assert.Contains(t, body, "holds its maximum of 1 jobs",
@@ -1093,7 +1204,7 @@ func TestMaxJobsBoundsJobsPerNamespace(t *testing.T) {
 
 	// A different namespace has its own bound: the first one's fullness must
 	// not leak across the namespace boundary.
-	status, body = postBody(t, exa, "/n/t-2/agent/runs", `{"query":"first"}`)
+	status, body = postBody(t, exaAddr, "/n/t-2/agent/runs", `{"query":"first"}`)
 	assert.Equal(t, http.StatusCreated, status, "another namespace's create must still succeed: %s", body)
 }
 
@@ -1131,12 +1242,12 @@ func TestResetClearsTheCountersTheHandlersConsult(t *testing.T) {
 	t.Parallel()
 
 	h := start(t, testConfig(t, "--scenario", "builtin:rate-limited"), discard())
-	exa := h.Addr(string(provider.Exa))
+	exaAddr := h.Addr(string(exa.Name))
 
 	require.Equal(t, http.StatusTooManyRequests,
-		post(t, exa, "/search", `{"query":"report a"}`).StatusCode)
+		post(t, exaAddr, "/search", `{"query":"report a"}`).StatusCode)
 	require.Equal(t, http.StatusOK,
-		post(t, exa, "/search", `{"query":"report a"}`).StatusCode)
+		post(t, exaAddr, "/search", `{"query":"report a"}`).StatusCode)
 
 	// The scope is explicit because the admin surface requires it: a bare reset
 	// that silently wiped every concurrent test's cursors is the trap the
@@ -1150,7 +1261,7 @@ func TestResetClearsTheCountersTheHandlersConsult(t *testing.T) {
 	require.Equal(t, http.StatusOK, resetResp.StatusCode)
 
 	require.Equal(t, http.StatusTooManyRequests,
-		post(t, exa, "/search", `{"query":"report a"}`).StatusCode,
+		post(t, exaAddr, "/search", `{"query":"report a"}`).StatusCode,
 		"the fault plan restarted, so reset reached the counter the handler consults")
 }
 
@@ -1198,11 +1309,112 @@ providers:
 	}
 
 	require.Equal(t, http.StatusOK,
-		unauthenticated(t, h.Addr(string(provider.Exa)), "/search", `{"query":"report a"}`),
+		unauthenticated(t, h.Addr(string(exa.Name)), "/search", `{"query":"report a"}`),
 		"an entry that declares no auth policy follows --strict-auth")
 	require.Equal(t, http.StatusUnauthorized,
-		unauthenticated(t, h.Addr(string(provider.Tavily)), "/search", `{"query":"report a"}`),
+		unauthenticated(t, h.Addr(string(tavily.Name)), "/search", `{"query":"report a"}`),
 		"an entry that declares its own policy is left exactly as authored")
+}
+
+// TestStrictAuthFourWayMatrix is Phase 10 unit 2 §4's required test: relaxAuth
+// is rewritten to consult each entry's OWNING PROFILE's DefaultAuth
+// (framework-seam.md) rather than flattening every profile to one
+// strict-auth behaviour, and Exchange.AuthPolicy reads the same DefaultAuth
+// for the fallback --strict-auth=false leaves untouched. Three rows, each run
+// under both --strict-auth (the default, true) and --strict-auth=false:
+//
+//   - mcp declares no auth: block. Its PROFILE default is
+//     scenario.AuthOptional (decision 3), so it is optional under both —
+//     relaxAuth never has to touch it, and AuthPolicy's own fallback already
+//     says optional.
+//   - exa declares no auth: block either. Its PROFILE default is
+//     scenario.AuthRequired, so it is required under strict and relaxed to
+//     optional under --strict-auth=false — the case the OLD relaxAuth (which
+//     ignored the profile entirely) already got right, kept here as the
+//     control row.
+//   - tavily declares its own auth: {mode: required} explicitly. relaxAuth's
+//     "declares no policy of its own" guard means an explicit policy is
+//     never touched, so it stays required under both, regardless of the
+//     owning profile's default.
+func TestStrictAuthFourWayMatrix(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+version: 1
+name: four-way-auth
+time:
+  base: 2026-01-01T00:00:00Z
+sources:
+  - id: source-a
+    url: https://example.test/report-a
+    title: Report A
+providers:
+  exa:
+    results:
+      - source: source-a
+  tavily:
+    auth:
+      mode: required
+    answer: A short synthesis of Report A.
+    results:
+      - source: source-a
+        score: 0.98
+  mcp: {}
+`
+	unauthenticatedPost := func(t *testing.T, addr, path, body string, headers map[string]string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+			"http://"+addr+path, strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		return resp.StatusCode
+	}
+
+	// mcpMeta/mcpHeaders are the minimal well-formed shape checkTransport
+	// (profiles/mcp/transport.go) requires before auth is ever consulted —
+	// mirrored from profiles/mcp/handler_test.go's own stdHeaders/defaultMeta,
+	// since those are unexported to that package.
+	const mcpMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
+	mcpHeaders := map[string]string{
+		"Accept":               "application/json, text/event-stream",
+		"MCP-Protocol-Version": "2026-07-28",
+		"Mcp-Method":           "server/discover",
+	}
+
+	for _, strict := range []bool{true, false} {
+		t.Run(map[bool]string{true: "strict-auth (default)", false: "strict-auth=false"}[strict], func(t *testing.T) {
+			t.Parallel()
+			args := writeScenario(t, src)
+			if !strict {
+				args = append(args, "--strict-auth=false")
+			}
+			h := start(t, testConfig(t, args...), discard())
+
+			mcpBody := `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":` + mcpMeta + `}}`
+			mcpStatus := unauthenticatedPost(t, h.Addr(string(mcp.Name)), "/mcp", mcpBody, mcpHeaders)
+			require.Equal(t, http.StatusOK, mcpStatus,
+				"mcp's own profile default is optional, so it never requires auth, under either flag")
+
+			exaStatus := unauthenticatedPost(t, h.Addr(string(exa.Name)), "/search", `{"query":"report a"}`, nil)
+			exaWant := http.StatusUnauthorized
+			if !strict {
+				exaWant = http.StatusOK
+			}
+			require.Equal(t, exaWant, exaStatus,
+				"exa's own profile default is required: strict by default, relaxed only under --strict-auth=false")
+
+			tavilyStatus := unauthenticatedPost(t, h.Addr(string(tavily.Name)), "/search", `{"query":"report a"}`, nil)
+			require.Equal(t, http.StatusUnauthorized, tavilyStatus,
+				"an entry declaring its own auth: {mode: required} is never relaxed, under either flag")
+		})
+	}
 }
 
 // TestScenarioIsResolvedThroughTheConfinedOpener proves the binary never reaches
