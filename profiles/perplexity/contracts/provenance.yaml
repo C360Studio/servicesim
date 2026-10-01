@@ -403,3 +403,32 @@ goldens:
       two response headers this golden's request would receive on the real
       wire are the same simulator-chosen pair perplexity-sonar-stream.sse
       already carries, for the same reason.
+
+  - golden: perplexity-agent-stream-failed.sse
+    endpoint: POST /v1/agent (aliases POST /v1/responses, POST /responses), GrammarTyped, status failed
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
+    verified: 2026-08-15
+    note: >-
+      How a scripted turn with status failed is streamed. Vendor-pinned
+      (#/components/schemas/ResponseFailedEvent): the failure event is
+      response.failed, a member of the 14-member EventType enum, and its
+      required properties are type, sequence_number and a TOP-LEVEL error
+      (ErrorInfo, message required) — not nested in a response object. The
+      profile used to stream a failed turn as response.completed carrying
+      status failed. Simulator-chosen, correctable from a captured live
+      response: that response.created comes first, with the same initial
+      in_progress response object the success transcript opens with; that
+      response.failed is the terminal frame with no response.completed after
+      it (the specification states no ordering and no termination); that the
+      scenario's error supplies code, message and type; that sequence_number
+      continues from 1; and that a failed turn streams no message item and no
+      deltas, so a scripted delta is never sent. The event carries no usage:
+      the schema has nowhere to put it. The literal "event: <type>" line is
+      simulator-chosen for the reason perplexity-agent-stream.sse gives. The
+      two response headers are the same simulator-chosen pair that golden
+      carries. The statuses incomplete and cancelled have no event of their
+      own in EventType and still stream as response.completed; that is
+      simulator policy, not a vendor statement.

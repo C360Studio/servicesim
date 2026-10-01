@@ -386,10 +386,10 @@ type agentErrorResponse struct {
 // Surface 2 — Agent API — GrammarTyped SSE events
 // -----------------------------------------------------------------------------
 
-// The GrammarTyped event names this build emits: six of the fourteen members
+// The GrammarTyped event names this build emits: seven of the fourteen members
 // the specification's ResponseStreamEvent/EventType union declares
-// (contracts/perplexity/README.md "Responses / Agent"). The other eight — the
-// reasoning.* family and response.failed — have no scenario vocabulary yet
+// (contracts/perplexity/README.md "Responses / Agent"). The other seven — the
+// reasoning.* family and response.in_progress — have no scenario vocabulary yet
 // and are never emitted; see renderAgentStream's doc comment.
 const (
 	eventResponseCreated   = "response.created"
@@ -398,6 +398,7 @@ const (
 	eventOutputTextDone    = "response.output_text.done"
 	eventOutputItemDone    = "response.output_item.done"
 	eventResponseCompleted = "response.completed"
+	eventResponseFailed    = "response.failed"
 )
 
 // responseCreatedEvent is the response.created frame's payload — the
@@ -466,6 +467,16 @@ type responseCompletedEvent struct {
 	Type           string          `json:"type"`
 	SequenceNumber int64           `json:"sequence_number"`
 	Response       json.RawMessage `json:"response"`
+}
+
+// responseFailedEvent is the response.failed frame's payload — the
+// specification's ResponseFailedEvent. Unlike every other lifecycle event it
+// carries no response object: its error (ErrorInfo) is a top-level property, and
+// the schema has nowhere to put usage.
+type responseFailedEvent struct {
+	Type           string    `json:"type"`
+	SequenceNumber int64     `json:"sequence_number"`
+	Error          errorInfo `json:"error"`
 }
 
 // -----------------------------------------------------------------------------

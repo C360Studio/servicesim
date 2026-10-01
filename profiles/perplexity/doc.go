@@ -31,10 +31,11 @@
 // package, which is what keeps scenario free of provider knowledge.
 //
 // Error bodies differ by surface and that asymmetry is deliberate, not an
-// oversight: 422 is FastAPI's HTTPValidationError on both, every other Agent
-// status is the published errorInfo envelope, and every other Sonar status is
-// the simulator-chosen {"detail": "<string>"} shape recorded as unverified in
-// contracts/perplexity/provenance.yaml.
+// oversight: a Sonar validation failure is FastAPI's 422 HTTPValidationError
+// and every other Sonar status is the simulator-chosen {"detail": "<string>"}
+// shape recorded as unverified in contracts/perplexity/provenance.yaml, while
+// every Agent error, a validation failure included (400), is the published
+// errorInfo envelope.
 //
 // # Exported surface
 //

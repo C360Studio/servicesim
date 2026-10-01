@@ -689,16 +689,24 @@ func renderAgent(x *provider.Exchange, p *perplexityAgent, requestModel string) 
 // code wins" rule — this build keeps that minimal sequence rather than
 // inventing a fourth envelope-only event the design's own illustration never
 // shows (P5U3 spec item 2's explicit instruction on this point). The
-// reasoning.* event family and response.failed have no scenario vocabulary
-// and are never emitted (contracts/perplexity/README.md "What Servicesim
-// simulates").
+// reasoning.* event family has no scenario vocabulary and is never emitted
+// (contracts/perplexity/README.md "What Servicesim simulates").
 //
 // A turn whose Status is failed or cancelled produces no message output item
 // at all (renderAgentOutput's own rule) and therefore has nothing for steps
-// 2-5 above to attach to; this renderer then emits only response.created and
-// response.completed. response.failed itself is a later unit's job (P5U3
-// spec, "Out of scope"), so a scripted failure streamed through this surface
-// degrades to that minimal pair rather than panicking on a missing item.
+// 2-5 above to attach to; this renderer then emits only two frames.
+//
+// For failed, the second frame is response.failed — the specification's own
+// failure event, carrying the scenario's error at top level — and it is
+// terminal: no response.completed follows. Which events surround it, and that
+// it ends the stream, are Servicesim's policy, not the specification's
+// (docs: contracts README "Streaming (SSE)"). The event has no response object,
+// so it carries no usage and extra_fields are not rendered on it.
+//
+// For cancelled, EventType has no response.cancelled, so the second frame is
+// response.completed carrying status cancelled; the same is true of an
+// incomplete turn, which keeps its message item. Neither is a statement about
+// what the vendor sends.
 func renderAgentStream(x *provider.Exchange, p *perplexityAgent, requestModel string) (*provider.Stream, error) {
 	callIndex := x.CallIndex()
 	id, messageID, created, status := renderAgentIdentity(x, p, callIndex)
@@ -748,6 +756,30 @@ func renderAgentStream(x *provider.Exchange, p *perplexityAgent, requestModel st
 		return nil, err
 	}
 	events = append(events, provider.SSEEvent{Name: eventResponseCreated, Data: createdData, Pace: pace(0)})
+
+	if status == statusFailed {
+		// The failure event has no response object, so there is no usage on the
+		// wire to lift into provider.Stream.Usage: it stays unset, as it does
+		// under terminal.omit_usage.
+		var info errorInfo
+		if p.Error != nil {
+			info = errorInfo{Code: p.Error.Code, Message: p.Error.Message, Type: p.Error.Type}
+		}
+		failedData, err := provider.Render(responseFailedEvent{
+			Type: eventResponseFailed, SequenceNumber: nextSeq(), Error: info,
+		}, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		var terminalPaceOverride scenario.Duration
+		if p.Stream.Terminal != nil {
+			terminalPaceOverride = p.Stream.Terminal.Pace
+		}
+		events = append(events, provider.SSEEvent{
+			Name: eventResponseFailed, Data: failedData, Terminal: true, Pace: pace(terminalPaceOverride),
+		})
+		return &provider.Stream{Grammar: provider.GrammarTyped, Chunks: provider.EncodeSSE(events)}, nil
+	}
 
 	var aggregate strings.Builder
 	if outputIndex >= 0 {

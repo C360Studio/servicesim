@@ -1524,6 +1524,183 @@ func TestAgentStreamDoneIgnoredWarning(t *testing.T) {
 	require.NotContains(t, string(body), "[DONE]")
 }
 
+// agentStreamFailedScenario scripts a turn that fails. Its deltas are never
+// streamed: a failed turn has no message output item to attach them to.
+const agentStreamFailedScenario = `
+version: 1
+name: deep-research-agent-stream-failed
+providers:
+  perplexity_agent:
+    response_id: resp_5d6e7f80912a3b4c5d6e7f80912a3b4c
+    model: openai/gpt-5
+    status: failed
+    error:
+      code: model_error
+      message: The model could not complete the research loop.
+      type: server_error
+    usage:
+      input_tokens: 42
+      cost:
+        input_cost: 0.00021
+        total_cost: 0.00021
+    stream:
+      when_requested: stream
+      deltas:
+        - "never sent"
+`
+
+// sseEventNames returns the "event:" line of every frame in a transcript, in
+// order.
+func sseEventNames(transcript string) []string {
+	var names []string
+	for _, line := range strings.Split(transcript, "\n") {
+		if name, ok := strings.CutPrefix(line, "event: "); ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// TestAgentStreamFailedTurnSendsResponseFailed pins how a scripted failure is
+// streamed. The specification's own failure event is response.failed
+// (#/components/schemas/ResponseFailedEvent), whose required properties are
+// type, sequence_number and a top-level error (ErrorInfo) — not nested in a
+// response object. The profile used to stream a failed turn as
+// response.completed carrying status failed, so a consumer's response.failed
+// handler could never be exercised.
+//
+// Ordering and termination are not in the specification: response.created
+// first, response.failed last and terminal, no response.completed after it, are
+// Servicesim's policy, and the golden is labelled simulator-chosen accordingly.
+func TestAgentStreamFailedTurnSendsResponseFailed(t *testing.T) {
+	t.Parallel()
+
+	want := sseGoldenBytes(t, "perplexity-agent-stream-failed.sse")
+
+	for _, path := range []string{"/v1/agent", "/v1/responses", "/responses"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			s := newSim(t, mustScenario(t, agentStreamFailedScenario))
+			resp, body := s.do(t, http.MethodPost, path, agentStreamGoldenRequest)
+			require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+			require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+			require.Equal(t, string(want), string(body))
+			require.NotContains(t, string(body), "response.completed")
+		})
+	}
+
+	t.Run("the failed event is schema-shaped", func(t *testing.T) {
+		t.Parallel()
+		s := newSim(t, mustScenario(t, agentStreamFailedScenario))
+		_, body := s.do(t, http.MethodPost, "/v1/agent", agentStreamGoldenRequest)
+
+		var failed map[string]any
+		for _, line := range strings.Split(string(body), "\n") {
+			if data, ok := strings.CutPrefix(line, "data: "); ok && strings.Contains(data, `"response.failed"`) {
+				require.NoError(t, json.Unmarshal([]byte(data), &failed))
+			}
+		}
+		require.NotNil(t, failed, "no response.failed frame in %s", body)
+		for _, required := range []string{"type", "sequence_number", "error"} {
+			require.Contains(t, failed, required)
+		}
+		info, ok := failed["error"].(map[string]any)
+		require.True(t, ok, "error is %T, want an ErrorInfo object", failed["error"])
+		require.Contains(t, info, "message")
+		require.NotContains(t, failed, "response", "the error is top-level, not nested in a response object")
+	})
+
+	t.Run("the non-streaming body of the same turn still reports status failed", func(t *testing.T) {
+		t.Parallel()
+		s := newSim(t, mustScenario(t, agentStreamFailedScenario))
+		resp, body := s.do(t, http.MethodPost, "/v1/agent",
+			`{"input":"hi","model":"openai/gpt-5"}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		require.Contains(t, string(body), `"status":"failed"`)
+	})
+}
+
+// TestAgentStreamFailedTurnJournalOutcome pins the planned half of
+// Outcome.Stream for a failed turn: two chunks, the response.failed frame as the
+// terminal one, no usage lifted (the frame has nowhere to carry it), and the
+// terminal pace override landing on that frame rather than on a frame that does
+// not exist. Without it a failed stream could regress to the wrong terminal
+// marker, a stale usage, or the script's default gap on its last frame, and
+// every transcript test above would still pass.
+func TestAgentStreamFailedTurnJournalOutcome(t *testing.T) {
+	t.Parallel()
+
+	s := newSimDelaySkip(t, mustScenario(t, agentStreamFailedScenario+`
+      pace: 40ms
+      terminal:
+        pace: 10ms
+`))
+	resp, body := s.do(t, http.MethodPost, "/v1/agent", agentStreamGoldenRequest)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+
+	entries := s.journal.Snapshot()
+	require.Len(t, entries, 1)
+	so := entries[0].Outcome.Stream
+	require.NotNil(t, so)
+	require.Equal(t, "responses", so.Grammar)
+	require.Equal(t, 2, so.ChunkCount)
+	require.Equal(t, 1, so.TerminalIndex, "response.failed is the terminal frame")
+	require.Equal(t, []string{eventResponseCreated, eventResponseFailed}, so.EventNames)
+	require.Equal(t, []int64{40, 10}, so.PaceMS,
+		"created carries the script's 40ms default; the terminal response.failed carries terminal.pace (10ms)")
+	require.Nil(t, so.Usage, "the failure event has no usage to lift")
+	require.Nil(t, so.CostTotal)
+	require.Equal(t, 2, so.ChunksSent)
+	require.Equal(t, journal.StreamCompleted, so.State)
+}
+
+// TestAgentStreamIncompleteAndCancelledKeepResponseCompleted pins the two
+// non-success statuses that have no event of their own. EventType has no
+// response.incomplete and no response.cancelled; response.completed is declared
+// to carry "the full or partial response object"
+// (#/components/schemas/ResponseCompletedEvent), which is the only documented
+// carrier for a partial response. That a real run ends this way is not stated,
+// so this is Servicesim policy, pinned here so a change to it is deliberate.
+func TestAgentStreamIncompleteAndCancelledKeepResponseCompleted(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status     string
+		wantEvents []string
+	}{
+		{"incomplete", []string{
+			"response.created", "response.output_item.added", "response.output_text.delta",
+			"response.output_text.done", "response.output_item.done", "response.completed",
+		}},
+		// A cancelled turn has no message item, like a failed one.
+		{"cancelled", []string{"response.created", "response.completed"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.status, func(t *testing.T) {
+			t.Parallel()
+			s := newSim(t, mustScenario(t, `
+version: 1
+name: agent-stream-`+tc.status+`
+providers:
+  perplexity_agent:
+    model: openai/gpt-5
+    status: `+tc.status+`
+    answer: partial
+    stream:
+      when_requested: stream
+      deltas:
+        - "partial"
+`))
+			resp, body := s.do(t, http.MethodPost, "/v1/agent", agentStreamGoldenRequest)
+			require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+			require.Equal(t, tc.wantEvents, sseEventNames(string(body)))
+			require.Contains(t, string(body), `"status":"`+tc.status+`"`)
+			require.NotContains(t, string(body), "response.failed")
+		})
+	}
+}
+
 // TestAgentStreamAfterChunkOutOfRangeAtLoad pins the ChunkCount override
 // this unit adds to scenario.StreamTurn: the entry's single turn scripts 3
 // deltas (chunk_count 8, valid range 0..7), and the fault targets chunk 8 —
@@ -1553,8 +1730,8 @@ func TestAgentStreamAfterChunkOutOfRangeAtLoad(t *testing.T) {
 // TestAgentStreamAfterChunkOutOfRangeAtLoad's failed-status regression: a
 // turn whose status is failed produces no message output item
 // (renderAgentOutput's own rule), so renderAgentStream emits only
-// response.created and response.completed — 2 chunks, valid range 0..1 —
-// regardless of how many deltas the turn still scripts. Before
+// response.created and one terminal frame (response.failed) — 2 chunks,
+// valid range 0..1 — regardless of how many deltas the turn still scripts. Before
 // agentChunkCount was made status-aware it returned len(Deltas)+5 = 7 for
 // this turn, so after_chunk: 3 loaded clean as "in range" against a bound
 // that described a stream that never actually plays back that far; the

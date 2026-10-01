@@ -583,9 +583,9 @@ func (agentValidator) ValidateProjections(s *scenario.Scenario, e *scenario.Prov
 // status matters because renderAgentOutput omits the message output item
 // entirely for a failed or cancelled turn, and renderAgentStream then has
 // nothing to attach output_item.added/the N deltas/output_text.done/
-// output_item.done to — it emits only response.created and
-// response.completed, two chunks, regardless of how many deltas the turn
-// still scripts. Using the five-envelope formula unconditionally for such a
+// output_item.done to — it emits only response.created and one terminal
+// frame (response.failed, or response.completed for cancelled), two chunks,
+// regardless of how many deltas the turn still scripts. Using the five-envelope formula unconditionally for such a
 // turn overstates its true chunk count, which understates nothing about
 // after_chunk's UPPER bound (still checked against the smaller number) but
 // makes the LOWER bound wrong: an after_chunk in [2, N+4] would load clean
