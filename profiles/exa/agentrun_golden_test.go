@@ -122,9 +122,9 @@ func TestGolden_AgentRunFailed(t *testing.T) {
 }
 
 // TestGolden_AgentRunNotFound pins the 404 for an identifier this process
-// never minted: the same flat {requestId, error, tag} envelope and NOT_FOUND
-// tag as unmatched routing, because the Agent API documents no run-specific
-// 404 body of its own.
+// never minted: AgentErrorResponse with type NOT_FOUND and code RUN_NOT_FOUND.
+// The spec documents the 404 and both enums but not the pairing, which is
+// inference (see contracts/exa/README.md).
 func TestGolden_AgentRunNotFound(t *testing.T) {
 	t.Parallel()
 
@@ -137,7 +137,8 @@ func TestGolden_AgentRunNotFound(t *testing.T) {
 
 // TestGolden_AgentRunCreateAtTheJobBound pins the 503 a create gets when its
 // namespace already holds the configured maximum of live jobs: a Servicesim
-// configuration wall, not a vendor status, and the message names the bound and
+// configuration wall, not a vendor status (the spec documents no 503 here), in
+// AgentErrorResponse's shape with SERVER_ERROR. The message names the bound and
 // the remedy.
 func TestGolden_AgentRunCreateAtTheJobBound(t *testing.T) {
 	t.Parallel()

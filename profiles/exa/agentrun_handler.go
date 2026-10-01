@@ -119,11 +119,13 @@ func handleAgentRunCreate(x *provider.Exchange) provider.Response {
 	}
 	return provider.Response{
 		// 200, not 201: createAgentRun documents only "200" (openapi line 831).
-		Status:        http.StatusOK,
+		Status: http.StatusOK,
+		// MintJob has claimed the call index, so this id is the per-call one.
+		Header:        requestIDHeader(renderedRequestID(x, "")),
 		Body:          body,
 		Label:         "exa.agent_runs.created",
 		FaultEligible: true,
-		FaultBody:     func(a scenario.FaultAttempt) []byte { return faultBody(id, a) },
+		FaultBody:     agentFaultBody,
 	}
 }
 
@@ -154,12 +156,24 @@ func handleAgentRunPoll(x *provider.Exchange) provider.Response {
 		return rejection(x)
 	}
 	return provider.Response{
-		Status:        http.StatusOK,
+		Status: http.StatusOK,
+		// selectAgentRunProjection has claimed the poll, so this id is the
+		// per-call one.
+		Header:        requestIDHeader(pollRequestID(x, id)),
 		Body:          body,
 		Label:         "exa.agent_runs.polled",
 		FaultEligible: true,
-		FaultBody:     func(a scenario.FaultAttempt) []byte { return faultBody(id, a) },
+		FaultBody:     agentFaultBody,
 	}
+}
+
+// pollRequestID is the x-request-id of a served poll. The call index alone is not
+// enough here: a poll lane is per job, so the first poll of every job is call 0 of
+// its own lane and would carry the same id as the first poll of any other job. The
+// job id joins the tuple, which makes the id distinct per job as well as per call
+// and still a pure function of the scenario, the job and the call position.
+func pollRequestID(x *provider.Exchange, id string) string {
+	return provider.Hex32(append(callParts(x), id)...)
 }
 
 // handleAgentRunHead serves HEAD /agent/runs/{id}.
@@ -179,13 +193,17 @@ func handleAgentRunHead(x *provider.Exchange) provider.Response {
 		return rejection(x)
 	}
 
+	// HEAD claims nothing, so its id is the unclaimed one: the same value a
+	// rejected request carries.
+	header := requestIDHeader(unclaimedRequestID(x))
 	if !provider.ResolveJob(x, x.Request.PathValue("id")) {
-		return provider.Response{Status: http.StatusNotFound, Label: "exa.agent_runs.head.missing"}
+		return provider.Response{Status: http.StatusNotFound, Header: header, Label: "exa.agent_runs.head.missing"}
 	}
-	return provider.Response{Status: http.StatusOK, Label: "exa.agent_runs.head.ok"}
+	return provider.Response{Status: http.StatusOK, Header: header, Label: "exa.agent_runs.head.ok"}
 }
 
-// runNotFound is the vendor's 404 for an identifier this process does not hold.
+// runNotFound is the vendor's 404 for an identifier this process does not hold:
+// RUN_NOT_FOUND on the agent envelope.
 //
 // The multi-replica diagnostic is NOT carried here: provider.ResolveJob has
 // already raised it, as a job.foreign_id finding plus a servicesim.job_foreign
@@ -195,10 +213,10 @@ func handleAgentRunHead(x *provider.Exchange) provider.Response {
 // the response either way.
 func runNotFound(x *provider.Exchange, id string) provider.Response {
 	x.Warn(codeAgentRunNotFound, "id", "no agent run %q exists in this namespace", id)
-	status := http.StatusNotFound
 	return provider.Response{
-		Status: status,
-		Body:   errorBody(unclaimedRequestID(x), "Not Found", tagNotFound, status),
+		Status: http.StatusNotFound,
+		Header: requestIDHeader(unclaimedRequestID(x)),
+		Body:   agentErrorBody(agentError(http.StatusNotFound, "")),
 		Label:  "exa.error." + tagNotFound,
 	}
 }

@@ -121,6 +121,10 @@ providers:
   # fault of kind none — it does not override what the handler renders, it
   # only marks the attempt as unfaulted, and a completed poll always renders
   # 200 anyway.
+  #
+  # The agent routes answer errors as {error: {type, code, message}}: `error:`
+  # becomes the message and `tag:` would become the code. No tag is declared
+  # because a 429 already defaults to RATE_LIMIT_ERROR / CONCURRENCY_LIMIT_REACHED.
   exa_agent_runs:
     create:
       fault:
@@ -128,14 +132,12 @@ providers:
           - status: 429
             retry_after: 1
             error: Rate limit exceeded.
-            tag: RATE_LIMIT
           - status: 200
     fault:
       attempts:
         - status: 429
           retry_after: 1
           error: Rate limit exceeded.
-          tag: RATE_LIMIT
         - status: 200
     status: completed
     output:

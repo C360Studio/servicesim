@@ -324,6 +324,7 @@ func (agentRunValidator) ValidateProjections(s *scenario.Scenario, e *scenario.P
 		}
 	}
 
+	findings = append(findings, validateAgentRunFaultTags(e)...)
 	return append(findings, validateAgentRunScript(e)...)
 }
 

@@ -1205,6 +1205,19 @@ only when pinning it is the point. `[{status: 429}, {}]` on a `tavily_research` 
 poll, then serve whatever the snapshot says"; `[{status: 429}, {status: 200}]` would answer 200 to a poll that is
 still pending.
 
+**Error bodies on `exa_agent_runs`.** The three Exa agent routes answer every error — rejections, a missing run, an
+injected fault — as `{error: {type, code, message}}`, the vendor's `AgentErrorResponse`, and carry an `x-request-id`
+response header. Exa's other routes keep their flat `{requestId, error, tag}` body. A fault attempt's `status` picks
+`type` and `code`: `400` is `INVALID_REQUEST` / `INVALID_REQUEST`, `401` is `AUTHENTICATION_ERROR` /
+`TEAM_NOT_FOUND`, `404` is `NOT_FOUND` / `RUN_NOT_FOUND`, `429` is `RATE_LIMIT_ERROR` /
+`CONCURRENCY_LIMIT_REACHED`, and every other `4xx` is `INVALID_REQUEST`, every `5xx` `SERVER_ERROR`. The vendor's
+document lists which statuses each operation returns but never pairs them with a type and code, so that pairing is
+this simulator's inference. The attempt's `error:` becomes `message` and its `tag:` becomes `code`, verbatim — a
+code outside the vendor's enum is allowed, to test a consumer's handling of one the vendor adds later, and is warned
+about at load (`exa.agent_run.fault_tag.unknown`) so a flat-envelope tag such as `RATE_LIMIT` copied from another Exa
+route does not render silently — while `type` always follows the status. An attempt's own `body:` still wins
+outright.
+
 **Per-job lanes.** A poll route's lane is per job, not per route. `Route.LaneFrom` — `["path:id"]` for
 `exa_agent_runs`, `["path:request_id"]` for `tavily_research` — adds the path wildcard's value as an extra
 component, in the style of `turn_key`, declared in Go on the route rather than in the scenario, so no scenario file ever
@@ -1230,6 +1243,7 @@ to the generic ones every provider raises for a malformed `respond:` node or an 
 | `exa.agent_run.status.unknown` | error | `status` is not one of `queued`, `running`, `completed`, `failed`, `cancelled` |
 | `exa.agent_run.stop_reason.unknown` | error | `stop_reason` is set and is not one of `schema_satisfied`, `budget_reached`, `time_limit_reached`, `stopped`, `error`, `cancelled` |
 | `exa.agent_run.error.not_in_schema` | error | an `error:` block — the live `AgentRun` schema has no run-level error; a failed run is `status: failed` plus `stop_reason: error` |
+| `exa.agent_run.fault_tag.unknown` | warning | a fault attempt's `tag:` (on `create.fault` or a turn's `fault`) is not one of the ten `AgentError` codes. It is still rendered verbatim as `code`; the warning is for a flat-envelope tag (`RATE_LIMIT`, `INTERNAL`, `INVALID_API_KEY`) copied from another Exa route |
 | `exa.agent_run.value.range` | error | a `usage` or `cost_dollars` value (a `data_sources` count or cost included) that is negative, NaN or infinite — every `AgentUsage` and `AgentCostDollars` member is a number with `minimum: 0` |
 | `exa.output.grounding.confidence.unknown` | warning | a grounding `confidence` outside `low`, `medium`, `high`; it is emitted verbatim |
 | `exa.agent_run.terminal_then_pending` | error | a non-terminal turn declared after a terminal one — a run does not un-complete |

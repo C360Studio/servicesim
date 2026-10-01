@@ -71,11 +71,24 @@ func Profile() provider.Profile {
 
 // refusalBody renders a provider.Refusal in Exa's own flat {requestId, error,
 // tag} error envelope (the reduced {error} shape for a 429 is unreachable
-// through a refusal, which never carries that status). It is what
+// through a refusal, which never carries that status), or in AgentErrorResponse's
+// nested shape when an agent-run route was serving the request. It is what
 // handler.go's now-deleted handleNotFound/handleMethodNotAllowed and
 // internal/server/listeners.go's now-deleted scenarioNotFoundBody built by
 // hand before this unit.
 func refusalBody(r provider.Refusal) []byte {
+	// A refusal raised while an agent-run route was serving the request —
+	// a handler panic, a stream-grammar refusal — speaks AgentErrorResponse too.
+	// A mux-level refusal (an unrouted path, a method the mux refuses) has no
+	// route and keeps the flat shape.
+	if r.X != nil && isAgentRoute(r.X) {
+		detail := ""
+		if r.Kind == provider.RefuseRequest {
+			_, _, detail = classify(r.X)
+		}
+		return agentErrorBody(agentError(r.Status, detail))
+	}
+
 	switch r.Kind {
 	case provider.RefuseNotFound:
 		return errorBody(refusalRequestID(r), messageNotFound, tagNotFound, r.Status)
