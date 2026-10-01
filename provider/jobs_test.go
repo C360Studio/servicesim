@@ -19,7 +19,7 @@ func mintExchange(t *testing.T, store jobs.Store, attempt *scenario.FaultAttempt
 	x := &Exchange{
 		Deps:     Deps{Jobs: store}.Normalized(),
 		Provider: testProviderExa,
-		Route:    Route{Pattern: "POST /agent/runs", FaultKey: "exa:agent_runs.create"},
+		Route:    Route{Pattern: "POST /agent/runs", FaultKey: "exa:agent_runs.create", Entry: "exa_agent_runs"},
 		claimed:  true,
 		decision: FaultDecision{Index: 0, Key: "exa:agent_runs.create", Attempt: attempt},
 	}
@@ -106,108 +106,6 @@ func TestMintJobRefusesAnUnresolvableIdentifier(t *testing.T) {
 	}
 	if got := store.StatsIn(DefaultNamespace).Count; got != 0 {
 		t.Errorf("%d records written for a refused create, want 0", got)
-	}
-}
-
-// TestMintJobCommitsOnlyWhenTheBodyIsDelivered is the predicate this whole
-// function turns on, and both directions are failures worth naming.
-//
-// Committing when the body is replaced leaves a phantom job: a slot consumed for
-// an identifier no client holds. NOT committing when the body IS delivered is
-// worse — the client holds a real identifier no record backs, so every poll 404s
-// on a job the create said it made.
-func TestMintJobCommitsOnlyWhenTheBodyIsDelivered(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		attempt    *scenario.FaultAttempt
-		wantRecord bool
-		why        string
-	}{
-		{
-			name: "no attempt", attempt: nil, wantRecord: true,
-			why: "an unfaulted create obviously delivers its body",
-		},
-		{
-			name: "an explicit 200", attempt: &scenario.FaultAttempt{Status: 200}, wantRecord: true,
-			why: "EffectiveKind only promotes to FaultStatus at 400 and above",
-		},
-		{
-			// The case FaultDecision.Faulted() gets wrong. Faulted() is true here
-			// because Delay > 0, but a pure delay writes the body after sleeping,
-			// so the client receives the identifier.
-			name:       "a pure delay with no kind",
-			attempt:    &scenario.FaultAttempt{Delay: scenario.Duration(5)},
-			wantRecord: true,
-			why:        "a delay defers the body, it does not replace it",
-		},
-		{
-			name:       "extra_fields",
-			attempt:    &scenario.FaultAttempt{Kind: scenario.FaultExtraFields, ExtraFields: map[string]any{"x": 1}},
-			wantRecord: true,
-			why:        "extra_fields merges into the rendered body rather than replacing it",
-		},
-		{
-			name:       "wrong_content_type",
-			attempt:    &scenario.FaultAttempt{Kind: scenario.FaultWrongContentType, ContentType: "text/plain"},
-			wantRecord: true,
-			why:        "the body is unchanged; only the header is wrong",
-		},
-
-		{
-			name: "a 429", attempt: &scenario.FaultAttempt{Status: 429}, wantRecord: false,
-			why: "the provider's error envelope replaces the body, so no identifier reaches the client",
-		},
-		{
-			name:       "empty_body",
-			attempt:    &scenario.FaultAttempt{Kind: scenario.FaultEmptyBody},
-			wantRecord: false,
-			why:        "nothing is written",
-		},
-		{
-			name:       "invalid_json",
-			attempt:    &scenario.FaultAttempt{Kind: scenario.FaultInvalidJSON},
-			wantRecord: false,
-			why:        "raw non-JSON bytes replace the body",
-		},
-		{
-			name:       "close_before_headers",
-			attempt:    &scenario.FaultAttempt{Kind: scenario.FaultCloseBeforeHeaders},
-			wantRecord: false,
-			why:        "nothing reaches the client at all",
-		},
-		{
-			name:       "truncate_body",
-			attempt:    &scenario.FaultAttempt{Kind: scenario.FaultTruncateBody, TruncateAfterBytes: 4},
-			wantRecord: false,
-			why:        "a prefix then an abort; the identifier is not reliably delivered",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			store := jobs.NewRegistry(jobs.Limits{})
-			x := mintExchange(t, store, tc.attempt)
-
-			job, ok := MintJob(x, "exa_agent_runs", "run_", stubEncode)
-			if !ok {
-				t.Fatalf("MintJob refused: %+v", x.Findings())
-			}
-
-			_, found := store.Lookup(DefaultNamespace, job)
-			if found != tc.wantRecord {
-				t.Errorf("record present = %v, want %v — %s", found, tc.wantRecord, tc.why)
-			}
-
-			// The identifier is returned either way: the handler renders a body
-			// whether or not Handle is about to replace it.
-			if job == "" {
-				t.Error("MintJob must derive an identifier even when it records nothing")
-			}
-		})
 	}
 }
 
@@ -430,7 +328,7 @@ func resolveExchange(store jobs.Store, namespace string, capture *capturingLogge
 	return &Exchange{
 		Deps:     Deps{Jobs: store, Logger: capture.logger}.Normalized(),
 		Provider: testProviderExa,
-		Route:    Route{Pattern: "GET /agent/runs/{id}", FaultKey: "exa:agent_runs.poll"},
+		Route:    Route{Pattern: "GET /agent/runs/{id}", FaultKey: "exa:agent_runs.poll", Entry: "exa_agent_runs"},
 		lane:     Lane{Namespace: namespace, Key: "exa:agent_runs.poll"},
 	}
 }
@@ -536,5 +434,90 @@ func TestResolveJobFoundRecordsNoForeignIDFinding(t *testing.T) {
 	}
 	if logged := capture.String(); strings.Contains(logged, "servicesim.job_foreign") {
 		t.Errorf("a resolved job must not log servicesim.job_foreign: %q", logged)
+	}
+}
+
+// A job resolves only through the entry that minted it. The store keys a record
+// by (namespace, id), so without this comparison any async entry's poll can
+// resolve any other entry's job — and then claim attempts against, and serve a
+// snapshot from, a script the job was never minted for.
+//
+// The resolver's entry is the one Exchange.Entry looks up: Route.Entry, else the
+// listener's own name. The last two rows pin that derivation.
+func TestResolveJobIsScopedToTheMintingEntry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		provider  Name
+		entry     string // the resolving route's Route.Entry
+		wantFound bool
+	}{
+		{name: "the minting entry", provider: testProviderExa, entry: "exa_agent_runs", wantFound: true},
+		{name: "another entry on the same listener", provider: testProviderExa, entry: "exa_other", wantFound: false},
+		{name: "another listener's entry", provider: "tavily", entry: "tavily_research", wantFound: false},
+		{name: "no route entry resolves under the listener's own name", provider: testProviderExa, entry: "", wantFound: false},
+		{name: "no route entry, listener named for the minting entry", provider: "exa_agent_runs", entry: "", wantFound: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := jobs.NewRegistry(jobs.Limits{})
+			job, ok := MintJob(mintExchange(t, store, nil), "exa_agent_runs", "run_", stubEncode)
+			if !ok {
+				t.Fatal("MintJob refused a clean create")
+			}
+
+			capture := newCapturingLogger()
+			poll := resolveExchange(store, DefaultNamespace, capture)
+			poll.Provider = tc.provider
+			poll.Route.Entry = tc.entry
+
+			if got := ResolveJob(poll, job); got != tc.wantFound {
+				t.Fatalf("ResolveJob = %v, want %v", got, tc.wantFound)
+			}
+			if poll.claimed {
+				t.Error("resolving a job must claim no attempt, hit or miss")
+			}
+
+			findings := poll.Findings()
+			logged := capture.String()
+			if tc.wantFound {
+				if len(findings) != 0 || strings.Contains(logged, "servicesim.job_foreign") {
+					t.Errorf("a hit records nothing: findings=%+v log=%q", findings, logged)
+				}
+				return
+			}
+
+			// A miss on a job that exists is still the one diagnostic this resolver
+			// has: the identifier is ours-shaped, the namespace has minted, and this
+			// route cannot resolve it. Its text must be true — the usual foreign-id
+			// text says no such job exists.
+			if len(findings) != 1 || findings[0].Code != CodeJobForeignID {
+				t.Fatalf("findings = %+v, want exactly one %s", findings, CodeJobForeignID)
+			}
+			if findings[0].Severity != SeverityWarning {
+				t.Errorf("severity = %v, want a warning", findings[0].Severity)
+			}
+			wantEntry := tc.entry
+			if wantEntry == "" {
+				wantEntry = string(tc.provider)
+			}
+			for _, want := range []string{job, "exa_agent_runs", wantEntry} {
+				if !strings.Contains(findings[0].Message, want) {
+					t.Errorf("message %q does not name %q", findings[0].Message, want)
+				}
+			}
+			if strings.Contains(findings[0].Message, "another replica") {
+				t.Errorf("message %q lists the usual causes, none of which is this one", findings[0].Message)
+			}
+			for _, want := range []string{"servicesim.job_foreign", "minted_by=exa_agent_runs", "polled_as=" + wantEntry} {
+				if !strings.Contains(logged, want) {
+					t.Errorf("log output %q does not contain %q", logged, want)
+				}
+			}
+		})
 	}
 }

@@ -595,6 +595,7 @@ journaled with `"attempt_index": -1`, which is how you tell the two apart:
 | `exa_agent_runs` / `tavily_research`: a poll that resolves a real job | yes — the job's own per-job lane, not the route's |
 | `exa_agent_runs` / `tavily_research`: `HEAD` on either route | **no** — it answers existence only and never reaches turn selection |
 | `exa_agent_runs` / `tavily_research`: a poll of an identifier this process never minted | **no** — `provider.ResolveJob` claims nothing before rendering the vendor's 404 |
+| `exa_agent_runs` / `tavily_research`: a poll of a job the **other** entry minted | **no** — a job resolves only through the entry that minted it, so this is the same miss as an unknown identifier |
 | `exa_agent_runs` / `tavily_research`: a poll whose identifier fails `provider.ValidJobID` | **no** — treated identically to an unknown identifier above; a malformed identifier is never this process's own |
 | A `stream_*` fault attempt, claimed by a request that did not itself ask to stream | yes — claimed at turn selection, before the handler has looked at `stream` on the wire; see [Streaming](#streaming-stream) |
 
@@ -1167,6 +1168,22 @@ providers:
 
 Because the poll route's lane is per job (below), that poll plan consumes **per job**: the `503` above is every
 job's second poll, not whichever job happens to poll second globally.
+
+**A faulted create leaves a job only if the client can use its identifier.** The create claims its attempt either
+way, so the plan advances as scripted, but the job record is written only when the response actually carries the
+identifier. A `status` of 400 or above, a `body:` (at any status — it replaces the rendered body, it does not merge
+into it), a `status` of 204, 304 or 101 (`net/http` writes no body under them), `empty_body`, `invalid_json`,
+`truncate_body` and `close_before_headers` all replace or destroy it: no record is written, and the retry mints a new
+identifier from the next call index. A delay, `delay_after_headers`, `extra_fields`, `wrong_content_type` and
+`oversized_body` leave the rendered body intact, so the identifier works and its job exists. A `body:` on a create
+attempt therefore scripts what the client sees; it is not a way to hand a client an identifier that polls.
+
+The rule is decided when the create is claimed, before its body exists, so a few scripts that defeat themselves fall
+outside it. `truncate_after_bytes` at or past the length of the create's response writes the whole body before the
+connection is aborted: the client receives the identifier, and no job was recorded. A `headers:` override of
+`Content-Length`, `Transfer-Encoding` or `Content-Encoding` can leave the client unable to read the body that was
+written, and `extra_fields` can overwrite the `id` they are merged into: in both a job is recorded that the client
+holds no usable identifier for.
 
 A kind-none attempt that names a `status` pins the wire status to it, whatever the handler would have written.
 That is invisible on a route that answers 200 anyway and wrong on the two that do not: a create answers `201`, and a

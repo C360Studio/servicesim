@@ -182,7 +182,7 @@ const (
 //
 //	ID          string    the identifier a create returned and a poll presents
 //	Namespace   string    the state lane this record belongs to
-//	Entry       string    the scenario provider entry that minted this job
+//	Entry       string    the scenario entry the create was served from (Route.Entry, else the listener's name)
 //	LaneKey     string    the turn lane the create was served in
 //	CreateIndex int       the call index the create claimed
 //	CreatedAt   time.Time when the record was created (never rendered into a response)
@@ -197,6 +197,11 @@ type Job = jobs.Job
 //	StatsIn(namespace string) JobStats       report one namespace's occupancy
 //	ResetIn(namespace string)                drop one namespace's records
 //	Reset()                                  drop every namespace's records
+//
+// Lookup must return the record exactly as Create was given it, Entry
+// included: a poll resolves a job only for a request served from the entry
+// recorded on it, so a store that drops or rewrites Entry turns every poll
+// into a miss.
 //
 // The two failure sentinels Create can report — a duplicate id, and a
 // namespace at its bound — are not reachable from outside this module: they

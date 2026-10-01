@@ -875,6 +875,21 @@ to the transport. [`profiles/perplexity`](../profiles/perplexity) (two SSE gramm
 [`profiles/mcp`](../profiles/mcp) (a JSON-RPC response as an SSE stream) are the worked examples;
 `docs/design/streaming.md` is the design.
 
+### Async jobs
+
+Acme has none. A create-then-poll surface mints a job on the create with `provider.MintJob` and resolves it on every
+poll with `provider.ResolveJob`; [`profiles/tavily`](../profiles/tavily)'s `research.go` is the worked example.
+
+One rule is yours to keep: **a profile's create and poll routes must be served from the same entry** — the same
+`Route.Entry`, or the same listener when the routes name none. The job records the name of the entry its create was
+served from, and a poll resolves it only for a request served from that same name. A poll served from any other
+entry — another async surface in the same namespace, or another instance of your own profile — is the vendor's
+ordinary 404, claims no attempt, and raises a `job.foreign_id` warning naming both entries. The `entry` argument to
+`MintJob` only feeds the identifier's derivation, so a stable constant is the right thing to pass.
+
+Whether the create records its job is decided from the claimed fault attempt before the handler returns, so the
+create's response must not stream and must stay `FaultEligible`.
+
 ## Step 3 — scenarios
 
 Your scenarios are your own YAML files, in your own repository. The schema is `docs/scenario-schema.md`; the

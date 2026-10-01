@@ -207,6 +207,15 @@ A poll in a namespace that has minted nothing raises no finding at all: that mis
 See ["Counts and cursors differ per run"](#counts-and-cursors-differ-per-run-or-a-fault-fires-twice) for the
 multi-replica case this diagnostic exists to name.
 
+There is a fourth cause the finding can tell apart from those three, and when it does it says so: the identifier
+**is** a real job, but its create was served from a different entry. A job resolves only through the entry its
+create was served from — a scenario entry name, such as `exa_agent_runs`, or the name of an instanced listener such
+as `acme-fallback` — so polling an `exa_agent_runs` run through `tavily_research`'s route (or one instance's job
+through another instance's listener) is the same 404 as an unknown identifier, claims no attempt and advances no
+cursor. The `job.foreign_id` warning in that case names both entries — `its create was served from entry
+"exa_agent_runs", not "tavily_research"` — and the fix is to poll through the entry that served the create, not to
+look for a second replica or a reset.
+
 Like every warning, `validation.strict` or a `validation.promote` entry for `job.foreign_id` turns it into an
 error — which fails `AssertNoErrors`, even though the response is still the vendor's unchanged 404. A suite that
 runs strict and also polls `HEAD`/`GET` for ids it knows are absent should demote `job.foreign_id` instead.
