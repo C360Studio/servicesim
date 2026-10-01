@@ -578,6 +578,154 @@ func TestAgentAnthropicRequiresMaxOutputTokens(t *testing.T) {
 	}
 }
 
+// TestAgentProfileField pins the request's profile property, a ProfileReference
+// (#/components/schemas/ProfileReference): additionalProperties false, required
+// type (enum ["custom"]) and id (1 to 128 characters), optional version (string).
+// profile "Cannot be combined with preset"
+// (#/components/schemas/ResponsesRequest/properties/profile). It is accepted and
+// validated only; what a saved profile would configure is not simulated.
+func TestAgentProfileField(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("p", 129)
+	tests := []struct {
+		name       string
+		request    string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "a profile is accepted",
+			request:    `{"input":"hi","model":"openai/gpt-5","profile":{"type":"custom","id":"research"}}`,
+			wantStatus: http.StatusOK},
+		{name: "a profile may pin a version",
+			request:    `{"input":"hi","model":"openai/gpt-5","profile":{"type":"custom","id":"research","version":"latest"}}`,
+			wantStatus: http.StatusOK},
+		{name: "an id of exactly 128 characters",
+			request:    `{"input":"hi","model":"openai/gpt-5","profile":{"type":"custom","id":"` + strings.Repeat("p", 128) + `"}}`,
+			wantStatus: http.StatusOK},
+		{name: "profile must be an object",
+			request:    `{"input":"hi","model":"openai/gpt-5","profile":"research"}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeProfileInvalid},
+		{name: "profile.type is required",
+			request:    `{"input":"hi","model":"openai/gpt-5","profile":{"id":"research"}}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeProfileInvalid},
+		{name: "profile.type is custom",
+			request:    `{"input":"hi","model":"openai/gpt-5","profile":{"type":"builtin","id":"research"}}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeProfileInvalid},
+		{name: "profile.id is required",
+			request:    `{"input":"hi","model":"openai/gpt-5","profile":{"type":"custom"}}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeProfileInvalid},
+		{name: "profile.id is not empty",
+			request:    `{"input":"hi","model":"openai/gpt-5","profile":{"type":"custom","id":""}}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeProfileInvalid},
+		{name: "profile.id is at most 128 characters",
+			request:    `{"input":"hi","model":"openai/gpt-5","profile":{"type":"custom","id":"` + long + `"}}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeProfileInvalid},
+		{name: "profile.version is a string",
+			request:    `{"input":"hi","model":"openai/gpt-5","profile":{"type":"custom","id":"research","version":2}}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeProfileInvalid},
+		{name: "profile takes no other properties",
+			request:    `{"input":"hi","model":"openai/gpt-5","profile":{"type":"custom","id":"research","extra":1}}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeProfileInvalid},
+		{name: "profile cannot be combined with preset",
+			request:    `{"input":"hi","preset":"fast","profile":{"type":"custom","id":"research"}}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeProfileInvalid},
+		// INFERENCE: the specification says model is required "if neither models
+		// nor preset is provided" and does not mention profile, but it also calls
+		// profile a "Saved, versioned configuration to run with" that "Cannot be
+		// combined with preset", which makes the two alternatives. Nothing says a
+		// profile does NOT supply the model, so a valid profile alone is accepted
+		// rather than rejecting traffic the live API may accept.
+		{name: "a valid profile alone selects a model (inference)",
+			request:    `{"input":"hi","profile":{"type":"custom","id":"research"}}`,
+			wantStatus: http.StatusOK},
+		// An invalid profile selects nothing, and is reported once, as itself.
+		{name: "an invalid profile alone is not also a missing model",
+			request:    `{"input":"hi","profile":{"type":"custom"}}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeProfileInvalid},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSim(t, mustScenario(t, agentCorpus))
+
+			resp, body := s.do(t, http.MethodPost, "/v1/agent", tc.request)
+			require.Equal(t, tc.wantStatus, resp.StatusCode, "body: %s", body)
+			findings := s.findings(t)
+			if tc.wantCode != "" {
+				require.True(t, hasCode(findings, tc.wantCode), "findings: %+v", findings)
+			}
+			require.False(t, hasCode(findings, CodeUnknownField),
+				"profile is a modelled property and must not draw the unknown-field warning: %+v", findings)
+		})
+	}
+}
+
+// TestAgentProfileSelectsTheModel pins the two INFERENCE / SIMULATOR-POLICY
+// choices around a profile-only request: it is accepted, and, with no scenario
+// model, it echoes "profile/<id>", mirroring the "preset/<name>" a preset-only
+// request echoes. The specification states neither.
+func TestAgentProfileSelectsTheModel(t *testing.T) {
+	t.Parallel()
+
+	newScenarioSim := func(t *testing.T) *sim {
+		t.Helper()
+		return newSim(t, mustScenario(t, `
+version: 1
+name: agent-no-scenario-model
+providers:
+  perplexity_agent:
+    answer: hi
+`))
+	}
+
+	t.Run("a profile-only request echoes profile/<id>", func(t *testing.T) {
+		t.Parallel()
+		s := newScenarioSim(t)
+		resp, body := s.do(t, http.MethodPost, "/v1/agent",
+			`{"input":"hi","profile":{"type":"custom","id":"research","version":"latest"}}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+		require.Contains(t, string(body), `"model":"profile/research"`)
+	})
+
+	t.Run("an explicit model still wins over the profile", func(t *testing.T) {
+		t.Parallel()
+		s := newScenarioSim(t)
+		_, body := s.do(t, http.MethodPost, "/v1/agent",
+			`{"input":"hi","model":"openai/gpt-5","profile":{"type":"custom","id":"research"}}`)
+		require.Contains(t, string(body), `"model":"openai/gpt-5"`)
+	})
+
+	t.Run("a profile does not satisfy max_output_tokens for an anthropic model", func(t *testing.T) {
+		t.Parallel()
+		s := newScenarioSim(t)
+		resp, body := s.do(t, http.MethodPost, "/v1/agent",
+			`{"input":"hi","model":"anthropic/claude-sonnet-4-6","profile":{"type":"custom","id":"research"}}`)
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode, "body: %s", body)
+		require.Contains(t, string(body), "max_output_tokens is required")
+	})
+
+	t.Run("an invalid profile is reported once, not also as a missing model", func(t *testing.T) {
+		t.Parallel()
+		s := newScenarioSim(t)
+		resp, body := s.do(t, http.MethodPost, "/v1/agent",
+			`{"input":"hi","profile":{"type":"custom"}}`)
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode, "body: %s", body)
+		require.Contains(t, string(body), "validation failed: profile.id is required")
+		require.NotContains(t, string(body), "model is required")
+	})
+
+	t.Run("profile with preset stays a 400", func(t *testing.T) {
+		t.Parallel()
+		s := newScenarioSim(t)
+		resp, body := s.do(t, http.MethodPost, "/v1/agent",
+			`{"input":"hi","preset":"fast","profile":{"type":"custom","id":"research"}}`)
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode, "body: %s", body)
+		require.Contains(t, string(body), "profile cannot be combined with preset")
+	})
+}
+
 // TestAgentValidatorRejectsBadProjections proves a bad Agent fixture fails at
 // boot. An annotation span past the end of the answer is the case that would
 // otherwise reach a consumer as an index into a string that is too short.

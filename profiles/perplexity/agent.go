@@ -2,10 +2,12 @@ package perplexity
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -32,6 +34,10 @@ const (
 	// CodeMaxOutputTokensRequired is raised when an anthropic/* model is selected
 	// without max_output_tokens. Its message is the one the specification quotes.
 	CodeMaxOutputTokensRequired = "perplexity.agent.max_output_tokens.required"
+
+	// CodeProfileInvalid is raised when profile is not a valid ProfileReference
+	// or is combined with preset.
+	CodeProfileInvalid = "perplexity.agent.profile.invalid"
 
 	CodeMaxSteps          = "perplexity.agent.max_steps.range"
 	CodeMaxOutputTokens   = "perplexity.agent.max_output_tokens.range"
@@ -79,7 +85,7 @@ const maxModelChain = 5
 // an Agent 400 names.
 var agentFields = []string{
 	"input", "background", "instructions", "language_preference",
-	"max_output_tokens", "max_steps", "model", "models", "preset",
+	"max_output_tokens", "max_steps", "model", "models", "preset", "profile",
 	"previous_response_id", "reasoning", "response_format", "store", "stream",
 	"tools", "skills", "temperature", "top_p",
 }
@@ -292,7 +298,8 @@ func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) st
 		}
 	}
 
-	model, effective := validateAgentModel(x)
+	profileID, profileOK := validateAgentProfile(x)
+	model, effective := validateAgentModel(x, profileID, profileOK)
 	requireMaxOutputTokensForAnthropic(x, effective)
 	validateNumericRange(x, "temperature", CodeTemperature, 0, 2)
 	validateNumericRange(x, "top_p", CodeTopP, 0, 1)
@@ -334,9 +341,10 @@ func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) st
 // anthropicModelPrefix marks the models for which max_output_tokens is required.
 const anthropicModelPrefix = "anthropic/"
 
-// validateAgentModel checks the model-selecting properties, model, models and
-// preset, and returns the model to echo as responsesResponse.model together with
-// the models the request may run on.
+// validateAgentModel checks the model-selecting properties, model, models,
+// preset and a valid profile (profileID, from validateAgentProfile), and returns
+// the model to echo as responsesResponse.model together with the models the
+// request may run on.
 //
 // Selection follows #/components/schemas/ResponsesRequest/properties: model is
 // "Required if neither models nor preset is provided", and models "takes
@@ -346,17 +354,28 @@ const anthropicModelPrefix = "anthropic/"
 // entry of models — the specification says nothing about it, and treating it as
 // selected would render "model": "".
 //
-// The echoed model is the first of models, else model, else, for a preset-only
-// request, "preset/<name>". The specification does not say what a preset
-// request echoes (the preset's own model is not knowable here), so that last
-// form is a Servicesim policy: deterministic, non-empty and provider/model
-// shaped. A scenario's own model: still overrides all of it.
+// Two choices here are the specification's silence filled in, not its words.
+// INFERENCE: a valid profile counts as a selection, like a preset. The model
+// text names only models and preset, but profile is described as a "Saved,
+// versioned configuration to run with" that "Cannot be combined with preset",
+// which makes the two alternatives, and nothing says a profile does not supply
+// the model; rejecting a profile-only request would make an accepted field
+// unusable. Likewise the preset text, "Required if model is not provided",
+// read literally conflicts with a models-only request; the lenient reading is
+// taken.
+//
+// SIMULATOR-POLICY: the echoed model is the first non-empty entry of models,
+// else model, else, for a preset-only request, "preset/<name>", else, for a
+// profile-only request, "profile/<id>". The specification does not say what a
+// preset or profile request echoes (the configuration's own model is not
+// knowable here), so those forms are deterministic, non-empty and
+// provider/model shaped. A scenario's own model: still overrides all of it.
 //
 // A model that is not in provider/model form is a warning rather than an error:
 // the Agent API is a multi-provider router whose model set is not enumerated
 // anywhere Servicesim can verify, and rejecting an unknown-but-well-formed model
 // would mean rejecting valid traffic the moment a router adds a provider.
-func validateAgentModel(x *provider.Exchange) (echo string, effective []string) {
+func validateAgentModel(x *provider.Exchange, profileID string, profileOK bool) (echo string, effective []string) {
 	model, modelOK := optionalString(x, "model")
 	preset, presetOK := optionalString(x, "preset")
 	chain, chainOK := validateModelChain(x)
@@ -366,7 +385,8 @@ func validateAgentModel(x *provider.Exchange) (echo string, effective []string) 
 			"model %q is not in provider/model form, for example openai/gpt-5", model)
 	}
 
-	if model == "" && preset == "" && len(chain) == 0 && modelOK && presetOK && chainOK {
+	if model == "" && preset == "" && len(chain) == 0 && profileID == "" &&
+		modelOK && presetOK && chainOK && profileOK {
 		x.Fail(CodeModelRequired, "body.model", "model is required if neither models nor preset is provided")
 	}
 
@@ -377,6 +397,8 @@ func validateAgentModel(x *provider.Exchange) (echo string, effective []string) 
 		return model, []string{model}
 	case preset != "":
 		return "preset/" + preset, nil
+	case profileID != "":
+		return "profile/" + profileID, nil
 	}
 	return "", nil
 }
@@ -428,6 +450,79 @@ func validateModelChain(x *provider.Exchange) (chain []string, ok bool) {
 		}
 	}
 	return chain, true
+}
+
+// profileFields are the properties of ProfileReference, which is
+// additionalProperties: false.
+var profileFields = []string{"type", "id", "version"}
+
+// maxProfileIDLength is ProfileReference.id's maxLength.
+const maxProfileIDLength = 128
+
+// validateAgentProfile checks the request's profile property against
+// #/components/schemas/ProfileReference and the one rule the specification
+// attaches to the property itself, that it "Cannot be combined with preset".
+// It validates shape only: what a saved profile would configure is not
+// simulated.
+//
+// It returns the profile's id and ok=true when profile is absent or valid; id is
+// empty unless profile is present and valid. ok=false, after recording a failure,
+// means profile is present and invalid. A valid profile counts as a model
+// selection (see validateAgentModel).
+func validateAgentProfile(x *provider.Exchange) (id string, ok bool) {
+	if !x.Has("profile") {
+		return "", true
+	}
+	valid := true
+	fail := func(field, format string, args ...any) {
+		valid = false
+		x.Fail(CodeProfileInvalid, field, format, args...)
+	}
+
+	profile, isObject := x.Object("profile")
+	if !isObject {
+		fail("body.profile", "profile must be an object")
+		return "", false
+	}
+	if x.Has("preset") {
+		fail("body.profile", "profile cannot be combined with preset")
+	}
+	// Sorted, so the findings and therefore the 400 message never depend on
+	// Go's randomised map iteration.
+	for _, key := range slices.Sorted(maps.Keys(profile)) {
+		if !slices.Contains(profileFields, key) {
+			fail("body.profile."+key, "profile has no property %q", key)
+		}
+	}
+
+	switch typ, present := profile["type"]; {
+	case !present:
+		fail("body.profile.type", "profile.type is required")
+	case typ != "custom":
+		fail("body.profile.type", "profile.type must be custom")
+	}
+
+	switch rawID, present := profile["id"]; {
+	case !present:
+		fail("body.profile.id", "profile.id is required")
+	default:
+		s, isString := rawID.(string)
+		if n := utf8.RuneCountInString(s); !isString || n < 1 || n > maxProfileIDLength {
+			fail("body.profile.id", "profile.id must be a string of 1 to %d characters", maxProfileIDLength)
+		} else {
+			id = s
+		}
+	}
+
+	if version, present := profile["version"]; present {
+		if _, isString := version.(string); !isString {
+			fail("body.profile.version", "profile.version must be a string")
+		}
+	}
+	if !valid {
+		return "", false
+	}
+	return id, true
 }
 
 // requireMaxOutputTokensForAnthropic fails a request that may run on an
