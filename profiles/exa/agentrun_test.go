@@ -585,3 +585,83 @@ func TestAgentRunCreateAtTheJobBound(t *testing.T) {
 		"a create past the bound is a Servicesim configuration wall, not a malformed client request")
 	assert.True(t, s.hasFinding(provider.CodeJobLimitReached))
 }
+
+// --- create.fault and job retention ----------------------------------------
+
+// A create is only worth a job when the response carries the identifier to the
+// client. oversized_body pads the rendered body and writes it whole, so the
+// client does hold the identifier — and every poll for it has to resolve.
+func TestAgentRunCreateUnderOversizedBodyStillLeavesAPollableJob(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+version: 1
+name: exa-oversized-create
+providers:
+  exa_agent_runs:
+    create:
+      fault:
+        attempts:
+          - {kind: oversized_body, body_bytes: 4096}
+    turns:
+      - respond: {status: completed, output: {text: done}}
+`
+	store := jobs.NewRegistry(jobs.Limits{})
+	s := newSimWithJobs(t, src, store)
+
+	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"q"}`})
+	require.Equal(t, http.StatusCreated, rec.Code, "create failed: %s", rec.Body.String())
+	assert.GreaterOrEqual(t, rec.Body.Len(), 4096, "the response must actually be padded")
+
+	var out struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out), "padding is insignificant whitespace, so the body still decodes")
+	require.NotEmpty(t, out.ID)
+
+	assert.Equal(t, 1, store.StatsIn(provider.DefaultNamespace).Count,
+		"the client holds an identifier, so exactly one job must back it")
+
+	got := pollRun(t, s, out.ID)
+	assert.Equal(t, statusCompleted, got["status"], "the identifier the padded create returned must resolve")
+}
+
+// An attempt carrying a body: replaces the response even below 400, so the client
+// never receives the identifier the handler minted. Recording a job for it would
+// leave a record nobody can poll and spend a slot against the namespace's bound.
+func TestAgentRunCreateUnderABodyOverrideLeavesNoJob(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+version: 1
+name: exa-body-override-create
+providers:
+  exa_agent_runs:
+    create:
+      fault:
+        attempts:
+          - {status: 201, body: {id: run_scripted, status: queued}}
+    turns:
+      - respond: {status: completed, output: {text: done}}
+`
+	store := jobs.NewRegistry(jobs.Limits{})
+	s := newSimWithJobs(t, src, store)
+
+	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"q"}`})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	assert.JSONEq(t, `{"id":"run_scripted","status":"queued"}`, rec.Body.String(),
+		"the scripted body replaces the rendered one")
+
+	assert.Zero(t, store.StatsIn(provider.DefaultNamespace).Count,
+		"no client holds the minted identifier, so no job may be recorded for it")
+
+	// The scripted identifier was never minted either, so it 404s. The retry is the
+	// next attempt in the plan — exhausted, so it succeeds — and its job resolves
+	// like any other create's.
+	missing := s.do(request{method: http.MethodGet, path: "/agent/runs/run_scripted"})
+	assert.Equal(t, http.StatusNotFound, missing.Code)
+
+	id := createRun(t, s, `{"query":"retry"}`)
+	assert.Equal(t, 1, store.StatsIn(provider.DefaultNamespace).Count)
+	assert.Equal(t, statusCompleted, pollRun(t, s, id)["status"])
+}
