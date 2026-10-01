@@ -176,7 +176,7 @@ check "POST :8082/research (tavily, async create)" \
 # OpenAPI document but consumers reach them through the OpenAI SDK, so a
 # regression there would be invisible to any spec-driven test.
 sonar_body='{"model":"sonar","messages":[{"role":"user","content":"smoke"}]}'
-agent_body='{"input":"smoke"}'
+agent_body='{"input":"smoke","model":"openai/gpt-5"}'
 
 check "POST :8083/v1/sonar (perplexity, canonical)" \
   "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${PERPLEXITY_PORT}/v1/sonar" \

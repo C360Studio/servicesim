@@ -647,7 +647,7 @@ func TestMaliciousContent_WireResponsesCarryMarkersVerbatim(t *testing.T) {
 			name:    "perplexity agent",
 			p:       perplexity.Name,
 			path:    "/v1/agent",
-			body:    `{"input":"malicious content probe"}`,
+			body:    `{"input":"malicious content probe","model":"openai/gpt-5"}`,
 			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
 		},
 	}
@@ -912,7 +912,7 @@ func TestOversizedBody_FirstAttemptPadsThenCleanRetry(t *testing.T) {
 			name:    "perplexity agent",
 			p:       perplexity.Name,
 			path:    "/v1/agent",
-			body:    `{"input":"report"}`,
+			body:    `{"input":"report","model":"openai/gpt-5"}`,
 			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
 		},
 	}
@@ -1106,7 +1106,7 @@ func syncRouteCases() []syncRouteCase {
 		},
 		{
 			name: "perplexity agent", p: perplexity.Name, path: "/v1/agent",
-			body:    `{"input":"report"}`,
+			body:    `{"input":"report","model":"openai/gpt-5"}`,
 			headers: map[string]string{"authorization": "Bearer test-perplexity-key"},
 		},
 	}

@@ -263,7 +263,7 @@ func TestAgentValidationFailureShape(t *testing.T) {
 		{name: "malformed JSON", path: "/v1/agent", request: `{"input":`,
 			wantMessage: "validation failed: "},
 		{name: "first failing field in schema order wins", path: "/v1/agent",
-			request:     `{"input":"hi","temperature":3,"max_steps":0}`,
+			request:     `{"input":"hi","model":"openai/gpt-5","temperature":3,"max_steps":0}`,
 			wantMessage: "validation failed: max_steps must be an integer of at least 1"},
 	}
 
@@ -322,8 +322,8 @@ func TestAgentDeferredFeaturesWarnLoudly(t *testing.T) {
 		request string
 		want    string
 	}{
-		{"stream", `{"input":"hi","stream":true}`, CodeAgentStreamUnsupported},
-		{"background", `{"input":"hi","background":true}`, CodeAgentBackgroundUnsupported},
+		{"stream", `{"input":"hi","model":"openai/gpt-5","stream":true}`, CodeAgentStreamUnsupported},
+		{"background", `{"input":"hi","model":"openai/gpt-5","background":true}`, CodeAgentBackgroundUnsupported},
 	}
 
 	for _, tc := range tests {
@@ -354,26 +354,26 @@ func TestAgentRequestValidation(t *testing.T) {
 	}{
 		{name: "input is required", request: `{"model":"openai/gpt-5"}`,
 			wantStatus: http.StatusBadRequest, wantCode: CodeInputMissing},
-		{name: "input may be an array of items", request: `{"input":[{"role":"user","content":"hi"}]}`,
+		{name: "input may be an array of items", request: `{"model":"openai/gpt-5","input":[{"role":"user","content":"hi"}]}`,
 			wantStatus: http.StatusOK},
-		{name: "input must not be a number", request: `{"input":7}`,
+		{name: "input must not be a number", request: `{"input":7,"model":"openai/gpt-5"}`,
 			wantStatus: http.StatusBadRequest, wantCode: CodeInputInvalid},
 		{name: "a model chain is capped at five",
-			request:    `{"input":"hi","models":["a/b","a/b","a/b","a/b","a/b","a/b"]}`,
+			request:    `{"input":"hi","model":"openai/gpt-5","models":["a/b","a/b","a/b","a/b","a/b","a/b"]}`,
 			wantStatus: http.StatusBadRequest, wantCode: CodeModelsTooMany},
-		{name: "max_steps is at least one", request: `{"input":"hi","max_steps":0}`,
+		{name: "max_steps is at least one", request: `{"input":"hi","model":"openai/gpt-5","max_steps":0}`,
 			wantStatus: http.StatusBadRequest, wantCode: CodeMaxSteps},
-		{name: "max_output_tokens is positive", request: `{"input":"hi","max_output_tokens":0}`,
+		{name: "max_output_tokens is positive", request: `{"input":"hi","model":"openai/gpt-5","max_output_tokens":0}`,
 			wantStatus: http.StatusBadRequest, wantCode: CodeMaxOutputTokens},
-		{name: "temperature is bounded", request: `{"input":"hi","temperature":3}`,
+		{name: "temperature is bounded", request: `{"input":"hi","model":"openai/gpt-5","temperature":3}`,
 			wantStatus: http.StatusBadRequest, wantCode: CodeTemperature},
-		{name: "top_p is bounded", request: `{"input":"hi","top_p":1.5}`,
+		{name: "top_p is bounded", request: `{"input":"hi","model":"openai/gpt-5","top_p":1.5}`,
 			wantStatus: http.StatusBadRequest, wantCode: CodeTopP},
-		{name: "store must be a boolean", request: `{"input":"hi","store":"yes"}`,
+		{name: "store must be a boolean", request: `{"input":"hi","model":"openai/gpt-5","store":"yes"}`,
 			wantStatus: http.StatusBadRequest, wantCode: CodeStoreInvalid},
 		{name: "a bare model name is flagged but accepted", request: `{"input":"hi","model":"gpt-5"}`,
 			wantStatus: http.StatusOK, wantCode: CodeModelFormat},
-		{name: "an unmodelled property is flagged but accepted", request: `{"input":"hi","curiosity":9}`,
+		{name: "an unmodelled property is flagged but accepted", request: `{"input":"hi","model":"openai/gpt-5","curiosity":9}`,
 			wantStatus: http.StatusOK, wantCode: CodeUnknownField},
 	}
 
@@ -387,6 +387,193 @@ func TestAgentRequestValidation(t *testing.T) {
 			if tc.wantCode != "" {
 				require.True(t, hasCode(s.findings(t), tc.wantCode), "findings: %+v", s.findings(t))
 			}
+		})
+	}
+}
+
+// TestAgentModelSelection pins which model-selecting properties a request must
+// carry. #/components/schemas/ResponsesRequest/properties/model says "Required
+// if neither models nor preset is provided", and models has minItems 1 and items
+// of type string.
+func TestAgentModelSelection(t *testing.T) {
+	t.Parallel()
+
+	const required = "validation failed: model is required if neither models nor preset is provided"
+
+	tests := []struct {
+		name        string
+		request     string
+		wantStatus  int
+		wantCode    string
+		wantMessage string
+	}{
+		{name: "nothing selecting a model", request: `{"input":"hi"}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeModelRequired, wantMessage: required},
+		{name: "an empty model selects nothing", request: `{"input":"hi","model":""}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeModelRequired, wantMessage: required},
+		{name: "models holding only empty strings select nothing", request: `{"input":"hi","models":["",""]}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeModelRequired, wantMessage: required},
+		{name: "model alone", request: `{"input":"hi","model":"openai/gpt-5"}`,
+			wantStatus: http.StatusOK},
+		{name: "models alone", request: `{"input":"hi","models":["openai/gpt-5"]}`,
+			wantStatus: http.StatusOK},
+		{name: "preset alone", request: `{"input":"hi","preset":"fast"}`,
+			wantStatus: http.StatusOK},
+		{name: "models and model together", request: `{"input":"hi","model":"openai/gpt-5","models":["openai/gpt-5"]}`,
+			wantStatus: http.StatusOK},
+		{name: "an empty models chain (minItems 1)", request: `{"input":"hi","model":"openai/gpt-5","models":[]}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeModelsInvalid,
+			wantMessage: "validation failed: models must contain at least one model"},
+		{name: "models items are strings", request: `{"input":"hi","models":[1]}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeModelsInvalid,
+			wantMessage: "validation failed: models entry 0 must be a string"},
+		{name: "models is an array", request: `{"input":"hi","models":"openai/gpt-5"}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeModelsInvalid,
+			wantMessage: "validation failed: models must be an array of model IDs"},
+		// The message is pinned, not only the finding code: a wrong-typed model
+		// must be reported once, as a type error, and not also as "model is
+		// required".
+		{name: "model is a string", request: `{"input":"hi","model":5}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeModelInvalid,
+			wantMessage: "validation failed: model must be a string"},
+		{name: "preset is a string", request: `{"input":"hi","preset":5}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeModelInvalid,
+			wantMessage: "validation failed: preset must be a string"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSim(t, mustScenario(t, agentCorpus))
+
+			resp, body := s.do(t, http.MethodPost, "/v1/agent", tc.request)
+			require.Equal(t, tc.wantStatus, resp.StatusCode, "body: %s", body)
+			if tc.wantCode != "" {
+				require.True(t, hasCode(s.findings(t), tc.wantCode), "findings: %+v", s.findings(t))
+			}
+			if tc.wantMessage != "" {
+				var envelope struct {
+					Error struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				require.NoError(t, json.Unmarshal(body, &envelope))
+				require.Equal(t, tc.wantMessage, envelope.Error.Message)
+			}
+		})
+	}
+}
+
+// TestAgentResponseModelIsNeverEmpty pins what responsesResponse.model holds
+// when the scenario names no model of its own. The specification calls it "Model
+// used for generation" and requires it, and says models takes precedence over
+// model; it is silent on what a preset-only request echoes, so that case is a
+// Servicesim policy: "preset/<name>", deterministic and non-empty.
+func TestAgentResponseModelIsNeverEmpty(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		request   string
+		wantModel string
+	}{
+		{name: "model", request: `{"input":"hi","model":"openai/gpt-5"}`,
+			wantModel: "openai/gpt-5"},
+		{name: "models takes precedence over model",
+			request:   `{"input":"hi","model":"openai/gpt-5","models":["google/gemini-3","openai/gpt-5"]}`,
+			wantModel: "google/gemini-3"},
+		{name: "preset alone", request: `{"input":"hi","preset":"fast"}`,
+			wantModel: "preset/fast"},
+		// An empty string selects nothing in models too: it is skipped when
+		// choosing the echoed model, never echoed.
+		{name: "an empty first entry of models is skipped",
+			request:   `{"input":"hi","models":["","openai/gpt-5"]}`,
+			wantModel: "openai/gpt-5"},
+		{name: "a models chain of empty strings falls back to model",
+			request:   `{"input":"hi","model":"openai/gpt-5","models":[""]}`,
+			wantModel: "openai/gpt-5"},
+		{name: "a models chain of empty strings falls back to preset",
+			request:   `{"input":"hi","preset":"fast","models":[""]}`,
+			wantModel: "preset/fast"},
+		{name: "model beats preset", request: `{"input":"hi","model":"openai/gpt-5","preset":"fast"}`,
+			wantModel: "openai/gpt-5"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSim(t, mustScenario(t, `
+version: 1
+name: agent-no-scenario-model
+providers:
+  perplexity_agent:
+    answer: hi
+`))
+			resp, body := s.do(t, http.MethodPost, "/v1/agent", tc.request)
+			require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+
+			var envelope struct {
+				Model string `json:"model"`
+			}
+			require.NoError(t, json.Unmarshal(body, &envelope))
+			require.Equal(t, tc.wantModel, envelope.Model)
+		})
+	}
+
+	t.Run("a scenario model still wins", func(t *testing.T) {
+		t.Parallel()
+		s := newSim(t, mustScenario(t, agentCorpus))
+		_, body := s.do(t, http.MethodPost, "/v1/agent", `{"input":"hi","preset":"fast"}`)
+		require.Contains(t, string(body), `"model":"openai/gpt-5"`)
+	})
+}
+
+// TestAgentAnthropicRequiresMaxOutputTokens pins the one Agent validation rule
+// whose status and message the specification quotes verbatim
+// (#/components/schemas/ResponsesRequest/properties/max_output_tokens): "If
+// omitted for an Anthropic model, the API returns HTTP 400 with: validation
+// failed: max_output_tokens is required when using Anthropic models."
+func TestAgentAnthropicRequiresMaxOutputTokens(t *testing.T) {
+	t.Parallel()
+
+	const wantMessage = "validation failed: max_output_tokens is required when using Anthropic models."
+
+	tests := []struct {
+		name    string
+		path    string
+		request string
+		reject  bool
+	}{
+		{name: "anthropic model without max_output_tokens", path: "/v1/agent",
+			request: `{"input":"hi","model":"anthropic/claude-sonnet-4-6"}`, reject: true},
+		{name: "through an alias", path: "/v1/responses",
+			request: `{"input":"hi","model":"anthropic/claude-sonnet-4-6"}`, reject: true},
+		{name: "an anthropic entry in the models chain", path: "/v1/agent",
+			request: `{"input":"hi","models":["openai/gpt-5","anthropic/claude-sonnet-4-6"]}`, reject: true},
+		{name: "anthropic model with max_output_tokens", path: "/v1/agent",
+			request: `{"input":"hi","model":"anthropic/claude-sonnet-4-6","max_output_tokens":1024}`},
+		{name: "another provider without max_output_tokens", path: "/v1/agent",
+			request: `{"input":"hi","model":"openai/gpt-5"}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSim(t, mustScenario(t, agentCorpus))
+
+			resp, body := s.do(t, http.MethodPost, tc.path, tc.request)
+			if !tc.reject {
+				require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+				return
+			}
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode, "body: %s", body)
+			var envelope struct {
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(body, &envelope))
+			require.Equal(t, wantMessage, envelope.Error.Message)
 		})
 	}
 }

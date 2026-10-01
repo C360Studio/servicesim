@@ -15,10 +15,24 @@ import (
 
 // Agent request finding codes.
 const (
-	CodeInputMissing      = "perplexity.input.missing"
-	CodeInputInvalid      = "perplexity.input.invalid"
-	CodeModelsTooMany     = "perplexity.agent.models.max"
-	CodeModelFormat       = "perplexity.agent.model.format"
+	CodeInputMissing  = "perplexity.input.missing"
+	CodeInputInvalid  = "perplexity.input.invalid"
+	CodeModelsTooMany = "perplexity.agent.models.max"
+	CodeModelFormat   = "perplexity.agent.model.format"
+
+	// CodeModelRequired is raised when a request names no model, models or preset:
+	// ResponsesRequest.model is "Required if neither models nor preset is
+	// provided".
+	CodeModelRequired = "perplexity.agent.model.required"
+
+	// CodeModelsInvalid is raised when models is not a non-empty array of strings
+	// (minItems 1, items of type string). The upper bound is [CodeModelsTooMany].
+	CodeModelsInvalid = "perplexity.agent.models.invalid"
+
+	// CodeMaxOutputTokensRequired is raised when an anthropic/* model is selected
+	// without max_output_tokens. Its message is the one the specification quotes.
+	CodeMaxOutputTokensRequired = "perplexity.agent.max_output_tokens.required"
+
 	CodeMaxSteps          = "perplexity.agent.max_steps.range"
 	CodeMaxOutputTokens   = "perplexity.agent.max_output_tokens.range"
 	CodeStoreInvalid      = "perplexity.agent.store.invalid"
@@ -106,8 +120,9 @@ type perplexityAgent struct {
 	MessageID string `yaml:"message_id,omitempty"`
 
 	// Model is echoed as responsesResponse.model. Agent model IDs are
-	// "provider/model" strings; when empty the request's model is echoed, and
-	// when the request omits it too the scenario default applies.
+	// "provider/model" strings; when empty the model the request selected is
+	// echoed (see validateAgentModel), which is never empty for a request that
+	// passed validation.
 	Model string `yaml:"model,omitempty"`
 
 	// CreatedAt overrides the derived Unix timestamp. When zero it is
@@ -277,7 +292,8 @@ func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) st
 		}
 	}
 
-	model := validateAgentModel(x)
+	model, effective := validateAgentModel(x)
+	requireMaxOutputTokensForAnthropic(x, effective)
 	validateNumericRange(x, "temperature", CodeTemperature, 0, 2)
 	validateNumericRange(x, "top_p", CodeTopP, 0, 1)
 
@@ -315,34 +331,127 @@ func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) st
 	return model
 }
 
-// validateAgentModel checks model and models, and returns the model to echo.
+// anthropicModelPrefix marks the models for which max_output_tokens is required.
+const anthropicModelPrefix = "anthropic/"
+
+// validateAgentModel checks the model-selecting properties, model, models and
+// preset, and returns the model to echo as responsesResponse.model together with
+// the models the request may run on.
+//
+// Selection follows #/components/schemas/ResponsesRequest/properties: model is
+// "Required if neither models nor preset is provided", and models "takes
+// precedence over single model field". A request naming none of them is a
+// failure, as is a models chain that is empty, is not an array of strings, or
+// exceeds the cap. An empty string selects nothing, whether it is model or an
+// entry of models — the specification says nothing about it, and treating it as
+// selected would render "model": "".
+//
+// The echoed model is the first of models, else model, else, for a preset-only
+// request, "preset/<name>". The specification does not say what a preset
+// request echoes (the preset's own model is not knowable here), so that last
+// form is a Servicesim policy: deterministic, non-empty and provider/model
+// shaped. A scenario's own model: still overrides all of it.
 //
 // A model that is not in provider/model form is a warning rather than an error:
 // the Agent API is a multi-provider router whose model set is not enumerated
 // anywhere Servicesim can verify, and rejecting an unknown-but-well-formed model
 // would mean rejecting valid traffic the moment a router adds a provider.
-func validateAgentModel(x *provider.Exchange) string {
-	model, _ := x.String("model")
+func validateAgentModel(x *provider.Exchange) (echo string, effective []string) {
+	model, modelOK := optionalString(x, "model")
+	preset, presetOK := optionalString(x, "preset")
+	chain, chainOK := validateModelChain(x)
+
 	if model != "" && !strings.Contains(model, "/") {
 		x.Warn(CodeModelFormat, "body.model",
 			"model %q is not in provider/model form, for example openai/gpt-5", model)
 	}
-	if !x.Has("models") {
-		return model
+
+	if model == "" && preset == "" && len(chain) == 0 && modelOK && presetOK && chainOK {
+		x.Fail(CodeModelRequired, "body.model", "model is required if neither models nor preset is provided")
 	}
-	models, ok := x.Body["models"].([]any)
+
+	switch {
+	case len(chain) > 0:
+		return chain[0], chain
+	case model != "":
+		return model, []string{model}
+	case preset != "":
+		return "preset/" + preset, nil
+	}
+	return "", nil
+}
+
+// optionalString reads an optional string property. It reports ok=false, after
+// recording a failure, only when the property is present and not a string.
+func optionalString(x *provider.Exchange, key string) (value string, ok bool) {
+	if !x.Has(key) {
+		return "", true
+	}
+	value, ok = x.String(key)
 	if !ok {
-		return model
+		x.Fail(CodeModelInvalid, "body."+key, "%s must be a string", key)
 	}
-	if len(models) > maxModelChain {
+	return value, ok
+}
+
+// validateModelChain checks models: an array of 1 to maxModelChain strings. It
+// returns the chain without its empty entries, so an empty string selects nothing
+// here exactly as it does for model; the chain is nil when models is absent,
+// invalid or holds only empty strings. ok=false, after recording a failure, means
+// models is present and invalid.
+func validateModelChain(x *provider.Exchange) (chain []string, ok bool) {
+	if !x.Has("models") {
+		return nil, true
+	}
+	raw, isArray := x.Body["models"].([]any)
+	if !isArray {
+		x.Fail(CodeModelsInvalid, "body.models", "models must be an array of model IDs")
+		return nil, false
+	}
+	if len(raw) == 0 {
+		x.Fail(CodeModelsInvalid, "body.models", "models must contain at least one model")
+		return nil, false
+	}
+	if len(raw) > maxModelChain {
 		x.Fail(CodeModelsTooMany, "body.models",
-			"models accepts at most %d entries, got %d", maxModelChain, len(models))
+			"models accepts at most %d entries, got %d", maxModelChain, len(raw))
 	}
-	if model == "" && len(models) > 0 {
-		first, _ := models[0].(string)
-		return first
+	chain = make([]string, 0, len(raw))
+	for i, item := range raw {
+		id, isString := item.(string)
+		if !isString {
+			x.Fail(CodeModelsInvalid, "body.models."+strconv.Itoa(i), "models entry %d must be a string", i)
+			return nil, false
+		}
+		if id != "" {
+			chain = append(chain, id)
+		}
 	}
-	return model
+	return chain, true
+}
+
+// requireMaxOutputTokensForAnthropic fails a request that may run on an
+// anthropic/* model without max_output_tokens. The specification quotes the
+// status and the message: "If omitted for an Anthropic model, the API returns
+// HTTP 400 with: validation failed: max_output_tokens is required when using
+// Anthropic models." The 400 and the "validation failed: " prefix come from
+// validationResponse; this supplies the rest.
+//
+// A models chain counts if ANY entry is anthropic/*. The specification does not
+// say whether a chain is checked up front or only when it falls through to such
+// a model; checking every entry is the strict reading, and adding
+// max_output_tokens to a request is harmless on any model.
+func requireMaxOutputTokensForAnthropic(x *provider.Exchange, effective []string) {
+	if x.Has("max_output_tokens") {
+		return
+	}
+	for _, id := range effective {
+		if strings.HasPrefix(id, anthropicModelPrefix) {
+			x.Fail(CodeMaxOutputTokensRequired, "body.max_output_tokens",
+				"max_output_tokens is required when using Anthropic models.")
+			return
+		}
+	}
 }
 
 // renderAgentIdentity computes the id, message id, created timestamp and

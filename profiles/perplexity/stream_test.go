@@ -1191,7 +1191,7 @@ func TestAgentStreamPolicySwitch(t *testing.T) {
 	t.Run("default (no stream: key) warns and serves JSON", func(t *testing.T) {
 		t.Parallel()
 		s := newSim(t, mustScenario(t, agentCorpus))
-		resp, body := s.do(t, http.MethodPost, "/v1/agent", `{"input":"hi","stream":true}`)
+		resp, body := s.do(t, http.MethodPost, "/v1/agent", `{"input":"hi","model":"openai/gpt-5","stream":true}`)
 		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
 		require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 		require.True(t, hasCode(s.findings(t), CodeAgentStreamUnsupported))
@@ -1207,7 +1207,7 @@ providers:
     stream: warn
     answer: hi
 `))
-		resp, body := s.do(t, http.MethodPost, "/v1/agent", `{"input":"hi","stream":true}`)
+		resp, body := s.do(t, http.MethodPost, "/v1/agent", `{"input":"hi","model":"openai/gpt-5","stream":true}`)
 		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
 		require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 		require.True(t, hasCode(s.findings(t), CodeAgentStreamUnsupported))
@@ -1223,7 +1223,7 @@ providers:
     stream: reject
     answer: hi
 `))
-		resp, body := s.do(t, http.MethodPost, "/v1/agent", `{"input":"hi","stream":true}`)
+		resp, body := s.do(t, http.MethodPost, "/v1/agent", `{"input":"hi","model":"openai/gpt-5","stream":true}`)
 		require.Equal(t, http.StatusBadRequest, resp.StatusCode, "body: %s", body)
 		require.Contains(t, string(body), `"error"`)
 		require.Contains(t, string(body), `streaming responses are not simulated`)
@@ -1240,7 +1240,7 @@ providers:
     stream: reject
     answer: hi
 `))
-		resp, body := s.do(t, http.MethodPost, "/v1/agent", `{"input":"hi","stream":false}`)
+		resp, body := s.do(t, http.MethodPost, "/v1/agent", `{"input":"hi","model":"openai/gpt-5","stream":false}`)
 		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
 		require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 		require.False(t, hasCode(s.findings(t), CodeAgentStreamUnsupported),
