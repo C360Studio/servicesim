@@ -44,7 +44,8 @@ providers:
 `
 
 // agentRunGoldenFailedScenario backs the failed-poll golden. A single
-// unconditional turn is already terminal on the first poll.
+// unconditional turn is already terminal on the first poll, and a failed run
+// needs nothing beyond its status: the schema has no run-level error.
 const agentRunGoldenFailedScenario = `
 version: 1
 name: exa-agent-runs-failed-golden
@@ -55,9 +56,6 @@ providers:
     turns:
       - respond:
           status: failed
-          error:
-            code: AGENT_RUN_FAILED
-            message: the run could not be completed
 `
 
 // agentRunGolden404Scenario backs the unknown-run-id golden. It declares no
@@ -80,8 +78,9 @@ func TestGolden_AgentRunCreated(t *testing.T) {
 	assertGoldenWire(t, "exa-agent-runs-created.json", rec.Body.Bytes())
 }
 
-// TestGolden_AgentRunRunning pins a non-terminal poll: stopReason present and
-// explicitly null, output/error/usage/costDollars all absent.
+// TestGolden_AgentRunRunning pins a non-terminal poll: stopReason and
+// completedAt present and explicitly null, and output, usage and costDollars the
+// zero-valued placeholders for their required keys.
 func TestGolden_AgentRunRunning(t *testing.T) {
 	t.Parallel()
 
@@ -94,7 +93,8 @@ func TestGolden_AgentRunRunning(t *testing.T) {
 }
 
 // TestGolden_AgentRunCompleted pins a terminal, successful poll: output with
-// RESOLVED grounding (title and url, not a bare source id) and costDollars.
+// RESOLVED grounding (url and title, not a bare source id) and the scripted
+// costDollars.total beside zero-filled components.
 func TestGolden_AgentRunCompleted(t *testing.T) {
 	t.Parallel()
 
@@ -107,9 +107,9 @@ func TestGolden_AgentRunCompleted(t *testing.T) {
 	assertGoldenWire(t, "exa-agent-runs-completed.json", rec.Body.Bytes())
 }
 
-// TestGolden_AgentRunFailed pins a terminal failure: the error object, and
-// costDollars.total present as 0 rather than omitted (the terminal-run
-// inference in contracts/exa/README.md applies regardless of outcome).
+// TestGolden_AgentRunFailed pins a terminal failure: status failed and stopReason
+// error, with no error key, and the required output, usage and costDollars at
+// their placeholders.
 func TestGolden_AgentRunFailed(t *testing.T) {
 	t.Parallel()
 

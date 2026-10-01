@@ -86,8 +86,9 @@ func TestAgentRunCreateThenPollToCompletion(t *testing.T) {
 	for i := range 2 {
 		got := pollRun(t, s, id)
 		assert.Equal(t, statusRunning, got["status"], "poll %d should still be running", i)
-		assert.Nil(t, got["output"], "output must not exist before a terminal status")
-		assert.Nil(t, got["costDollars"], "a run that has not finished has spent nothing")
+		assert.Equal(t, map[string]any{"text": "", "structured": nil, "grounding": []any{}}, got["output"],
+			"output is a required non-nullable object, so a run that has not finished carries an empty one")
+		assert.Nil(t, got["completedAt"], "a run that has not finished has not completed")
 		assert.Nil(t, got["stopReason"], "a non-terminal run carries a null stop reason")
 		_, present := got["stopReason"]
 		assert.True(t, present, "stopReason must be present and explicitly null, not omitted")
@@ -117,16 +118,13 @@ func TestAgentRunCreateThenPollToCompletion(t *testing.T) {
 	assert.Equal(t, "Report A", citation["title"], "the citation did not resolve against the corpus")
 	assert.Equal(t, "https://example.test/report-a", citation["url"])
 
-	// costDollars.total is emitted on every terminal run. See the recorded
-	// inference in contracts/exa/README.md for why it ships on evidence rather
-	// than on a vendor example — and note it must be here from the FIRST
-	// release, because adding a cost key after adopters hold goldens rewrites
-	// the bytes of every one of those files.
+	// costDollars is required on every run and its total is scripted here; the
+	// components the scenario did not script are zero placeholders.
 	cost, ok := done["costDollars"].(map[string]any)
 	require.True(t, ok, "a terminal run carries costDollars: %v", done)
 	assert.InDelta(t, 0.045, cost["total"], 1e-9)
-	assert.NotContains(t, cost, "search",
-		"costDollars.search is not confirmed on this surface and must not be copied across from /search")
+	assert.Equal(t, 0.0, cost["search"],
+		"costDollars.search is a required scalar on this surface; unscripted it is a zero placeholder")
 
 	// The terminal turn is unconditional, so it answers every later poll too —
 	// which is what every real job API does with a finished run.
@@ -310,38 +308,6 @@ func TestAgentRunCreateRejectsAMissingQuery(t *testing.T) {
 	assert.True(t, s.hasFinding(codeQueryMissing))
 }
 
-// A failed run carries its error, which is what a consumer's failure branch
-// reads. The scenario declaring failed without an error is a load error, tested
-// separately in the validator tests.
-func TestAgentRunFailedCarriesItsError(t *testing.T) {
-	t.Parallel()
-
-	s := asyncSim(t, `
-version: 1
-name: exa-agent-run-fails
-providers:
-  exa_agent_runs:
-    turns:
-      - when: {call_index: 0}
-        respond: {status: running}
-      - respond:
-          status: failed
-          error:
-            code: AGENT_RUN_FAILED
-            message: the run could not be completed
-`)
-	id := createRun(t, s, `{"query":"q"}`)
-	assert.Equal(t, statusRunning, pollRun(t, s, id)["status"])
-
-	got := pollRun(t, s, id)
-	assert.Equal(t, statusFailed, got["status"])
-	assert.Equal(t, stopError, got["stopReason"], "a failed run derives the error stop reason")
-
-	failure, ok := got["error"].(map[string]any)
-	require.True(t, ok, "a failed run carries an error: %v", got)
-	assert.Equal(t, "AGENT_RUN_FAILED", failure["code"])
-}
-
 // A stuck run never terminates: the consumer's own timeout is what fires, which
 // is the behaviour under test. Servicesim does not decide the run is stuck.
 func TestAgentRunStuckPending(t *testing.T) {
@@ -484,9 +450,9 @@ func TestAgentRunValidatorFindings(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name:     "failed without an error",
-			src:      `{status: failed}`,
-			wantCode: CodeAgentRunFailedWithoutError,
+			name:     "a run-level error block",
+			src:      `{status: failed, error: {code: X, message: y}}`,
+			wantCode: codeAgentRunErrorNotInSchema,
 			wantErr:  true,
 		},
 		{

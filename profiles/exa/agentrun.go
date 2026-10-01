@@ -2,6 +2,9 @@ package exa
 
 import (
 	"fmt"
+	"maps"
+	"math"
+	"slices"
 
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
@@ -16,13 +19,13 @@ import (
 // and is unaffected.
 const NameAgentRuns = "exa_agent_runs"
 
-// Run status values, verified against the vendor's Agent API documentation on
-// 2026-08-15 (contracts/exa/README.md).
+// Run status values: AgentRunStatus in the vendor's OpenAPI document (retrieved
+// 2026-10-01, line 5840; see contracts/exa/README.md).
 //
 // The lifecycle is queued -> running -> completed | failed | cancelled, and the
-// last three are terminal. Output exists ONLY at a terminal status, which is the
-// whole reason this surface needs a scenario shape a single request/response
-// projection cannot express.
+// last three are terminal. A run is a resource whose payload arrives over
+// successive polls, which is the whole reason this surface needs a scenario shape
+// a single request/response projection cannot express.
 const (
 	statusQueued    = "queued"
 	statusRunning   = "running"
@@ -62,10 +65,11 @@ var terminalStatuses = map[string]bool{
 // followed by a terminal one is a run that answers "running" twice and then
 // completes.
 //
-// The create response is not projected. It is derived in full — the identifier
-// and the vendor's initial status — because a projection body alongside `turns:`
-// is already a load error, so there is nowhere honest to put create-side body
-// keys. See contracts/exa/README.md for what a create actually returns.
+// The create response is not projected. It is derived in full — the run in its
+// initial queued status, with every required key at its placeholder — because a
+// projection body alongside `turns:` is already a load error, so there is
+// nowhere honest to put create-side body keys. See contracts/exa/README.md for
+// what a create returns.
 type agentRunProjection struct {
 	// Status is the run's status for this poll. Empty means statusRunning, so a
 	// scenario can write a pending snapshot as `respond: {}`.
@@ -77,31 +81,33 @@ type agentRunProjection struct {
 	// derive schema_satisfied.
 	StopReason string `yaml:"stop_reason,omitempty"`
 
-	// Output is present only at a terminal status. A completed run with no
-	// output is a warning, not an error — the vendor allows it and a consumer's
-	// empty-result branch is worth being able to test.
+	// Output projects the run's output object. The wire object is required and
+	// non-nullable on EVERY snapshot, so a snapshot that declares none renders the
+	// empty placeholder {text: "", structured: null, grounding: []}; a snapshot
+	// that declares one renders it, whatever its status. A completed run with no
+	// output is still a warning, not an error — the vendor allows it and a
+	// consumer's empty-result branch is worth being able to test.
 	Output *agentOutputProjection `yaml:"output,omitempty"`
 
-	// Error is the failure detail. `status: failed` with no error is a load
-	// ERROR: a consumer's terminal-state handler is what such a scenario exists
-	// to test, and handing it a failure with no reason tests nothing.
+	// Error is retained ONLY so that a scenario still declaring it fails with a
+	// finding that says why, instead of an unhelpful unknown-key error. The
+	// AgentRun schema has no run-level error; see codeAgentRunErrorNotInSchema.
 	Error *agentErrorProjection `yaml:"error,omitempty"`
 
-	// CostDollars projects the run's cost breakdown. Emitted on terminal runs
-	// whether or not a scenario declares it, because a real terminal run always
-	// carries one and a consumer's spend-attribution path must have something to
-	// read. See the recorded inference in contracts/exa/README.md for why
-	// `total` is emitted on evidence rather than on a vendor example.
+	// CostDollars projects the run's cost breakdown. The wire object is required
+	// on every snapshot; a snapshot that declares none renders zeros, which are
+	// placeholders for required keys and no claim about billing. A declared value
+	// always wins over the placeholder.
 	CostDollars *agentCostProjection `yaml:"cost_dollars,omitempty"`
 
-	// Usage projects the compute accounting. Optional: unlike costDollars it has
-	// no documented always-present guarantee.
+	// Usage projects the compute accounting, on the same terms as CostDollars:
+	// required on the wire, zero-filled when undeclared, declared values win.
 	Usage *agentUsageProjection `yaml:"usage,omitempty"`
 
 	ExtraFields scenario.ExtraFields `yaml:"extra_fields,omitempty"`
 }
 
-// agentOutputProjection projects a terminal run's output object.
+// agentOutputProjection projects a run's output object.
 type agentOutputProjection struct {
 	// Text is the natural-language answer or summary (wire: output.text).
 	Text string `yaml:"text,omitempty"`
@@ -115,38 +121,63 @@ type agentOutputProjection struct {
 	Grounding []groundingProjection `yaml:"grounding,omitempty"`
 }
 
-// agentErrorProjection projects a failed run's error object.
+// agentErrorProjection is the shape of the removed run-level error block. It is
+// decoded only to be reported; nothing renders it.
 type agentErrorProjection struct {
 	Code    string `yaml:"code,omitempty"`
 	Message string `yaml:"message,omitempty"`
 }
 
-// agentCostProjection projects costDollars on a run.
+// agentCostProjection projects costDollars on a run: AgentCostDollars in the
+// vendor's OpenAPI document (line 6009).
 //
-// It deliberately does NOT carry a `search` key, unlike costProjection on
-// /search. `costDollars.search` is part of the shared CostDollarsOutput schema
-// and is NOT confirmed on this surface; `dataSources` is confirmed and does not
-// appear in that schema. Copying the /search shape across would emit a field the
-// vendor has not been observed sending, which is how a simulator teaches a
-// consumer to parse something that does not exist.
+// It is NOT costProjection. On /search, costDollars.search is the {neural}
+// object of the shared CostDollarsOutput schema; on this surface AgentCostDollars
+// is a separate schema whose `search` is a plain number. Copying the /search
+// shape across would emit an object where the vendor sends a scalar.
+//
+// total, agent_compute, search, emails and phone_numbers are all REQUIRED on the
+// wire and default to zero when undeclared. Zero is a placeholder for a required
+// key: the components are not derived from, and need not sum to, the total.
 type agentCostProjection struct {
-	// Total is the aggregate. Required within the object, matching every other
-	// Exa cost breakdown.
+	// Total is the aggregate (wire: costDollars.total).
 	Total float64 `yaml:"total"`
 
+	// AgentCompute, Search, Emails and PhoneNumbers are the per-meter dollar
+	// costs (wire: costDollars.agentCompute, .search, .emails, .phoneNumbers).
+	AgentCompute float64 `yaml:"agent_compute,omitempty"`
+	Search       float64 `yaml:"search,omitempty"`
+	Emails       float64 `yaml:"emails,omitempty"`
+	PhoneNumbers float64 `yaml:"phone_numbers,omitempty"`
+
 	// DataSources is the per-partner breakdown for Exa Connect sources. Emitted
-	// only when a scenario declares it.
+	// only when a scenario declares it: the spec lists only providers with
+	// non-zero usage, so an empty map is omitted rather than rendered.
 	DataSources map[string]float64 `yaml:"data_sources,omitempty"`
 }
 
-// agentUsageProjection projects the run's usage accounting.
+// agentUsageProjection projects the run's usage accounting: AgentUsage in the
+// vendor's OpenAPI document (line 5978).
+//
+// agent_compute_units, searches, emails and phone_numbers are REQUIRED on the
+// wire and default to zero when undeclared, on the same placeholder terms as
+// agentCostProjection.
 type agentUsageProjection struct {
 	// AgentComputeUnits measures model computation across the full run (wire:
 	// usage.agentComputeUnits).
-	AgentComputeUnits *float64 `yaml:"agent_compute_units,omitempty"`
+	AgentComputeUnits float64 `yaml:"agent_compute_units,omitempty"`
+
+	// Searches, Emails and PhoneNumbers are the per-meter counters (wire:
+	// usage.searches, .emails, .phoneNumbers). The schema types them as
+	// integers.
+	Searches     int `yaml:"searches,omitempty"`
+	Emails       int `yaml:"emails,omitempty"`
+	PhoneNumbers int `yaml:"phone_numbers,omitempty"`
 
 	// DataSources is the per-partner tool-call count (wire: usage.dataSources).
-	DataSources map[string]float64 `yaml:"data_sources,omitempty"`
+	// The schema types the counts as integers, so a fractional value is a load
+	// error rather than a schema-invalid response.
+	DataSources map[string]int `yaml:"data_sources,omitempty"`
 }
 
 // IsTerminal reports whether this snapshot ends the run, so a poll after it
@@ -197,11 +228,6 @@ const (
 	// documented set.
 	CodeAgentRunStopReasonUnknown = "exa.agent_run.stop_reason.unknown"
 
-	// CodeAgentRunFailedWithoutError is raised for `status: failed` carrying no
-	// error object. A consumer's terminal-state handler is what such a scenario
-	// tests, and a failure with no reason tests nothing.
-	CodeAgentRunFailedWithoutError = "exa.agent_run.failed_without_error"
-
 	// CodeAgentRunTerminalThenPending is raised for a non-terminal turn declared
 	// after a terminal one — a run that un-completes, which no real job API does.
 	CodeAgentRunTerminalThenPending = "exa.agent_run.terminal_then_pending"
@@ -221,6 +247,20 @@ const (
 	// always an unfinished fixture.
 	CodeAgentRunCompletedWithoutOutput = "exa.agent_run.completed_without_output"
 )
+
+// codeAgentRunErrorNotInSchema is raised for an `error:` block on an agent-run
+// turn. The AgentRun schema is additionalProperties: false and has no run-level
+// error (openapi line 5839), so the block could only put a key outside the schema
+// on the wire. It is unexported: a consumer asserts on the string.
+const codeAgentRunErrorNotInSchema = "exa.agent_run.error.not_in_schema"
+
+// codeAgentRunValueRange is raised for a scripted usage or cost value outside what
+// the schema allows. Every AgentUsage and AgentCostDollars member is a number with
+// minimum: 0 (openapi lines 5981-6026), as is every data-source count and cost
+// (6003-6007, 6038-6042), and JSON carries no NaN or Infinity, so a negative or
+// non-finite value could only put a schema-invalid body on the wire. It is
+// unexported: a consumer asserts on the string.
+const codeAgentRunValueRange = "exa.agent_run.value.range"
 
 // agentRunValidator decodes and checks the async projections in a scenario.
 type agentRunValidator struct{}
@@ -315,12 +355,15 @@ func validateAgentRunTurn(
 		})
 	}
 
-	if status == statusFailed && p.Error == nil {
+	findings = append(findings, validateAgentRunValues(path, p)...)
+
+	if p.Error != nil {
 		findings = append(findings, scenario.Finding{
 			Severity: scenario.SeverityError,
-			Code:     CodeAgentRunFailedWithoutError,
+			Code:     codeAgentRunErrorNotInSchema,
 			Path:     path + ".error",
-			Message:  "a failed run must declare an error; a consumer's failure branch is what this scenario tests",
+			Message: "the live AgentRun schema has no run-level error object (it is additionalProperties: false); " +
+				"a failed run is expressed through `status: failed` plus `stop_reason: error`, so remove `error:`",
 		})
 	}
 
@@ -348,6 +391,49 @@ func validateAgentRunTurn(
 		for gi := range p.Output.Grounding {
 			findings = append(findings,
 				s.ResolveRefs(fmt.Sprintf("%s.output.grounding[%d]", path, gi), &p.Output.Grounding[gi])...)
+		}
+		// AgentGrounding.confidence is low|medium|high|null. An off-enum value is
+		// emitted verbatim with a warning, as on /search.
+		findings = append(findings, validateGrounding(&outputProjection{Grounding: p.Output.Grounding}, path)...)
+	}
+	return findings
+}
+
+// validateAgentRunValues rejects a scripted usage or cost value the schema does
+// not allow: negative, NaN or infinite. A count that is not an integer never gets
+// here — it fails to decode into the projection's int fields, which is its own
+// load error.
+func validateAgentRunValues(path string, p *agentRunProjection) []scenario.Finding {
+	var findings []scenario.Finding
+	check := func(field string, v float64) {
+		if v >= 0 && !math.IsInf(v, 0) {
+			return
+		}
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityError,
+			Code:     codeAgentRunValueRange,
+			Path:     path + "." + field,
+			Message:  fmt.Sprintf("%s is %v; the schema requires a finite number >= 0", field, v),
+		})
+	}
+
+	if u := p.Usage; u != nil {
+		check("usage.agent_compute_units", u.AgentComputeUnits)
+		check("usage.searches", float64(u.Searches))
+		check("usage.emails", float64(u.Emails))
+		check("usage.phone_numbers", float64(u.PhoneNumbers))
+		for _, k := range slices.Sorted(maps.Keys(u.DataSources)) {
+			check("usage.data_sources."+k, float64(u.DataSources[k]))
+		}
+	}
+	if c := p.CostDollars; c != nil {
+		check("cost_dollars.total", c.Total)
+		check("cost_dollars.agent_compute", c.AgentCompute)
+		check("cost_dollars.search", c.Search)
+		check("cost_dollars.emails", c.Emails)
+		check("cost_dollars.phone_numbers", c.PhoneNumbers)
+		for _, k := range slices.Sorted(maps.Keys(c.DataSources)) {
+			check("cost_dollars.data_sources."+k, c.DataSources[k])
 		}
 	}
 	return findings

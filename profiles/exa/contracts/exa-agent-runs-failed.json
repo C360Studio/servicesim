@@ -1,13 +1,27 @@
 {
   "id": "agent_run_98547165f79d1c0cee06a20db5e7ad6f",
+  "object": "agent_run",
   "status": "failed",
   "stopReason": "error",
   "createdAt": "2026-01-01T00:00:00.000Z",
-  "error": {
-    "code": "AGENT_RUN_FAILED",
-    "message": "the run could not be completed"
+  "completedAt": "2026-01-01T00:00:00.000Z",
+  "request": null,
+  "output": {
+    "text": "",
+    "structured": null,
+    "grounding": []
+  },
+  "usage": {
+    "agentComputeUnits": 0,
+    "searches": 0,
+    "emails": 0,
+    "phoneNumbers": 0
   },
   "costDollars": {
-    "total": 0
+    "total": 0,
+    "agentCompute": 0,
+    "search": 0,
+    "emails": 0,
+    "phoneNumbers": 0
   }
 }

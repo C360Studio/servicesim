@@ -359,14 +359,13 @@ a finished run keeps returning its result. Nothing special-cases it; it is the e
         respond: {status: running}
       - respond:
           status: failed
-          error:
-            code: AGENT_RUN_FAILED
-            message: the run could not be completed
 ```
 
-`status: failed` with no `error` is a load-time **error** finding (`exa.agent_run.failed_without_error`), for the same
-reason `extended-surfaces.md` rejects a failed Agent status with no error object: a consumer's terminal-state handler
-is being tested, and handing it a failure with no reason tests nothing.
+A failed run is `status: failed` and nothing else: the stop reason derives to `error`. An earlier version of this
+design required an `error` object on a failed run and made its absence a load error
+(`exa.agent_run.failed_without_error`). The vendor's OpenAPI document (retrieved 2026-10-01) gives `AgentRun` no
+run-level error object and closes it with `additionalProperties: false`, so that finding is gone and declaring
+`error:` is now the load-time **error** `exa.agent_run.error.not_in_schema`.
 
 ### 2.3 Stuck pending
 
@@ -454,7 +453,7 @@ Each async entry has its own validator — `AgentRunValidator` for `exa_agent_ru
 
 | Finding | Severity | Condition |
 |---|---|---|
-| `exa.agent_run.failed_without_error` | error | `status: failed` with no `error` |
+| `exa.agent_run.error.not_in_schema` | error | an `error:` block on a turn — the live `AgentRun` schema has no run-level error |
 | `exa.agent_run.terminal_then_pending` | error | a non-terminal turn declared after a terminal one — a job that un-completes |
 | `exa.agent_run.script_exhausted` | warning | no unconditional final turn: poll N+1 gets `scenario.no_matching_turn` and a 404 the author did not intend |
 | `exa.agent_run.body_predicate_on_poll` | warning | `body_contains` or `body_json` on a turn of an async entry; a GET carries no body, so the predicate can never match |
@@ -1058,7 +1057,9 @@ v1 limitation rather than an oversight — a projection body alongside `turns:` 
 else."** Both vendors' create bodies carry more than that pair. Exa's `renderRunCreated`
 (`profiles/exa/agentrun_handler.go`) renders `{id, status: "queued", stopReason: null, createdAt}` — `stopReason`
 has no `omitempty` because the contract documents it as present-and-null while queued, not absent, and `createdAt`
-is `Scenario.BaseTime()`. Tavily's `handleResearchCreate` (`profiles/tavily/research.go`) renders
+is `Scenario.BaseTime()`. (Superseded 2026-10-01: the create now renders the whole `AgentRun` — ten required keys,
+`additionalProperties: false` — with placeholders for the keys it cannot script; see
+`profiles/exa/contracts/README.md`.) Tavily's `handleResearchCreate` (`profiles/tavily/research.go`) renders
 `{request_id, created_at, status: "pending", input, model, response_time: 0}` — `input` is echoed from the request
 body and `model` is echoed too, defaulting to `"auto"` when the request omits it. None of these extra fields is
 scenario-scriptable — they are still fully derived, from `BaseTime` and the request rather than from `turns:` —
@@ -1229,12 +1230,13 @@ const (
 
 - The status constant is spelled `cancelled` (two Ls), matching `contracts/exa/README.md` — the sketch's
   `"canceled"` would fail `exa.agent_run.status.unknown` if copied into a fixture.
-- `costDollars` is emitted only when the snapshot `IsTerminal()`, not on every response as the comment above
-  claims; a non-terminal run has spent nothing yet and carries none.
+- `costDollars` is a required key of the vendor's `AgentRun` schema, so it is emitted on every response — zero-filled
+  when the snapshot declares none. (This bullet first said it was terminal-only; superseded 2026-10-01.)
 - `stopReason` is derived, not scripted directly: `null` while queued or running, and at terminal it defaults to
   `schema_satisfied`/`error`/`cancelled` from the status unless the projection's own `stop_reason:` overrides it.
-- `usage: {agentComputeUnits, dataSources}` and `createdAt` (`Scenario.BaseTime()`) are rendered on every poll,
-  terminal or not — neither key exists on the sketch above.
+- `usage` and `createdAt` (`Scenario.BaseTime()`) are rendered on every poll, terminal or not — neither key exists
+  on the sketch above — and `output`, `completedAt`, `request` and `object` are too, since the vendor's `AgentRun`
+  schema requires them (2026-10-01).
 - There is no `omit_fields` key on the shipped `AgentRunProjection`; `OmitFields` above was never built.
 
 ### 4.5 Import edges
