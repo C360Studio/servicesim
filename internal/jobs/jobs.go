@@ -96,8 +96,11 @@ type Job struct {
 	// cannot create a record it can never look up.
 	Namespace string
 
-	// Entry is the scenario provider entry that minted this job, for example
-	// "exa_agent_runs". A poll resolves its turns from the same entry.
+	// Entry is the name of the scenario entry the create was served from — its
+	// route's Route.Entry, or the listener's own name when the route names none —
+	// for example "exa_agent_runs". A poll resolves the job only for a request
+	// served from that same name, and resolves its turns from that entry. A Store
+	// must return it from Lookup exactly as Create was given it.
 	Entry string
 
 	// LaneKey is the turn lane the create was served in, without its namespace
@@ -160,6 +163,8 @@ type Store interface {
 	Create(j Job) (Stats, error)
 
 	// Lookup returns the record for id in namespace, and whether one exists.
+	// The record carries the Entry that Create was given: a poll resolves a job
+	// only through that entry, so a store that drops it makes every poll a miss.
 	Lookup(namespace, id string) (Job, bool)
 
 	// StatsIn reports one namespace's occupancy against its bound.

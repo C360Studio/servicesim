@@ -324,10 +324,21 @@ func (x *Exchange) Has(key string) bool {
 // meant every entry after the first had its own turn_key and validation block
 // silently ignored, since both reach the scenario through here.
 func (x *Exchange) Entry() *scenario.ProviderEntry {
+	return x.Deps.Scenario.Provider(x.entryName())
+}
+
+// entryName is the name of the scenario entry this request is served from:
+// [Route.Entry] when the route names one, the listener's own name otherwise.
+//
+// It is the one derivation behind [Exchange.Entry] and behind [ResolveJob]'s
+// check that a job is polled through the entry that minted it. It returns a
+// name rather than the entry because Entry is nil for a scenario that declares
+// no such block, and a request is still served from that entry's name then.
+func (x *Exchange) entryName() string {
 	if x.Route.Entry != "" {
-		return x.Deps.Scenario.Provider(x.Route.Entry)
+		return x.Route.Entry
 	}
-	return x.Deps.Scenario.Provider(string(x.Provider))
+	return string(x.Provider)
 }
 
 // EntryFor returns the scenario provider entry named kind, and whether one

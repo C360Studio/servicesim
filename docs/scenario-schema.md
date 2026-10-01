@@ -595,6 +595,7 @@ journaled with `"attempt_index": -1`, which is how you tell the two apart:
 | `exa_agent_runs` / `tavily_research`: a poll that resolves a real job | yes — the job's own per-job lane, not the route's |
 | `exa_agent_runs` / `tavily_research`: `HEAD` on either route | **no** — it answers existence only and never reaches turn selection |
 | `exa_agent_runs` / `tavily_research`: a poll of an identifier this process never minted | **no** — `provider.ResolveJob` claims nothing before rendering the vendor's 404 |
+| `exa_agent_runs` / `tavily_research`: a poll of a job the **other** entry minted | **no** — a job resolves only through the entry that minted it, so this is the same miss as an unknown identifier |
 | `exa_agent_runs` / `tavily_research`: a poll whose identifier fails `provider.ValidJobID` | **no** — treated identically to an unknown identifier above; a malformed identifier is never this process's own |
 | A `stream_*` fault attempt, claimed by a request that did not itself ask to stream | yes — claimed at turn selection, before the handler has looked at `stream` on the wire; see [Streaming](#streaming-stream) |
 
