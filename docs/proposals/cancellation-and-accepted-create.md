@@ -237,8 +237,18 @@ race).
   before the first byte, so `Sim.Jobs()` is correct as soon as the client sees the error. The aborted journal entry may
   land later, so a test uses the existing bounded `AwaitRequests`.
 - **Evidence that already exists:** the journal's create entry (`fault_kind`, `aborted`, `attempt_index`, `fault_key`)
-  and `GET /__admin/jobs` (create index, lane), matched on namespace, lane and index. A read-only job listing is
-  evidence for a test controller, not a recovery API — it is not reachable by application code under test.
+  and `GET /__admin/jobs` (entry and create index), matched on namespace, entry and create index. The listing carries no
+  lane field and must not gain one: a lane key can embed a header-derived `turn_key` value, which could carry a
+  credential into an admin listing. A read-only job listing is evidence for a test controller, not a recovery API — it
+  is not reachable by application code under test.
+- **What `accepted` does and does not hide (found building U2).** `accepted` keeps the *job*; whether the *client* learns
+  the id depends on the shape. `close_before_headers`, `empty_body`, `invalid_json` and a status of 400 or above withhold
+  it, provided the profile's `FaultBody` is built from the attempt alone — a profile that registers none serves its own
+  rendered body, id included, under an error status. `truncate_body` sends a *prefix* of the rendered body, and the id is
+  the first key of both in-tree creates, so a default or large truncation delivers the whole id (a clean `200` when the
+  cut is at or past the body length); the id is withheld only when `truncate_after_bytes` is below the id's offset plus
+  length. The mechanism does not warn about that combination, since a warning would be a further exported finding code;
+  the documentation says it plainly and the tests pin it.
 - **Rejected:** a new `FaultKind` (one per failure shape, every switch over kinds must learn it, and `fault_kind`
   filters would miss it); a plan-level flag or index list (too coarse, and it drifts against `repeat:`).
 
