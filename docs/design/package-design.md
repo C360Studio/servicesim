@@ -3382,6 +3382,10 @@ Tavily — errors return `{"detail":{"error":"..."}}`, status 400 unless noted:
 | `tavily.country.requires_general_topic` | warning | `country` is documented as available only when `topic` is `general`. |
 | `tavily.auth.wrong_header` | warning | An `x-api-key` on Tavily is flagged; only Bearer authenticates. |
 
+> **Superseded in part (2026-10-01).** This holds for Sonar only. The Agent surface answers a validation failure with
+> `400` and an `ErrorInfo` body, because the specification documents no Agent `422`
+> ([`docs/audits/2026-10-01-perplexity-agent.md`](../audits/2026-10-01-perplexity-agent.md)).
+
 Perplexity — **every** field validation error returns 422 with the FastAPI `HTTPValidationError` shape, because that is
 the only error body Perplexity formally schematises:
 

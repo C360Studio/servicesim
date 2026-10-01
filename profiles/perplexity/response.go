@@ -252,13 +252,15 @@ const (
 )
 
 // contentPartTypeOutputText is the content-part discriminator for rendered text.
-// The generated contract does not enumerate ContentPartType's members; this
-// value is inferred from the surface's OpenAI-compatible naming and is recorded
-// as such in contracts/perplexity/provenance.yaml.
+// It is ContentPartType's only member (#/components/schemas/ContentPartType/enum
+// in the 2026-10-01 document; before that the contract did not enumerate it and
+// the value was inferred from the surface's OpenAI-compatible naming).
 const contentPartTypeOutputText = "output_text"
 
 // annotationTypeURLCitation is the annotation discriminator for a cited source.
-// Like contentPartTypeOutputText it is inferred rather than enumerated.
+// Annotation.type is a free string, not an enum; the only support for this value
+// is its description, "Annotation type (url_citation)"
+// (#/components/schemas/Annotation/properties/type).
 const annotationTypeURLCitation = "url_citation"
 
 // outputItem is one element of the Agent API's ordered output trace.

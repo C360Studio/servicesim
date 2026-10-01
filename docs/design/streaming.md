@@ -12,6 +12,10 @@
 > `response.reasoning.*` and `response.failed` events, Exa/Tavily streaming. `contracts/perplexity/README.md`
 > outranks this document on any wire field ([ADR 0002](../adr/0002-verified-contract-precedence.md)).
 >
+> **Superseded in part (2026-10-01).** `response.failed` is no longer "not shipped": a scripted `failed` turn now
+> streams it, and an Agent `reject` is a `400`, not a `422`
+> ([`docs/audits/2026-10-01-perplexity-agent.md`](../audits/2026-10-01-perplexity-agent.md)).
+>
 > ## SHIPPED (unit 3) — 2026-08-15
 >
 > **Phase 5 unit 3 has landed**: the Agent API's `GrammarTyped` grammar, on `perplexity_agent`. The projection
@@ -1878,6 +1882,12 @@ degradation pending a later unit's `response.failed`. The same status split feed
 count is 2, not `len(Deltas)+5`, and an `agentChunkCount` that ignored status overstated it — see the
 correction note at the end of this unit's banner.
 
+**Superseded in part (2026-10-01).** A `failed` turn is no longer degraded to `response.created` then
+`response.completed`: it streams `response.created` then a terminal `response.failed` carrying the turn's `error` at
+top level, which is the specification's own failure event. `cancelled` still degrades to `response.completed`.
+Ordering and termination around `response.failed` are simulator policy
+([`docs/audits/2026-10-01-perplexity-agent.md`](../audits/2026-10-01-perplexity-agent.md)).
+
 **Vendor-verified 2026-08-15**: the `ResponseStreamEvent` schema is retrievable from `openapi.json` (an earlier
 edition of this document and of the contract said it could not be — a fetch-tooling artefact, not a vendor gap)
 and is exactly the 14 members matching the `EventType` enum, discriminated by `type`, with a monotonically
@@ -2063,6 +2073,11 @@ string value is `perplexity.stream.agent_unsupported`; the Go identifier is unch
 this repository needed updating, only the wire value a consumer's journal assertion matches against. It now fires
 under exactly the same two-severity pattern `CodeStreamUnimplemented` already uses on Sonar — a warning under
 `warn`, an error (folded into the surface's 422) under `reject` — rather than unconditionally.
+
+**Superseded in part (2026-10-01).** On the Agent surface a validation failure, and therefore `reject`, is now a `400`
+with an `ErrorInfo` body, not a `422`: the specification documents no Agent `422`
+([`docs/audits/2026-10-01-perplexity-agent.md`](../audits/2026-10-01-perplexity-agent.md)). Sonar's `reject` is still
+a `422`.
 
 **`scenario.fault.stream_mismatch` and `scenario.fault.after_chunk.out_of_range` are load-time checks only where a
 provider's own `ValidateProjections` calls `ValidateStreamFaultMismatch` — today, only Perplexity's

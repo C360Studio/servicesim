@@ -11,6 +11,14 @@
 #     against its documentation_url. Refreshing one fixture moves only its own
 #     date; it does not imply every other entry was re-checked, and the test
 #     suite no longer requires them all to agree.
+# The 2026-10-01 refresh re-read the Agent surface only (docs/audits/
+# 2026-10-01-perplexity-agent.md): every Agent entry was re-dated except
+# perplexity-agent-stream.sse, whose documentation_url is a prose page that was
+# not re-read, and the Sonar and routing entries were not re-read at all, so
+# those keep their own dates. The top-level date moved with the re-dated
+# Agent entries, as contracts/README.md's
+# refresh procedure requires, so today it records the most recent re-check of
+# ANY entry, not a re-read of every route.
 #
 # kind:
 #   vendor-documented  the shape AND the values come from the vendor's own
@@ -19,6 +27,12 @@
 #                      re-verification (contracts/README.md "Keeping them
 #                      honest") may correct it from a real response — there is
 #                      no live contract canary.
+#
+# For an error golden the rule is: vendor-documented when the specification
+# documents both the STATUS and the envelope SHAPE for that operation;
+# simulator-chosen when it documents either not at all. The strings inside a
+# vendor-documented error body (code, type, message text) are Servicesim's
+# unless the specification quotes them, and the entry's note says which.
 #
 # Unlike Exa and Tavily, this provider's contract was generated directly from
 # https://docs.perplexity.ai/openapi.json rather than from prose pages, so
@@ -29,21 +43,28 @@
 # both surfaces are simulated.
 
 provider: perplexity
-verified: 2026-08-15
+verified: 2026-10-01
 
-# spec: records the document as fetched and hashed on 2026-08-16 for this
-# record (not reused from the original 2026-08-14/15 verification pass, which
-# read the same URL but never hashed it): 176,997 bytes, the same size
-# contracts/perplexity/README.md's 2026-08-15 fetch recorded. That file's
-# 2026-08-14 headline says 176,777 bytes; this record cannot establish
-# whether the 220-byte gap is a tooling artefact (one is already noted in
-# that file) or a real vendor edit, because nothing was hashed at either
-# earlier fetch. A refresh compares a new fetch's SHA256 against sha256
-# below: unchanged, move nothing; changed, treat it as vendor drift and
-# re-verify. api_version "1.0.0" below is info.version as read from THIS
-# 2026-08-16 fetch, applied to entries verified 2026-08-14 on the assumption
-# that the version has not changed since — the earlier pass never recorded
-# info.version itself.
+# spec: records the document as fetched and hashed on 2026-10-01: 208,564
+# bytes, info.version "1.0.0", sha256 below. The audit that compared it with
+# this bundle, the pointers it cites and how to re-fetch it are in
+# docs/audits/2026-10-01-perplexity-agent.md.
+#
+# The previous record (fetched and hashed 2026-08-16, retrieved before any
+# earlier fetch had been hashed) was 176,997 bytes with sha256
+# 95305c44ed99cf4e51463de55994b3bd26063194b78668d5e8753534ee3551ab. Those
+# bytes were not kept, so the vendor's change between the two cannot be
+# diffed; the audit compared this bundle's own README tables with the new
+# document instead. That 2026-08-16 record could not establish whether a
+# 220-byte gap against the 2026-08-14 headline's 176,777 bytes was a tooling
+# artefact or a real vendor edit, because nothing was hashed at either earlier
+# fetch.
+#
+# A refresh compares a new fetch's SHA256 against sha256 below: unchanged, move
+# nothing; changed, treat it as vendor drift and re-verify. api_version
+# "1.0.0" on each entry is info.version, which did not change between the two
+# fetches; the 2026-08-14 pass never recorded it, so entries verified then
+# carry it on the assumption it had not changed.
 # Exa and Tavily carry a spec: block too (contracts/exa/provenance.yaml,
 # contracts/tavily/provenance.yaml) — see contracts/README.md "Keeping them
 # honest" for why the hash is a drift signal there rather than the source
@@ -51,8 +72,8 @@ verified: 2026-08-15
 spec:
   url: https://docs.perplexity.ai/openapi.json
   version: "1.0.0"
-  sha256: 95305c44ed99cf4e51463de55994b3bd26063194b78668d5e8753534ee3551ab
-  retrieved: 2026-08-16
+  sha256: e0b92edf13c7596c5f830e7e61a30af2c534b878a7a505953bbd6829382c3981
+  retrieved: 2026-10-01
 
 goldens:
   - golden: perplexity-sonar-happy.json
@@ -165,15 +186,19 @@ goldens:
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
-    verified: 2026-08-14
+    verified: 2026-10-01
     note: >-
       SearchResult.id is an INTEGER - the one identifier in this repository that
       is not a string, not a source ID and not a URL. output[] order is fixed at
       search_results then message, mirroring the execution order the trace
-      represents. Field names are all from the specification; the enum VALUES
-      "output_text" (ContentPartType) and "url_citation" (Annotation.type) are
-      inferred from the OpenAI-compatible naming, as the generated contract does
-      not enumerate those members.
+      represents. Field names are all from the specification. The enum value
+      "output_text" is ContentPartType's only member
+      (#/components/schemas/ContentPartType/enum), confirmed by the 2026-10-01
+      document; it was inferred from OpenAI-compatible naming before that.
+      "url_citation" is not an enum: Annotation.type is a free string whose
+      description reads "Annotation type (url_citation)"
+      (#/components/schemas/Annotation/properties/type), which is the only
+      support for the value.
 
   - golden: perplexity-agent-empty.json
     endpoint: POST /v1/agent (alias POST /v1/responses)
@@ -181,11 +206,12 @@ goldens:
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
-    verified: 2026-08-14
+    verified: 2026-10-01
     note: >-
       Zero-result success. results and annotations are emitted as empty arrays
       rather than omitted so a consumer's array handling is always exercised.
-      Same ContentPartType inference as perplexity-agent-happy.json.
+      Same ContentPartType and Annotation.type provenance as
+      perplexity-agent-happy.json.
 
   - golden: perplexity-agent-failed.json
     endpoint: POST /v1/agent (alias POST /v1/responses)
@@ -193,12 +219,15 @@ goldens:
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
-    verified: 2026-08-14
+    verified: 2026-10-01
     note: >-
       A terminal failure reported inside a 200 body: status is the Status enum
       member "failed" and error is the specification's ErrorInfo. This is how a
       consumer's terminal-state handling is exercised without an HTTP-level
       fault, and a consumer that only branches on the status code misses it.
+      Delivering a failed run as HTTP 200 is simulator policy: the
+      specification states no HTTP status for a failed run, and does not say a
+      failed status implies error is present.
 
   - golden: perplexity-agent-400.json
     endpoint: POST /v1/agent (alias POST /v1/responses)
@@ -206,33 +235,32 @@ goldens:
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
-    verified: 2026-08-14
+    verified: 2026-10-01
     note: >-
-      createAgent documents 400 with an ErrorInfo body
-      (#/paths/~1v1~1agent/post/responses/400), so the {"error": {...}}
-      envelope is the specification's, not an inference. Only message is
-      required. The code and type VALUES, and the default message text
-      ("Bad Request", http.StatusText), are Servicesim's; the specification
-      does not enumerate them. This is the body a scripted fault attempt of
-      status 400 sends; perplexity-agent-400-validation.json is the body a
-      request that fails validation receives.
+      createAgent documents the 400 status and an ErrorInfo body
+      (#/paths/~1v1~1agent/post/responses/400), so the status and the
+      {"error": {...}} envelope are the specification's, not an inference.
+      Only message is required. The code and type VALUES, and the default
+      message text ("Bad Request", http.StatusText), are Servicesim's; the
+      specification does not enumerate them. This is the body a scripted fault
+      attempt of status 400 sends; perplexity-agent-400-validation.json is the
+      body a request that fails validation receives.
 
   - golden: perplexity-agent-400-validation.json
     endpoint: POST /v1/agent (aliases POST /v1/responses, POST /responses)
     status: 400
-    kind: simulator-chosen
+    kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
-    verified: 2026-08-15
+    verified: 2026-10-01
     note: >-
-      A request that fails validation. Labelled simulator-chosen because the
-      header's vendor-documented means the VALUES come from the specification
-      too, and the message text here is Servicesim's apart from one quoted rule. createAgent documents only 200 and 400
+      A request that fails validation. createAgent documents only 200 and 400
       (#/paths/~1v1~1agent/post/responses) and no Agent operation documents
       422, so this is HTTP 400 with ErrorInfo, replacing the FastAPI
       HTTPValidationError 422 the earlier golden perplexity-agent-422.json
-      pinned. Vendor-pinned: the status and the {"error": {...}} envelope, and
-      the "validation failed: <message>" wording, which
+      pinned. Same kind and same rule as perplexity-agent-400.json: the status
+      and the {"error": {...}} envelope are the specification's. Also
+      vendor-pinned: the "validation failed: <message>" wording, which
       #/components/schemas/ResponsesRequest/properties/max_output_tokens
       quotes for exactly one rule ("validation failed: max_output_tokens is
       required when using Anthropic models."). Simulator-chosen: applying that
@@ -246,7 +274,7 @@ goldens:
     kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
-    verified: 2026-08-14
+    verified: 2026-10-01
     note: >-
       No Agent operation documents 401 (createAgent documents only 200 and
       400). The status is the ordinary HTTP answer to a missing or wrong bearer
@@ -260,7 +288,7 @@ goldens:
     kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
-    verified: 2026-08-14
+    verified: 2026-10-01
     note: >-
       Undocumented for the Agent API, see perplexity-agent-401.json. Reached
       only through a scripted fault attempt; ErrorInfo body by extrapolation,
@@ -272,7 +300,7 @@ goldens:
     kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
-    verified: 2026-08-14
+    verified: 2026-10-01
     note: >-
       Undocumented for the Agent API, see perplexity-agent-401.json. Reached
       only through a scripted fault attempt; ErrorInfo body by extrapolation,
@@ -284,7 +312,7 @@ goldens:
     kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
-    verified: 2026-08-14
+    verified: 2026-10-01
     note: >-
       Undocumented for the Agent API, see perplexity-agent-401.json. Reached
       only through a scripted fault attempt; ErrorInfo body by extrapolation,
@@ -402,7 +430,12 @@ goldens:
       gap where an added/done pair for it might otherwise be expected. The
       two response headers this golden's request would receive on the real
       wire are the same simulator-chosen pair perplexity-sonar-stream.sse
-      already carries, for the same reason.
+      already carries, for the same reason. The 2026-10-01 openapi.json
+      (sha256 in this file's spec: block) was re-read for this golden's
+      vendor-pinned claims: the 14-member EventType enum and every event's
+      required properties are unchanged. This entry's own verified date stays
+      2026-08-15 because its documentation_url, the prose page, was not
+      re-read. The failure form is pinned by perplexity-agent-stream-failed.sse.
 
   - golden: perplexity-agent-stream-failed.sse
     endpoint: POST /v1/agent (aliases POST /v1/responses, POST /responses), GrammarTyped, status failed
@@ -410,7 +443,7 @@ goldens:
     kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
-    verified: 2026-08-15
+    verified: 2026-10-01
     note: >-
       How a scripted turn with status failed is streamed. Vendor-pinned
       (#/components/schemas/ResponseFailedEvent): the failure event is
