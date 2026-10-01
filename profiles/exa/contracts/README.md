@@ -14,8 +14,8 @@ is no live contract canary).
 - <https://exa.ai/docs/reference/answer>
 - <https://exa.ai/docs/reference/error-codes>
 - <https://apis.io/apis/exa-ai/exa-ai-search-api/>
-- <https://exa.ai/docs/exa-spec.yaml> — the vendor's own OpenAPI spec; source of record for `/findSimilar` and
-  used to cross-check `/contents`.
+- <https://exa.ai/docs/exa-spec.yaml> — the vendor's own OpenAPI spec; source of record for `/findSimilar` and,
+  since 2026-10-01, for `/agent/runs` (see that section), and used to cross-check `/contents`.
 
 ## Endpoints
 
@@ -25,10 +25,10 @@ is no live contract canary).
 | `POST` | `/answer` | canonical, simulated | Separate documented endpoint at <https://exa.ai/docs/reference/answer>. Same auth. Request: query (string, required), stream, text, outputSchema. Response: answer (string\|object), citations[] (title,url,publishedDate,author,id,image,text), requestId, costDollars. The plan doc does not mention /answer at all. |
 | `POST` | `/contents` | canonical, verified 2026-08-15, simulated | See the "POST /contents" section below. |
 | `POST` | `/findSimilar` | canonical per the live OpenAPI spec, DEPRECATED by the vendor, verified 2026-08-15, simulated | See the "POST /findSimilar" section below. The vendor's own OpenAPI spec documents this route in full and marks it `deprecated: true`, steering callers to `/search` instead; a prose reference page for it 404s, which is why an earlier pass wrongly recorded "no documentation found". |
-| `POST` | `/agent/runs` | canonical, simulated | Create-then-poll create route. See the "Exa Agent API" section at the end of this file. |
-| `GET` | `/agent/runs/{id}` | canonical, simulated | Poll route. |
-| `HEAD` | `/agent/runs/{id}` | canonical, simulated | Existence check; claims no turn or attempt. |
-| — | `/agent/runs` (list), `/agent/runs/{id}/events`, `/agent/runs/{id}/cancel`, `/agent/runs/{id}` (`DELETE`) | NOT SIMULATED | On the backlog. See the "Exa Agent API" section at the end of this file. |
+| `POST` | `/agent/runs` | canonical per the live OpenAPI spec, verified 2026-10-01, simulated | Create-then-poll create route; answers `200`, the only documented success status. See the "POST /agent/runs" section below. |
+| `GET` | `/agent/runs/{id}` | canonical per the live OpenAPI spec, verified 2026-10-01, simulated | Poll route. |
+| `HEAD` | `/agent/runs/{id}` | simulator affordance, simulated | The spec documents no `head` operation on this path. Existence check; claims no turn or attempt. |
+| — | `/agent/runs` (list), `/agent/runs/{id}/events`, `/agent/runs/{id}/cancel`, `/agent/runs/{id}/stop`, `/agent/runs/{id}` (`DELETE`) | NOT SIMULATED | Documented by the spec; on the backlog. See the "POST /agent/runs" section below. |
 
 ## Authentication
 
@@ -336,119 +336,246 @@ The README's existing one-line /answer row is directionally right but incomplete
 - IN-STREAM ERRORS BREAK THE ENVELOPE RULE. A fault injected mid-stream must serialise as {"tag":"ERROR","payload":{"error":{"code":400,"message":"..."},"requestId":"..."}} on an already-200 text/event-stream response — nested error object, numeric code, and `tag` holding the literal "ERROR" rather than a value from the documented tag enum. Reusing the flat {requestId,error,tag} serialiser here is the single most likely simulator bug on this surface.
 - SIMULATE 501 / UNABLE_TO_GENERATE_RESPONSE. It is documented as /answer-only and is the 'model could not answer' path that has no /search analogue. A research product's error handling is incomplete without it, and it must NOT be reachable on /search in the simulator.
 - REQUEST VALIDATION MUST DIVERGE FROM /search. Reject or ignore the /search-only fields — a request with type/numResults/includeDomains/contents against /answer should not be validated by the /search decoder. Treat model, systemPrompt and userLocation as accept-and-ignore (SDK sends them; the OpenAPI schema does not list them), and do not echo them.
-- DO NOT IMPLEMENT /research. No vendor doc page exists for it; only a third-party page claims it was retired in favour of the Agent API. If an agentic surface is ever needed, the real one is the async POST /agent/runs + GET /agent/runs/{id} poll pattern, which is a fundamentally different lifecycle (create returns immediately, output only at terminal status) and must not be folded into /answer's synchronous shape.
+- DO NOT IMPLEMENT /research. No vendor doc page exists for it; only a third-party page claims it was retired in favour of the Agent API. If an agentic surface is ever needed, the real one is the async POST /agent/runs + GET /agent/runs/{id} poll pattern, which is a fundamentally different lifecycle (create returns immediately and the run is polled to a terminal status) and must not be folded into /answer's synchronous shape.
 
 ## POST /agent/runs and GET /agent/runs/{id}
 
-Verified against live vendor documentation on **2026-08-15**.
+Verified against the vendor's own OpenAPI document on **2026-10-01**. Every classification below is one of **VERIFIED**
+(read from the spec), **SIMULATOR-POLICY** (the spec fixes a shape but not a value, and Servicesim chose one),
+**INFERENCE** (a reading, with its evidence stated) or **UNVERIFIED** (not read, not simulated, not to be invented).
+Line numbers are of the fetch below.
 
-Read from:
+- <https://exa.ai/docs/exa-spec.yaml> — `info.version` 2.0.0, retrieved 2026-10-01, sha256
+  `cbb9a1429456270527cec49cb495ec00671dd2b7702c411a168988e22222416d`. Operations `createAgentRun` (line 814) and
+  `getAgentRun` (line 976); schemas `CreateAgentRunRequest` (4754), `AgentRun` (5793) and `AgentErrorResponse` (6044),
+  with everything they reference.
+- The full field-by-field record — each consumed field's classification after the fixes, how to re-fetch, and what
+  changed against the profile — is [`docs/audits/2026-10-01-exa-agent.md`](../../../docs/audits/2026-10-01-exa-agent.md).
 
-- <https://exa.ai/docs/reference/agent-api/overview> — lifecycle, status and stopReason enums, `output` shape
-- <https://exa.ai/docs/reference/agent-api-guide> — request example, run-object top-level fields, `usage`
-- <https://exa.ai/docs/reference/agent-api/examples> — request fields, `budget`, `previous_run_id`
-- <https://github.com/exa-labs/exa-js> — `costDollars.dataSources` and `usage.dataSources`
+**The spec is the authority, including over this section's own earlier text.** This section was first written
+(2026-08-15) from the vendor's prose pages, and the spec disagrees with several of its claims: `max` is not an
+`effort` value, run ids carry an `agent_run_` prefix, the create answers 200 and not 201, `costDollars.search` is a
+required number, `output` exists on every run, `createdAt` is a date-time, the grounding shape is known, and the
+request fields are camelCase throughout. Each is corrected in place below.
 
-Note the documentation host moved: `docs.exa.ai/reference/*` now 307-redirects to `exa.ai/docs/reference/*`. The
-older host still resolves, so a URL recorded before this date is not wrong, only indirect.
+The spec has **no example bodies**. Where it fixes a key's presence and type but not its value, that value is
+SIMULATOR-POLICY and no vendor guarantee — and this applies above all to billing and metering.
 
 ### Lifecycle
 
-`POST /agent/runs` returns immediately with a run in a non-terminal status. The client then polls
-`GET /agent/runs/{id}` until terminal. Output exists **only at a terminal status** — that is the whole reason this
-surface needs a scenario shape a single request/response projection cannot express.
+`POST /agent/runs` returns the run object immediately; the only documented success status is `200`
+(`createAgentRun`, line 831). The client then polls `GET /agent/runs/{id}` until the run is terminal. The run object
+has the same ten keys on every status (below), so `output`, `usage` and `costDollars` exist on a queued or running
+run too.
 
 ```text
 queued -> running -> completed | failed | cancelled
 ```
 
-`completed`, `failed` and `cancelled` are terminal. The vendor also documents
-`GET /agent/runs`, `GET /agent/runs/{id}/events`, `POST /agent/runs/{id}/cancel` and `DELETE /agent/runs/{id}`;
-none of those are in scope here and none are verified below.
+`completed`, `failed` and `cancelled` are terminal (`AgentRunStatus`, line 5840). The spec also documents list,
+`/events`, `/cancel`, `/stop` and `DELETE` operations; none of those are simulated and none are described here.
 
 ### Request fields (POST /agent/runs)
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `query` | `string` | yes | The research task. |
-| `outputSchema` | `object` | no | JSON Schema shaping `output.structured`. **camelCase** — see the naming conflict below. |
-| `effort` | `string` | no | Enum: `minimal`, `low`, `medium`, `high`, `xhigh`, `auto`, `max`. `max` is beta and requires a beta header. |
-| `input` | `object` | no | Carries `data`, `exclusion`, or both. Sub-shapes NOT verified. |
-| `previous_run_id` | `string` | no | Continues from a prior run. Note the snake_case, unlike `outputSchema`. |
-| `data_sources` | — | no | Exa Connect premium partners. Shape NOT verified. |
-| `budget` | `object` | no | Documented key: `maxCostDollars`. Other keys NOT verified. |
-| `betas` | — | no | Beta feature tokens. Shape NOT verified. |
+`CreateAgentRunRequest`, line 4754. It has no `additionalProperties` keyword, so whether the live API rejects an
+unknown key is UNVERIFIED; the profile accepts and ignores them.
+
+| Field | Type | Required | Spec | Servicesim |
+|---|---|---|---|---|
+| `query` | `string` | yes | `minLength: 1` (4757) | rejected when absent, non-string or blank (blank is stricter than the spec) |
+| `systemPrompt` | `string` | no | 4761 | accepted, ignored |
+| `effort` | `string` | no | closed enum, default `auto` (`AgentEffort`, 4819) | enum enforced: a 400 outside it, `null` and non-strings included |
+| `input` | `object` | no | `{data[], exclusion[]}` of JSON object records (4766) | accepted, ignored |
+| `outputSchema` | `object\|null` | no | camelCase (4790); draft-07, 2019-09 or 2020-12 via `$schema` | accepted, ignored |
+| `previousRunId` | `string` | no | `AgentRunId`; "must belong to the same team" (4799) | accepted, ignored |
+| `metadata` | `map<string,string>` | no | 4802 | accepted, ignored |
+| `dataSources` | `array` | no | `maxItems: 5` of `{provider}` over nine providers (4809, 4837-4857) | accepted, ignored |
+| `budget` | `object` | no | `AgentBudget` (4858) | type and range of the two limits enforced, below |
+
+`effort` values, in the spec's order: `minimal`, `low`, `medium`, `high`, `xhigh`, `auto`, `ultra`. `max` is **not** a
+member. An earlier reading of the prose pages listed it (and a beta header for it) and left `ultra` out; the spec has
+it the other way round. The spec states the enum but not the live API's response to a violation, so rejecting with a
+400 (`exa.effort.invalid`, whose message quotes the offending value as JSON — `null`, `"max"`) is strict-request
+policy (house rule 5), not a vendor guarantee.
+
+`budget` is `{maxCostDollars, maxDurationSeconds}`. The ranges are stated in the spec's prose only, not as
+`minimum`/`maximum` keywords: `maxCostDollars` is a number that "accepts $1–$100" (line 4863) and
+`maxDurationSeconds` an integer that "accepts 300–10,800" (line 4866), the latter ending a run with
+`stopReason: "time_limit_reached"`. The same prose says `maxCostDollars` "applies only to `auto` and `ultra`" and
+`maxDurationSeconds` "only to `ultra`". What the live API answers to a violation is UNVERIFIED, so the enforcement
+below is **SIMULATOR-POLICY**, including how it reads "applies only to":
+
+- A member of the wrong type — a non-number `maxCostDollars`, a non-integer `maxDurationSeconds`, a non-object
+  `budget` — is always a 400 (`exa.request.field_type`), whatever the effort.
+- An out-of-range value is a 400 (`exa.budget.maxCostDollars.range`, `exa.budget.maxDurationSeconds.range`) only when
+  the limit applies to the request's effort: `maxCostDollars` on `auto` and `ultra`, `maxDurationSeconds` on `ultra`
+  alone, and an omitted `effort` is the default, `auto`. Under any other effort the limit has no meaning, so the
+  request is served unchanged and the same code is a warning finding in the journal.
+- The out-of-range message formats the offending number as sent (`1e+300`, not an integer conversion), so the bytes do
+  not depend on the platform.
+
+Two header parameters exist: `Accept` (`application/json` or `text/event-stream`, line 11173) and `Exa-Beta`
+(comma-separated beta tokens, line 11183). Neither is read: a streamed create (`AgentRunEvent`, line 840) is not
+simulated and no beta token is enforced. Both are UNVERIFIED beyond their declarations.
 
 ### Response fields (the run object, returned by both routes)
 
-| Field | Type | Notes |
-|---|---|---|
-| `id` | `string` | The identifier a poll presents. Format NOT verified. |
-| `status` | `string` | `queued`, `running`, `completed`, `failed`, `cancelled`. |
-| `stopReason` | `string\|null` | `null` while queued or running. Terminal: `schema_satisfied`, `budget_reached`, `error`, `cancelled`. |
-| `createdAt` | — | Type and format NOT verified. |
-| `request` | `object` | Echo of the submitted request. Shape NOT verified. |
-| `output` | `object\|null` | Present at terminal status. |
-| `output.text` | `string` | Natural-language answer or summary. |
-| `output.structured` | `object\|null` | Shaped by `outputSchema`; `null` when no schema was supplied. |
-| `output.grounding` | — | Citations for text or structured fields. Shape NOT verified. |
-| `usage` | `object` | Documented keys: `agentComputeUnits`, `dataSources`. |
-| `costDollars` | `object` | The run's cost breakdown. Documented key: `dataSources`. **See below.** |
+`AgentRun`, line 5793: ten required keys, `additionalProperties: false`. The profile renders these ten keys, in the
+order below, on every response. A snapshot whose scenario uses `extra_fields` also carries the extras and is keyed
+alphabetically, because `provider.Render` re-sorts a body that merges extras; that is the one case where neither the
+key set nor the order is the schema's. `profiles/exa/agentrun_envelope_test.go` pins the key sets and the value rules
+named in the tables below (closed enums, required nullability, finite `>= 0` numbers, integer counters); it does not
+validate a body against the whole schema.
+
+| Field | Type | Spec | Servicesim |
+|---|---|---|---|
+| `id` | `string` | `AgentRunId`: pattern `^[A-Za-z0-9_.:-]+$`, 1-200, "new run IDs are returned with the `agent_run_` prefix" (4831-4836) | `agent_run_` plus 32 hex characters, derived from the scenario seed (SIMULATOR-POLICY for the suffix) |
+| `object` | `string` | `const: agent_run` (5798) | the constant |
+| `status` | `string` | the five-value enum (5840) | as scripted |
+| `stopReason` | `string\|null` | six values, `null` while queued or running (5803, 5848) | `null` until terminal; a terminal status derives one unless scripted (SIMULATOR-POLICY, below) |
+| `createdAt` | `string` | `date-time` (5808) | `time.base`, RFC 3339 with milliseconds |
+| `completedAt` | `string\|null` | `date-time` or `null` (5812) | `null` until terminal, then `time.base` (SIMULATOR-POLICY) |
+| `request` | `object\|null` | `AgentRunRequest`, "canonicalized request fields stored with the run" (5818, 5857) | always `null` (SIMULATOR-POLICY, below) |
+| `output` | `object` | `AgentRunOutput`, required, non-nullable (5822, 5921) | scripted, else the empty placeholder |
+| `usage` | `object` | `AgentUsage`, required, non-nullable (5824, 5978) | scripted, else zeros |
+| `costDollars` | `object` | `AgentCostDollars`, required, non-nullable (5826, 6009) | scripted, else zeros |
+
+`stopReason` members: `schema_satisfied`, `budget_reached`, `time_limit_reached`, `stopped`, `error`, `cancelled`.
+
+| Nested field | Type | Spec | Servicesim |
+|---|---|---|---|
+| `output.text` | `string` | required (5924, 5938) | always present, `""` when unscripted |
+| `output.structured` | `JsonValue\|null` | required; `null` when no schema was provided (5927) | always present, `null` when unscripted |
+| `output.grounding` | `array` | required (5932, 5940) | always present, `[]` when unscripted |
+| `output.grounding[].field` | `string` | required (5945) | as scripted |
+| `output.grounding[].citations` | `array` | required (5948) | always present, `[]` when empty |
+| `output.grounding[].confidence` | `low\|medium\|high\|null` | optional (5952) | present only when scripted |
+| `…citations[].url` | `string` | required, `format: uri` (5968) | resolved from the corpus |
+| `…citations[].title` | `string` | optional (5972) | resolved from the corpus |
+| `usage.agentComputeUnits` | `number` | required, `>= 0` (5981) | scripted, else `0` |
+| `usage.searches`, `.emails`, `.phoneNumbers` | `integer` | required, `>= 0` (5984-5992) | scripted, else `0` |
+| `usage.dataSources` | `map<string,integer>` | optional; only providers with non-zero usage (5993, 6001) | present only when scripted and non-empty |
+| `costDollars.total` | `number` | required, `>= 0` (6012) | scripted, else `0` |
+| `costDollars.agentCompute`, `.search`, `.emails`, `.phoneNumbers` | `number` | required, `>= 0` (6015-6026) | scripted, else `0` |
+| `costDollars.dataSources` | `map<string,number>` | optional; only providers with non-zero usage (6027, 6036) | present only when scripted and non-empty |
+
+A citation is `{url, title}` and **nothing else**: an earlier version of the profile also emitted an `id`, which the
+schema (`additionalProperties: false`, line 5977) does not allow.
+
+#### Decision: `costDollars.search` is a number on this surface
+
+The earlier version of this file recorded that `costDollars.search` was *not confirmed* on this surface and
+deliberately omitted it, reading the agent's `costDollars` as a superset of the shared `CostDollarsOutput`. The spec
+shows otherwise: `AgentCostDollars` is its own schema, `search` is a plain **number** in it and is required (lines
+6018 and 6032), and it is not the `{neural}` object `/search` carries (`CostDollarsOutput.search`, line 7252). The
+decision is reversed. The earlier "recorded inference" that `total` is emitted is now VERIFIED by the same schema
+(line 6012), and its evidence chain is no longer needed.
+
+#### Simulator policy where the spec is silent
+
+None of the following is a claim about what the live service sends:
+
+- **Placeholders.** A zero (or empty value) that the scenario did not script is a **placeholder for a required key**,
+  not a claim about billing or metering. The spec marks `stopReason`, `completedAt` and `request` as the nullable
+  keys and `output`, `usage` and `costDollars` as non-nullable, which suggests the live API sends zero-valued
+  objects on a run that has not finished — that is an INFERENCE from the nullability marking, and the runtime is
+  UNVERIFIED. The cost components are not derived from, and need not sum to, `total`. A scripted value always wins
+  over a placeholder, on any snapshot that declares it.
+- **`completedAt`** is `null` while queued or running and `time.base` once terminal. There is no elapsed-time model, so
+  a run never takes any time and `createdAt` equals `completedAt`.
+- **`request`** is `null`, which the schema permits. Echoing the request would mean retaining the create body, and the
+  job record is immutable and body-free by design (house rule 4 would also apply: redact before retention). The echo
+  is deferred.
+- **`stopReason` derivation.** The spec pairs no status with a reason. A terminal run derives `error` for `failed`,
+  `cancelled` for `cancelled` and `schema_satisfied` otherwise, unless the scenario scripts one.
+- **Run-level `error`.** `AgentRun` has no `error` key and is `additionalProperties: false` (line 5839), so a failed
+  run is `status: failed` plus `stopReason: error` and nothing more. The earlier `{code, message}` object was
+  Servicesim's own construction, and a scenario that still declares one is a load error
+  (`exa.agent_run.error.not_in_schema`).
+- **`extra_fields`** can still add keys outside the schema, on purpose: it exists so a consumer can prove it tolerates
+  additions (house rule 5), which the schema itself does not. Such a snapshot is keyed alphabetically (above); the
+  create body carries none.
+- **HEAD `/agent/runs/{id}`.** The spec defines `get` (line 977) and `delete` (line 1065) on that path and no `head`.
+  The route is a Servicesim existence check that claims no poll; it carries `x-request-id` for uniformity.
+- **A run id the process never minted** is a 404 `RUN_NOT_FOUND`, whatever its shape. The spec lists a 400 for `GET`
+  (line 1001) and `AgentRunId` permits `.` and `:`, which the profile's id check does not; which one a malformed id
+  gets from the live API is UNVERIFIED.
+
+### Error bodies
+
+Every agent operation returns `AgentErrorResponse` on failure (for example lines 851, 860, 869 and 878 on the create,
+and 1009 through 1045 on the poll):
+
+```json
+{"error": {"type": "NOT_FOUND", "code": "RUN_NOT_FOUND", "message": "Run not found"}}
+```
+
+`type` is one of `INVALID_REQUEST`, `AUTHENTICATION_ERROR`, `RATE_LIMIT_ERROR`, `NOT_FOUND`, `SERVER_ERROR`; `code` is
+one of `INVALID_REQUEST`, `TEAM_NOT_FOUND`, `RUN_NOT_FOUND`, `PREVIOUS_RUN_NOT_FOUND`, `PREVIOUS_RUN_NOT_COMPLETED`,
+`CONCURRENCY_LIMIT_REACHED`, `INVALID_OUTPUT_SCHEMA`, `INVALID_DATA_SOURCE`, `TIMEOUT`, `SERVER_ERROR`; all three keys
+are required and extra keys are allowed (lines 6052-6083). This is **not** the flat `{requestId, error, tag}` body
+the other Exa routes use, which is unchanged.
+
+`createAgentRun` documents 200, 400, 401, 429 and 500; `getAgentRun` documents 200, 400, 401, 404, 429 and 500. The
+spec **does not pair a `type` and `code` with a status**. The pairing below is **INFERENCE** from the enum names and
+the response descriptions, and the messages are the response descriptions reused:
+
+| Status | `type` | `code` | `message` |
+|---|---|---|---|
+| 400 | `INVALID_REQUEST` | `INVALID_REQUEST` | the rejecting finding's text |
+| 401 | `AUTHENTICATION_ERROR` | `TEAM_NOT_FOUND` | "Team context or authentication was not found" |
+| 404 | `NOT_FOUND` | `RUN_NOT_FOUND` | "Run not found" |
+| 429 | `RATE_LIMIT_ERROR` | `CONCURRENCY_LIMIT_REACHED` | "Agent run concurrency limit reached" |
+| 500 | `SERVER_ERROR` | `SERVER_ERROR` | "Server error" |
+
+Statuses the spec does not document for these operations (402, 405, 413, 422, 501, 503, …) are SIMULATOR-POLICY: any
+other 4xx is `INVALID_REQUEST`/`INVALID_REQUEST`, any other 5xx `SERVER_ERROR`/`SERVER_ERROR`, and the job-bound 503
+keeps its remedy as the message. The codes `PREVIOUS_RUN_NOT_FOUND`, `PREVIOUS_RUN_NOT_COMPLETED`,
+`INVALID_OUTPUT_SCHEMA`, `INVALID_DATA_SOURCE` and `TIMEOUT` exist in the enum and are not simulated: no check the
+profile makes corresponds to them.
+
+**Scenario faults.** A fault attempt carries the flat envelope's `error:` and `tag:`. On the agent routes `error:`
+becomes `message` and `tag:` becomes `code`, verbatim — a code outside the enum is allowed on purpose — while `type`
+follows the status. An attempt's own `body:` wins outright. This mapping is Servicesim's.
+
+**`x-request-id`.** The spec documents the header on every status of every agent operation (line 11084); agent bodies
+carry no `requestId`, so the header is the only request id a response has. Its value uses the same deterministic
+derivation as `requestId` on the other routes, per call once an attempt is claimed: a create's id follows the create
+lane's call index, and a poll's also folds in the run id, so two polls of one run differ and so do the first polls of
+two runs. Two rejections in one lane, and a HEAD, carry the unclaimed id, which has no call index. Whether the live
+header is per call is UNVERIFIED. The header is **absent** on a refusal the framework renders without a handler's
+response — an unrouted path, a method the mux refuses, a handler panic — because a profile's error renderer returns a
+body only. The unrouted and method refusals keep the flat body; a panic on an agent route answers the nested body,
+just without the header.
+
+### Findings this profile raises on the agent routes
+
+All of these are Servicesim's, not the vendor's; the schema and conditions are in `docs/scenario-schema.md`.
+
+- **At request time** (`POST /agent/runs`): `exa.effort.invalid` (error), `exa.budget.maxDurationSeconds.range` and
+  `exa.budget.maxCostDollars.range` (an error when the limit applies to the effort, otherwise a warning — see
+  "Request fields").
+- **At scenario load**: `exa.agent_run.error.not_in_schema` (error: a run-level `error:`),
+  `exa.agent_run.value.range` (error: a negative or non-finite `usage` or `cost_dollars` value, `data_sources`
+  included), `exa.agent_run.fault_tag.unknown` (warning: a `tag:` outside the ten `code` values, still rendered
+  verbatim) and `exa.output.grounding.confidence.unknown` (warning).
 
 ### What is NOT verified, and must not be invented
 
-The vendor documentation confirms these fields exist without showing a complete example run object, so the
-following are open and a simulator must not assert them from memory:
-
-1. **`costDollars`' nested shape on this surface — see the recorded inference below.** No vendor page prints a
-   complete agent-run JSON body, so the exact shape is derived rather than read. It is written down as an inference
-   with its evidence rather than presented as verified.
-2. **`createdAt`'s type and format.** `/search` has no analogue; do not assume the `publishedDate` ISO-8601 shape.
-3. **The `id` format.** No example identifier appears. `/search`'s `requestId` is 32 lowercase hex, but nothing
-   verifies that this surface matches it.
-4. **`output.grounding`, `input`, `data_sources`, `betas` and `request` sub-shapes.**
-5. **`outputSchema` versus `output_schema`.** The guide's example JSON and the overview's prose both use
-   `outputSchema`; the examples page's prose says `output_schema`. Two sources to one, and the one that disagrees
-   is prose rather than a code sample, so **camelCase is recorded** — but it is a documentation conflict rather
-   than a settled fact, and a consumer sending snake_case should be accepted rather than rejected until it is.
-
-### Recorded inference: `costDollars.total` is emitted on terminal runs
-
-**Status: INFERRED, not read from a vendor example. Recorded 2026-08-15.** Servicesim emits it; this section is the
-reason, so a future reader can re-open the decision against evidence rather than re-derive it.
-
-The evidence chain, strongest first:
-
-1. The Agent API documentation states that completed runs include `costDollars`, described as **"the run's cost
-   breakdown"**. The field's presence on this surface is verified; only its interior is not.
-2. `CostDollarsOutput` is a **shared schema component** in Exa's OpenAPI specification, used by `/search`,
-   `/answer` and `/contents`. Within it, `total` is the aggregate float and is required. Two of those three are
-   independently verified in this file already (`/search` above, `/answer` in its own section).
-3. Exa's official JS SDK reads `completedRun.costDollars?.dataSources`, confirming the agent's `costDollars` is a
-   real object with per-operation breakdown keys — the same shape family as `costDollars.search` elsewhere.
-
-An aggregate-plus-breakdown object that leads with `total` across every other endpoint, on an orchestration surface
-whose cost is by definition the sum of the operations it ran, is a strong inference. It is not a reading.
-
-**The shape is a SUPERSET of `CostDollarsOutput`, not a copy**, and the distinction matters for what a simulator
-emits. `dataSources` is confirmed on agent runs and does not appear in `CostDollarsOutput`; `search` appears in
-`CostDollarsOutput` and is **not** confirmed on agent runs. So:
-
-| Key | On agent runs | Basis |
-|---|---|---|
-| `costDollars.total` | emitted | inferred, this section |
-| `costDollars.dataSources` | emitted only when a scenario declares it | verified, JS SDK |
-| `costDollars.search` | **not emitted by default** | not confirmed on this surface — do not copy it across from `/search` |
-
-**Why emit an inferred field at all**, when house rule 1 says never write a wire field from memory: this is not
-memory, it is a documented inference with a citation trail, and the cost of deferring is asymmetric. Adding a cost
-key *after* adopters hold golden files rewrites the bytes of every one of those files. Emitting it now and being
-wrong costs one field's removal; omitting it now and being wrong costs an N-repository golden refresh. The rule
-exists to stop unsourced invention, which this is not.
-
-**How to falsify it.** One captured terminal run from the live API settles it in either direction. If it turns out
-`costDollars` on this surface carries no `total`, correct this section first and the projection second — and record
-the correction here rather than silently dropping the field.
+1. **Values the spec does not give.** No example body exists, so every value in the golden fixtures that the scenario
+   scripts is the scenario's, and every placeholder is SIMULATOR-POLICY. Nothing here asserts a vendor value for
+   `usage`, `costDollars`, `completedAt` or `request`, and `AgentCostDollars` carries no description: do not assert
+   that it is an estimate (the "estimated" wording at line 7249 belongs to `CostDollarsOutput`).
+2. **Streaming.** `Accept: text/event-stream` on the create, and the `AgentRunEvent` stream, are not simulated.
+3. **Request-side semantics beyond the enum and the budget ranges:** `previousRunId` continuation, `dataSources`
+   validation, `outputSchema` validation, the `Exa-Beta` header, unknown request keys, and what a budget limit sent
+   with the wrong effort does.
+4. **The other lifecycle operations.** List, `/events`, `/cancel`, `/stop` and `DELETE` are documented by the spec and
+   are NOT simulated; the mux refuses them in the flat shape and with no `x-request-id`. `GET /agent/runs` and
+   `DELETE /agent/runs/{id}` share a path with a simulated operation, so they answer `405` with `Allow: POST` and
+   `Allow: GET, HEAD`; `/cancel`, `/stop` and `/events` are not routed and answer `404`. Nothing about their bodies is
+   recorded here.
+5. **What a malformed run id returns,** and whether the live `x-request-id` is per call.
 
 ### Exa Agent API — create, poll and HEAD are simulated; the rest of the lifecycle is not
 
@@ -457,17 +584,13 @@ progress, the terminal output, failure — lives on `GET /agent/runs/{id}`, whic
 simulates the create, poll and `HEAD /agent/runs/{id}` (existence-only) routes, driven by the scenario provider
 entry `exa_agent_runs` — see `docs/scenario-schema.md`'s async section for the projection shape, and
 `docs/design/async-jobs.md` for why this needed a different scenario shape than a single request/response
-projection (a create returns immediately and the output only exists at a terminal status).
+projection (a create returns immediately and the run is polled through successive snapshots).
 
 Exa's remaining lifecycle routes — `GET /agent/runs` (list), `GET /agent/runs/{id}/events`,
-`POST /agent/runs/{id}/cancel` and `DELETE /agent/runs/{id}` — are NOT simulated. They are on the backlog and fall
-to the catch-all's provider-shaped 404 until built. Exa's own guidance is "for simpler low-latency retrieval,
-prefer /search".
-
-This section previously carried a stronger claim — that none of the surface was simulated, and before that, that
-no consumer used it. Both were corrected in place rather than only struck, because the create/poll/HEAD routes
-have since shipped (see the repository root's `contracts/README.md`'s index table, which check-docs.sh verifies against the registered
-routes in both directions).
+`POST /agent/runs/{id}/cancel`, `POST /agent/runs/{id}/stop` and `DELETE /agent/runs/{id}` — are NOT simulated. They
+are on the backlog and are refused in the flat shape until built — a `405` for the list and `DELETE` (which share a
+path with a simulated operation), a `404` for the other three. Exa's own guidance is "for simpler low-latency
+retrieval, prefer /search".
 
 A `POST /research` endpoint appears in third-party integration documentation but not in Exa's own docs index.
 Treat it as retired; do not simulate it.
