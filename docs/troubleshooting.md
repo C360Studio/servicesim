@@ -180,7 +180,7 @@ suite that is not tearing down after itself.
 A related finding, `job.id_collision`, means a create re-minted an identifier that is still live:
 
 ```text
-job "run_9f2c1ab4e5d67890abcdef0123456789" is already live in namespace "t-42"; the usual cause is a reset that
+job "agent_run_9f2c1ab4e5d67890abcdef0123456789" is already live in namespace "t-42"; the usual cause is a reset that
 dropped the fault cursors without dropping the job records, so this create re-minted an identifier it had
 already used
 ```

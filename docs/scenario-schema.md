@@ -1116,7 +1116,7 @@ and `response_time`).
 | Key | Type | Renders to |
 |---|---|---|
 | `status` | `queued` \| `running` \| `completed` \| `failed` \| `cancelled` | `status`. Empty means `running`, so a pending poll can be written as `respond: {}`. `completed`, `failed` and `cancelled` are terminal. |
-| `stop_reason` | `schema_satisfied` \| `budget_reached` \| `error` \| `cancelled` | `stopReason`. A non-terminal snapshot always renders `null`. A terminal one derives it from `status` — `failed` becomes `error`, `cancelled` stays `cancelled`, everything else becomes `schema_satisfied` — unless stated explicitly. |
+| `stop_reason` | `schema_satisfied` \| `budget_reached` \| `time_limit_reached` \| `stopped` \| `error` \| `cancelled` | `stopReason`. A non-terminal snapshot always renders `null`. A terminal one derives it from `status` — `failed` becomes `error`, `cancelled` stays `cancelled`, everything else becomes `schema_satisfied` — unless stated explicitly. |
 | `output` | `{text, structured, grounding}` | `output`, whenever declared. A real run only carries one at a terminal status, and `status: completed` with none is a load-time warning — but nothing stops a non-terminal turn from declaring one too; use it only on the terminal snapshot. `grounding[]` entries are `{field, citations, confidence}`, resolved against the corpus exactly like `exa`'s own `output.grounding`. |
 | `error` | `{code, message}` | `error`. Required when `status: failed` — declaring `failed` with no `error` is a load error, because a consumer's failure branch is what such a scenario tests. |
 | `cost_dollars` | `{total, data_sources}` | `costDollars`, emitted on every **terminal** snapshot whether or not the scenario declares one, and never on a non-terminal one even if declared — a real run has spent nothing until it finishes. Unlike `exa`'s own `costDollars`, there is no `search` key here — it is not confirmed on this surface. |
@@ -1152,9 +1152,9 @@ providers:
       fault:
         attempts:
           - {status: 429, retry_after: 1}
-          - {status: 201}     # a kind-none attempt still writes `status` to the wire,
-                                # so the success attempt must name the vendor's real
-                                # create status (201), not a generic 200
+          - {status: 200}     # a kind-none attempt still writes `status` to the wire;
+                                # Exa's create answers 200, so naming it is a pass-through
+                                # (Tavily's create answers 201, which this would downgrade)
     turns:                     # each turn is a poll; a turn's fault is the POLL plan
       - when: {call_index: 0}  # turn 0 must be conditional, or turn 1 is unreachable
         fault:
@@ -1186,11 +1186,12 @@ written, and `extra_fields` can overwrite the `id` they are merged into: in both
 holds no usable identifier for.
 
 A kind-none attempt that names a `status` pins the wire status to it, whatever the handler would have written.
-That is invisible on a route that answers 200 anyway and wrong on the two that do not: a create answers `201`, and a
-`tavily_research` poll answers `202` until the task is terminal. Write the success attempt as `- {}` — no status,
-no kind — wherever the route's real status is not 200 or varies with state, and name a status only when pinning it
-is the point. `[{status: 429}, {}]` on a `tavily_research` poll plan is "rate-limit the first poll, then serve
-whatever the snapshot says"; `[{status: 429}, {status: 200}]` would answer 200 to a poll that is still pending.
+That is invisible on a route that answers 200 anyway and wrong on the two that do not: a `tavily_research` create
+answers `201`, and a `tavily_research` poll answers `202` until the task is terminal. Write the success attempt as
+`- {}` — no status, no kind — wherever the route's real status is not 200 or varies with state, and name a status
+only when pinning it is the point. `[{status: 429}, {}]` on a `tavily_research` poll plan is "rate-limit the first
+poll, then serve whatever the snapshot says"; `[{status: 429}, {status: 200}]` would answer 200 to a poll that is
+still pending.
 
 **Per-job lanes.** A poll route's lane is per job, not per route. `Route.LaneFrom` — `["path:id"]` for
 `exa_agent_runs`, `["path:request_id"]` for `tavily_research` — adds the path wildcard's value as an extra
@@ -1215,7 +1216,7 @@ to the generic ones every provider raises for a malformed `respond:` node or an 
 | Code | Severity | Condition |
 |---|---|---|
 | `exa.agent_run.status.unknown` | error | `status` is not one of `queued`, `running`, `completed`, `failed`, `cancelled` |
-| `exa.agent_run.stop_reason.unknown` | error | `stop_reason` is set and is not one of `schema_satisfied`, `budget_reached`, `error`, `cancelled` |
+| `exa.agent_run.stop_reason.unknown` | error | `stop_reason` is set and is not one of `schema_satisfied`, `budget_reached`, `time_limit_reached`, `stopped`, `error`, `cancelled` |
 | `exa.agent_run.failed_without_error` | error | `status: failed` with no `error` |
 | `exa.agent_run.terminal_then_pending` | error | a non-terminal turn declared after a terminal one — a run does not un-complete |
 | `exa.agent_run.script_exhausted` | warning | no unconditional final turn: the poll after the script's last snapshot gets `scenario.no_matching_turn` and a 404 the author did not intend |

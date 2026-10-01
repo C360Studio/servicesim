@@ -1806,7 +1806,13 @@ func asyncCreate(
 
 	raw, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	require.Equalf(t, http.StatusCreated, resp.StatusCode, "create failed: %s", raw)
+	// The two vendors' creates differ: Exa's createAgentRun documents only a 200,
+	// while Tavily's research create answers 201.
+	wantStatus := http.StatusCreated
+	if p == exa.Name {
+		wantStatus = http.StatusOK
+	}
+	require.Equalf(t, wantStatus, resp.StatusCode, "create failed: %s", raw)
 
 	var out map[string]any
 	require.NoError(t, json.Unmarshal(raw, &out))

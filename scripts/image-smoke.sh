@@ -160,11 +160,11 @@ check "POST :8082/extract (tavily)" \
 
 # The async create routes. The image's default scenario is `happy`, which
 # declares both async entries (scenarios/protocol/happy.yaml), so a create
-# against either one mints a job and answers 201.
+# against either one mints a job and answers 201 (Tavily) or 200 (Exa).
 check "POST :8081/agent/runs (exa, async create)" \
   "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${EXA_PORT}/agent/runs" \
       -H 'content-type: application/json' -H 'x-api-key: smoke-test-key' \
-      -d '{"query":"smoke"}')" "201"
+      -d '{"query":"smoke"}')" "200"
 
 check "POST :8082/research (tavily, async create)" \
   "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${TAVILY_PORT}/research" \

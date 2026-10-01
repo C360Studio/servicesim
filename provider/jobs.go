@@ -19,7 +19,7 @@ const (
 	// two were equal, a legal identifier at the boundary would silently fall back
 	// to the shared route lane and two jobs would answer from one cursor.
 	//
-	// Both vendors fit comfortably: Exa mints "run_" plus 32 hex characters (36),
+	// Both vendors fit comfortably: Exa mints "agent_run_" plus 32 hex characters (42),
 	// Tavily a UUID (36).
 	MaxJobIDLen = 64
 )
@@ -131,7 +131,7 @@ const wrongEntryMessage = "job %q exists in namespace %q but its create was serv
 // one segment.
 //
 // It is a shape check, not a scheme check. It says an identifier COULD be one
-// this simulator minted; it cannot say that one WAS. Exa's "run_" prefix and
+// this simulator minted; it cannot say that one WAS. Exa's "agent_run_" prefix and
 // Tavily's UUID layout are each provider knowledge, and a caller wanting that
 // precision has to ask the provider package.
 func ValidJobID(id string) bool {

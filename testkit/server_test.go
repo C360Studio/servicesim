@@ -139,7 +139,7 @@ func createAgentRun(tb testing.TB, sim *testkit.Sim, base string) string {
 	resp, err := sim.Client().Do(req)
 	require.NoError(tb, err)
 	defer func() { _ = resp.Body.Close() }()
-	require.Equal(tb, http.StatusCreated, resp.StatusCode, "create failed")
+	require.Equal(tb, http.StatusOK, resp.StatusCode, "create failed")
 
 	var out struct {
 		ID string `json:"id"`
@@ -1150,7 +1150,7 @@ func TestJobsAliasIsImplementable(t *testing.T) {
 	createReq := newRequest(context.Background(), t, srv.URL+"/agent/runs", exa.Name, `{"query":"report a"}`)
 	createResp, err := srv.Client().Do(createReq)
 	require.NoError(t, err)
-	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	require.Equal(t, http.StatusOK, createResp.StatusCode)
 
 	var out struct {
 		ID string `json:"id"`

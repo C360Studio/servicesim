@@ -32,11 +32,18 @@ const (
 )
 
 // Stop reasons a terminal run carries. A non-terminal run carries JSON null.
+//
+// The six AgentStopReason members of the vendor's OpenAPI document (retrieved
+// 2026-10-01, line 5848). The spec does not pair a status with a reason, so which
+// reason a terminal status derives is EffectiveStopReason's policy, not the
+// vendor's.
 const (
-	stopSchemaSatisfied = "schema_satisfied"
-	stopBudgetReached   = "budget_reached"
-	stopError           = "error"
-	stopCancelled       = "cancelled"
+	stopSchemaSatisfied  = "schema_satisfied"
+	stopBudgetReached    = "budget_reached"
+	stopTimeLimitReached = "time_limit_reached"
+	stopStopped          = "stopped"
+	stopError            = "error"
+	stopCancelled        = "cancelled"
 )
 
 // terminalStatuses is the set a poll stops at. It is also what
@@ -66,8 +73,8 @@ type agentRunProjection struct {
 
 	// StopReason overrides the derived stop reason. It is normally left unset:
 	// a terminal status implies one, and stating it is only needed to script a
-	// budget_reached or cancelled run that would otherwise derive
-	// schema_satisfied.
+	// budget_reached, time_limit_reached or stopped run that would otherwise
+	// derive schema_satisfied.
 	StopReason string `yaml:"stop_reason,omitempty"`
 
 	// Output is present only at a terminal status. A completed run with no
@@ -302,8 +309,9 @@ func validateAgentRunTurn(
 			Severity: scenario.SeverityError,
 			Code:     CodeAgentRunStopReasonUnknown,
 			Path:     path + ".stop_reason",
-			Message: fmt.Sprintf("stop_reason %q is not one of %s, %s, %s, %s",
-				p.StopReason, stopSchemaSatisfied, stopBudgetReached, stopError, stopCancelled),
+			Message: fmt.Sprintf("stop_reason %q is not one of %s, %s, %s, %s, %s, %s",
+				p.StopReason, stopSchemaSatisfied, stopBudgetReached, stopTimeLimitReached, stopStopped,
+				stopError, stopCancelled),
 		})
 	}
 
@@ -375,7 +383,7 @@ func knownStatus(s string) bool {
 
 func knownStopReason(s string) bool {
 	switch s {
-	case stopSchemaSatisfied, stopBudgetReached, stopError, stopCancelled:
+	case stopSchemaSatisfied, stopBudgetReached, stopTimeLimitReached, stopStopped, stopError, stopCancelled:
 		return true
 	}
 	return false

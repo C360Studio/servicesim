@@ -3,6 +3,8 @@ package exa
 import (
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
@@ -28,10 +30,11 @@ const (
 	// budget, for the same reason it must not advance the poll cursor.
 	faultKeyRunHead = "exa:agent_runs.head"
 
-	// runIDPrefix matches the house shape Exa's own identifiers use. The vendor
-	// does not document a run-id format, which contracts/exa/README.md records;
-	// this is simulator-chosen and stable.
-	runIDPrefix = "run_"
+	// runIDPrefix is the prefix AgentRunId documents for new run ids (openapi
+	// line 4836, retrieved 2026-10-01). The 32 hex characters after it are this
+	// simulator's choice: the spec fixes only the pattern and the 1-200 length,
+	// so the 42-character result fits provider.MaxJobIDLen.
+	runIDPrefix = "agent_run_"
 )
 
 // agentRunRoutes returns the three async routes, in registration order.
@@ -113,7 +116,8 @@ func handleAgentRunCreate(x *provider.Exchange) provider.Response {
 		return rejection(x)
 	}
 	return provider.Response{
-		Status:        http.StatusCreated,
+		// 200, not 201: createAgentRun documents only "200" (openapi line 831).
+		Status:        http.StatusOK,
 		Body:          body,
 		Label:         "exa.agent_runs.created",
 		FaultEligible: true,
@@ -252,23 +256,30 @@ func selectAgentRunProjection(x *provider.Exchange, e *scenario.ProviderEntry) (
 func validateAgentRunCreate(x *provider.Exchange) {
 	validateContentType(x)
 	validateQuery(x)
-	if effort, ok := x.String("effort"); ok && !knownEffort(effort) {
-		x.Warn(codeEffortInvalid, "effort",
-			"effort %q is not one of the seven documented values; the live API may reject it", effort)
-	}
+	validateEffort(x)
 }
 
-// knownEffort reports whether an effort value is one the vendor documents.
+// validateEffort rejects an effort outside AgentEffort, which is a closed enum
+// (openapi line 4819, retrieved 2026-10-01). An earlier reading of the prose
+// pages put `max` in the set and left `ultra` out; the spec has it the other way
+// round, so `max` is now an error like any other unknown value.
 //
-// Seven values, verified 2026-08-15. `max` is beta and gated behind a header the
-// simulator does not check: a scenario testing a beta path should not need one.
-func knownEffort(v string) bool {
-	switch v {
-	case "minimal", "low", "medium", "high", "xhigh", "auto", "max":
-		return true
+// Rejecting is the simulator's strict-request policy (house rule 5): the spec
+// states the enum but not the live API's response to a violation.
+func validateEffort(x *provider.Exchange) {
+	raw, present := x.Body["effort"]
+	if !present {
+		return
 	}
-	return false
+	if effort, ok := raw.(string); ok && slices.Contains(agentEfforts, effort) {
+		return
+	}
+	x.Fail(codeEffortInvalid, "effort", "effort must be one of %s, got %v",
+		strings.Join(agentEfforts, ", "), raw)
 }
+
+// agentEfforts is AgentEffort, in the spec's order.
+var agentEfforts = []string{"minimal", "low", "medium", "high", "xhigh", "auto", "ultra"}
 
 // renderRunCreated renders the create response: the identifier and the initial
 // status, and nothing else.

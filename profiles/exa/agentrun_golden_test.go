@@ -68,15 +68,15 @@ version: 1
 name: exa-agent-runs-404-golden
 `
 
-// TestGolden_AgentRunCreated pins POST /agent/runs's 201 body: the initial
-// status and nothing else, per contracts/exa/README.md's async section.
+// TestGolden_AgentRunCreated pins POST /agent/runs's 200 body: the run in its
+// initial queued status, per contracts/exa/README.md's async section.
 func TestGolden_AgentRunCreated(t *testing.T) {
 	t.Parallel()
 
 	s := newSim(t, agentRunGoldenScenario)
 	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"find the finding"}`})
 
-	require.Equal(t, http.StatusCreated, rec.Code)
+	require.Equal(t, http.StatusOK, rec.Code)
 	assertGoldenWire(t, "exa-agent-runs-created.json", rec.Body.Bytes())
 }
 
@@ -129,7 +129,7 @@ func TestGolden_AgentRunNotFound(t *testing.T) {
 	t.Parallel()
 
 	s := newSim(t, agentRunGolden404Scenario)
-	rec := s.do(request{method: http.MethodGet, path: "/agent/runs/run_neverminted"})
+	rec := s.do(request{method: http.MethodGet, path: "/agent/runs/agent_run_neverminted"})
 
 	require.Equal(t, http.StatusNotFound, rec.Code)
 	assertGoldenWire(t, "exa-agent-runs-404.json", rec.Body.Bytes())
@@ -146,7 +146,7 @@ func TestGolden_AgentRunCreateAtTheJobBound(t *testing.T) {
 	s := newSimWithJobs(t, agentRunGoldenScenario, store)
 
 	first := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"first"}`})
-	require.Equal(t, http.StatusCreated, first.Code, "the first create must succeed: %s", first.Body.String())
+	require.Equal(t, http.StatusOK, first.Code, "the first create must succeed: %s", first.Body.String())
 
 	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"second"}`})
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)

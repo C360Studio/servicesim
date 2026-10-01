@@ -129,7 +129,7 @@ providers:
             retry_after: 1
             error: Rate limit exceeded.
             tag: RATE_LIMIT
-          - status: 201
+          - status: 200
     fault:
       attempts:
         - status: 429
