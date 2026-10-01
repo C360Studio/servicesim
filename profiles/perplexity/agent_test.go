@@ -264,7 +264,7 @@ func TestAgentValidationFailureShape(t *testing.T) {
 			wantMessage: "validation failed: "},
 		{name: "first failing field in schema order wins", path: "/v1/agent",
 			request:     `{"input":"hi","model":"openai/gpt-5","temperature":3,"max_steps":0}`,
-			wantMessage: "validation failed: max_steps must be an integer of at least 1"},
+			wantMessage: "validation failed: max_steps must be an integer from 1 to 100"},
 	}
 
 	for _, tc := range tests {
@@ -354,7 +354,12 @@ func TestAgentRequestValidation(t *testing.T) {
 	}{
 		{name: "input is required", request: `{"model":"openai/gpt-5"}`,
 			wantStatus: http.StatusBadRequest, wantCode: CodeInputMissing},
-		{name: "input may be an array of items", request: `{"model":"openai/gpt-5","input":[{"role":"user","content":"hi"}]}`,
+		// The specification's InputMessage requires type, role and content, and
+		// InputItem is discriminated on type, so a message item without a type
+		// is not an input item at all. This row used to pin the type-less shape
+		// as accepted, which was the wrong shape.
+		{name: "input may be an array of items",
+			request:    `{"model":"openai/gpt-5","input":[{"type":"message","role":"user","content":"hi"}]}`,
 			wantStatus: http.StatusOK},
 		{name: "input must not be a number", request: `{"input":7,"model":"openai/gpt-5"}`,
 			wantStatus: http.StatusBadRequest, wantCode: CodeInputInvalid},
@@ -578,6 +583,75 @@ func TestAgentAnthropicRequiresMaxOutputTokens(t *testing.T) {
 	}
 }
 
+// TestAgentSpecBoundRequestRules covers the Agent request rules the
+// specification states unambiguously and the profile previously let through.
+// Each case names the JSON pointer of the sentence it enforces.
+func TestAgentSpecBoundRequestRules(t *testing.T) {
+	t.Parallel()
+
+	const base = `"input":"hi","model":"openai/gpt-5"`
+	tests := []struct {
+		name       string
+		request    string
+		wantStatus int
+		wantCode   string
+	}{
+		// #/components/schemas/InputItem (discriminator propertyName type) and
+		// #/components/schemas/InputMessage/required: type is required, and its
+		// values are the three discriminator mapping keys.
+		{name: "input item: type is required (InputItem)",
+			request:    `{"model":"openai/gpt-5","input":[{"role":"user","content":"hi"}]}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeInputItemInvalid},
+		{name: "input item: must be an object (InputItem)",
+			request:    `{"model":"openai/gpt-5","input":["hi"]}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeInputItemInvalid},
+		{name: "input item: type is a mapping key (InputItem/discriminator/mapping)",
+			request:    `{"model":"openai/gpt-5","input":[{"type":"tool_result","content":"x"}]}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeInputItemInvalid},
+		// FunctionCallInput requires type, call_id, name and arguments
+		// (#/components/schemas/FunctionCallInput/required).
+		{name: "input item: function_call is a mapping key",
+			request:    `{"model":"openai/gpt-5","input":[{"type":"function_call","call_id":"c1","name":"f","arguments":"{}"}]}`,
+			wantStatus: http.StatusOK},
+		{name: "input item: function_call_output is a mapping key",
+			request:    `{"model":"openai/gpt-5","input":[{"type":"function_call_output","call_id":"c1","output":"{}"}]}`,
+			wantStatus: http.StatusOK},
+		{name: "input item: an empty array has no item to fault",
+			request:    `{"model":"openai/gpt-5","input":[]}`,
+			wantStatus: http.StatusOK},
+
+		// #/components/schemas/ResponsesRequest/properties/max_steps: integer,
+		// minimum 1, maximum 100.
+		{name: "max_steps: 100 is the maximum", request: `{` + base + `,"max_steps":100}`,
+			wantStatus: http.StatusOK},
+		{name: "max_steps: 101 is over the maximum", request: `{` + base + `,"max_steps":101}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeMaxSteps},
+		{name: "max_steps: 1.5 is not an integer", request: `{` + base + `,"max_steps":1.5}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeMaxSteps},
+		{name: "max_steps: a string is not an integer", request: `{` + base + `,"max_steps":"3"}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeMaxSteps},
+
+		// #/components/schemas/ResponsesRequest/properties/stream: boolean.
+		{name: "stream: a string is not a boolean", request: `{` + base + `,"stream":"yes"}`,
+			wantStatus: http.StatusBadRequest, wantCode: CodeAgentStreamInvalid},
+		{name: "stream: false is accepted", request: `{` + base + `,"stream":false}`,
+			wantStatus: http.StatusOK},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSim(t, mustScenario(t, agentCorpus))
+
+			resp, body := s.do(t, http.MethodPost, "/v1/agent", tc.request)
+			require.Equal(t, tc.wantStatus, resp.StatusCode, "body: %s", body)
+			if tc.wantCode != "" {
+				require.True(t, hasCode(s.findings(t), tc.wantCode), "findings: %+v", s.findings(t))
+			}
+		})
+	}
+}
+
 // TestAgentProfileField pins the request's profile property, a ProfileReference
 // (#/components/schemas/ProfileReference): additionalProperties false, required
 // type (enum ["custom"]) and id (1 to 128 characters), optional version (string).
@@ -766,6 +840,19 @@ func TestAgentValidatorRejectsBadProjections(t *testing.T) {
 			name:     "an unknown source reference",
 			respond:  "    search_results:\n      - source: source-z\n",
 			wantCode: "scenario.source.unknown",
+		},
+		{
+			// #/components/schemas/SearchSource/enum is ["web"]; "attachment" is
+			// Sonar's ApiPublicSearchResult source, a different schema.
+			name:     "a source_type outside SearchSource",
+			respond:  "    search_results:\n      - source: source-a\n        source_type: attachment\n",
+			wantCode: "perplexity.source_type.invalid",
+		},
+		{
+			// #/components/schemas/Currency/enum is ["USD"].
+			name:     "a currency outside Currency",
+			respond:  "    usage:\n      cost:\n        currency: EUR\n",
+			wantCode: "perplexity.agent.currency.invalid",
 		},
 	}
 

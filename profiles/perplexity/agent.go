@@ -3,6 +3,7 @@ package perplexity
 import (
 	"encoding/json"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,6 +39,15 @@ const (
 	// CodeProfileInvalid is raised when profile is not a valid ProfileReference
 	// or is combined with preset.
 	CodeProfileInvalid = "perplexity.agent.profile.invalid"
+
+	// CodeInputItemInvalid is raised when an element of an input array is not an
+	// object carrying one of the InputItem discriminator values in type.
+	CodeInputItemInvalid = "perplexity.input.item.invalid"
+
+	// CodeAgentStreamInvalid is raised when stream is present and not a boolean.
+	// It sorts under perplexity.stream. with the other streaming codes, for the
+	// reason [CodeAgentStreamUnsupported] gives.
+	CodeAgentStreamInvalid = "perplexity.stream.agent_invalid"
 
 	CodeMaxSteps          = "perplexity.agent.max_steps.range"
 	CodeMaxOutputTokens   = "perplexity.agent.max_output_tokens.range"
@@ -291,8 +301,10 @@ func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) st
 	if !x.Has("input") {
 		x.Fail(CodeInputMissing, "body.input", "input is required")
 	} else {
-		switch x.Body["input"].(type) {
-		case string, []any:
+		switch input := x.Body["input"].(type) {
+		case string:
+		case []any:
+			validateInputItems(x, input)
 		default:
 			x.Fail(CodeInputInvalid, "body.input", "input must be a string or an array of input items")
 		}
@@ -304,9 +316,12 @@ func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) st
 	validateNumericRange(x, "temperature", CodeTemperature, 0, 2)
 	validateNumericRange(x, "top_p", CodeTopP, 0, 1)
 
+	// max_steps is an integer from 1 to 100
+	// (#/components/schemas/ResponsesRequest/properties/max_steps).
 	if x.Has("max_steps") {
-		if v, ok := x.Number("max_steps"); !ok || v < 1 {
-			x.Fail(CodeMaxSteps, "body.max_steps", "max_steps must be an integer of at least 1")
+		if v, ok := x.Number("max_steps"); !ok || v < 1 || v > maxStepsLimit || v != math.Trunc(v) {
+			x.Fail(CodeMaxSteps, "body.max_steps",
+				"max_steps must be an integer from 1 to %d", maxStepsLimit)
 		}
 	}
 	if x.Has("max_output_tokens") {
@@ -331,11 +346,45 @@ func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) st
 				"background execution is not simulated; this request receives the ordinary synchronous body")
 		}
 	}
-	if stream, ok := x.Bool("stream"); ok && stream && policy != scenario.StreamServe {
-		x.Warn(CodeAgentStreamUnsupported, "body.stream",
-			"streaming is not simulated; this request receives the ordinary non-streaming body")
+	if x.Has("stream") {
+		stream, ok := x.Bool("stream")
+		switch {
+		case !ok:
+			x.Fail(CodeAgentStreamInvalid, "body.stream", "stream must be a boolean")
+		case stream && policy != scenario.StreamServe:
+			x.Warn(CodeAgentStreamUnsupported, "body.stream",
+				"streaming is not simulated; this request receives the ordinary non-streaming body")
+		}
 	}
 	return model
+}
+
+// inputItemTypes are the InputItem discriminator mapping keys
+// (#/components/schemas/InputItem/discriminator/mapping): the only values an
+// input item's type may take.
+var inputItemTypes = []string{"message", "function_call", "function_call_output"}
+
+// maxStepsLimit is max_steps' maximum (ResponsesRequest.max_steps).
+const maxStepsLimit = 100
+
+// validateInputItems checks each element of an input array is an object whose
+// type is one of the InputItem discriminator values. It checks nothing else: the
+// per-variant required properties (role and content for a message, and so on)
+// are not enforced, so a malformed message body still passes.
+func validateInputItems(x *provider.Exchange, items []any) {
+	for i, raw := range items {
+		at := "body.input." + strconv.Itoa(i)
+		item, ok := raw.(map[string]any)
+		if !ok {
+			x.Fail(CodeInputItemInvalid, at, "input item %d must be an object", i)
+			continue
+		}
+		typ, ok := item["type"].(string)
+		if !ok || !slices.Contains(inputItemTypes, typ) {
+			x.Fail(CodeInputItemInvalid, at+".type", "input item %d type must be one of %s",
+				i, strings.Join(inputItemTypes, ", "))
+		}
+	}
 }
 
 // anthropicModelPrefix marks the models for which max_output_tokens is required.
@@ -916,12 +965,19 @@ func validateAgentProjection(path string, p *perplexityAgent) []scenario.Finding
 		add("perplexity.agent.error.message", path+".error.message",
 			"error.message is required by the specification")
 	}
+	// SearchSource is ["web"] on the Agent surface (#/components/schemas/SearchSource);
+	// "attachment" belongs to Sonar's ApiPublicSearchResult, a different schema.
 	for i := range p.SearchResults {
-		if st := p.SearchResults[i].SourceType; st != "" && !slices.Contains(sourceTypes, st) {
+		if st := p.SearchResults[i].SourceType; st != "" && st != sourceTypeWeb {
 			add("perplexity.source_type.invalid",
 				path+".search_results["+strconv.Itoa(i)+"].source_type",
-				"source_type "+strconv.Quote(st)+" is not web or attachment")
+				"source_type "+strconv.Quote(st)+" is not web, the only SearchSource value")
 		}
+	}
+	// Currency is ["USD"] (#/components/schemas/Currency).
+	if u := p.Usage; u != nil && u.Cost != nil && u.Cost.Currency != "" && u.Cost.Currency != currencyUSD {
+		add("perplexity.agent.currency.invalid", path+".usage.cost.currency",
+			"currency "+strconv.Quote(u.Cost.Currency)+" is not "+currencyUSD+", the only Currency value")
 	}
 	// An annotation span outside the answer is a fixture bug that would otherwise
 	// reach a consumer as an index into a string that is too short.
