@@ -3,11 +3,9 @@ package provider
 import (
 	"errors"
 	"log/slog"
-	"net/http"
 	"strconv"
 
 	"github.com/c360studio/servicesim/internal/jobs"
-	"github.com/c360studio/servicesim/scenario"
 )
 
 // Job identifier bounds.
@@ -151,118 +149,21 @@ func ValidJobID(id string) bool {
 }
 
 // deliversBody reports whether the client of a create will receive the job
-// identifier: whether the response this attempt produces is complete, is not an
-// error status, and still carries the handler's rendered body.
+// identifier: no attempt means the response is untouched, and an attempt answers
+// through [scenario.FaultAttempt.DeliversBody], which owns the truth table and
+// the reasoning behind each row.
 //
-// It is the predicate MintJob commits on, and getting it wrong is expensive in
-// both directions. Committing when the body is replaced leaves a phantom job:
-// a record consuming a slot that no client has an identifier for. NOT committing
-// when the body IS delivered is worse — the client holds a real identifier that
-// no record backs, so every poll returns the vendor's 404 for a job the create
-// said it made.
-//
-// FaultDecision.Faulted() is the obvious reach and is wrong here: it is true
-// whenever Delay > 0, and a pure delay writes the body after sleeping. The
-// question is not "was this request faulted" but "does the client still receive
-// what the handler rendered".
-//
-// The table below is read off what Handle and execute (provider/handle.go,
-// provider/fault_exec.go) actually do, not off what a kind is named for. Three of
-// its rows are not the kind's own doing, and all were wrong before this was
-// derived from the executor:
-//
-//   - faultBody replaces the body with the attempt's body: at ANY status, and
-//     asks the provider's FaultBody for an envelope at status >= 400. Every kind
-//     that would otherwise write the rendered body therefore writes it only when
-//     the attempt has no body: and a status below 400.
-//   - net/http writes no body under some statuses it is asked for one under: 204
-//     and 304, and 101, which it sends as the final status. Every other 1xx goes
-//     out as an interim response and the body follows it under a 200, so that
-//     client still receives the identifier. See [writesNoBody].
-//   - Handle drops an attempt that cannot apply to the exchange — a stream_*
-//     kind on a response that does not stream, which a create never does — so the
-//     rendered body is written untouched and the mismatch is reported as a
-//     finding.
-//
-// Per kind, as EffectiveKind resolves it:
-//
-//	EffectiveKind                        the client receives the handler's body when
-//	-----------------------------------  ------------------------------------------
-//	FaultNone, FaultStatus,              the attempt has no body:, a status below
-//	FaultWrongContentType,               400, and a status net/http writes a body
-//	FaultExtraFields,                    under. Otherwise the override or the
-//	FaultOversizedBody                   provider's error envelope replaces it, and
-//	                                     these kinds then only change the header,
-//	                                     merge fields into the replacement, or pad it.
-//	FaultStreamDisconnect,               always: the attempt is dropped, so even a
-//	FaultStreamTruncateChunk,            status or body: it declares is never applied.
-//	FaultStreamStall
-//	FaultInvalidJSON                     never: raw non-JSON bytes replace it.
-//	FaultEmptyBody                       never: nothing is written.
-//	FaultTruncateBody                    never: a prefix, then an abort.
-//	FaultCloseBeforeHeaders              never: nothing reaches the client at all.
-//
-// Error, Tag, RawBody, ContentType, RetryAfter, Delay and DelayAfterHeaders do
-// not appear because none of them can change the answer: Error and Tag are read
-// only by the provider's FaultBody, which runs only for a body: or a status >= 400
-// — both already "never" above — and the rest change a timing, a header that
-// does not frame the body, or (RawBody) the kind EffectiveKind infers. Headers
-// is the one that can, and is the third self-defeating script below.
-//
-// A status >= 400 is "never" even for a provider that registers no FaultBody, in
-// which case the handler's body is served under the error status: no client
-// treats that as a created job, so no job is the right answer there too.
+// It is the predicate MintJob commits on. FaultDecision.Faulted() is the obvious
+// reach and is wrong here: it is true whenever Delay > 0, and a pure delay writes
+// the body after sleeping. The question is not "was this request faulted" but
+// "does the client still receive what the handler rendered".
 //
 // The prediction assumes a create that does not stream and whose response stays
-// fault-eligible. It is made before the body exists, so these outcomes are
-// beyond it, and the first three are scripts defeating themselves rather than
-// shapes worth a branch here: truncate_body with truncate_after_bytes at or past
-// the rendered body's length writes the whole body before it aborts; extra_fields
-// can overwrite the "id" it merges into; a headers: override of a framing header
-// — Content-Length, Transfer-Encoding or Content-Encoding — can leave the client
-// unable to read the body that was written; and a client whose own deadline fires
-// during a delay receives nothing.
-//
-// The switch names every kind rather than defaulting, and
-// TestDeliveryTableNamesEveryFaultKind fails when scenario declares a kind
-// constant — as `X FaultKind = "lit"` or `X = FaultKind("lit")`; a kind declared
-// any other way is outside what that test can read — that the table in
-// jobs_delivery_test.go does not cover. Each row of that table is checked
-// against a real client, so the next kind has to be decided, not absorbed by a
-// default.
+// fault-eligible; see [MintJob]. TestDeliveryTableNamesEveryFaultKind and
+// TestACreateLeavesAJobExactlyWhenTheClientHoldsItsIdentifier keep the method
+// honest against a real client.
 func deliversBody(dec FaultDecision) bool {
-	a := dec.Attempt
-	if a == nil {
-		return true
-	}
-	switch a.EffectiveKind() {
-	case scenario.FaultNone, scenario.FaultStatus, scenario.FaultWrongContentType,
-		scenario.FaultExtraFields, scenario.FaultOversizedBody:
-		return len(a.Body) == 0 && a.Status < http.StatusBadRequest && !writesNoBody(a.Status)
-
-	case scenario.FaultStreamDisconnect, scenario.FaultStreamTruncateChunk, scenario.FaultStreamStall:
-		return true
-
-	case scenario.FaultInvalidJSON, scenario.FaultEmptyBody,
-		scenario.FaultTruncateBody, scenario.FaultCloseBeforeHeaders:
-		return false
-
-	default:
-		// A kind this switch does not name. Not recording is the conservative
-		// answer, but the test above is what is meant to catch it first.
-		return false
-	}
-}
-
-// writesNoBody reports whether net/http sends a response under status without
-// the body the handler wrote to it. That is 204 and 304 — bodyAllowedForStatus
-// refuses them — and 101, which the server sends as the final status. It is not
-// every 1xx, though that is what bodyAllowedForStatus says: the server sends any
-// other 1xx as an interim response and writes the body under the 200 that
-// follows, which TestACreateLeavesAJobExactlyWhenTheClientHoldsItsIdentifier
-// pins with a real client.
-func writesNoBody(status int) bool {
-	return status == http.StatusSwitchingProtocols || status == http.StatusNoContent || status == http.StatusNotModified
+	return dec.Attempt == nil || dec.Attempt.DeliversBody()
 }
 
 // MintJob claims this request's call index and records a job derived from it,
@@ -310,7 +211,7 @@ func writesNoBody(status int) bool {
 //
 // It is made before the handler has rendered anything or Handle has applied a
 // fault, so it rests on two things the handler must keep true. The create does
-// not stream: [deliversBody]'s table is for a response with no Stream, and
+// not stream: [scenario.FaultAttempt.DeliversBody]'s table is for a response with no Stream, and
 // against a stream a stream_* kind applies instead of being dropped while
 // truncate_body and oversized_body are the ones reported unreachable. And the
 // create's response stays fault-eligible: Handle clears a claimed attempt on a
