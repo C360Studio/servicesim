@@ -76,6 +76,29 @@ const (
 	// "Validation has the last word" in Handle for the mechanism and its known
 	// limitation.
 	CodeAttemptOnRejection = "fault.attempt_on_rejection"
+
+	// CodeAcceptedUnreachable is raised, per request, when a claimed fault
+	// attempt carries `accepted: true` ([scenario.FaultAttempt.Accepted]) and the
+	// request that claimed it minted no job — a poll, a route whose handler never
+	// calls [MintJob], or an `accepted` attempt in a plan shared with such a
+	// route. `accepted` says the request took effect and its job is kept; a
+	// request that creates nothing has no job for it to keep.
+	//
+	// Load cannot raise this: it checks an attempt in isolation, and only a
+	// profile's routes know which of them mint. It is the runtime half of
+	// [scenario.CodeAcceptedRedundant], and it mirrors
+	// [scenario.CodeStreamAbortUnreachable] in kind — a scripted attempt that
+	// cannot do what it declares — which is why it is an ERROR and not a
+	// warning: a warning would let a scenario that scripts "accepted, reply
+	// lost" run green while exercising nothing of the sort, and its author
+	// would find out from an assertion about a job that was never there.
+	//
+	// It differs from the stream mirror in one respect: the attempt is NOT
+	// dropped. Only the modifier is unreachable, so the fault still applies as
+	// an ordinary fault, and the finding is the only thing that reports it.
+	// A request refused before it could mint raises nothing here: its claimed
+	// attempt is stripped and reported as [CodeAttemptOnRejection].
+	CodeAcceptedUnreachable = "fault.accepted_unreachable"
 )
 
 // Handle wraps h with the shared lifecycle and returns an http.HandlerFunc:
@@ -348,6 +371,21 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 				x.decision.Index, x.decision.Key)
 		}
 		dec := x.decision
+
+		// An `accepted` attempt keeps the job its request created, so it means
+		// something only on a request that minted one. Load cannot tell which
+		// routes do — the attempt is validated in isolation — so the claim is
+		// judged here, where the handler has already run. Only the modifier is
+		// unreachable: the attempt itself is left in place and applies below as
+		// an ordinary fault. A rejected request has had its attempt cleared above
+		// and is reported as CodeAttemptOnRejection instead.
+		if a := dec.Attempt; a != nil && a.Accepted && !x.minted {
+			x.Fail(CodeAcceptedUnreachable, "",
+				"fault attempt %d on key %q is marked accepted, but this request created no job; accepted keeps the job "+
+					"a create made, so it has nothing to keep here and the attempt applies as an ordinary fault; "+
+					"put it on the plan of a route that mints a job (an async create) or remove accepted",
+				dec.Index, dec.Key)
+		}
 
 		// Suppression is decided HERE — before faultOutcome, before the journal
 		// condition, before anything else reads resp.Stream — so resp.Stream !=

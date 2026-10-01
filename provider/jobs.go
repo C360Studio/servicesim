@@ -249,6 +249,7 @@ func commits(dec FaultDecision) bool {
 func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (id string, ok bool) {
 	lane := x.Lane()
 	index := x.CallIndex()
+	x.minted = true
 
 	job := jobs.Job{
 		ID: prefix + encode(
