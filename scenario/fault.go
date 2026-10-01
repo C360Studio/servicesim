@@ -52,6 +52,15 @@ const (
 	FaultStreamStall FaultKind = "stream_stall"
 )
 
+// CodeAcceptedRedundant is raised when `accepted: true` is declared on a fault
+// attempt that already delivers its body ([FaultAttempt.DeliversBody]), which
+// includes every stream_* kind: the job is kept whether or not the modifier is
+// there, so declaring it claims a lost reply the attempt does not script. Checked
+// in [Scenario.Validate] from the attempt alone, and defined as the predicate's
+// result rather than as a list of kinds so it cannot drift from what a create
+// actually keeps.
+const CodeAcceptedRedundant = "scenario.fault.accepted.redundant"
+
 // IsStream reports whether k is one of the three fault kinds that assume a
 // chunked SSE transport and cannot apply to an ordinary JSON exchange. It is
 // exported so provider (whose own execution-time switch needs the same
@@ -158,6 +167,45 @@ type FaultAttempt struct {
 	AfterChunk int `yaml:"after_chunk,omitempty"`
 
 	ExtraFields ExtraFields `yaml:"extra_fields,omitempty"`
+
+	// Accepted says the request TOOK EFFECT before the failure this attempt
+	// scripts: the job it created is kept even though the response that carries
+	// its identifier does not arrive intact. "Accepted, reply lost" is the
+	// failure a create-then-poll client cannot distinguish from "rejected" — it
+	// holds an error either way — and the two have different consequences, an
+	// orphaned run that is still being billed versus nothing at all. Without
+	// this modifier a create attempt whose body does not arrive leaves no job,
+	// which is the rejected case.
+	//
+	// Accepted keeps the JOB; it does not hide the identifier, and whether the
+	// client learns it depends on the shape. close_before_headers, empty_body,
+	// invalid_json and a status of 400 or above withhold it, provided the
+	// provider's error body is built from the attempt alone. truncate_body does
+	// not by default: it sends a PREFIX of the rendered body, and the identifier
+	// is the first key of both in-tree creates, so the default truncation (half
+	// the body) and any larger one deliver the whole identifier — a complete,
+	// ordinary response once truncate_after_bytes reaches the body's length.
+	// Only a cut that stops short of the identifier's last byte withholds it;
+	// for Exa's create, whose body opens with `{"id":"` (7 bytes) and then a
+	// 42-character identifier, that is a truncate_after_bytes below 49.
+	//
+	// It is meaningful only where the attempt does NOT deliver its body
+	// ([FaultAttempt.DeliversBody]): where the client does receive the
+	// identifier the job is kept anyway, so declaring it is a load error,
+	// [CodeAcceptedRedundant]. The check is that predicate's result and not a
+	// list of kinds, so it covers a Body: override below 400 and a 204 or 304 as
+	// well as close_before_headers, truncate_body, empty_body, invalid_json and
+	// any status of 400 or above.
+	//
+	// Load checks the attempt in isolation and allows it under any fault plan.
+	// Whether the request that claims it mints a job is a runtime fact only a
+	// profile's routes know; an accepted attempt claimed by a request that mints
+	// nothing is reported per request, as provider.CodeAcceptedUnreachable.
+	//
+	// It is not idempotency. A client that retries claims the next attempt and
+	// mints a SECOND job; neither vendor documents an idempotency key, and the
+	// simulator does not invent one.
+	Accepted bool `yaml:"accepted,omitempty"`
 
 	// Repeat applies this attempt to N consecutive attempts. Zero and one are
 	// equivalent. "Fail the first three then succeed" is one attempt with

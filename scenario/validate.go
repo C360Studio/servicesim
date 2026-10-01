@@ -211,6 +211,9 @@ func validateProvider(r *Report, e *ProviderEntry) {
 		}
 	}
 	validateTurnKey(r, base, e.TurnKey)
+	if e.Create != nil {
+		validateFault(r, base+".create.fault", e.Create.Fault)
+	}
 
 	if len(e.Turns) == 0 {
 		r.add(SeverityError, "scenario.provider.turns.empty", base+".turns",
@@ -376,6 +379,19 @@ func validateFaultAttempt(r *Report, path string, a FaultAttempt) {
 	if a.Repeat < 0 {
 		r.add(SeverityError, "scenario.fault.repeat.negative", path+".repeat",
 			"repeat must not be negative")
+	}
+	if a.Accepted && a.DeliversBody() {
+		message := "accepted: true says the request took effect before a failure that loses the response, but this " +
+			"attempt still delivers the response body, so the job is kept without it; remove accepted, or script a " +
+			"failure that loses the body (close_before_headers, truncate_body, empty_body, invalid_json, a status of " +
+			"400 or above, or a body: override)"
+		if a.EffectiveKind().IsStream() {
+			message = fmt.Sprintf("accepted: true is redundant on %s: a stream_* kind applies only to a streaming "+
+				"exchange and is dropped on the create, which is not one, so the response body is delivered "+
+				"untouched and the job is kept without it; script a failure that loses the body instead",
+				a.EffectiveKind())
+		}
+		r.add(SeverityError, CodeAcceptedRedundant, path+".accepted", "%s", message)
 	}
 	if a.EffectiveKind() == FaultInvalidJSON && a.RawBody == "" {
 		r.add(SeverityWarning, "scenario.fault.raw_body.missing", path+".raw_body",

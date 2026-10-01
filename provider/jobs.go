@@ -166,6 +166,19 @@ func deliversBody(dec FaultDecision) bool {
 	return dec.Attempt == nil || dec.Attempt.DeliversBody()
 }
 
+// commits reports whether the job a create mints is kept: the client will
+// receive the identifier ([deliversBody]), or the attempt says the request took
+// effect regardless ([scenario.FaultAttempt.Accepted]) — the accepted-create,
+// lost-reply case, where a job exists that no response ever names.
+//
+// It is the single predicate MintJob keeps a job on. The two halves are not
+// redundant at runtime even though load rejects `accepted` on a delivering
+// attempt: the same attempt reaches this from a hand-built scenario that was
+// never validated, and the answer there must still be "kept".
+func commits(dec FaultDecision) bool {
+	return deliversBody(dec) || (dec.Attempt != nil && dec.Attempt.Accepted)
+}
+
 // MintJob claims this request's call index and records a job derived from it,
 // returning the identifier and whether the request may proceed.
 //
@@ -188,7 +201,22 @@ func deliversBody(dec FaultDecision) bool {
 // The call index is claimed unconditionally, so a fault plan advances exactly as
 // scripted and the retry after a faulted create draws attempt 1. The RECORD is
 // written only when the response will actually carry the identifier to the
-// client ([deliversBody]).
+// client ([deliversBody]) or the attempt is marked accepted ([commits]).
+//
+// An accepted attempt is how a scenario scripts "the request took effect, the
+// reply was lost": the job is kept whatever the attempt does to the response.
+// Whether the client still learns the identifier depends on the shape —
+// truncate_body sends a prefix of the rendered body, which can carry it. It is
+// not idempotency. The client's retry claims the next attempt and mints a
+// SECOND job under a different identifier, and a namespace at its job bound
+// refuses the accepted create like any other, so the scripted fault is not
+// applied. With a nil Deps.Jobs no job state exists and nothing is kept at all.
+//
+// A profile whose create may run under an accepted attempt must register a
+// [Response.FaultBody] built from the attempt alone — never from the rendered
+// body or the minted identifier. A create with no FaultBody serves its own
+// rendered body, identifier included, under an accepted status of 400 or above,
+// and the client learns the id of a job the scenario said it lost.
 //
 // Faults are applied by Handle AFTER the handler returns, so a create that
 // committed unconditionally would leave a record behind on every faulted
@@ -250,7 +278,7 @@ func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (
 		return "", false
 	}
 
-	if !deliversBody(x.Fault()) {
+	if !commits(x.Fault()) {
 		// The claim stands, the record does not. The handler still renders a body
 		// so the response has a shape; Handle replaces it with the fault before
 		// any of it reaches the client.
