@@ -220,6 +220,49 @@ Like every warning, `validation.strict` or a `validation.promote` entry for `job
 error — which fails `AssertNoErrors`, even though the response is still the vendor's unchanged 404. A suite that
 runs strict and also polls `HEAD`/`GET` for ids it knows are absent should demote `job.foreign_id` instead.
 
+## My create failed, and I need to know whether a job exists
+
+A faulted async create leaves a job only when the scenario says the request took effect. By default a create
+attempt whose body does not arrive — `close_before_headers`, `truncate_body`, `empty_body`, `invalid_json`, a status of
+400 or above, a `body:` override — leaves **no** job: that is the "rejected before acceptance" case, and a retry mints
+a fresh one. To script "accepted, reply lost" — the job exists although the reply did not arrive intact — mark the
+attempt `accepted: true`
+([the schema](scenario-schema.md#an-accepted-create-whose-reply-is-lost)). `accepted` keeps the job, not the secret:
+`close_before_headers`, `empty_body`, `invalid_json` and a status of 400 or above withhold the identifier, but
+`truncate_body` sends a prefix of the rendered body and the identifier is its first key, so a default or large
+truncation delivers the whole identifier to the client with the job kept. If your test needs the application to lose
+the id, use `close_before_headers`, or a small `truncate_after_bytes` (for Exa, 48 or less).
+
+To tell which one a scenario produced, read what the simulator holds, not what the client saw:
+
+```bash
+curl -s 'http://localhost:8080/__admin/jobs'
+curl -s 'http://localhost:8080/__admin/requests?pretty=1'
+```
+
+The jobs listing shows every live job with its namespace, entry and `create_index`. The create's journal entry
+shows `outcome.fault_key`, `outcome.attempt_index` and `outcome.fault_kind`; the job is the one in the same
+namespace and entry whose `create_index` equals that `attempt_index`. In Go the same two views are `sim.Jobs()` and
+`sim.AwaitRequests(t, exa.Name, n)` — wait on the journal after a request that ended at the transport level.
+
+A client's retry is not deduplicated: it claims the next attempt and mints a second job with a different identifier,
+as the vendors' APIs would. Expect one more job than the client holds identifiers for, for every `accepted`
+attempt it retried past.
+
+Two findings belong here:
+
+- **`scenario.fault.accepted.redundant`** — a load error. `accepted: true` is on an attempt whose client still receives
+  the create's body (a 2xx or 3xx status that still delivers it, a delay, `extra_fields`, `oversized_body`, any
+  `stream_*` kind, ...), so the job is kept without it. Remove `accepted`, or script a failure that loses the body.
+- **`fault.accepted_unreachable`** — an error on the request's journal entry. An `accepted` attempt was claimed by a
+  request that created no job, most often because it sits in a poll plan (a turn's `fault:`) instead of
+  `create.fault`. The attempt still applied as an ordinary fault; only the "job kept" part had nothing to act on.
+  Move it to the plan of the route that creates the job.
+
+`accepted` counts against `--max-jobs` like any other job. At the bound the create gets the provider's rejection and
+a `job.limit_reached` finding instead of the scripted fault; see
+[the `--max-jobs` section](#a-create-is-refused-the-namespace-is-at-its---max-jobs-bound).
+
 ## `POST /__admin/reset` came back 400
 
 Reset requires an **explicit scope**. A bare reset is refused:

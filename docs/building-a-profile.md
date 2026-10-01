@@ -888,7 +888,18 @@ ordinary 404, claims no attempt, and raises a `job.foreign_id` warning naming bo
 `MintJob` only feeds the identifier's derivation, so a stable constant is the right thing to pass.
 
 Whether the create records its job is decided from the claimed fault attempt before the handler returns, so the
-create's response must not stream and must stay `FaultEligible`.
+create's response must not stream and must stay `FaultEligible`. The job is kept when the client will receive the
+identifier — the delivery predicate `scenario.FaultAttempt.DeliversBody` — or when the attempt says `accepted: true`,
+the scenario author's way to script a create that took effect and whose reply was lost
+([the schema](scenario-schema.md#an-accepted-create-whose-reply-is-lost)). A route that never calls `MintJob` has
+nothing to keep, so an `accepted` attempt it claims raises `fault.accepted_unreachable` while the attempt still applies
+as an ordinary fault.
+
+**A profile whose create may run under `accepted` must register a `FaultBody` built from the attempt alone** — never
+from the rendered body or the minted identifier. `accepted` keeps the job and says nothing about the response: a
+create with no `FaultBody` serves its own rendered body, identifier included, under an `accepted` status of 400 or
+above, so the client learns the id of a job the scenario said it lost. Exa and Tavily register one; so should you,
+and the `x-request-id` or equivalent you put on a faulted create must not derive from the job id either.
 
 ## Step 3 — scenarios
 

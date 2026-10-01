@@ -482,6 +482,7 @@ A deterministic failure plan. Attempt *N* of a route receives `attempts[N]` afte
 | `body_bytes` | integer | For `oversized_body`: the response body is padded with insignificant JSON whitespace to at least this many bytes. There is no default size — unlike `truncate_after_bytes`, a zero or absent value under `kind: oversized_body` is a load error, not a fallback. If the unpadded body is already this size or larger, nothing is appended. Setting it under any other explicit `kind` is also a load error. The padded response declares an exact `Content-Length`. |
 | `after_chunk` | integer | `stream_disconnect` \| `stream_truncate_chunk` \| `stream_stall` only: the zero-based index of the first chunk this attempt affects. See [Streaming fault kinds](#streaming-fault-kinds). |
 | `extra_fields` | map | Additive properties merged into this attempt's body. |
+| `accepted` | boolean | The request took effect before the failure this attempt scripts, so the async job it created is kept even though the response that carries its identifier does not arrive intact — "accepted, reply lost". It keeps the job, not the secret: which shapes also withhold the identifier is below. Meaningful only where the attempt does not deliver its body; an error where it does. See [An accepted create whose reply is lost](#an-accepted-create-whose-reply-is-lost). |
 | `repeat` | integer | Applies this attempt to N consecutive attempts. "Fail the first three, then succeed" is one attempt with `repeat: 3` and the default `after`. |
 
 An omitted `kind` is inferred, in this order: `raw_body` set means `invalid_json`; `content_type` set means
@@ -1181,18 +1182,27 @@ providers:
 Because the poll route's lane is per job (below), that poll plan consumes **per job**: the `503` above is every
 job's second poll, not whichever job happens to poll second globally.
 
+`create.fault` is validated at load exactly like a turn's plan: an empty `attempts:` list, an unknown `kind`, a
+negative `retry_after` and every other fault finding is a load error addressed at
+`providers.<entry>.create.fault…`. Builds up to and including v0.5.0 did not validate it at all, so a malformed
+create plan loaded silently and misbehaved at request time.
+
 **A faulted create leaves a job only if the client can use its identifier.** The create claims its attempt either
 way, so the plan advances as scripted, but the job record is written only when the response actually carries the
 identifier. A `status` of 400 or above, a `body:` (at any status — it replaces the rendered body, it does not merge
 into it), a `status` of 204, 304 or 101 (`net/http` writes no body under them), `empty_body`, `invalid_json`,
 `truncate_body` and `close_before_headers` all replace or destroy it: no record is written, and the retry mints a new
-identifier from the next call index. A delay, `delay_after_headers`, `extra_fields`, `wrong_content_type` and
-`oversized_body` leave the rendered body intact, so the identifier works and its job exists. A `body:` on a create
-attempt therefore scripts what the client sees; it is not a way to hand a client an identifier that polls.
+identifier from the next call index — unless the attempt says `accepted: true`, which keeps the job anyway
+([below](#an-accepted-create-whose-reply-is-lost)). A delay, `delay_after_headers`, `extra_fields`,
+`wrong_content_type` and `oversized_body` leave the rendered body intact, so the identifier works and its job exists.
+A `body:` on a create attempt therefore scripts what the client sees; it is not a way to hand a client an identifier
+that polls.
 
 The rule is decided when the create is claimed, before its body exists, so a few scripts that defeat themselves fall
 outside it. `truncate_after_bytes` at or past the length of the create's response writes the whole body before the
-connection is aborted: the client receives the identifier, and no job was recorded. A `headers:` override of
+connection is aborted: the client receives the identifier and, unless the attempt says `accepted: true`, no job was
+recorded (with `accepted` the job exists and the client holds its id — see
+[below](#an-accepted-create-whose-reply-is-lost)). A `headers:` override of
 `Content-Length`, `Transfer-Encoding` or `Content-Encoding` can leave the client unable to read the body that was
 written, and `extra_fields` can overwrite the `id` they are merged into: in both a job is recorded that the client
 holds no usable identifier for.
@@ -1281,6 +1291,111 @@ jobs would 404 every live identifier while the create kept advancing. A job's id
 index it was minted at, so the same create issued after a reset, at the same call position, mints the identifier
 it minted before — which is what keeps a golden file portable across a reset the same way every other derived
 identifier already is.
+
+#### An accepted create whose reply is lost
+
+A create-then-poll client cannot tell "the request was rejected" from "the request took effect and the reply was
+lost": it holds an error either way. The first leaves nothing behind. The second leaves a run that is still going —
+on a real API, still being billed — that the client never confirmed. `accepted: true` on a fault attempt scripts the
+second: the request took effect, the job is kept, and the attempt then fails the way it says. The same attempt
+without it is the first. `accepted` keeps the *job*; how much of its identifier the client learns depends on the
+shape, and not every shape withholds it ([below](#which-shapes-withhold-the-identifier)).
+
+```yaml
+providers:
+  exa_agent_runs:
+    create:
+      fault:
+        attempts:
+          - {kind: close_before_headers, accepted: true}  # the job is saved, then the connection dies
+    turns:                                                # the retry draws attempt 1, past the plan, and is served
+      - when: {call_index: 0}
+        respond: {status: running}
+      - respond: {status: completed, output: {text: done}}
+```
+
+The rejected counterpart is the same file with `- {kind: close_before_headers}`: the client sees the same connection
+error, and no job exists.
+
+With the plan above the client's create fails with a connection error and never learns an identifier. The evidence is
+the simulator's own, and a test controller reads it without any new endpoint: `GET /__admin/jobs` (`sim.Jobs()` in
+Go) lists exactly one job, and the journal's create entry shows `fault_key: exa:agent_runs.create`,
+`attempt_index: 0`, `fault_kind: close_before_headers` and `aborted: true` — the job matches it on namespace, entry
+and create index. A poll of the listed identifier answers like any other, which is what shows the job is real. The
+listing is read-only evidence for the test, not a recovery API: it carries no lane key (a lane key can embed a
+header-derived value, and credentials must never reach an admin listing), and no route the application reaches
+returns a job's identifier other than the create's own response. Read the journal with `AwaitRequests` after a
+request that ended at the transport level, as everywhere else.
+
+What `accepted` does **not** do:
+
+- **It is not idempotency.** A client retry claims the next attempt and mints a *second* job with a different
+  identifier; two lost replies and a retry leave three jobs. Neither vendor documents an idempotency key, so the
+  simulator does not invent one.
+- **It is not a billing fact.** The simulator records no cost for the orphaned job; a poll renders the scenario's
+  own `cost_dollars`, as for any other run.
+- **It does not exceed the job bound.** At `--max-jobs` the create is refused with the provider's rejection and
+  `job.limit_reached`, and the scripted fault is *not* applied — the rejection is what the client sees, and the
+  attempt it had claimed is reported as `fault.attempt_on_rejection`. A reset drops the accepted job together
+  with its cursors, so the next create is attempt 0 again and re-mints the same identifier.
+
+**Where it can appear.** Load accepts `accepted` on any fault attempt — `create.fault`, a turn's plan, a block-level
+plan — because load sees one attempt in isolation, and whether the request that claims it creates a job is a fact only
+the routes know. It means something only on a route that mints a job: an async create. Exa's Agent create is the one
+this is built and tested against; `tavily_research`'s create mints through the same seam. An accepted attempt claimed
+by a request that mints nothing — an `accepted` in a poll plan, say — raises `fault.accepted_unreachable`, an error
+on that request's journal entry, and the attempt still applies as an ordinary fault.
+
+**When it is redundant.** `accepted` on an attempt whose client still receives the create's body is a load error,
+`scenario.fault.accepted.redundant`: the job is kept without it, so declaring it claims a lost reply the attempt does
+not script. "Receives the body" is the delivery predicate `scenario.FaultAttempt.DeliversBody`, not a list of kinds,
+so the rule follows what the executor does. It is an error on a 2xx or 3xx `status` that still delivers its body
+(not 204 or 304), a `delay`, `delay_after_headers`, `extra_fields`, `wrong_content_type`, `oversized_body` and every
+`stream_*` kind — a create never streams, so a `stream_*` attempt is dropped and the body is delivered. It is *not* an
+error, and `accepted` is meaningful because the body does not arrive intact, on `close_before_headers`,
+`truncate_body`, `empty_body`, `invalid_json`, any `status` of 400 or above, a `body:` override at any status, and a
+`status` of 204, 304 or 101. Whether the application also loses the identifier there is the
+[next question](#which-shapes-withhold-the-identifier); for `truncate_body` it usually does not.
+
+| Code | Severity | Condition |
+|---|---|---|
+| `scenario.fault.accepted.redundant` | error, at load | `accepted: true` on an attempt that delivers the create's body, including a `stream_*` kind. |
+| `fault.accepted_unreachable` | error, per request | An `accepted` attempt was claimed by a request that created no job. |
+
+The runtime finding is an error rather than a warning for the reason `scenario.stream.abort_unreachable` is: a
+scenario that scripts "accepted, reply lost" on a route that cannot honour it would otherwise run green while
+exercising nothing of the sort, and its author would find out from an assertion about a job that was never there.
+
+##### Which shapes withhold the identifier
+
+The create's own response is the one place the application can learn the identifier, so whether `accepted` also
+hides it is the shape's doing, not the modifier's:
+
+| Shape | Does the application learn the identifier? |
+|---|---|
+| `close_before_headers` | No: nothing arrives. |
+| `empty_body`, `invalid_json` | No: the body is replaced. |
+| a `status` of 400 or above, a `body:` override | No, provided the provider's error body is built from the attempt alone. Exa's and Tavily's are. A `status: 504` attempt answers with the agent error envelope and an `x-request-id` derived separately from the run id. |
+| a `status` of 204, 304 or 101 | No: `net/http` writes no body. |
+| `truncate_body` | **Usually yes.** It sends a *prefix* of the rendered body, and the identifier is the first key of both in-tree creates. |
+
+For Exa's create the body is 390 bytes and opens with `{"id":"` (7 bytes) followed by the 42-character
+`agent_run_…` identifier, so the identifier occupies bytes 7–48. Only a `truncate_after_bytes` of **48 or less**
+withholds it; 49 delivers all of it. Leaving `truncate_after_bytes` out means half the body, 195 bytes, which
+delivers the whole identifier, and so does any larger value — at **390 or more** the response is complete, an
+ordinary `200` with nothing lost. Tavily's research create behaves the same way: `request_id` is the first key
+(`{"request_id":"` is 15 bytes, so the 36-character UUID occupies bytes 15–50), its body is well over 102 bytes, so
+the default cut delivers the UUID, and only a `truncate_after_bytes` of 50 or less withholds it. To script a reply
+the application really loses, use `close_before_headers`, or give `truncate_body` a small explicit cut. The tests pin
+both sides — an 8-byte cut and a cut at byte 48 hide the identifier; a cut at byte 49, the default cut and a
+390-byte cut deliver it with the job kept — and pin Exa's layout (390, 7 and 42) against the real body.
+
+Three further ways a script can defeat itself under `accepted`, none of them a load error because load does not have
+the rendered body: a `truncate_body` cut that reaches the identifier, above; a provider `FaultBody` that echoes the
+rendered body or the minted identifier, which hands it to the client under a status of 400 or above (a profile
+author's rule: [Async jobs](building-a-profile.md#async-jobs)); and a `headers:` override of `Content-Length`,
+`Transfer-Encoding` or `Content-Encoding`, which can leave the client unable to read the body that was written and so
+only hides the identifier further.
 
 ### What the request still controls
 

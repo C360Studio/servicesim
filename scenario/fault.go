@@ -52,6 +52,15 @@ const (
 	FaultStreamStall FaultKind = "stream_stall"
 )
 
+// CodeAcceptedRedundant is raised when `accepted: true` is declared on a fault
+// attempt that already delivers its body ([FaultAttempt.DeliversBody]), which
+// includes every stream_* kind: the job is kept whether or not the modifier is
+// there, so declaring it claims a lost reply the attempt does not script. Checked
+// in [Scenario.Validate] from the attempt alone, and defined as the predicate's
+// result rather than as a list of kinds so it cannot drift from what a create
+// actually keeps.
+const CodeAcceptedRedundant = "scenario.fault.accepted.redundant"
+
 // IsStream reports whether k is one of the three fault kinds that assume a
 // chunked SSE transport and cannot apply to an ordinary JSON exchange. It is
 // exported so provider (whose own execution-time switch needs the same
@@ -159,6 +168,45 @@ type FaultAttempt struct {
 
 	ExtraFields ExtraFields `yaml:"extra_fields,omitempty"`
 
+	// Accepted says the request TOOK EFFECT before the failure this attempt
+	// scripts: the job it created is kept even though the response that carries
+	// its identifier does not arrive intact. "Accepted, reply lost" is the
+	// failure a create-then-poll client cannot distinguish from "rejected" — it
+	// holds an error either way — and the two have different consequences, an
+	// orphaned run that is still being billed versus nothing at all. Without
+	// this modifier a create attempt whose body does not arrive leaves no job,
+	// which is the rejected case.
+	//
+	// Accepted keeps the JOB; it does not hide the identifier, and whether the
+	// client learns it depends on the shape. close_before_headers, empty_body,
+	// invalid_json and a status of 400 or above withhold it, provided the
+	// provider's error body is built from the attempt alone. truncate_body does
+	// not by default: it sends a PREFIX of the rendered body, and the identifier
+	// is the first key of both in-tree creates, so the default truncation (half
+	// the body) and any larger one deliver the whole identifier — a complete,
+	// ordinary response once truncate_after_bytes reaches the body's length.
+	// Only a cut that stops short of the identifier's last byte withholds it;
+	// for Exa's create, whose body opens with `{"id":"` (7 bytes) and then a
+	// 42-character identifier, that is a truncate_after_bytes below 49.
+	//
+	// It is meaningful only where the attempt does NOT deliver its body
+	// ([FaultAttempt.DeliversBody]): where the client does receive the
+	// identifier the job is kept anyway, so declaring it is a load error,
+	// [CodeAcceptedRedundant]. The check is that predicate's result and not a
+	// list of kinds, so it covers a Body: override below 400 and a 204 or 304 as
+	// well as close_before_headers, truncate_body, empty_body, invalid_json and
+	// any status of 400 or above.
+	//
+	// Load checks the attempt in isolation and allows it under any fault plan.
+	// Whether the request that claims it mints a job is a runtime fact only a
+	// profile's routes know; an accepted attempt claimed by a request that mints
+	// nothing is reported per request, as provider.CodeAcceptedUnreachable.
+	//
+	// It is not idempotency. A client that retries claims the next attempt and
+	// mints a SECOND job; neither vendor documents an idempotency key, and the
+	// simulator does not invent one.
+	Accepted bool `yaml:"accepted,omitempty"`
+
 	// Repeat applies this attempt to N consecutive attempts. Zero and one are
 	// equivalent. "Fail the first three then succeed" is one attempt with
 	// Repeat: 3 and the default After.
@@ -189,6 +237,122 @@ func (a FaultAttempt) EffectiveKind() FaultKind {
 		return FaultStatus
 	}
 	return FaultNone
+}
+
+// HTTP statuses DeliversBody reasons about, spelled out rather than imported:
+// this package has no dependency on net/http and a framework consumers import
+// for its data model should not acquire one for three constants.
+const (
+	statusSwitchingProtocols = 101
+	statusNoContent          = 204
+	statusNotModified        = 304
+	statusBadRequest         = 400
+)
+
+// DeliversBody reports whether the client of a non-streaming exchange still
+// receives the body the handler rendered under this attempt: the response is
+// complete, is not an error status, and carries the handler's own bytes.
+//
+// It is exported so provider, which decides at MintJob time whether a create's
+// job is kept, shares this one predicate with scenario's load validation
+// ([FaultAttempt.Accepted] is redundant on an attempt that delivers its body)
+// rather than carrying a second copy — the precedent is [FaultKind.IsStream].
+// Getting it wrong is expensive in both directions. Keeping a job when the body
+// is replaced leaves a phantom: a record consuming a slot that no client has an
+// identifier for. NOT keeping one when the body IS delivered is worse — the
+// client holds a real identifier that no record backs, so every poll returns the
+// vendor's 404 for a job the create said it made.
+//
+// [FaultAttempt.Delay] and [FaultAttempt.DelayAfterHeaders] do not decide it:
+// "was this request faulted" is the wrong question, because a pure delay writes
+// the body after sleeping. The question is whether the client still receives
+// what the handler rendered.
+//
+// The table below is read off what provider's Handle and executor actually do,
+// not off what a kind is named for. Three of its rows are not the kind's own
+// doing, and all were wrong before this was derived from the executor:
+//
+//   - The executor replaces the body with the attempt's Body: at ANY status, and
+//     asks the provider's FaultBody for an envelope at status >= 400. Every kind
+//     that would otherwise write the rendered body therefore writes it only when
+//     the attempt has no Body: and a status below 400.
+//   - net/http writes no body under some statuses it is asked for one under: 204
+//     and 304, and 101, which it sends as the final status. Every other 1xx goes
+//     out as an interim response and the body follows it under a 200, so that
+//     client still receives the identifier.
+//   - Handle drops an attempt that cannot apply to the exchange — a stream_* kind
+//     on a response that does not stream — so the rendered body is written
+//     untouched and the mismatch is reported as a finding. This method answers for
+//     a response that does not stream, so those kinds deliver.
+//
+// Per kind, as [FaultAttempt.EffectiveKind] resolves it:
+//
+//	EffectiveKind                        the client receives the handler's body when
+//	-----------------------------------  ------------------------------------------
+//	FaultNone, FaultStatus,              the attempt has no Body:, a status below
+//	FaultWrongContentType,               400, and a status net/http writes a body
+//	FaultExtraFields,                    under. Otherwise the override or the
+//	FaultOversizedBody                   provider's error envelope replaces it, and
+//	                                     these kinds then only change the header,
+//	                                     merge fields into the replacement, or pad it.
+//	FaultStreamDisconnect,               always: the attempt is dropped, so even a
+//	FaultStreamTruncateChunk,            status or Body: it declares is never applied.
+//	FaultStreamStall
+//	FaultInvalidJSON                     never: raw non-JSON bytes replace it.
+//	FaultEmptyBody                       never: nothing is written.
+//	FaultTruncateBody                    never: a prefix, then an abort.
+//	FaultCloseBeforeHeaders              never: nothing reaches the client at all.
+//
+// Error, Tag, RawBody, ContentType, RetryAfter, Delay and DelayAfterHeaders do
+// not appear because none of them can change the answer: Error and Tag are read
+// only by the provider's FaultBody, which runs only for a Body: or a status >= 400
+// — both already "never" above — and the rest change a timing, a header that does
+// not frame the body, or (RawBody) the kind EffectiveKind infers. Headers is the
+// one that can, and is the third self-defeating script below.
+//
+// A status >= 400 is "never" even for a provider that registers no FaultBody, in
+// which case the handler's body is served under the error status: no client
+// treats that as a created job, so no job is the right answer there too.
+//
+// The prediction is made before the body exists, so these outcomes are beyond
+// it, and the first three are scripts defeating themselves rather than shapes
+// worth a branch here: truncate_body with TruncateAfterBytes at or past the
+// rendered body's length writes the whole body before it aborts; extra_fields can
+// overwrite the "id" it merges into; a Headers: override of a framing header —
+// Content-Length, Transfer-Encoding or Content-Encoding — can leave the client
+// unable to read the body that was written; and a client whose own deadline fires
+// during a delay receives nothing.
+//
+// The switch names every kind rather than defaulting, so a new kind has to be
+// decided here rather than absorbed by a default. The result is verified against
+// what a real HTTP client receives, kind by kind, in this repository's own tests.
+func (a FaultAttempt) DeliversBody() bool {
+	switch a.EffectiveKind() {
+	case FaultNone, FaultStatus, FaultWrongContentType, FaultExtraFields, FaultOversizedBody:
+		return len(a.Body) == 0 && a.Status < statusBadRequest && !writesNoBody(a.Status)
+
+	case FaultStreamDisconnect, FaultStreamTruncateChunk, FaultStreamStall:
+		return true
+
+	case FaultInvalidJSON, FaultEmptyBody, FaultTruncateBody, FaultCloseBeforeHeaders:
+		return false
+
+	default:
+		// A kind this switch does not name. Not delivering is the conservative
+		// answer, but the provider test above is what is meant to catch it first.
+		return false
+	}
+}
+
+// writesNoBody reports whether net/http sends a response under status without
+// the body the handler wrote to it. That is 204 and 304 — bodyAllowedForStatus
+// refuses them — and 101, which the server sends as the final status. It is not
+// every 1xx, though that is what bodyAllowedForStatus says: the server sends any
+// other 1xx as an interim response and writes the body under the 200 that
+// follows, which provider's TestACreateLeavesAJobExactlyWhenTheClientHoldsItsIdentifier
+// pins with a real client.
+func writesNoBody(status int) bool {
+	return status == statusSwitchingProtocols || status == statusNoContent || status == statusNotModified
 }
 
 // Repeats returns the number of consecutive attempts this entry covers. Zero and

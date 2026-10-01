@@ -57,6 +57,13 @@ type Exchange struct {
 	decision FaultDecision
 	claimed  bool
 
+	// minted records that the handler called MintJob, so Handle can tell an
+	// `accepted` attempt claimed by a request that creates a job from one claimed
+	// by a request that creates nothing (CodeAcceptedUnreachable). It says the
+	// create ran, not that it succeeded: a refused create is reported as a
+	// rejection, not as an unreachable modifier.
+	minted bool
+
 	// errorBody, defaultAuth and kind are this Exchange's profile's
 	// ErrorBody, DefaultAuth and effective Kind (Profile.effectiveKind()),
 	// installed once per request by Profile.Handler (installProfile,

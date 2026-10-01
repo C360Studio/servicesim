@@ -587,6 +587,11 @@ slice alone would have changed nothing.
 real gap, not a documentation slip: `HasFaults` reads `e.Create.Fault` and `Validate` does not, so the two halves
 of "follow-through" this design asked for landed unevenly.
 
+**Closed with `accepted: true` (issue #7, 2026-10-01):** `validateProvider` now runs `validateFault` on
+`e.Create.Fault` as well, addressed at `providers.<entry>.create.fault`, so a malformed create plan fails at load like
+a turn's plan. It is a deliberate behaviour change for a scenario that loaded only because the plan was never looked
+at.
+
 **Compatibility is worse than additive, and stayed that way.** An older binary meeting a file with `create:` does
 *not* reject it cleanly — `KnownFields(true)` never sees the key, because the `default:` arm has already swept it
 into the projection body. What the author gets is `scenario.provider.body_with_turns`: *"move create inside a
@@ -1115,6 +1120,11 @@ The set is read directly off `execute`'s switch (`provider/fault_exec.go`): thos
 explicitly and fall through to writing `resp.Body`; everything else replaces or withholds it. An earlier version of
 this table's `extra_fields` row said "yes" while the predicate above it said `FaultNone` only — internally
 inconsistent, since `extra_fields` is never `FaultNone`. **Fixed in place, in this doc-truth pass** (2026-08-15).
+
+**Since then (2026-10-01):** the predicate lives on the attempt, as `scenario.FaultAttempt.DeliversBody`, so load
+validation and `MintJob` share one copy, and the record is kept on `commits(dec)` — the body is delivered, *or* the
+attempt says `accepted: true`. The table above is that method's table; `provider`'s `deliversBody` only adds the
+no-attempt row.
 
 Claiming the attempt inside the handler is established practice, not a new risk: `handleSearch` already claims in
 `selectProjection` before its own `codeRenderFailed` path (`profiles/exa/handler.go`).

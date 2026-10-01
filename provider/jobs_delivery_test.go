@@ -37,7 +37,7 @@ type deliveryRow struct {
 // no "id", so a response built from it can never be mistaken for the handler's.
 var scriptedBody = map[string]any{"scripted": true}
 
-// deliveryTable is the truth table deliversBody must agree with, one row per
+// deliveryTable is the truth table scenario.FaultAttempt.DeliversBody must agree with, one row per
 // shape the executor treats differently. It is shared by the unit test that
 // asks MintJob directly and by the end-to-end test that asks a real client, so
 // the two cannot drift apart.
@@ -165,7 +165,7 @@ func TestMintJobRecordsExactlyWhenTheBodyIsDelivered(t *testing.T) {
 // half: it sends a real create through Handle and the real executor, reads what a
 // client reads, and requires the job store to agree.
 //
-// deliversBody predicts the response at MintJob time, before the handler has
+// DeliversBody predicts the response at MintJob time, before the handler has
 // returned and before Handle applies the fault; the executor is what decides. A
 // prediction that drifts from it fails in one of two ways, both silent: a client
 // holding an identifier no record backs (every poll 404s), or a record no client
@@ -268,7 +268,7 @@ func clientHeldIdentifier(t *testing.T, client *http.Client, url string) string 
 }
 
 // TestDeliveryTableNamesEveryFaultKind is what makes the NEXT fault kind force a
-// decision here instead of silently falling out of deliversBody as "no job".
+// decision here instead of silently falling out of DeliversBody as "no job".
 //
 // The kinds are read from the scenario package's own source — every constant
 // declared as `X FaultKind = "lit"` or `X = FaultKind("lit")`, and any other form
@@ -293,7 +293,7 @@ func TestDeliveryTableNamesEveryFaultKind(t *testing.T) {
 
 	for _, kind := range kinds {
 		if !covered[kind] {
-			t.Errorf("fault kind %q has no row in deliveryTable: decide in deliversBody (provider/jobs.go) whether "+
+			t.Errorf("fault kind %q has no row in deliveryTable: decide in scenario.FaultAttempt.DeliversBody (scenario/fault.go) whether "+
 				"a create attempt of this kind still delivers the handler's body, then add the row", kind)
 		}
 	}
