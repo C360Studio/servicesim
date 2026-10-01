@@ -225,16 +225,72 @@ providers:
 	require.NotContains(t, string(body), "tool_calls_cost")
 }
 
-// TestAgentValidationGolden pins the 422 body. It is FastAPI's
-// HTTPValidationError even on the Agent surface, whose every other status is
-// errorInfo — an asymmetry that is real and must not be unified.
+// TestAgentValidationGolden pins the Agent surface's validation failure. The
+// specification documents only 200 and 400 on createAgent
+// (#/paths/~1v1~1agent/post/responses) and no Agent operation documents 422, so a
+// request that fails validation is HTTP 400 carrying ErrorInfo, whose message
+// takes the "validation failed: <message>" form the max_output_tokens
+// description gives (#/components/schemas/ResponsesRequest/properties/max_output_tokens).
 func TestAgentValidationGolden(t *testing.T) {
 	t.Parallel()
 	s := newSim(t, mustScenario(t, agentCorpus))
 
 	resp, body := s.do(t, http.MethodPost, "/v1/agent", `{}`)
-	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
-	require.Equal(t, string(goldenBytes(t, "perplexity-agent-422.json")), string(body))
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Equal(t, string(goldenBytes(t, "perplexity-agent-400-validation.json")), string(body))
+}
+
+// TestAgentValidationFailureShape walks the facts the golden above cannot say on
+// its own: the envelope is ErrorInfo and never FastAPI's detail array, it is the
+// same through every spelling of the route, the journal labels it 400, and when
+// several rules fail at once the message names the first in the request schema's
+// declaration order, so the body does not depend on the order checks happen to run.
+func TestAgentValidationFailureShape(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		path        string
+		request     string
+		wantMessage string
+	}{
+		{name: "missing input", path: "/v1/agent", request: `{}`,
+			wantMessage: "validation failed: input is required"},
+		{name: "through /v1/responses", path: "/v1/responses", request: `{}`,
+			wantMessage: "validation failed: input is required"},
+		{name: "through /responses", path: "/responses", request: `{}`,
+			wantMessage: "validation failed: input is required"},
+		{name: "malformed JSON", path: "/v1/agent", request: `{"input":`,
+			wantMessage: "validation failed: "},
+		{name: "first failing field in schema order wins", path: "/v1/agent",
+			request:     `{"input":"hi","temperature":3,"max_steps":0}`,
+			wantMessage: "validation failed: max_steps must be an integer of at least 1"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSim(t, mustScenario(t, agentCorpus))
+
+			resp, body := s.do(t, http.MethodPost, tc.path, tc.request)
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode, "body: %s", body)
+
+			var envelope map[string]any
+			require.NoError(t, json.Unmarshal(body, &envelope))
+			require.NotContains(t, envelope, "detail", "422's HTTPValidationError is not an Agent body")
+			info, ok := envelope["error"].(map[string]any)
+			require.True(t, ok, "error is %T, want an ErrorInfo object", envelope["error"])
+			require.Equal(t, "invalid_request", info["code"])
+			require.Equal(t, "invalid_request_error", info["type"])
+			message, _ := info["message"].(string)
+			require.True(t, strings.HasPrefix(message, tc.wantMessage),
+				"message %q does not start with %q", message, tc.wantMessage)
+
+			entries := s.journal.Snapshot()
+			require.Len(t, entries, 1)
+			require.Equal(t, "perplexity.agent.error.400", entries[0].Outcome.Label)
+		})
+	}
 }
 
 // TestAgentUnauthorizedGolden pins the non-422 envelope, which is the published
@@ -297,24 +353,24 @@ func TestAgentRequestValidation(t *testing.T) {
 		wantCode   string
 	}{
 		{name: "input is required", request: `{"model":"openai/gpt-5"}`,
-			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeInputMissing},
+			wantStatus: http.StatusBadRequest, wantCode: CodeInputMissing},
 		{name: "input may be an array of items", request: `{"input":[{"role":"user","content":"hi"}]}`,
 			wantStatus: http.StatusOK},
 		{name: "input must not be a number", request: `{"input":7}`,
-			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeInputInvalid},
+			wantStatus: http.StatusBadRequest, wantCode: CodeInputInvalid},
 		{name: "a model chain is capped at five",
 			request:    `{"input":"hi","models":["a/b","a/b","a/b","a/b","a/b","a/b"]}`,
-			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeModelsTooMany},
+			wantStatus: http.StatusBadRequest, wantCode: CodeModelsTooMany},
 		{name: "max_steps is at least one", request: `{"input":"hi","max_steps":0}`,
-			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeMaxSteps},
+			wantStatus: http.StatusBadRequest, wantCode: CodeMaxSteps},
 		{name: "max_output_tokens is positive", request: `{"input":"hi","max_output_tokens":0}`,
-			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeMaxOutputTokens},
+			wantStatus: http.StatusBadRequest, wantCode: CodeMaxOutputTokens},
 		{name: "temperature is bounded", request: `{"input":"hi","temperature":3}`,
-			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeTemperature},
+			wantStatus: http.StatusBadRequest, wantCode: CodeTemperature},
 		{name: "top_p is bounded", request: `{"input":"hi","top_p":1.5}`,
-			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeTopP},
+			wantStatus: http.StatusBadRequest, wantCode: CodeTopP},
 		{name: "store must be a boolean", request: `{"input":"hi","store":"yes"}`,
-			wantStatus: http.StatusUnprocessableEntity, wantCode: CodeStoreInvalid},
+			wantStatus: http.StatusBadRequest, wantCode: CodeStoreInvalid},
 		{name: "a bare model name is flagged but accepted", request: `{"input":"hi","model":"gpt-5"}`,
 			wantStatus: http.StatusOK, wantCode: CodeModelFormat},
 		{name: "an unmodelled property is flagged but accepted", request: `{"input":"hi","curiosity":9}`,

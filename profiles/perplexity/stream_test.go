@@ -1213,7 +1213,7 @@ providers:
 		require.True(t, hasCode(s.findings(t), CodeAgentStreamUnsupported))
 	})
 
-	t.Run("reject: 422 naming body.stream, no attempt consumed", func(t *testing.T) {
+	t.Run("reject: 400 ErrorInfo naming the stream, no attempt consumed", func(t *testing.T) {
 		t.Parallel()
 		s := newSim(t, mustScenario(t, `
 version: 1
@@ -1224,8 +1224,9 @@ providers:
     answer: hi
 `))
 		resp, body := s.do(t, http.MethodPost, "/v1/agent", `{"input":"hi","stream":true}`)
-		require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, "body: %s", body)
-		require.Contains(t, string(body), `"stream"`)
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode, "body: %s", body)
+		require.Contains(t, string(body), `"error"`)
+		require.Contains(t, string(body), `streaming responses are not simulated`)
 		require.True(t, hasCode(s.findings(t), CodeAgentStreamUnsupported))
 	})
 

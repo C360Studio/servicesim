@@ -12,10 +12,11 @@ import (
 )
 
 // surface identifies which of the two Perplexity APIs an error body is shaped
-// for. The two error models are genuinely different and must not be unified: 422
-// is FastAPI's HTTPValidationError on both, every other Agent status is the
-// published errorInfo envelope, and every other Sonar status is the
-// simulator-chosen {"detail": "<string>"} form.
+// for. The two error models are genuinely different and must not be unified: a
+// Sonar validation failure is FastAPI's 422 HTTPValidationError and every other
+// Sonar status is the simulator-chosen {"detail": "<string>"} form, while every
+// Agent error — a validation failure included, the specification documents no
+// Agent 422 — is the published ErrorInfo envelope.
 type surface string
 
 // The two simulated surfaces.
@@ -107,9 +108,10 @@ func faultBody(surface surface) func(scenario.FaultAttempt) []byte {
 	}
 }
 
-// validationErrorMessage maps a finding code onto the FastAPI msg and type a 422
-// entry carries. The strings are FastAPI's own vocabulary, so a consumer that
-// matches on `type` sees what the real surface sends.
+// validationErrorMessage maps a finding code onto the FastAPI msg and type a
+// Sonar 422 entry carries. The strings are FastAPI's own vocabulary, so a
+// consumer that matches on `type` sees what the real surface sends. The Agent
+// surface never reads this table: its validation failures are 400 ErrorInfo.
 var validationErrorMessage = map[string][2]string{
 	CodeModelMissing:    {"Field required", "missing"},
 	CodeModelInvalid:    {"Input should be 'sonar', 'sonar-pro', 'sonar-reasoning-pro' or 'sonar-deep-research'", "enum"},
@@ -128,16 +130,47 @@ var validationErrorMessage = map[string][2]string{
 	CodeRecencyFilter:   {"Input should be 'hour', 'day', 'week', 'month' or 'year'", "enum"},
 	CodeStreamMode:      {"Input should be 'full' or 'concise'", "enum"},
 
-	CodeInputMissing:      {"Field required", "missing"},
-	CodeInputInvalid:      {"Input should be a valid string or list", "value_error"},
-	CodeModelsTooMany:     {"List should have at most 5 items after validation", "too_long"},
-	CodeMaxSteps:          {"Input should be greater than or equal to 1", "greater_than_equal"},
-	CodeMaxOutputTokens:   {"Input should be greater than 0", "greater_than"},
-	CodeStoreInvalid:      {"Input should be a valid boolean", "bool_type"},
-	CodeBackgroundInvalid: {"Input should be a valid boolean", "bool_type"},
-
 	provider.CodeBodyNotObject: {"Input should be a valid dictionary", "dict_type"},
 	provider.CodeMalformedJSON: {"JSON decode error", "json_invalid"},
+}
+
+// agentValidationPrefix opens the message of an Agent validation failure. The
+// specification quotes it for exactly one rule, max_output_tokens ("the API
+// returns HTTP 400 with: validation failed: max_output_tokens is required when
+// using Anthropic models."); applying it to every other rule is Servicesim's
+// reading, not a vendor statement.
+const agentValidationPrefix = "validation failed: "
+
+// agentValidationMessage renders the ErrorInfo message for an Agent request that
+// failed validation. It names the first error finding in the request schema's
+// declaration order — the same order validationErrorBody sorts a 422 into — so
+// the body never depends on the order the checks happened to run in. The other
+// findings are not lost: they stay in the journal.
+func agentValidationMessage(findings []provider.Finding, order []string) string {
+	rank := make(map[string]int, len(order))
+	for i, name := range order {
+		rank[name] = i
+	}
+
+	var first *provider.Finding
+	for i := range findings {
+		f := &findings[i]
+		if f.Severity != provider.SeverityError {
+			continue
+		}
+		if first == nil {
+			first = f
+			continue
+		}
+		ra, rb := fieldRank(rank, f.Field), fieldRank(rank, first.Field)
+		if ra < rb || (ra == rb && f.Field < first.Field) {
+			first = f
+		}
+	}
+	if first == nil {
+		return ""
+	}
+	return agentValidationPrefix + first.Message
 }
 
 // validationErrorBody renders the FastAPI 422 body from the request's error

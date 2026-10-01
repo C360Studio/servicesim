@@ -164,12 +164,21 @@ func errorResponse(surface surface, status int, message string) provider.Respons
 	}
 }
 
-// validationResponse builds the FastAPI 422 body, or the surface's own envelope
-// for the statuses that are not field validation failures.
+// validationResponse builds the response for a request that failed validation.
+//
+// The two surfaces answer differently. Sonar answers FastAPI's 422
+// HTTPValidationError. The Agent API documents no 422 on any operation, only 400
+// with ErrorInfo (#/paths/~1v1~1agent/post/responses), so an Agent request that
+// fails validation is a 400 in the surface's own envelope. The statuses that are
+// not field validation failures — authentication, an oversized body, a refused
+// namespace — keep their own status and envelope on both surfaces.
 func validationResponse(surface surface, findings []provider.Finding, order []string) provider.Response {
 	status := errorStatus(findings)
 	if status != http.StatusUnprocessableEntity {
 		return errorResponse(surface, status, "")
+	}
+	if surface == surfaceAgent {
+		return errorResponse(surface, http.StatusBadRequest, agentValidationMessage(findings, order))
 	}
 	return provider.Response{
 		Status: status,

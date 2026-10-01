@@ -26,7 +26,7 @@ const (
 
 	// CodeAgentStreamUnsupported is raised for stream: true under an entry
 	// whose effective streaming policy is not stream — a warning under the
-	// warn default, an error (422) under reject, exactly mirroring
+	// warn default, an error (400, ErrorInfo) under reject, mirroring
 	// [CodeStreamUnimplemented]'s two-severity use on the Sonar surface. It
 	// does NOT fire under a stream-policy entry: a request that will
 	// actually receive the scripted GrammarTyped sequence must not also
@@ -60,8 +60,9 @@ const (
 const maxModelChain = 5
 
 // agentFields are the Agent request properties this build models, in the order
-// the specification declares them. As with sonarFields the order is what the 422
-// detail array is sorted into.
+// the specification declares them. As with sonarFields the order is what a
+// validation failure is sorted by: Sonar's 422 detail array, and the one finding
+// an Agent 400 names.
 var agentFields = []string{
 	"input", "background", "instructions", "language_preference",
 	"max_output_tokens", "max_steps", "model", "models", "preset",

@@ -136,12 +136,27 @@ func TestPerplexityAgentSearchResultIDsAreIntegers(t *testing.T) {
 	}
 }
 
-// TestPerplexityErrorEnvelopesStaySeparate pins the asymmetry the addendum
-// calls out: 422 is FastAPI's array-valued detail on both surfaces, non-422
-// Sonar is a string-valued detail, and non-422 Agent is the specification's
-// ErrorInfo. Unifying them would be wrong for two of the three.
+// TestPerplexityErrorEnvelopesStaySeparate pins the asymmetry between the two
+// surfaces: Sonar's 422 is FastAPI's array-valued detail, its other statuses are
+// a string-valued detail, and every Agent error — validation failures included,
+// because the specification documents no 422 on any Agent operation — is the
+// specification's ErrorInfo. Unifying them would be wrong for both.
 func TestPerplexityErrorEnvelopesStaySeparate(t *testing.T) {
 	t.Parallel()
+
+	errorInfo := func(t *testing.T, body map[string]any) {
+		t.Helper()
+		info, ok := body["error"].(map[string]any)
+		if !ok {
+			t.Fatalf("error is %T, want an ErrorInfo object", body["error"])
+		}
+		if _, ok := info["message"].(string); !ok {
+			t.Errorf("error.message is %T, want a string", info["message"])
+		}
+		if _, ok := body["detail"]; ok {
+			t.Errorf("an Agent error carries detail, which belongs to the Sonar surface")
+		}
+	}
 
 	cases := []struct {
 		golden string
@@ -152,25 +167,13 @@ func TestPerplexityErrorEnvelopesStaySeparate(t *testing.T) {
 				t.Errorf("detail is %T, want an array of validation errors", body["detail"])
 			}
 		}},
-		{"perplexity-agent-422.json", func(t *testing.T, body map[string]any) {
-			if _, ok := body["detail"].([]any); !ok {
-				t.Errorf("detail is %T, want an array of validation errors", body["detail"])
-			}
-		}},
 		{"perplexity-sonar-429.json", func(t *testing.T, body map[string]any) {
 			if _, ok := body["detail"].(string); !ok {
 				t.Errorf("detail is %T, want a string", body["detail"])
 			}
 		}},
-		{"perplexity-agent-429.json", func(t *testing.T, body map[string]any) {
-			info, ok := body["error"].(map[string]any)
-			if !ok {
-				t.Fatalf("error is %T, want an ErrorInfo object", body["error"])
-			}
-			if _, ok := info["message"].(string); !ok {
-				t.Errorf("error.message is %T, want a string", info["message"])
-			}
-		}},
+		{"perplexity-agent-400-validation.json", errorInfo},
+		{"perplexity-agent-429.json", errorInfo},
 	}
 
 	for _, tc := range cases {

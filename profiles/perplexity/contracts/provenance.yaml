@@ -208,58 +208,87 @@ goldens:
     api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
-      ErrorInfo is declared on the agent operations, so the {"error": {...}}
+      createAgent documents 400 with an ErrorInfo body
+      (#/paths/~1v1~1agent/post/responses/400), so the {"error": {...}}
       envelope is the specification's, not an inference. Only message is
-      required. The code and type VALUES are Servicesim's; the specification
-      does not enumerate them.
+      required. The code and type VALUES, and the default message text
+      ("Bad Request", http.StatusText), are Servicesim's; the specification
+      does not enumerate them. This is the body a scripted fault attempt of
+      status 400 sends; perplexity-agent-400-validation.json is the body a
+      request that fails validation receives.
+
+  - golden: perplexity-agent-400-validation.json
+    endpoint: POST /v1/agent (aliases POST /v1/responses, POST /responses)
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
+    verified: 2026-08-15
+    note: >-
+      A request that fails validation. Labelled simulator-chosen because the
+      header's vendor-documented means the VALUES come from the specification
+      too, and the message text here is Servicesim's apart from one quoted rule. createAgent documents only 200 and 400
+      (#/paths/~1v1~1agent/post/responses) and no Agent operation documents
+      422, so this is HTTP 400 with ErrorInfo, replacing the FastAPI
+      HTTPValidationError 422 the earlier golden perplexity-agent-422.json
+      pinned. Vendor-pinned: the status and the {"error": {...}} envelope, and
+      the "validation failed: <message>" wording, which
+      #/components/schemas/ResponsesRequest/properties/max_output_tokens
+      quotes for exactly one rule ("validation failed: max_output_tokens is
+      required when using Anthropic models."). Simulator-chosen: applying that
+      wording to every other rule, the message text after the prefix, naming
+      only the first failing field in request-schema order, and the code and
+      type values.
 
   - golden: perplexity-agent-401.json
     endpoint: POST /v1/agent (alias POST /v1/responses)
     status: 401
-    kind: vendor-documented
-    documentation_url: https://docs.perplexity.ai/openapi.json
-    api_version: "1.0.0"
-    verified: 2026-08-14
-    note: ErrorInfo envelope; code and type values are Servicesim's.
-
-  - golden: perplexity-agent-403.json
-    endpoint: POST /v1/agent (alias POST /v1/responses)
-    status: 403
-    kind: vendor-documented
-    documentation_url: https://docs.perplexity.ai/openapi.json
-    api_version: "1.0.0"
-    verified: 2026-08-14
-    note: ErrorInfo envelope; code and type values are Servicesim's.
-
-  - golden: perplexity-agent-422.json
-    endpoint: POST /v1/agent (alias POST /v1/responses)
-    status: 422
-    kind: vendor-documented
+    kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
     verified: 2026-08-14
     note: >-
-      HTTPValidationError, not ErrorInfo. The asymmetry is real and deliberate:
-      422 follows FastAPI's validation convention on both surfaces while the
-      Agent API declares ErrorInfo for every other status. Do not unify them.
+      No Agent operation documents 401 (createAgent documents only 200 and
+      400). The status is the ordinary HTTP answer to a missing or wrong bearer
+      credential and the profile must fail closed on it; the ErrorInfo body is
+      an extrapolation from the documented 400, and the code and type values
+      are Servicesim's.
+
+  - golden: perplexity-agent-403.json
+    endpoint: POST /v1/agent (alias POST /v1/responses)
+    status: 403
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
+    verified: 2026-08-14
+    note: >-
+      Undocumented for the Agent API, see perplexity-agent-401.json. Reached
+      only through a scripted fault attempt; ErrorInfo body by extrapolation,
+      code and type values are Servicesim's.
 
   - golden: perplexity-agent-429.json
     endpoint: POST /v1/agent (alias POST /v1/responses)
     status: 429
-    kind: vendor-documented
+    kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
     verified: 2026-08-14
-    note: ErrorInfo envelope; code and type values are Servicesim's.
+    note: >-
+      Undocumented for the Agent API, see perplexity-agent-401.json. Reached
+      only through a scripted fault attempt; ErrorInfo body by extrapolation,
+      code and type values are Servicesim's.
 
   - golden: perplexity-agent-500.json
     endpoint: POST /v1/agent (alias POST /v1/responses)
     status: 500
-    kind: vendor-documented
+    kind: simulator-chosen
     documentation_url: https://docs.perplexity.ai/openapi.json
     api_version: "1.0.0"
     verified: 2026-08-14
-    note: ErrorInfo envelope; code and type values are Servicesim's.
+    note: >-
+      Undocumented for the Agent API, see perplexity-agent-401.json. Reached
+      only through a scripted fault attempt; ErrorInfo body by extrapolation,
+      code and type values are Servicesim's.
 
   - golden: perplexity-sonar-stream.sse
     endpoint: POST /v1/sonar (aliases POST /chat/completions, POST /v1/chat/completions), stream_mode full
