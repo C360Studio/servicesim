@@ -817,15 +817,15 @@ is fixed — `search_results` first, then `message` — and a scenario cannot re
 |---|---|---|
 | `response_id` | string | `id`. Defaults to a derived `resp_<32 hex>`. |
 | `message_id` | string | The message output item's `id`. Defaults to a derived `msg_<32 hex>`. |
-| `model` | string | `model`. Agent model IDs are `provider/model` strings such as `openai/gpt-5`. |
+| `model` | string | `model`. Agent model IDs are `provider/model` strings such as `openai/gpt-5`. When omitted the response echoes what the request selected: the first non-empty entry of `models`, else `model`, else `preset/<name>` for a preset-only request, else `profile/<id>` for a profile-only one. A request must name `model`, `models`, `preset` or a valid `profile`, or it is a 400. |
 | `created_at` | integer | `created_at`. Defaults to `time.base` as a Unix timestamp. |
 | `status` | `completed` \| `failed` \| `incomplete` \| `in_progress` \| `queued` \| `cancelled` | `status`. Defaults to `completed`. `failed` requires `error`. |
 | `answer` | string | The text of the single `message` output item. |
 | `queries` | list of string | The searches the agent reports having run. Independent of `search_results`, so a scenario can project "searched but found nothing". |
-| `search_results` | list of AgentResult | The `search_results` output item. Accepts the scalar shorthand, or a mapping with `snippet`, `date`, `last_updated` and `source_type`. `results[].id` is the 1-based index as a JSON **integer**. |
+| `search_results` | list of AgentResult | The `search_results` output item. Accepts the scalar shorthand, or a mapping with `snippet`, `date`, `last_updated` and `source_type`. `source_type` is `web` only on this surface (`attachment` is Sonar's and is a load error here). `results[].id` is the 1-based index as a JSON **integer**. |
 | `annotations` | list of `{source, start_index, end_index}` | `url_citation` spans over the answer text. Indices are byte offsets into `answer`; an out-of-range span is a load error. An empty list emits `[]` rather than omitting the key. |
 | `error` | `{message, code, type}` | `error`. `message` is required by the specification. |
-| `usage` | `{input_tokens, output_tokens, total_tokens, cost}` | `usage`. Note the field names differ from Sonar's. `total_tokens` is derived when zero; `cost` is `{currency, input_cost, output_cost, total_cost, cache_creation_cost, cache_read_cost, tool_calls_cost}`, with `currency` defaulting to `USD` and `total_cost` derived when zero. |
+| `usage` | `{input_tokens, output_tokens, total_tokens, cost}` | `usage`. Note the field names differ from Sonar's. `total_tokens` is derived when zero; `cost` is `{currency, input_cost, output_cost, total_cost, cache_creation_cost, cache_read_cost, tool_calls_cost}`, with `currency` defaulting to `USD` (the only value the specification allows; any other is a load error) and `total_cost` derived when zero. |
 | `stream` | `{when_requested, deltas, terminal, pace}` | Scripts the `responses` SSE grammar instead of the ordinary JSON body. See [Streaming](#streaming-stream). |
 | `extra_fields` | map | Merged into the top-level response object. |
 
@@ -925,7 +925,10 @@ script:
 
 `usage` and the rest of the ordinary non-streaming projection are reused verbatim on the terminal chunk — one
 declaration serves both transports, so a scenario cannot quote one spend figure when it streams and another when
-it does not.
+it does not. The one exception is a `perplexity_agent` turn whose `status` is `failed`: it streams
+`response.created` then a terminal `response.failed` carrying the turn's `error` at top level — the specification's
+own failure event, which has no response object — so there is no `usage` on it, no `extra_fields`, and nothing
+for `terminal.omit_usage` to drop. A `cancelled` turn streams `response.created` then `response.completed`.
 
 **The policy is per ENTRY; the deltas are per TURN.** `when_requested` is read once, from turn 0, because
 rejecting a request has to happen before turn selection claims a fault attempt — a policy that varied per turn
@@ -1048,7 +1051,7 @@ silently served as a plain 200.
 | `scenario.fault.after_chunk.out_of_range` | error | `after_chunk` is not in `[0, chunk_count)` for the smallest chunk count across the entry's turns. |
 | `scenario.stream.abort_unreachable` | error, per request | A claimed attempt cannot apply to this specific exchange's actual transport — a `stream_*` kind on a call that will not stream; `truncate_body`/`oversized_body` on one that will; or `delay_after_headers`, on a kind that would not otherwise turn the response into JSON, on one that will. |
 | `perplexity.stream.unimplemented` | warning | Sonar: `stream: true` under an entry whose effective policy is not `stream`. The request still receives the ordinary body. |
-| `perplexity.stream.agent_unsupported` | warning under `warn`, error (422) under `reject` | The Agent surface's analogue of the code above — renamed from `perplexity.agent.stream.unsupported` so it sorts under the `perplexity.stream.` prefix like every other streaming code. |
+| `perplexity.stream.agent_unsupported` | warning under `warn`, error (400, `ErrorInfo`) under `reject` | The Agent surface's analogue of the code above — renamed from `perplexity.agent.stream.unsupported` so it sorts under the `perplexity.stream.` prefix like every other streaming code. |
 | `perplexity.stream_mode.concise.unscripted` | warning | A request sets `stream_mode: concise` **and** will actually stream. Only `stream_mode: full` is rendered; the full-mode transcript is served instead of being rejected. |
 | `perplexity.stream.done_ignored` | warning | `terminal.omit_done` declared on a `perplexity_agent` turn — the typed grammar never writes a `[DONE]` sentinel, so there is nothing to omit. |
 

@@ -252,13 +252,15 @@ const (
 )
 
 // contentPartTypeOutputText is the content-part discriminator for rendered text.
-// The generated contract does not enumerate ContentPartType's members; this
-// value is inferred from the surface's OpenAI-compatible naming and is recorded
-// as such in contracts/perplexity/provenance.yaml.
+// It is ContentPartType's only member (#/components/schemas/ContentPartType/enum
+// in the 2026-10-01 document; before that the contract did not enumerate it and
+// the value was inferred from the surface's OpenAI-compatible naming).
 const contentPartTypeOutputText = "output_text"
 
 // annotationTypeURLCitation is the annotation discriminator for a cited source.
-// Like contentPartTypeOutputText it is inferred rather than enumerated.
+// Annotation.type is a free string, not an enum; the only support for this value
+// is its description, "Annotation type (url_citation)"
+// (#/components/schemas/Annotation/properties/type).
 const annotationTypeURLCitation = "url_citation"
 
 // outputItem is one element of the Agent API's ordered output trace.
@@ -386,10 +388,10 @@ type agentErrorResponse struct {
 // Surface 2 — Agent API — GrammarTyped SSE events
 // -----------------------------------------------------------------------------
 
-// The GrammarTyped event names this build emits: six of the fourteen members
+// The GrammarTyped event names this build emits: seven of the fourteen members
 // the specification's ResponseStreamEvent/EventType union declares
-// (contracts/perplexity/README.md "Responses / Agent"). The other eight — the
-// reasoning.* family and response.failed — have no scenario vocabulary yet
+// (contracts/perplexity/README.md "Responses / Agent"). The other seven — the
+// reasoning.* family and response.in_progress — have no scenario vocabulary yet
 // and are never emitted; see renderAgentStream's doc comment.
 const (
 	eventResponseCreated   = "response.created"
@@ -398,6 +400,7 @@ const (
 	eventOutputTextDone    = "response.output_text.done"
 	eventOutputItemDone    = "response.output_item.done"
 	eventResponseCompleted = "response.completed"
+	eventResponseFailed    = "response.failed"
 )
 
 // responseCreatedEvent is the response.created frame's payload — the
@@ -466,6 +469,16 @@ type responseCompletedEvent struct {
 	Type           string          `json:"type"`
 	SequenceNumber int64           `json:"sequence_number"`
 	Response       json.RawMessage `json:"response"`
+}
+
+// responseFailedEvent is the response.failed frame's payload — the
+// specification's ResponseFailedEvent. Unlike every other lifecycle event it
+// carries no response object: its error (ErrorInfo) is a top-level property, and
+// the schema has nowhere to put usage.
+type responseFailedEvent struct {
+	Type           string    `json:"type"`
+	SequenceNumber int64     `json:"sequence_number"`
+	Error          errorInfo `json:"error"`
 }
 
 // -----------------------------------------------------------------------------

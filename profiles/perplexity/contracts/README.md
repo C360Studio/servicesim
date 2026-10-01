@@ -8,7 +8,15 @@ with a "Streaming (SSE)" section verified against the prose pages listed under "
 `ResponseStreamEvent` schema — previously recorded as unretrievable — was confirmed present in the OpenAPI
 document.
 
-Source of truth: <https://docs.perplexity.ai/openapi.json> (OpenAPI 3.1.0, 176,777 bytes, `servers: [https://api.perplexity.ai]`). Every table below is generated from that document, not from prose documentation pages and not from memory.
+**Re-verified 2026-10-01 for the Agent surface** against a fresh fetch of the same document (208,564 bytes, sha256
+`e0b92edf13c7596c5f830e7e61a30af2c534b878a7a505953bbd6829382c3981`, `info.version` `1.0.0`). The Sonar tables below
+were **not** re-read on that date and still describe the 2026-08-14 reading. The dated evidence, every consumed
+Agent field and operation classified against the new document with its JSON pointer, and how to re-fetch it are in
+[`docs/audits/2026-10-01-perplexity-agent.md`](../../../docs/audits/2026-10-01-perplexity-agent.md). Where this file
+marks a behaviour `SIMULATOR-POLICY` or `INFERENCE`, the document is silent and Servicesim chose; none of it is a
+vendor guarantee.
+
+Source of truth: <https://docs.perplexity.ai/openapi.json> (OpenAPI 3.1.0, 208,564 bytes as of 2026-10-01, `servers: [https://api.perplexity.ai]`). Every table below is generated from that document, not from prose documentation pages and not from memory.
 
 > **Why this matters.** An earlier pass built this contract by reading Mintlify documentation pages and
 > produced fields borrowed from OpenAI's Responses API by analogy, plus one quotation that does not exist in
@@ -214,20 +222,53 @@ Perplexity-models-only surface.
 | `background` | `boolean` | no | — | Run the response asynchronously. With `stream: false`, the request returns immediately with `status: "queued"`; poll `GE |
 | `instructions` | `string` | no | — | System instructions for the model |
 | `language_preference` | `string` | no | — | ISO 639-1 language code for response language |
-| `max_output_tokens` | `integer` | no | — | Maximum tokens to generate. This is a shared optional Agent API request parameter, but it is required when using anthrop |
-| `max_steps` | `integer` | no | — | Maximum number of research loop steps. If provided, overrides the preset's max_steps value. Must be >= 1 if specified. M |
-| `model` | `string` | no | — | Model ID in provider/model format (e.g., "openai/gpt-5", "anthropic/claude-sonnet-4-6"). If models is also provided, mod |
-| `models` | array[`string`] | no | — | Model fallback chain. Each model is in provider/model format. Models are tried in order until one succeeds. Max 5 models |
-| `preset` | `string` | no | — | Preset configuration name (e.g., "fast", "low", "medium", "high", "xhigh"). Pre-configured model with system prompt and  |
+| `max_output_tokens` | `integer` (int32, min 1) | no | — | Maximum tokens to generate. Shared optional Agent API request parameter, but **required when using `anthropic/*` models**: "If omitted for an Anthropic model, the API returns HTTP 400 with: validation failed: max_output_tokens is required when using Anthropic models." |
+| `max_steps` | `integer` (int32, min 1, **max 100**) | no | — | Maximum number of research loop steps. If provided, overrides the preset's max_steps value. For `model` or `models` without a preset the default is 1. Must be >= 1 if specified. Maximum allowed is 100. |
+| `model` | `string` | no | — | Model ID in provider/model format (e.g., `openai/gpt-5.6-terra`, `anthropic/claude-sonnet-4-6`). If `models` is also provided, `models` takes precedence. **Required if neither `models` nor `preset` is provided.** |
+| `models` | array[`string`] (min 1, max 5) | no | — | Model fallback chain. Each model is in provider/model format. Models are tried in order until one succeeds. Max 5 models allowed. If set, takes precedence over the single `model` field. The `response.model` will reflect the model that actually succeeded. |
+| `preset` | `string` | no | — | Preset configuration name (e.g., `fast`, `low`, `medium`, `high`, `xhigh`). Pre-configured model with system prompt and search parameters. Required if `model` is not provided. |
+| `profile` | `ProfileReference` | no | — | Saved, versioned configuration to run with. The version is resolved when the request is admitted. **Cannot be combined with `preset`.** New in the 2026-10-01 document. |
 | `previous_response_id` | `string` | no | — | OpenAI-compatible previous response id for multi-turn response chains. When set, the new response continues from the com |
 | `reasoning` | `ReasoningConfig` | no | — |  |
 | `response_format` | `ResponseFormat` | no | — |  |
 | `store` | `boolean` | no | — | OpenAI-compatible storage toggle. When false, the response is hidden from later retrieve calls, and the echoed response  |
 | `stream` | `boolean` | no | — | If true, returns SSE stream instead of JSON |
 | `tools` | array[`Tool`] | no | — | Tools available to the model |
-| `skills` | array[`Skill`] | no | — | Built-in and request-scoped inline skills available to the model. Skill metadata is disclosed to the model up front; ful |
+| `skills` | array[`Skill`] (max 16) | no | — | Built-in, request-scoped inline, and organization-owned custom skills available to the model. Skill metadata is disclosed to the model up front; full instructions are loaded on demand through the load_skill tool. Requests with skills run on the durable backend. |
 | `temperature` | `number` | no | — | OpenAI-compatible sampling temperature forwarded to generation. |
 | `top_p` | `number` | no | — | OpenAI-compatible nucleus sampling parameter forwarded to generation. |
+
+### `ProfileReference`
+
+`additionalProperties: false`. Required `type` (enum `custom`) and `id` (string, 1 to 128 characters); optional
+`version` (string, "Version to bind to, or `latest`. Omitted means `latest`").
+
+### `InputItem` (discriminated union)
+
+`Input` is a string or an array of `InputItem`, discriminated on `type`: `message` (`InputMessage`: required
+`type`, `role`, `content`; `role` is `user`, `assistant`, `system` or `developer`), `function_call`
+(`FunctionCallInput`: required `type`, `call_id`, `name`, `arguments`) and `function_call_output`
+(`FunctionCallOutputInput`: required `type`, `call_id`, `output`). Every variant requires `type`.
+
+### How the profile treats the Agent request
+
+The document states most of these rules; the profile enforces the ones marked below. Everything it does **not** state
+is marked `SIMULATOR-POLICY` or `INFERENCE`, and none of that is a vendor guarantee.
+
+| Rule | Source | Behaviour |
+|---|---|---|
+| A request that fails validation is **HTTP 400** with an `ErrorInfo` body, not 422 | `#/paths/~1v1~1agent/post/responses` documents only `200` and `400`; no Agent operation documents `422`; the `max_output_tokens` text gives the form "HTTP 400 with: validation failed: ..." | Enforced. The message is `validation failed: <message>`, naming the first failing field in request-schema order. Applying that wording to rules other than `max_output_tokens`, and naming only one failure, is `SIMULATOR-POLICY`. Sonar's validation 422 is unchanged. |
+| One of `model`, `models`, `preset` or a valid `profile` must be present | `model`: "Required if neither models nor preset is provided"; `preset`: "Required if model is not provided" | Enforced. An empty `model` string, or an empty entry of `models`, selects nothing (`SIMULATOR-POLICY`). The `preset` text read literally conflicts with a `models`-only request, which the `model` text exempts; the lenient reading is taken and a `models`-only request is accepted (`INFERENCE`). |
+| A valid `profile` counts as a model selection | the `model` text names only `models` and `preset`; `profile`: "Saved, versioned configuration to run with ... Cannot be combined with preset" | `INFERENCE`: the two read as alternatives and nothing says a profile does not supply the model, so a profile-only request is accepted rather than rejecting traffic the live API may accept. An invalid profile selects nothing and is reported once, as itself. The echoed model for it is `profile/<id>` (`SIMULATOR-POLICY`, below). |
+| `models` is a non-empty array of at most 5 strings | `models`: `minItems` 1, `maxItems` 5, string items | Enforced. |
+| `response.model` echoes the selection | `models` "takes precedence"; `response.model` "will reflect the model that actually succeeded" | The first non-empty entry of `models`, else `model`. A scenario's own `model:` overrides it. For a preset-only request, `preset/<name>`, and for a profile-only request, `profile/<id>`: `SIMULATOR-POLICY`, since the document does not say what either echoes. |
+| `anthropic/*` requires `max_output_tokens` | `max_output_tokens` text, quoted above | Enforced with the quoted message. Any non-empty entry of a `models` chain counts: `INFERENCE`, the document not saying whether a chain is checked up front. A preset or profile request is not checked: its model is not knowable here. |
+| `profile` shape; not combinable with `preset` | `ProfileReference`; the `profile` text | Enforced. What a saved profile configures is not simulated. |
+| `input[]` items need a valid `type` | `InputItem` discriminator; every variant requires `type` | Enforced. The per-variant required properties are not. |
+| `max_steps` integer from 1 to 100; `stream` boolean | the two properties | Enforced. |
+| `search_results[].source` is `web` | `SearchSource` enum is `["web"]` | A load-time error for any other `source_type` in an Agent fixture. Sonar's own `source` allows `attachment`. |
+| `usage.cost.currency` is `USD` | `Currency` enum is `["USD"]` | A load-time error for any other value in a fixture. |
+| 401, 403, 429, 500 | none documented on any Agent operation | `SIMULATOR-POLICY`. The status codes are ordinary HTTP and the profile must fail closed on authentication; the `ErrorInfo` body is an extrapolation from the documented `400`, and the `code` and `type` values are Servicesim's. |
 
 ### Response — `ResponsesResponse`
 
@@ -281,7 +322,10 @@ Discriminated on `type`:
 |---|---|---|---|---|
 | `annotations` | array[`Annotation`] | no | — |  |
 | `text` | `string` | **yes** | — |  |
-| `type` | `ContentPartType` | **yes** | — |  |
+| `type` | `ContentPartType` | **yes** | — | Type of a content part |
+
+`ContentPartType` enum: `output_text` (the only member, enumerated in the 2026-10-01 document; the profile's value
+was inferred before that and is now confirmed).
 
 ### `Annotation`
 
@@ -292,6 +336,10 @@ Discriminated on `type`:
 | `title` | `string` | no | — | Title of the cited source |
 | `type` | `string` | no | — | Annotation type (url_citation) |
 | `url` | `string` | no | — | URL of the cited source |
+
+`Annotation.type` is a free string, not an enum; `url_citation` appears only in its description. The indices are
+described as "character" indices and the profile counts bytes, so the unit is `UNVERIFIED` and matters only for
+non-ASCII fixtures.
 
 ### `SearchResult`
 
@@ -306,6 +354,9 @@ Discriminated on `type`:
 | `url` | `string` | **yes** | — | URL of the search result page |
 
 `SearchResult.id` is an **integer**, not a string — it differs from every other id in this repository.
+
+`SearchSource` enum: `web` only. Sonar's own result schema (`ApiPublicSearchResult`) is a different schema whose
+`source` also allows `attachment`; the two must not be conflated.
 
 ### `ResponsesUsage`
 
@@ -330,6 +381,9 @@ Discriminated on `type`:
 | `tool_calls_cost` | `number` | no | — | Cost for tool call invocations in USD |
 | `total_cost` | `number` | **yes** | — | Total cost for the request in USD |
 
+`Currency` enum: `USD` only. The document gives no formula for `total_cost`; deriving it as input plus output when a
+scenario leaves it unset is `SIMULATOR-POLICY`, and cache and tool costs are not folded in.
+
 ### `Status`
 
 Enum: `completed`, `failed`, `incomplete`, `in_progress`, `queued`, `cancelled`
@@ -341,6 +395,12 @@ Enum: `completed`, `failed`, `incomplete`, `in_progress`, `queued`, `cancelled`
 | `code` | `string` | no | — | Error code |
 | `message` | `string` | **yes** | — | Human-readable error message |
 | `type` | `string` | no | — | Error type category |
+
+`createAgent` documents exactly two responses, `200` and `400` (`400`: `{error: ErrorInfo}`, "Invalid request. Includes
+an unresolvable `previous_response_id`"). The retrieve, files and cancel operations document `404`, and cancel also
+`400`. **No Agent operation documents `401`, `403`, `422`, `429` or `500`**; `HTTPValidationError` is referenced only
+by non-Agent operations. `code` and `type` are free strings the document does not enumerate, so their values are
+Servicesim's.
 
 ### `EventType` (streaming)
 
@@ -354,7 +414,8 @@ wire shape a `stream: true` request receives. It was written ahead of an impleme
 Servicesim simulates" below — since **Phase 5 unit 1 (2026-08-15)** the Sonar surface (`POST /v1/sonar` and its
 two aliases) serves this shape for a `stream: true` request against an entry whose policy is `stream`. An entry
 whose policy is `warn` (the default) still receives a complete non-streaming body plus a warning, and `reject`
-still answers `422`. Since **Phase 5 unit 3 (2026-08-15)** the Agent API's typed SSE grammar is simulated too,
+still answers `422` on Sonar (on the Agent surface it answers `400` with `ErrorInfo`, since 2026-10-01).
+Since **Phase 5 unit 3 (2026-08-15)** the Agent API's typed SSE grammar is simulated too,
 on `POST /v1/agent` and its aliases, under the same `warn`/`reject`/`stream` switch; see "What Servicesim
 simulates" for the exact split.
 
@@ -565,9 +626,19 @@ edition of this file's claim — "`gateway-responses-post.md` states a successfu
 "Documentation sources" above), not the Agent surface, and is withdrawn along with the "Contradicted" table row
 it produced: the correct status for this row is unstated, not contradicted.
 
-**Mid-stream error:** likewise unstated for this surface by any Agent-API page fetched. The "stream emits an
-`error` event followed by `response.failed` and closes without a `[DONE]` trailer" sentence in an earlier
-edition of this file was the Router page's wording, not the Agent surface's, and is withdrawn.
+**Mid-stream error.** The failure *event* is documented: `response.failed` is a member of `EventType`, and
+`ResponseFailedEvent` requires `type`, `sequence_number` and a top-level `error` (`ErrorInfo`, `message`
+required), with no `response` property — "Contains error details when streaming fails." What no Agent-API page
+or the OpenAPI document states is the failure's **ordering and termination**: what precedes the event, whether it
+ends the stream, and whether the real service ever sends `response.completed` carrying `status: failed` instead
+(`UNVERIFIED`). The "stream emits an `error` event followed by `response.failed` and closes without a `[DONE]`
+trailer" sentence in an earlier edition of this file was the Router page's wording, not the Agent surface's, and
+is withdrawn.
+
+**`incomplete` and `cancelled`.** `EventType` has no `response.incomplete` and no `response.cancelled`
+(0 occurrences of either string in the document), and `ResponseCompletedEvent` is described as containing "the
+full or partial response object" — the only documented carrier for a partial response. Streaming those two
+statuses as `response.completed` is `SIMULATOR-POLICY`, not a statement of what the vendor sends.
 
 ### OpenAI compatibility (declared)
 
@@ -612,6 +683,8 @@ events are **not** cited here as a secondary source for the typed grammar.
 | Chunk-to-token granularity (one token per chunk vs batched) | No | Not addressed by any fetched page |
 | `ResponseStreamEvent`'s own declared envelope fields | **Yes — resolved** | Retrieved directly from `openapi.json` and `agent-post.md`; recorded in full above |
 | Full catalogue of `GrammarTyped` event names beyond the 14 already recorded above | **No further members — resolved** | `openapi.json`'s `ResponseStreamEvent.oneOf` is exactly the 14-member list matching the `EventType` enum above; an earlier ~25-member catalogue attributed to this page in a prior edition was a fetch-tooling artefact, not vendor content |
+| Ordering and termination of a failed stream (`response.failed` follows `response.created`, is terminal, no `response.completed` after it) | **No** — the event and its payload are pinned, the ordering is not | `ResponseFailedEvent` requires `type`, `sequence_number` and a top-level `error`; no page or schema line says what precedes it or whether it ends the stream. The profile's sequence is `SIMULATOR-POLICY`, and whether the real service ever sends `response.completed` with `status: failed` is `UNVERIFIED` |
+| Streaming of `incomplete` and `cancelled` turns | **No** | `EventType` has neither `response.incomplete` nor `response.cancelled`; `response.completed` is the only documented carrier of a "full or partial response object". `SIMULATOR-POLICY` |
 
 ## What Servicesim simulates
 
@@ -621,7 +694,9 @@ subset a C360 research adapter parses:
 - `POST /v1/sonar` and its `/chat/completions` and `/v1/chat/completions` aliases — full request
   validation, `choices`, `citations`, `search_results`, `usage` with required `cost`.
 - `POST /v1/agent` and its `/v1/responses` and `/responses` aliases — the non-streaming body, with `message`
-  and `search_results` output items, `usage`/`cost`, and the `ErrorInfo` envelope, plus streaming (below).
+  and `search_results` output items, `usage`/`cost`, and the `ErrorInfo` envelope — for every Agent error, a
+  validation failure included, which is a `400` rather than a `422` (see "How the profile treats the Agent
+  request") — plus streaming (below).
 - Sonar streaming, `stream_mode: full` only. `providers.perplexity.stream:` (a Sonar entry's
   `when_requested`) selects between three behaviours. The default, `warn`, journals
   `perplexity.stream.unimplemented` and answers a `stream: true` request with a complete non-streaming
@@ -637,8 +712,9 @@ subset a C360 research adapter parses:
   behaviours Sonar has, decoded and validated exactly the same way. The default, `warn`, journals
   `perplexity.stream.agent_unsupported` — the renamed
   (from `perplexity.agent.stream.unsupported`) unconditional warning this surface always raised before this
-  unit — and answers with a complete non-streaming body. `reject` turns that into a `422` naming
-  `body.stream`. `stream` serves six of the fourteen `EventType` members, in this exact order, for a turn
+  unit — and answers with a complete non-streaming body. `reject` turns that into a `400` `ErrorInfo`
+  (`validation failed: ...`) naming the stream, as every Agent validation failure is a `400`.
+  `stream` serves six of the fourteen `EventType` members, in this exact order, for a turn
   scripting N deltas: `response.created` (the `ResponsesResponse` in its initial `in_progress` state — empty
   `output`, zero `usage`), `response.output_item.added` (the message item, `in_progress`, empty `content`),
   N × `response.output_text.delta`, `response.output_text.done` (the aggregate text),
@@ -657,20 +733,27 @@ subset a C360 research adapter parses:
   object specifically, leaving every other field untouched — except key order: dropping a key round-trips the
   object through a map, so it comes back alphabetised at every nesting level, unlike every other frame's
   struct order. A turn whose `status` is `failed` or `cancelled` renders no message output item at all (the
-  non-streaming route's own rule), so `stream` degrades to just two frames for such a turn —
-  `response.created` then `response.completed` (the latter carrying `status: "failed"`/`"cancelled"` and
-  `error`) — rather than the six-event sequence above; `response.failed` itself is not simulated (below).
+  non-streaming route's own rule), so `stream` degrades to just two frames for such a turn rather than the
+  six-event sequence above. For `failed` they are `response.created` then a terminal **`response.failed`**
+  carrying the scenario's `error` at top level (since 2026-10-01; the golden is
+  `perplexity-agent-stream-failed.sse`): the event is the specification's, while that created comes first, that
+  `failed` ends the stream with no `response.completed` after it, and that it carries no `usage` and no
+  `extra_fields` (the schema has no response object) are `SIMULATOR-POLICY`. For `cancelled` they are
+  `response.created` then `response.completed` carrying `status: "cancelled"`, and an `incomplete` turn keeps
+  its message item and ends in `response.completed` carrying `status: "incomplete"`; both are
+  `SIMULATOR-POLICY`, see "Streaming (SSE)" above.
 
 Deliberately **not** simulated, because no consumer parses them yet:
 
 - **`stream_mode: concise`'s own four-object-type grammar** (`chat.reasoning`, `chat.reasoning.done`,
   `chat.completion.chunk`, `chat.completion.done`). A request naming it is served the full-mode transcript
   instead, with the warning noted above, not the concise-mode sequence.
-- **The Agent API's eight remaining `EventType` members**: the `response.reasoning.*` family
-  (`started`, `search_queries`, `search_results`, `fetch_url_queries`, `fetch_url_results`, `stopped`) and
-  `response.failed`. None has scenario vocabulary yet — there is no scripted "reasoning step" or "this turn
-  fails mid-stream" shape to project them from — and each is a bounded addition behind the same scenario
-  model whenever a consumer needs it, exactly like the items below.
+- **The Agent API's seven remaining `EventType` members**: `response.in_progress` and the
+  `response.reasoning.*` family (`started`, `search_queries`, `search_results`, `fetch_url_queries`,
+  `fetch_url_results`, `stopped`). None has scenario vocabulary yet — there is no scripted "reasoning step" shape
+  to project them from — and each is a bounded addition behind the same scenario model whenever a consumer
+  needs it, exactly like the items below. (`response.failed`, listed here until 2026-10-01, is now emitted for a
+  `failed` turn.)
 - **An `output_item.added`/`.done` pair for the `search_results` output item.** Only the message item gets
   one; a turn that projects search results has them appear, unannounced, inside `response.completed`'s
   `output[]` at whatever index precedes the message item (see `output_index`, below). No scenario vocabulary

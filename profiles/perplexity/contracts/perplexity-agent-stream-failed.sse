@@ -1,0 +1,6 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_5d6e7f80912a3b4c5d6e7f80912a3b4c","object":"response","model":"openai/gpt-5","created_at":1767225600,"status":"in_progress","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cost":{"currency":"USD","input_cost":0,"output_cost":0,"total_cost":0}}}}
+
+event: response.failed
+data: {"type":"response.failed","sequence_number":1,"error":{"code":"model_error","message":"The model could not complete the research loop.","type":"server_error"}}
+

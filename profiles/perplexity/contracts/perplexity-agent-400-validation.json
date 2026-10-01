@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "invalid_request",
+    "message": "validation failed: input is required",
+    "type": "invalid_request_error"
+  }
+}

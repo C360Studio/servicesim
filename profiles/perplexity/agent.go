@@ -2,10 +2,13 @@ package perplexity
 
 import (
 	"encoding/json"
+	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -15,10 +18,37 @@ import (
 
 // Agent request finding codes.
 const (
-	CodeInputMissing      = "perplexity.input.missing"
-	CodeInputInvalid      = "perplexity.input.invalid"
-	CodeModelsTooMany     = "perplexity.agent.models.max"
-	CodeModelFormat       = "perplexity.agent.model.format"
+	CodeInputMissing  = "perplexity.input.missing"
+	CodeInputInvalid  = "perplexity.input.invalid"
+	CodeModelsTooMany = "perplexity.agent.models.max"
+	CodeModelFormat   = "perplexity.agent.model.format"
+
+	// CodeModelRequired is raised when a request names no model, models or preset:
+	// ResponsesRequest.model is "Required if neither models nor preset is
+	// provided".
+	CodeModelRequired = "perplexity.agent.model.required"
+
+	// CodeModelsInvalid is raised when models is not a non-empty array of strings
+	// (minItems 1, items of type string). The upper bound is [CodeModelsTooMany].
+	CodeModelsInvalid = "perplexity.agent.models.invalid"
+
+	// CodeMaxOutputTokensRequired is raised when an anthropic/* model is selected
+	// without max_output_tokens. Its message is the one the specification quotes.
+	CodeMaxOutputTokensRequired = "perplexity.agent.max_output_tokens.required"
+
+	// CodeProfileInvalid is raised when profile is not a valid ProfileReference
+	// or is combined with preset.
+	CodeProfileInvalid = "perplexity.agent.profile.invalid"
+
+	// CodeInputItemInvalid is raised when an element of an input array is not an
+	// object carrying one of the InputItem discriminator values in type.
+	CodeInputItemInvalid = "perplexity.input.item.invalid"
+
+	// CodeAgentStreamInvalid is raised when stream is present and not a boolean.
+	// It sorts under perplexity.stream. with the other streaming codes, for the
+	// reason [CodeAgentStreamUnsupported] gives.
+	CodeAgentStreamInvalid = "perplexity.stream.agent_invalid"
+
 	CodeMaxSteps          = "perplexity.agent.max_steps.range"
 	CodeMaxOutputTokens   = "perplexity.agent.max_output_tokens.range"
 	CodeStoreInvalid      = "perplexity.agent.store.invalid"
@@ -26,7 +56,7 @@ const (
 
 	// CodeAgentStreamUnsupported is raised for stream: true under an entry
 	// whose effective streaming policy is not stream — a warning under the
-	// warn default, an error (422) under reject, exactly mirroring
+	// warn default, an error (400, ErrorInfo) under reject, mirroring
 	// [CodeStreamUnimplemented]'s two-severity use on the Sonar surface. It
 	// does NOT fire under a stream-policy entry: a request that will
 	// actually receive the scripted GrammarTyped sequence must not also
@@ -60,11 +90,12 @@ const (
 const maxModelChain = 5
 
 // agentFields are the Agent request properties this build models, in the order
-// the specification declares them. As with sonarFields the order is what the 422
-// detail array is sorted into.
+// the specification declares them. As with sonarFields the order is what a
+// validation failure is sorted by: Sonar's 422 detail array, and the one finding
+// an Agent 400 names.
 var agentFields = []string{
 	"input", "background", "instructions", "language_preference",
-	"max_output_tokens", "max_steps", "model", "models", "preset",
+	"max_output_tokens", "max_steps", "model", "models", "preset", "profile",
 	"previous_response_id", "reasoning", "response_format", "store", "stream",
 	"tools", "skills", "temperature", "top_p",
 }
@@ -105,8 +136,9 @@ type perplexityAgent struct {
 	MessageID string `yaml:"message_id,omitempty"`
 
 	// Model is echoed as responsesResponse.model. Agent model IDs are
-	// "provider/model" strings; when empty the request's model is echoed, and
-	// when the request omits it too the scenario default applies.
+	// "provider/model" strings; when empty the model the request selected is
+	// echoed (see validateAgentModel), which is never empty for a request that
+	// passed validation.
 	Model string `yaml:"model,omitempty"`
 
 	// CreatedAt overrides the derived Unix timestamp. When zero it is
@@ -269,20 +301,27 @@ func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) st
 	if !x.Has("input") {
 		x.Fail(CodeInputMissing, "body.input", "input is required")
 	} else {
-		switch x.Body["input"].(type) {
-		case string, []any:
+		switch input := x.Body["input"].(type) {
+		case string:
+		case []any:
+			validateInputItems(x, input)
 		default:
 			x.Fail(CodeInputInvalid, "body.input", "input must be a string or an array of input items")
 		}
 	}
 
-	model := validateAgentModel(x)
+	profileID, profileOK := validateAgentProfile(x)
+	model, effective := validateAgentModel(x, profileID, profileOK)
+	requireMaxOutputTokensForAnthropic(x, effective)
 	validateNumericRange(x, "temperature", CodeTemperature, 0, 2)
 	validateNumericRange(x, "top_p", CodeTopP, 0, 1)
 
+	// max_steps is an integer from 1 to 100
+	// (#/components/schemas/ResponsesRequest/properties/max_steps).
 	if x.Has("max_steps") {
-		if v, ok := x.Number("max_steps"); !ok || v < 1 {
-			x.Fail(CodeMaxSteps, "body.max_steps", "max_steps must be an integer of at least 1")
+		if v, ok := x.Number("max_steps"); !ok || v < 1 || v > maxStepsLimit || v != math.Trunc(v) {
+			x.Fail(CodeMaxSteps, "body.max_steps",
+				"max_steps must be an integer from 1 to %d", maxStepsLimit)
 		}
 	}
 	if x.Has("max_output_tokens") {
@@ -307,41 +346,256 @@ func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) st
 				"background execution is not simulated; this request receives the ordinary synchronous body")
 		}
 	}
-	if stream, ok := x.Bool("stream"); ok && stream && policy != scenario.StreamServe {
-		x.Warn(CodeAgentStreamUnsupported, "body.stream",
-			"streaming is not simulated; this request receives the ordinary non-streaming body")
+	if x.Has("stream") {
+		stream, ok := x.Bool("stream")
+		switch {
+		case !ok:
+			x.Fail(CodeAgentStreamInvalid, "body.stream", "stream must be a boolean")
+		case stream && policy != scenario.StreamServe:
+			x.Warn(CodeAgentStreamUnsupported, "body.stream",
+				"streaming is not simulated; this request receives the ordinary non-streaming body")
+		}
 	}
 	return model
 }
 
-// validateAgentModel checks model and models, and returns the model to echo.
+// inputItemTypes are the InputItem discriminator mapping keys
+// (#/components/schemas/InputItem/discriminator/mapping): the only values an
+// input item's type may take.
+var inputItemTypes = []string{"message", "function_call", "function_call_output"}
+
+// maxStepsLimit is max_steps' maximum (ResponsesRequest.max_steps).
+const maxStepsLimit = 100
+
+// validateInputItems checks each element of an input array is an object whose
+// type is one of the InputItem discriminator values. It checks nothing else: the
+// per-variant required properties (role and content for a message, and so on)
+// are not enforced, so a malformed message body still passes.
+func validateInputItems(x *provider.Exchange, items []any) {
+	for i, raw := range items {
+		at := "body.input." + strconv.Itoa(i)
+		item, ok := raw.(map[string]any)
+		if !ok {
+			x.Fail(CodeInputItemInvalid, at, "input item %d must be an object", i)
+			continue
+		}
+		typ, ok := item["type"].(string)
+		if !ok || !slices.Contains(inputItemTypes, typ) {
+			x.Fail(CodeInputItemInvalid, at+".type", "input item %d type must be one of %s",
+				i, strings.Join(inputItemTypes, ", "))
+		}
+	}
+}
+
+// anthropicModelPrefix marks the models for which max_output_tokens is required.
+const anthropicModelPrefix = "anthropic/"
+
+// validateAgentModel checks the model-selecting properties, model, models,
+// preset and a valid profile (profileID, from validateAgentProfile), and returns
+// the model to echo as responsesResponse.model together with the models the
+// request may run on.
+//
+// Selection follows #/components/schemas/ResponsesRequest/properties: model is
+// "Required if neither models nor preset is provided", and models "takes
+// precedence over single model field". A request naming none of them is a
+// failure, as is a models chain that is empty, is not an array of strings, or
+// exceeds the cap. An empty string selects nothing, whether it is model or an
+// entry of models — the specification says nothing about it, and treating it as
+// selected would render "model": "".
+//
+// Two choices here are the specification's silence filled in, not its words.
+// INFERENCE: a valid profile counts as a selection, like a preset. The model
+// text names only models and preset, but profile is described as a "Saved,
+// versioned configuration to run with" that "Cannot be combined with preset",
+// which makes the two alternatives, and nothing says a profile does not supply
+// the model; rejecting a profile-only request would make an accepted field
+// unusable. Likewise the preset text, "Required if model is not provided",
+// read literally conflicts with a models-only request; the lenient reading is
+// taken.
+//
+// SIMULATOR-POLICY: the echoed model is the first non-empty entry of models,
+// else model, else, for a preset-only request, "preset/<name>", else, for a
+// profile-only request, "profile/<id>". The specification does not say what a
+// preset or profile request echoes (the configuration's own model is not
+// knowable here), so those forms are deterministic, non-empty and
+// provider/model shaped. A scenario's own model: still overrides all of it.
 //
 // A model that is not in provider/model form is a warning rather than an error:
 // the Agent API is a multi-provider router whose model set is not enumerated
 // anywhere Servicesim can verify, and rejecting an unknown-but-well-formed model
 // would mean rejecting valid traffic the moment a router adds a provider.
-func validateAgentModel(x *provider.Exchange) string {
-	model, _ := x.String("model")
+func validateAgentModel(x *provider.Exchange, profileID string, profileOK bool) (echo string, effective []string) {
+	model, modelOK := optionalString(x, "model")
+	preset, presetOK := optionalString(x, "preset")
+	chain, chainOK := validateModelChain(x)
+
 	if model != "" && !strings.Contains(model, "/") {
 		x.Warn(CodeModelFormat, "body.model",
 			"model %q is not in provider/model form, for example openai/gpt-5", model)
 	}
-	if !x.Has("models") {
-		return model
+
+	if model == "" && preset == "" && len(chain) == 0 && profileID == "" &&
+		modelOK && presetOK && chainOK && profileOK {
+		x.Fail(CodeModelRequired, "body.model", "model is required if neither models nor preset is provided")
 	}
-	models, ok := x.Body["models"].([]any)
+
+	switch {
+	case len(chain) > 0:
+		return chain[0], chain
+	case model != "":
+		return model, []string{model}
+	case preset != "":
+		return "preset/" + preset, nil
+	case profileID != "":
+		return "profile/" + profileID, nil
+	}
+	return "", nil
+}
+
+// optionalString reads an optional string property. It reports ok=false, after
+// recording a failure, only when the property is present and not a string.
+func optionalString(x *provider.Exchange, key string) (value string, ok bool) {
+	if !x.Has(key) {
+		return "", true
+	}
+	value, ok = x.String(key)
 	if !ok {
-		return model
+		x.Fail(CodeModelInvalid, "body."+key, "%s must be a string", key)
 	}
-	if len(models) > maxModelChain {
+	return value, ok
+}
+
+// validateModelChain checks models: an array of 1 to maxModelChain strings. It
+// returns the chain without its empty entries, so an empty string selects nothing
+// here exactly as it does for model; the chain is nil when models is absent,
+// invalid or holds only empty strings. ok=false, after recording a failure, means
+// models is present and invalid.
+func validateModelChain(x *provider.Exchange) (chain []string, ok bool) {
+	if !x.Has("models") {
+		return nil, true
+	}
+	raw, isArray := x.Body["models"].([]any)
+	if !isArray {
+		x.Fail(CodeModelsInvalid, "body.models", "models must be an array of model IDs")
+		return nil, false
+	}
+	if len(raw) == 0 {
+		x.Fail(CodeModelsInvalid, "body.models", "models must contain at least one model")
+		return nil, false
+	}
+	if len(raw) > maxModelChain {
 		x.Fail(CodeModelsTooMany, "body.models",
-			"models accepts at most %d entries, got %d", maxModelChain, len(models))
+			"models accepts at most %d entries, got %d", maxModelChain, len(raw))
 	}
-	if model == "" && len(models) > 0 {
-		first, _ := models[0].(string)
-		return first
+	chain = make([]string, 0, len(raw))
+	for i, item := range raw {
+		id, isString := item.(string)
+		if !isString {
+			x.Fail(CodeModelsInvalid, "body.models."+strconv.Itoa(i), "models entry %d must be a string", i)
+			return nil, false
+		}
+		if id != "" {
+			chain = append(chain, id)
+		}
 	}
-	return model
+	return chain, true
+}
+
+// profileFields are the properties of ProfileReference, which is
+// additionalProperties: false.
+var profileFields = []string{"type", "id", "version"}
+
+// maxProfileIDLength is ProfileReference.id's maxLength.
+const maxProfileIDLength = 128
+
+// validateAgentProfile checks the request's profile property against
+// #/components/schemas/ProfileReference and the one rule the specification
+// attaches to the property itself, that it "Cannot be combined with preset".
+// It validates shape only: what a saved profile would configure is not
+// simulated.
+//
+// It returns the profile's id and ok=true when profile is absent or valid; id is
+// empty unless profile is present and valid. ok=false, after recording a failure,
+// means profile is present and invalid. A valid profile counts as a model
+// selection (see validateAgentModel).
+func validateAgentProfile(x *provider.Exchange) (id string, ok bool) {
+	if !x.Has("profile") {
+		return "", true
+	}
+	valid := true
+	fail := func(field, format string, args ...any) {
+		valid = false
+		x.Fail(CodeProfileInvalid, field, format, args...)
+	}
+
+	profile, isObject := x.Object("profile")
+	if !isObject {
+		fail("body.profile", "profile must be an object")
+		return "", false
+	}
+	if x.Has("preset") {
+		fail("body.profile", "profile cannot be combined with preset")
+	}
+	// Sorted, so the findings and therefore the 400 message never depend on
+	// Go's randomised map iteration.
+	for _, key := range slices.Sorted(maps.Keys(profile)) {
+		if !slices.Contains(profileFields, key) {
+			fail("body.profile."+key, "profile has no property %q", key)
+		}
+	}
+
+	switch typ, present := profile["type"]; {
+	case !present:
+		fail("body.profile.type", "profile.type is required")
+	case typ != "custom":
+		fail("body.profile.type", "profile.type must be custom")
+	}
+
+	switch rawID, present := profile["id"]; {
+	case !present:
+		fail("body.profile.id", "profile.id is required")
+	default:
+		s, isString := rawID.(string)
+		if n := utf8.RuneCountInString(s); !isString || n < 1 || n > maxProfileIDLength {
+			fail("body.profile.id", "profile.id must be a string of 1 to %d characters", maxProfileIDLength)
+		} else {
+			id = s
+		}
+	}
+
+	if version, present := profile["version"]; present {
+		if _, isString := version.(string); !isString {
+			fail("body.profile.version", "profile.version must be a string")
+		}
+	}
+	if !valid {
+		return "", false
+	}
+	return id, true
+}
+
+// requireMaxOutputTokensForAnthropic fails a request that may run on an
+// anthropic/* model without max_output_tokens. The specification quotes the
+// status and the message: "If omitted for an Anthropic model, the API returns
+// HTTP 400 with: validation failed: max_output_tokens is required when using
+// Anthropic models." The 400 and the "validation failed: " prefix come from
+// validationResponse; this supplies the rest.
+//
+// A models chain counts if ANY entry is anthropic/*. The specification does not
+// say whether a chain is checked up front or only when it falls through to such
+// a model; checking every entry is the strict reading, and adding
+// max_output_tokens to a request is harmless on any model.
+func requireMaxOutputTokensForAnthropic(x *provider.Exchange, effective []string) {
+	if x.Has("max_output_tokens") {
+		return
+	}
+	for _, id := range effective {
+		if strings.HasPrefix(id, anthropicModelPrefix) {
+			x.Fail(CodeMaxOutputTokensRequired, "body.max_output_tokens",
+				"max_output_tokens is required when using Anthropic models.")
+			return
+		}
+	}
 }
 
 // renderAgentIdentity computes the id, message id, created timestamp and
@@ -435,16 +689,24 @@ func renderAgent(x *provider.Exchange, p *perplexityAgent, requestModel string) 
 // code wins" rule — this build keeps that minimal sequence rather than
 // inventing a fourth envelope-only event the design's own illustration never
 // shows (P5U3 spec item 2's explicit instruction on this point). The
-// reasoning.* event family and response.failed have no scenario vocabulary
-// and are never emitted (contracts/perplexity/README.md "What Servicesim
-// simulates").
+// reasoning.* event family has no scenario vocabulary and is never emitted
+// (contracts/perplexity/README.md "What Servicesim simulates").
 //
 // A turn whose Status is failed or cancelled produces no message output item
 // at all (renderAgentOutput's own rule) and therefore has nothing for steps
-// 2-5 above to attach to; this renderer then emits only response.created and
-// response.completed. response.failed itself is a later unit's job (P5U3
-// spec, "Out of scope"), so a scripted failure streamed through this surface
-// degrades to that minimal pair rather than panicking on a missing item.
+// 2-5 above to attach to; this renderer then emits only two frames.
+//
+// For failed, the second frame is response.failed — the specification's own
+// failure event, carrying the scenario's error at top level — and it is
+// terminal: no response.completed follows. Which events surround it, and that
+// it ends the stream, are Servicesim's policy, not the specification's
+// (docs: contracts README "Streaming (SSE)"). The event has no response object,
+// so it carries no usage and extra_fields are not rendered on it.
+//
+// For cancelled, EventType has no response.cancelled, so the second frame is
+// response.completed carrying status cancelled; the same is true of an
+// incomplete turn, which keeps its message item. Neither is a statement about
+// what the vendor sends.
 func renderAgentStream(x *provider.Exchange, p *perplexityAgent, requestModel string) (*provider.Stream, error) {
 	callIndex := x.CallIndex()
 	id, messageID, created, status := renderAgentIdentity(x, p, callIndex)
@@ -494,6 +756,30 @@ func renderAgentStream(x *provider.Exchange, p *perplexityAgent, requestModel st
 		return nil, err
 	}
 	events = append(events, provider.SSEEvent{Name: eventResponseCreated, Data: createdData, Pace: pace(0)})
+
+	if status == statusFailed {
+		// The failure event has no response object, so there is no usage on the
+		// wire to lift into provider.Stream.Usage: it stays unset, as it does
+		// under terminal.omit_usage.
+		var info errorInfo
+		if p.Error != nil {
+			info = errorInfo{Code: p.Error.Code, Message: p.Error.Message, Type: p.Error.Type}
+		}
+		failedData, err := provider.Render(responseFailedEvent{
+			Type: eventResponseFailed, SequenceNumber: nextSeq(), Error: info,
+		}, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		var terminalPaceOverride scenario.Duration
+		if p.Stream.Terminal != nil {
+			terminalPaceOverride = p.Stream.Terminal.Pace
+		}
+		events = append(events, provider.SSEEvent{
+			Name: eventResponseFailed, Data: failedData, Terminal: true, Pace: pace(terminalPaceOverride),
+		})
+		return &provider.Stream{Grammar: provider.GrammarTyped, Chunks: provider.EncodeSSE(events)}, nil
+	}
 
 	var aggregate strings.Builder
 	if outputIndex >= 0 {
@@ -711,12 +997,19 @@ func validateAgentProjection(path string, p *perplexityAgent) []scenario.Finding
 		add("perplexity.agent.error.message", path+".error.message",
 			"error.message is required by the specification")
 	}
+	// SearchSource is ["web"] on the Agent surface (#/components/schemas/SearchSource);
+	// "attachment" belongs to Sonar's ApiPublicSearchResult, a different schema.
 	for i := range p.SearchResults {
-		if st := p.SearchResults[i].SourceType; st != "" && !slices.Contains(sourceTypes, st) {
+		if st := p.SearchResults[i].SourceType; st != "" && st != sourceTypeWeb {
 			add("perplexity.source_type.invalid",
 				path+".search_results["+strconv.Itoa(i)+"].source_type",
-				"source_type "+strconv.Quote(st)+" is not web or attachment")
+				"source_type "+strconv.Quote(st)+" is not web, the only SearchSource value")
 		}
+	}
+	// Currency is ["USD"] (#/components/schemas/Currency).
+	if u := p.Usage; u != nil && u.Cost != nil && u.Cost.Currency != "" && u.Cost.Currency != currencyUSD {
+		add("perplexity.agent.currency.invalid", path+".usage.cost.currency",
+			"currency "+strconv.Quote(u.Cost.Currency)+" is not "+currencyUSD+", the only Currency value")
 	}
 	// An annotation span outside the answer is a fixture bug that would otherwise
 	// reach a consumer as an index into a string that is too short.

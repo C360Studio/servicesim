@@ -108,9 +108,9 @@ header:
  "tag":"INVALID_REQUEST_BODY"}
 ```
 
-The status is each vendor's own shape for a rejected request: 400 from Exa and Tavily, 422 from Perplexity. The
-journal finding is `namespace.invalid`, and the offending value is deliberately **not** echoed anywhere — it
-arrives from the request path and must not reach a log line.
+The status is each vendor's own shape for a rejected request: 400 from Exa and Tavily, and from Perplexity's Agent
+surface, 422 from Perplexity's Sonar surface. The journal finding is `namespace.invalid`, and the offending value is
+deliberately **not** echoed anywhere — it arrives from the request path and must not reach a log line.
 
 The usual cause is interpolating something that is not a bare identifier: a Go test name (`TestFoo/case_one`
 contains a slash), a UUID with braces, or a `t.Name()` used raw. `sim.NamespaceFor(t)` derives a legal name from
