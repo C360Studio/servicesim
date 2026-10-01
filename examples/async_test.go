@@ -55,7 +55,7 @@ func createAsyncJob(t *testing.T, client *http.Client, base string) string {
 	resp, err := client.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, http.StatusCreated, resp.StatusCode, "create failed")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "create failed")
 
 	var out struct {
 		ID string `json:"id"`

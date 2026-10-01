@@ -359,14 +359,13 @@ a finished run keeps returning its result. Nothing special-cases it; it is the e
         respond: {status: running}
       - respond:
           status: failed
-          error:
-            code: AGENT_RUN_FAILED
-            message: the run could not be completed
 ```
 
-`status: failed` with no `error` is a load-time **error** finding (`exa.agent_run.failed_without_error`), for the same
-reason `extended-surfaces.md` rejects a failed Agent status with no error object: a consumer's terminal-state handler
-is being tested, and handing it a failure with no reason tests nothing.
+A failed run is `status: failed` and nothing else: the stop reason derives to `error`. An earlier version of this
+design required an `error` object on a failed run and made its absence a load error
+(`exa.agent_run.failed_without_error`). The vendor's OpenAPI document (retrieved 2026-10-01) gives `AgentRun` no
+run-level error object and closes it with `additionalProperties: false`, so that finding is gone and declaring
+`error:` is now the load-time **error** `exa.agent_run.error.not_in_schema`.
 
 ### 2.3 Stuck pending
 
@@ -454,7 +453,7 @@ Each async entry has its own validator — `AgentRunValidator` for `exa_agent_ru
 
 | Finding | Severity | Condition |
 |---|---|---|
-| `exa.agent_run.failed_without_error` | error | `status: failed` with no `error` |
+| `exa.agent_run.error.not_in_schema` | error | an `error:` block on a turn — the live `AgentRun` schema has no run-level error |
 | `exa.agent_run.terminal_then_pending` | error | a non-terminal turn declared after a terminal one — a job that un-completes |
 | `exa.agent_run.script_exhausted` | warning | no unconditional final turn: poll N+1 gets `scenario.no_matching_turn` and a 404 the author did not intend |
 | `exa.agent_run.body_predicate_on_poll` | warning | `body_contains` or `body_json` on a turn of an async entry; a GET carries no body, so the predicate can never match |
@@ -522,7 +521,7 @@ polls are made of. The create call has no turn at all, so it needs its own key:
       fault:
         attempts:
           - {status: 429, retry_after: 1}
-          - {status: 201}           # the create's real status — see the note below
+          - {status: 200}           # Exa's create answers 200 (openapi line 831) — see the note below
     turns:                           # each turn is a poll; a turn plan is the POLL plan
       - when: {call_index: 0}        # turn 0 must be conditional, or turn 1 is unreachable
         fault:
@@ -546,11 +545,13 @@ Because the poll route's lane is per job ([§3.2](#32-routelanefrom)), that poll
 success attempt above.** This is a general `Faults`/`execute` behaviour (`provider/fault_exec.go`'s `execute`
 applies `a.Status` whenever it is set, before it switches on `EffectiveKind`), not something this design added, but
 it bites specifically here because the async routes are the first ones whose baseline status is not a flat 200:
-Exa's create answers `201`, and a `tavily_research` poll answers `202` while non-terminal and `200` once terminal.
-A pass-through attempt written as `{status: 200}` — the pattern every earlier fault example in this repository
-uses, because every earlier route answers 200 — silently downgrades a create's `201` or a pending Tavily poll's
-`202` to `200` on that attempt, which is wrong and easy to miss because the body still renders correctly. The fix
-is to name the route's real status when pinning one is not the point (`{status: 201}` above), or to write the
+a `tavily_research` create answers `201` and a `tavily_research` poll answers `202` while non-terminal and `200` once
+terminal. (Exa's create answered `201` when this was written; the vendor's OpenAPI document documents only `200`, so
+it is `200` now and an Exa pass-through attempt may name it.) A pass-through attempt written as `{status: 200}` — the
+pattern every earlier fault example in this repository uses, because every earlier route answers 200 — silently
+downgrades a Tavily create's `201` or a pending Tavily poll's `202` to `200` on that attempt, which is wrong and easy
+to miss because the body still renders correctly. The fix is to name the route's real status when pinning one is not
+the point (`{status: 201}` on a Tavily create), or to write the
 pass-through attempt with no `status` and no fault kind at all — `- {}` — which lets `execute` fall through to
 whatever the handler actually rendered. `docs/scenario-schema.md`'s async section documents this explicitly and is
 the authoritative statement of the rule; this paragraph exists so a reader of this design does not have to
@@ -670,8 +671,8 @@ they sent. `appendLanePart` therefore takes the code and field to raise rather t
 A poll lane key therefore reads:
 
 ```text
-key   t-42/exa:agent_runs.poll|path:id=run_9f2c1ab4e5d67890abcdef0123456789
-      └──┘ └─────────────────┘ └──────────────────────────────────────────┘
+key   t-42/exa:agent_runs.poll|path:id=agent_run_9f2c1ab4e5d67890abcdef0123456789
+      └──┘ └─────────────────┘ └────────────────────────────────────────────────┘
        ns    Route.FaultKey     Route.LaneFrom contribution: the job itself
 ```
 
@@ -1056,7 +1057,9 @@ v1 limitation rather than an oversight — a projection body alongside `turns:` 
 else."** Both vendors' create bodies carry more than that pair. Exa's `renderRunCreated`
 (`profiles/exa/agentrun_handler.go`) renders `{id, status: "queued", stopReason: null, createdAt}` — `stopReason`
 has no `omitempty` because the contract documents it as present-and-null while queued, not absent, and `createdAt`
-is `Scenario.BaseTime()`. Tavily's `handleResearchCreate` (`profiles/tavily/research.go`) renders
+is `Scenario.BaseTime()`. (Superseded 2026-10-01: the create now renders the whole `AgentRun` — ten required keys,
+`additionalProperties: false` — with placeholders for the keys it cannot script; see
+`profiles/exa/contracts/README.md`.) Tavily's `handleResearchCreate` (`profiles/tavily/research.go`) renders
 `{request_id, created_at, status: "pending", input, model, response_time: 0}` — `input` is echoed from the request
 body and `model` is echoed too, defaulting to `"auto"` when the request omits it. None of these extra fields is
 scenario-scriptable — they are still fully derived, from `BaseTime` and the request rather than from `turns:` —
@@ -1227,12 +1230,13 @@ const (
 
 - The status constant is spelled `cancelled` (two Ls), matching `contracts/exa/README.md` — the sketch's
   `"canceled"` would fail `exa.agent_run.status.unknown` if copied into a fixture.
-- `costDollars` is emitted only when the snapshot `IsTerminal()`, not on every response as the comment above
-  claims; a non-terminal run has spent nothing yet and carries none.
+- `costDollars` is a required key of the vendor's `AgentRun` schema, so it is emitted on every response — zero-filled
+  when the snapshot declares none. (This bullet first said it was terminal-only; superseded 2026-10-01.)
 - `stopReason` is derived, not scripted directly: `null` while queued or running, and at terminal it defaults to
   `schema_satisfied`/`error`/`cancelled` from the status unless the projection's own `stop_reason:` overrides it.
-- `usage: {agentComputeUnits, dataSources}` and `createdAt` (`Scenario.BaseTime()`) are rendered on every poll,
-  terminal or not — neither key exists on the sketch above.
+- `usage` and `createdAt` (`Scenario.BaseTime()`) are rendered on every poll, terminal or not — neither key exists
+  on the sketch above — and `output`, `completedAt`, `request` and `object` are too, since the vendor's `AgentRun`
+  schema requires them (2026-10-01).
 - There is no `omit_fields` key on the shipped `AgentRunProjection`; `OmitFields` above was never built.
 
 ### 4.5 Import edges
@@ -1303,7 +1307,8 @@ does not stay invisible until an adopter hits it.
 func mintID(x *Exchange, entry, prefix string, encode func(...string) string) string
 ```
 
-Exa mints `run_` + `ids.Hex32(...)` — 32 lowercase hex, matching the house shape its `requestId` already uses.
+Exa mints `agent_run_` + `ids.Hex32(...)` — 32 lowercase hex, matching the house shape its `requestId` already uses
+(the prefix is the one `AgentRunId` documents; this design first minted `run_`).
 Tavily mints a bare `ids.UUIDv5(...)`, matching its documented `request_id`.
 
 #### `turn_key` must resolve against the route's entry, not the listener's
@@ -1819,7 +1824,7 @@ written; it is now — see §4.1's Shipped-as note.)
 
 **`ValidJobID` is a charset check, not a scheme check**, and the wording above is careful about that.
 [§7.1](#71-the-identifier-charset-is-load-bearing) defines it as `[A-Za-z0-9_-]{1,64}`, so `GET /agent/runs/typo`
-in a namespace holding one job satisfies it. Tightening it to the real schemes — Exa's `run_` + 32 hex, Tavily's
+in a namespace holding one job satisfies it. Tightening it to the real schemes — Exa's `agent_run_` + 32 hex, Tavily's
 UUID — would sharpen the diagnostic considerably, and is worth doing if it is cheap; but the finding must be honest
 at whatever precision it has, because an error-level line blaming replica count for a typo'd fixture id sends a
 reader to their deployment when the problem is in their test.

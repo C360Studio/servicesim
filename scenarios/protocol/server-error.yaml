@@ -107,7 +107,6 @@ providers:
         attempts:
           - status: 500
             error: Internal server error.
-            tag: INTERNAL
     status: completed
     output:
       text: Report A states the finding.

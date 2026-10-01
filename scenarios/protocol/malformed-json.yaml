@@ -111,7 +111,7 @@ providers:
       attempts:
         - kind: invalid_json
           status: 200
-          raw_body: '{"id":"run_00000000000000000000000000000000","status":"completed","output":{'
+          raw_body: '{"id":"agent_run_00000000000000000000000000000000","status":"completed","output":{'
     status: completed
     output:
       text: Report A states the finding.

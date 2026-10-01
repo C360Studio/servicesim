@@ -3362,6 +3362,7 @@ Exa — errors return `{"requestId","error","tag"}` with `tag: INVALID_REQUEST_B
 | `exa.contents.highlights.highlightsPerUrl.deprecated` | warning | Deprecated highlight parameter. |
 | `exa.context.deprecated` | warning | Deprecated request field. |
 | `exa.stream.unimplemented` | warning | Streaming is a plan non-goal. Default: warn and return the ordinary JSON body. `providers.exa.stream: reject` makes it a 400 for tests that want that. |
+| `exa.effort.invalid`, `exa.budget.maxDurationSeconds.range`, `exa.budget.maxCostDollars.range` | error (a budget range is a warning when the limit does not apply to the effort) | `POST /agent/runs` only, whose errors are `AgentErrorResponse`, not the flat body above. See `docs/scenario-schema.md`. |
 
 Tavily — errors return `{"detail":{"error":"..."}}`, status 400 unless noted:
 

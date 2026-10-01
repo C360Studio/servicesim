@@ -29,7 +29,7 @@
 # spec: records the machine-readable specification Exa publishes,
 # https://exa.ai/docs/exa-spec.yaml, covering every route this provider
 # simulates (/search, /contents, /answer, /findSimilar, /agent/runs,
-# /agent/runs/{id}) — fetched and hashed 2026-08-16. Its sha256 is the DRIFT
+# /agent/runs/{id}) — last fetched and hashed 2026-10-01. Its sha256 is the DRIFT
 # SIGNAL for this provider: an unchanged hash on a fresh fetch means nothing
 # below needs re-reading; a changed one means re-read the consumed fields
 # against both the per-entry documentation_url pages below and the spec
@@ -43,18 +43,30 @@
 # additions). The hash says "go re-read the pages", not "here is what
 # changed" — the per-entry documentation_url and verified date remain the
 # record of what was actually verified and against what. Only entries whose
-# documentation_url IS the spec (the three /findSimilar entries below) carry
-# api_version, because only those were read from this versioned document;
-# every other entry was read from an undated prose page and carries none.
+# documentation_url IS the spec (the three /findSimilar entries and the six
+# exa-agent-runs-* entries below: nine in all) carry api_version, because only
+# those were read from this versioned document; every other entry was read from
+# an undated prose page and carries none.
+#
+# 2026-10-01: the hash below was re-fetched and adopted after re-reading ONLY the
+# /agent/runs surface against the spec (docs/audits/2026-10-01-exa-agent.md),
+# which is why the six exa-agent-runs-* entries now cite the spec and carry
+# api_version. The /search, /answer, /contents and /findSimilar entries were NOT
+# re-read against this revision: they keep their earlier verified dates, and the
+# provider-level date below moved only because contracts.Conform requires it to
+# be no older than any entry: it reflects that rule, not a re-read of all seven
+# routes this provider simulates, and neither does the Verified cell it must
+# match in contracts/README.md. A re-read of those routes against this hash is
+# still owed, tracked in GitHub issue #11, and nothing here claims it was done.
 
 provider: exa
-verified: 2026-08-15
+verified: 2026-10-01
 
 spec:
   url: https://exa.ai/docs/exa-spec.yaml
   version: "2.0.0"
-  sha256: 6fcf299032d8b52fb614315cf4f251f055633bb9e21da7aeeaa0e9bcfb532e30
-  retrieved: 2026-08-16
+  sha256: cbb9a1429456270527cec49cb495ec00671dd2b7702c411a168988e22222416d
+  retrieved: 2026-10-01
 
 goldens:
   - golden: exa-search-happy.json
@@ -234,114 +246,117 @@ goldens:
 
   - golden: exa-agent-runs-created.json
     endpoint: POST /agent/runs
-    status: 201
+    status: 200
     kind: simulator-chosen
-    documentation_url: https://exa.ai/docs/reference/agent-api/overview
-    verified: 2026-08-15
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-01
     note: >-
-      status, stopReason (present and explicitly null) and the field names are
-      vendor-documented. createdAt's type/format and the id format are both
-      recorded NOT VERIFIED in contracts/exa/README.md's async section, so both
-      values here are Servicesim's choice.
+      Read from the OpenAPI spec (createAgentRun, AgentRun), which documents
+      only a 200 for the create (spec line 831). The ten keys, their order, the
+      object constant, the null stopReason, completedAt and request and the
+      required output, usage and costDollars objects are vendor-documented
+      shape (AgentRun, line 5793). Every VALUE is Servicesim's: the spec has no
+      example bodies, so the id suffix, createdAt and the zero placeholders for
+      the required output, usage and costDollars keys are SIMULATOR-POLICY, not
+      a claim about what the live service sends or bills. request is null, which
+      the schema permits, because the job record holds no request body. The full
+      record is docs/audits/2026-10-01-exa-agent.md.
 
   - golden: exa-agent-runs-running.json
     endpoint: GET /agent/runs/{id}
     status: 200
     kind: simulator-chosen
-    documentation_url: https://exa.ai/docs/reference/agent-api/overview
-    verified: 2026-08-15
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-01
     note: >-
-      A non-terminal poll snapshot. status and stopReason (present and
-      explicitly null while running) are vendor-documented enum values; output,
-      error, usage and costDollars being absent matches "output exists only at
-      a terminal status", which is also documented. createdAt and id are
-      simulator-chosen, as on the create golden — id's format and createdAt's
-      type/format are both recorded NOT VERIFIED in contracts/exa/README.md's
-      async section — which is why this entry is simulator-chosen rather than
-      vendor-documented despite most of its field names being real: kind
-      describes the record as a whole, per contracts.go's definition
-      ("the shape AND the values"), and the values here are not all vendor's.
+      A non-terminal poll snapshot. The same ten keys as the create, because
+      AgentRun requires them on every status: stopReason and completedAt are
+      nullable (spec lines 5803 and 5812; the spec states nullability, not
+      when the value is null, so null until terminal is SIMULATOR-POLICY) and
+      output, usage and costDollars are non-nullable required objects
+      (5822-5827), so they are present as zero-valued placeholders. That the live API sends
+      zero-valued objects on a run that has not finished is INFERENCE from the
+      nullability marking, not a read example — the earlier reading that
+      output exists only at a terminal status came from a prose page and the
+      spec does not support it. Every value is simulator-chosen.
 
   - golden: exa-agent-runs-completed.json
     endpoint: GET /agent/runs/{id}
     status: 200
     kind: simulator-chosen
-    documentation_url: https://exa.ai/docs/reference/agent-api/overview
-    verified: 2026-08-15
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-01
     note: >-
-      A terminal run. status: completed, stopReason: schema_satisfied and
-      output.text are vendor-documented fields and values. Everything else here
-      is Servicesim's: id and createdAt are simulator-chosen (NOT VERIFIED in
-      the README, same as every other agent-run entry); output.grounding's
-      shape is NOT VERIFIED, and the {title, url, id} citation triple used here
-      is the same simulator choice exa-search-structured.json makes, not a
-      vendor shape; costDollars.total is the RECORDED INFERENCE in
-      contracts/exa/README.md's "Recorded inference" section (not read from a
-      vendor example) — see that section before changing this fixture.
-      costDollars.dataSources is not emitted here because the scenario did not
-      declare one, which is also the documented default. Separately:
-      output.structured now renders explicit null on this fixture, matching
-      contracts/exa/README.md's response-fields table, which documents
-      output.structured as object|null, "null when no schema was supplied".
-      A prior pass of this fixture omitted the key instead, because
-      provider/exa/agentrun_handler.go's outputWire declared its Structured
-      field with the json tag structured,omitempty; that was a real
-      disagreement between the code and the README (the authority), and the
-      fix — dropping omitempty so a nil interface value renders JSON null —
-      is what changed this golden on 2026-08-15 as part of Phase 4. This
-      entry stays simulator-chosen because output.structured being an
-      explicit null in the absence of a captured example run (as opposed to
-      merely present-vs-absent) is Servicesim's reading of the field-table
-      wording, not a vendor-observed response.
+      A terminal run. status: completed and stopReason: schema_satisfied are
+      documented enum members; which reason a status derives is not documented
+      (the spec pairs none), so schema_satisfied here is SIMULATOR-POLICY.
+      completedAt equals createdAt because Servicesim has no elapsed-time model
+      (SIMULATOR-POLICY). output is AgentRunOutput (spec line 5921) with all
+      three keys; the grounding entry is AgentGrounding and its citation is
+      AgentCitation, {url, title} and nothing else (lines 5942-5977) — an
+      earlier fixture also carried a citation id the schema does not allow.
+      structured is an explicit null, which the schema permits when no
+      outputSchema was supplied. costDollars is AgentCostDollars (line 6009):
+      total is the scenario's scripted 0.045, which is the only scripted cost
+      fact; search is a plain number here, not the {neural} object of
+      CostDollarsOutput, and the other components are zero placeholders that do
+      not sum to total and make no billing claim. usage is the four required
+      counters at zero for the same reason. The "recorded inference" that total
+      is emitted is now verified by the schema (line 6012).
 
   - golden: exa-agent-runs-failed.json
     endpoint: GET /agent/runs/{id}
     status: 200
     kind: simulator-chosen
-    documentation_url: https://exa.ai/docs/reference/agent-api/overview
-    verified: 2026-08-15
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-01
     note: >-
-      A terminal failure: status: failed and stopReason: error are both
-      documented enum values. The `error` object is NOT vendor-documented: the
-      response-fields table in contracts/exa/README.md's async section has no
-      `error` row, and grepping the whole async section finds `error` only as
-      one of the four documented stopReason enum values — never as a top-level
-      run-object key with its own shape. The {code, message} shape rendered
-      here traces to docs/design/async-jobs.md's design and
-      provider/exa/agentrun_handler.go's errorWire, i.e. it is Servicesim's
-      construction, unverified against any vendor example, and a dated
-      re-verification against a real failed run is what would confirm or
-      correct it. Note
-      costDollars.total is 0, not absent: the terminal-run inference in the
-      completed golden's entry applies regardless of outcome, and a failed run
-      still reports a (possibly zero) spend rather than omitting the key. id
-      and createdAt are simulator-chosen, same as every other agent-run entry.
+      A terminal failure: status: failed with stopReason: error, both documented
+      enum members (pairing them is SIMULATOR-POLICY). There is deliberately NO
+      error key: AgentRun has no run-level error and is additionalProperties:
+      false (spec line 5839), so the {code, message} object an earlier version of
+      this fixture carried was Servicesim's own construction and has been
+      removed; a scenario that still declares one is a load error. output,
+      usage and costDollars are the zero-valued placeholders for their required
+      keys, and completedAt is the scenario's base time.
 
   - golden: exa-agent-runs-404.json
     endpoint: GET /agent/runs/{id}, an identifier this process never minted
     status: 404
     kind: simulator-chosen
-    documentation_url: https://exa.ai/docs/reference/error-codes
-    verified: 2026-08-15
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-01
     note: >-
-      Fail-closed: the flat {requestId, error, tag} envelope and the NOT_FOUND
-      tag are the same ones exa-search-404.json uses for unmatched routing: the
-      Agent API documents no run-specific 404 body of its own, so the general
-      error envelope applies here too.
+      Fail-closed. getAgentRun documents a 404 "Run not found" (spec line 1019)
+      and every agent error body is AgentErrorResponse, {error: {type, code,
+      message}} (line 6044), not the flat envelope the other routes use. The
+      spec closes the type and code enums but does not pair them with a status:
+      NOT_FOUND / RUN_NOT_FOUND is INFERENCE from the enum names, and the
+      message reuses the response description. The x-request-id header the spec
+      documents on this response is not part of the body and is asserted in the
+      tests.
 
   - golden: exa-agent-runs-503.json
     endpoint: POST /agent/runs, refused at the configured job bound
     status: 503
     kind: simulator-chosen
-    documentation_url: https://exa.ai/docs/reference/agent-api/overview
-    verified: 2026-08-15
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-01
     note: >-
-      Not a vendor status: this is Servicesim refusing to hold more job state,
-      using the same flat error envelope and INTERNAL_ERROR tag as every other
-      simulator-side 5xx. The message names the bound and the remedy
-      (POST /__admin/reset, a fresh namespace, or raising the bound), which is
-      the part a consumer's test failure output actually needs to be
-      actionable — the wire text itself does not name the --max-jobs flag.
+      Not a vendor status: createAgentRun documents no 503 (its error statuses
+      are 400, 401, 429 and 500), so this is Servicesim refusing to hold more
+      job state. It uses AgentErrorResponse's shape with SERVER_ERROR for both
+      type and code, which is SIMULATOR-POLICY for a status the spec does not
+      cover. The message names the bound and the remedy (POST /__admin/reset, a
+      fresh namespace, or raising the bound), which is the part a consumer's
+      test failure output actually needs to be actionable — the wire text
+      itself does not name the --max-jobs flag.
 
   - golden: exa-contents-happy.json
     endpoint: POST /contents

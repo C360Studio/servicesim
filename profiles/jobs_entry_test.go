@@ -36,11 +36,14 @@ providers:
       - respond: {status: completed, content: done}
 `
 
-// surface is one listener plus the credential its vendor expects.
+// surface is one listener plus the credential its vendor expects and the status
+// its create answers: Exa's createAgentRun documents only a 200, Tavily's
+// research create answers 201.
 type surface struct {
-	handler http.Handler
-	header  string
-	value   string
+	handler      http.Handler
+	header       string
+	value        string
+	createStatus int
 }
 
 // jobWorld is the Exa and Tavily listeners over ONE scenario, ONE job store and
@@ -73,8 +76,8 @@ func newJobWorld(t *testing.T) *jobWorld {
 	}
 	return &jobWorld{
 		t:       t,
-		exa:     surface{exa.Profile().Handler(deps), "x-api-key", "test-key"},
-		tavily:  surface{tavily.Profile().Handler(deps), "Authorization", "Bearer tvly-test-key"},
+		exa:     surface{exa.Profile().Handler(deps), "x-api-key", "test-key", http.StatusOK},
+		tavily:  surface{tavily.Profile().Handler(deps), "Authorization", "Bearer tvly-test-key", http.StatusCreated},
 		journal: ring,
 	}
 }
@@ -106,7 +109,7 @@ func (w *jobWorld) create(s surface, path, body, idField string) string {
 	w.t.Helper()
 
 	rec := w.do(s, http.MethodPost, path, body)
-	require.Equal(w.t, http.StatusCreated, rec.Code, "create failed: %s", rec.Body.String())
+	require.Equal(w.t, s.createStatus, rec.Code, "create failed: %s", rec.Body.String())
 
 	var out map[string]any
 	require.NoError(w.t, json.Unmarshal(rec.Body.Bytes(), &out))

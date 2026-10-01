@@ -1,5 +1,7 @@
 {
-  "requestId": "ba74851f4cac17b34aac1ba93f00599f",
-  "error": "Not Found",
-  "tag": "NOT_FOUND"
+  "error": {
+    "type": "NOT_FOUND",
+    "code": "RUN_NOT_FOUND",
+    "message": "Run not found"
+  }
 }

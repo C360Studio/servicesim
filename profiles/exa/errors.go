@@ -8,7 +8,8 @@ import (
 )
 
 // errorResponseWire is Exa's canonical error body: a flat object, not a nested
-// {error: {code, message}}.
+// {error: {code, message}}. The three agent-run routes are the exception: they
+// answer in AgentErrorResponse's nested shape, see agenterror.go.
 type errorResponseWire struct {
 	RequestID string `json:"requestId"`
 	Error     string `json:"error"`
@@ -109,11 +110,7 @@ func errorBody(requestID, message, tag string, status int) []byte {
 // all when a.Status is an error status or a.Body is set (Phase 10 unit 2), so
 // the a.Status < 400 guard this function used to carry itself is gone.
 func faultBody(requestID string, a scenario.FaultAttempt) []byte {
-	if len(a.Body) > 0 {
-		body, err := provider.Render(a.Body, nil, nil)
-		if err != nil {
-			return nil
-		}
+	if body, ok := verbatimFaultBody(a); ok {
 		return body
 	}
 
@@ -125,6 +122,20 @@ func faultBody(requestID string, a scenario.FaultAttempt) []byte {
 		tag = a.Tag
 	}
 	return errorBody(requestID, message, tag, a.Status)
+}
+
+// verbatimFaultBody returns the attempt's own `body:` rendered as-is, and whether
+// the attempt declared one. A body that cannot be rendered yields (nil, true): the
+// attempt asked for a body and must not silently fall back to a default.
+func verbatimFaultBody(a scenario.FaultAttempt) ([]byte, bool) {
+	if len(a.Body) == 0 {
+		return nil, false
+	}
+	body, err := provider.Render(a.Body, nil, nil)
+	if err != nil {
+		return nil, true
+	}
+	return body, true
 }
 
 // defaultsFor returns the message and tag Exa documents for a status. The 429

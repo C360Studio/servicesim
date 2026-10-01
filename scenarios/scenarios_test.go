@@ -1740,9 +1740,10 @@ func TestAsyncFailed_BothSurfacesReachATerminalFailure(t *testing.T) {
 
 	failed := asyncPoll(t, sim, exa.Name, "/agent/runs/"+exaID, exaHeaders)
 	assert.Equal(t, "failed", failed["status"])
-	errObj, ok := failed["error"].(map[string]any)
-	require.True(t, ok, "a failed run must carry an error object: %v", failed)
-	assert.Equal(t, "AGENT_RUN_FAILED", errObj["code"])
+	// The live AgentRun schema has no run-level error: a failed run is its status
+	// plus stopReason "error", and an error key would be outside the schema.
+	assert.Equal(t, "error", failed["stopReason"])
+	assert.NotContains(t, failed, "error", "the AgentRun schema has no run-level error")
 
 	tavilyHeaders := map[string]string{"authorization": "Bearer test-tavily-key"}
 	tavilyID := asyncCreate(t, sim, tavily.Name, "/research", `{"input":"find the finding"}`, tavilyHeaders)
@@ -1785,6 +1786,28 @@ func TestAsyncStuck_NeitherSurfaceEverTerminates(t *testing.T) {
 	}
 }
 
+// TestExtraFields_ExaAgentRunRendersTheScriptedFields is the other half of the
+// built-in's promise on the agent-run surface: the extra_fields it scripts reach
+// the wire beside the schema's own ten keys, and only there — a consumer that
+// tolerates unknown response fields is being tested against these two, not
+// against a body that merely could have carried them.
+func TestExtraFields_ExaAgentRunRendersTheScriptedFields(t *testing.T) {
+	t.Parallel()
+
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
+		testkit.WithBuiltin("extra-fields"),
+		testkit.WithProviders(exa.Name))
+
+	headers := map[string]string{"x-api-key": "test-exa-key"}
+	id := asyncCreate(t, sim, exa.Name, "/agent/runs", `{"query":"q"}`, headers)
+	got := asyncPoll(t, sim, exa.Name, "/agent/runs/"+id, headers)
+
+	assert.Equal(t, "completed", got["status"])
+	assert.Equal(t, "trace-0", got["experimental_trace_id"])
+	assert.Equal(t, "default", got["service_tier"])
+	assert.Len(t, got, 10+2, "the ten AgentRun keys plus exactly the two scripted extras: %v", got)
+}
+
 // asyncCreate posts a create request against an async entry's create route and
 // returns the minted identifier, under either wire spelling ("id" for Exa,
 // "request_id" for Tavily).
@@ -1806,7 +1829,13 @@ func asyncCreate(
 
 	raw, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	require.Equalf(t, http.StatusCreated, resp.StatusCode, "create failed: %s", raw)
+	// The two vendors' creates differ: Exa's createAgentRun documents only a 200,
+	// while Tavily's research create answers 201.
+	wantStatus := http.StatusCreated
+	if p == exa.Name {
+		wantStatus = http.StatusOK
+	}
+	require.Equalf(t, wantStatus, resp.StatusCode, "create failed: %s", raw)
 
 	var out map[string]any
 	require.NoError(t, json.Unmarshal(raw, &out))

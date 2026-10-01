@@ -1,6 +1,27 @@
 {
-  "id": "run_b7d96bf4b3dcc91559d175789c250d38",
+  "id": "agent_run_b7d96bf4b3dcc91559d175789c250d38",
+  "object": "agent_run",
   "status": "queued",
   "stopReason": null,
-  "createdAt": "2026-01-01T00:00:00.000Z"
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "completedAt": null,
+  "request": null,
+  "output": {
+    "text": "",
+    "structured": null,
+    "grounding": []
+  },
+  "usage": {
+    "agentComputeUnits": 0,
+    "searches": 0,
+    "emails": 0,
+    "phoneNumbers": 0
+  },
+  "costDollars": {
+    "total": 0,
+    "agentCompute": 0,
+    "search": 0,
+    "emails": 0,
+    "phoneNumbers": 0
+  }
 }

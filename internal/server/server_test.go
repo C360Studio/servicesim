@@ -1102,7 +1102,7 @@ providers:
 func createAgentRun(t *testing.T, exaAddr, path string) string {
 	t.Helper()
 	status, body := postBody(t, exaAddr, path, `{"query":"find the finding"}`)
-	require.Equal(t, http.StatusCreated, status, "create failed: %s", body)
+	require.Equal(t, http.StatusOK, status, "create failed: %s", body)
 
 	var out struct {
 		ID string `json:"id"`
@@ -1194,7 +1194,7 @@ func TestMaxJobsBoundsJobsPerNamespace(t *testing.T) {
 	assert.Equal(t, 1, h.scenarios[0].deps.MaxJobs, "--max-jobs must reach Deps.MaxJobs, not just the registry")
 
 	status, body := postBody(t, exaAddr, "/n/t-1/agent/runs", `{"query":"first"}`)
-	require.Equal(t, http.StatusCreated, status, "the first create in a fresh namespace must succeed: %s", body)
+	require.Equal(t, http.StatusOK, status, "the first create in a fresh namespace must succeed: %s", body)
 
 	status, body = postBody(t, exaAddr, "/n/t-1/agent/runs", `{"query":"second"}`)
 	assert.Equal(t, http.StatusServiceUnavailable, status, "a create past --max-jobs must be refused with the "+
@@ -1205,7 +1205,7 @@ func TestMaxJobsBoundsJobsPerNamespace(t *testing.T) {
 	// A different namespace has its own bound: the first one's fullness must
 	// not leak across the namespace boundary.
 	status, body = postBody(t, exaAddr, "/n/t-2/agent/runs", `{"query":"first"}`)
-	assert.Equal(t, http.StatusCreated, status, "another namespace's create must still succeed: %s", body)
+	assert.Equal(t, http.StatusOK, status, "another namespace's create must still succeed: %s", body)
 }
 
 // TestSingleReplicaWarningIsAnnouncedOnceAtStartup covers

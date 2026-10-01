@@ -1107,21 +1107,33 @@ file: `respond: &pending {status: running}` on one turn, `respond: *pending` on 
 | `tavily_research` | `POST /research` (create), `GET /research/{request_id}` (poll), `HEAD /research/{request_id}` (existence only) |
 
 The create response is derived in full and cannot be scripted: a projection body alongside `turns:` is already a
-load error, so there is nowhere honest to put create-side keys. `exa_agent_runs` creates at `queued` (plus
-`id` and `createdAt`); `tavily_research` creates at `pending` (plus `request_id`, `created_at`, `input`, `model`
-and `response_time`).
+load error, so there is nowhere honest to put create-side keys. `exa_agent_runs` creates a full `AgentRun` at `queued`
+(every required key, the unscripted ones at their placeholders — see below); `tavily_research` creates at `pending`
+(plus `request_id`, `created_at`, `input`, `model` and `response_time`).
 
 `exa_agent_runs`:
 
 | Key | Type | Renders to |
 |---|---|---|
 | `status` | `queued` \| `running` \| `completed` \| `failed` \| `cancelled` | `status`. Empty means `running`, so a pending poll can be written as `respond: {}`. `completed`, `failed` and `cancelled` are terminal. |
-| `stop_reason` | `schema_satisfied` \| `budget_reached` \| `error` \| `cancelled` | `stopReason`. A non-terminal snapshot always renders `null`. A terminal one derives it from `status` — `failed` becomes `error`, `cancelled` stays `cancelled`, everything else becomes `schema_satisfied` — unless stated explicitly. |
-| `output` | `{text, structured, grounding}` | `output`, whenever declared. A real run only carries one at a terminal status, and `status: completed` with none is a load-time warning — but nothing stops a non-terminal turn from declaring one too; use it only on the terminal snapshot. `grounding[]` entries are `{field, citations, confidence}`, resolved against the corpus exactly like `exa`'s own `output.grounding`. |
-| `error` | `{code, message}` | `error`. Required when `status: failed` — declaring `failed` with no `error` is a load error, because a consumer's failure branch is what such a scenario tests. |
-| `cost_dollars` | `{total, data_sources}` | `costDollars`, emitted on every **terminal** snapshot whether or not the scenario declares one, and never on a non-terminal one even if declared — a real run has spent nothing until it finishes. Unlike `exa`'s own `costDollars`, there is no `search` key here — it is not confirmed on this surface. |
-| `usage` | `{agent_compute_units, data_sources}` | `usage`. Optional — unlike `costDollars` it carries no documented always-present guarantee. |
+| `stop_reason` | `schema_satisfied` \| `budget_reached` \| `time_limit_reached` \| `stopped` \| `error` \| `cancelled` | `stopReason`. A non-terminal snapshot always renders `null`. A terminal one derives it from `status` — `failed` becomes `error`, `cancelled` stays `cancelled`, everything else becomes `schema_satisfied` — unless stated explicitly. |
+| `output` | `{text, structured, grounding}` | `output`, on any snapshot that declares it. A snapshot that declares none renders the empty placeholder `{text: "", structured: null, grounding: []}` — the wire object is required on every run, queued and running included. `status: completed` with none is a load-time warning. `grounding[]` entries are `{field, citations, confidence}`, resolved against the corpus; each citation renders as `{url, title}` and nothing else, and `citations` renders as `[]` when empty. |
+| `error` | — | **Removed.** The live `AgentRun` schema has no run-level error object, so declaring `error:` is the load error `exa.agent_run.error.not_in_schema`. A failed run is `status: failed`, which derives `stop_reason: error`. |
+| `cost_dollars` | `{total, agent_compute, search, emails, phone_numbers, data_sources}` | `costDollars`, on every snapshot. All five scalars are required on the wire and `search` is a plain number here, not the `{neural}` object of `exa`'s own `costDollars`. A key the scenario omits renders `0`; a value must be a finite number `>= 0` (`exa.agent_run.value.range`). `data_sources` is a map of provider to dollars and is omitted when empty. |
+| `usage` | `{agent_compute_units, searches, emails, phone_numbers, data_sources}` | `usage`, on every snapshot. The four counters are required on the wire and an omitted one renders `0`; a value must be a finite number `>= 0` (`exa.agent_run.value.range`); `searches`, `emails`, `phone_numbers` and the `data_sources` counts are integers, so a fractional value is a load error. `data_sources` is a map of provider to count and is omitted when empty. |
 | `extra_fields` | map | Merged into the top-level response object. |
+
+**What `exa_agent_runs` renders that no key scripts** (all simulator policy: the vendor's OpenAPI document gives the
+shape of each key but has no example bodies, so none of this is a claim about what the live service sends):
+
+- `object` is the constant `agent_run`, and the run id is `agent_run_` plus 32 hex characters.
+- `createdAt` is `time.base`. `completedAt` is `null` until a snapshot is terminal and `time.base` after — there is
+  no elapsed-time model, so a run never takes any time.
+- `request` is `null`, which the schema permits. The job record holds no request body, so the request is not echoed.
+- A zero that the scenario did not script is a **placeholder for a required key**, not a claim about billing or
+  metering. The cost components are not derived from, and need not sum to, `total`. A scripted value always wins.
+- `extra_fields` is the one way to put a key outside the schema on the wire, on purpose: it exists so a consumer can
+  prove it tolerates additions, which the `AgentRun` schema itself (`additionalProperties: false`) does not.
 
 `tavily_research`:
 
@@ -1152,9 +1164,9 @@ providers:
       fault:
         attempts:
           - {status: 429, retry_after: 1}
-          - {status: 201}     # a kind-none attempt still writes `status` to the wire,
-                                # so the success attempt must name the vendor's real
-                                # create status (201), not a generic 200
+          - {status: 200}     # a kind-none attempt still writes `status` to the wire;
+                                # Exa's create answers 200, so naming it is a pass-through
+                                # (Tavily's create answers 201, which this would downgrade)
     turns:                     # each turn is a poll; a turn's fault is the POLL plan
       - when: {call_index: 0}  # turn 0 must be conditional, or turn 1 is unreachable
         fault:
@@ -1186,11 +1198,25 @@ written, and `extra_fields` can overwrite the `id` they are merged into: in both
 holds no usable identifier for.
 
 A kind-none attempt that names a `status` pins the wire status to it, whatever the handler would have written.
-That is invisible on a route that answers 200 anyway and wrong on the two that do not: a create answers `201`, and a
-`tavily_research` poll answers `202` until the task is terminal. Write the success attempt as `- {}` — no status,
-no kind — wherever the route's real status is not 200 or varies with state, and name a status only when pinning it
-is the point. `[{status: 429}, {}]` on a `tavily_research` poll plan is "rate-limit the first poll, then serve
-whatever the snapshot says"; `[{status: 429}, {status: 200}]` would answer 200 to a poll that is still pending.
+That is invisible on a route that answers 200 anyway and wrong on the two that do not: a `tavily_research` create
+answers `201`, and a `tavily_research` poll answers `202` until the task is terminal. Write the success attempt as
+`- {}` — no status, no kind — wherever the route's real status is not 200 or varies with state, and name a status
+only when pinning it is the point. `[{status: 429}, {}]` on a `tavily_research` poll plan is "rate-limit the first
+poll, then serve whatever the snapshot says"; `[{status: 429}, {status: 200}]` would answer 200 to a poll that is
+still pending.
+
+**Error bodies on `exa_agent_runs`.** The three Exa agent routes answer every error — rejections, a missing run, an
+injected fault — as `{error: {type, code, message}}`, the vendor's `AgentErrorResponse`, and carry an `x-request-id`
+response header. Exa's other routes keep their flat `{requestId, error, tag}` body. A fault attempt's `status` picks
+`type` and `code`: `400` is `INVALID_REQUEST` / `INVALID_REQUEST`, `401` is `AUTHENTICATION_ERROR` /
+`TEAM_NOT_FOUND`, `404` is `NOT_FOUND` / `RUN_NOT_FOUND`, `429` is `RATE_LIMIT_ERROR` /
+`CONCURRENCY_LIMIT_REACHED`, and every other `4xx` is `INVALID_REQUEST`, every `5xx` `SERVER_ERROR`. The vendor's
+document lists which statuses each operation returns but never pairs them with a type and code, so that pairing is
+this simulator's inference. The attempt's `error:` becomes `message` and its `tag:` becomes `code`, verbatim — a
+code outside the vendor's enum is allowed, to test a consumer's handling of one the vendor adds later, and is warned
+about at load (`exa.agent_run.fault_tag.unknown`) so a flat-envelope tag such as `RATE_LIMIT` copied from another Exa
+route does not render silently — while `type` always follows the status. An attempt's own `body:` still wins
+outright.
 
 **Per-job lanes.** A poll route's lane is per job, not per route. `Route.LaneFrom` — `["path:id"]` for
 `exa_agent_runs`, `["path:request_id"]` for `tavily_research` — adds the path wildcard's value as an extra
@@ -1215,12 +1241,26 @@ to the generic ones every provider raises for a malformed `respond:` node or an 
 | Code | Severity | Condition |
 |---|---|---|
 | `exa.agent_run.status.unknown` | error | `status` is not one of `queued`, `running`, `completed`, `failed`, `cancelled` |
-| `exa.agent_run.stop_reason.unknown` | error | `stop_reason` is set and is not one of `schema_satisfied`, `budget_reached`, `error`, `cancelled` |
-| `exa.agent_run.failed_without_error` | error | `status: failed` with no `error` |
+| `exa.agent_run.stop_reason.unknown` | error | `stop_reason` is set and is not one of `schema_satisfied`, `budget_reached`, `time_limit_reached`, `stopped`, `error`, `cancelled` |
+| `exa.agent_run.error.not_in_schema` | error | an `error:` block — the live `AgentRun` schema has no run-level error; a failed run is `status: failed` plus `stop_reason: error` |
+| `exa.agent_run.fault_tag.unknown` | warning | a fault attempt's `tag:` (on `create.fault` or a turn's `fault`) is not one of the ten `AgentError` codes. It is still rendered verbatim as `code`; the warning is for a flat-envelope tag (`RATE_LIMIT`, `INTERNAL`, `INVALID_API_KEY`) copied from another Exa route |
+| `exa.agent_run.value.range` | error | a `usage` or `cost_dollars` value (a `data_sources` count or cost included) that is negative, NaN or infinite — every `AgentUsage` and `AgentCostDollars` member is a number with `minimum: 0` |
+| `exa.output.grounding.confidence.unknown` | warning | a grounding `confidence` outside `low`, `medium`, `high`; it is emitted verbatim |
 | `exa.agent_run.terminal_then_pending` | error | a non-terminal turn declared after a terminal one — a run does not un-complete |
 | `exa.agent_run.script_exhausted` | warning | no unconditional final turn: the poll after the script's last snapshot gets `scenario.no_matching_turn` and a 404 the author did not intend |
 | `exa.agent_run.body_predicate_on_poll` | warning | a turn's `when` uses `body_contains` or `body_json` — a `GET` poll carries no body, so it can never match |
 | `exa.agent_run.completed_without_output` | warning | `status: completed` with no `output` — the vendor allows it, but it is almost always an unfinished fixture |
+
+`exa_agent_runs` also checks the **create request** when it arrives, with these findings (the schema documents the
+values; what the live API answers to a violation is not documented, so rejecting is this simulator's policy):
+
+| Code | Severity | Condition |
+|---|---|---|
+| `exa.effort.invalid` | error | `effort` is not one of `minimal`, `low`, `medium`, `high`, `xhigh`, `auto`, `ultra` — `max` is not a member; `null` and non-strings are included |
+| `exa.budget.maxDurationSeconds.range` | error on `ultra`, otherwise warning | `budget.maxDurationSeconds` outside 300-10,800. The limit applies only to `ultra`, so for any other effort the request is served and the finding is a warning |
+| `exa.budget.maxCostDollars.range` | error on `auto` and `ultra`, otherwise warning | `budget.maxCostDollars` outside 1-100. The limit applies only to `auto` and `ultra`, and an omitted `effort` is `auto`, so for any other effort the request is served and the finding is a warning |
+
+A budget member of the wrong type (`exa.request.field_type`) is always an error, whatever the effort.
 
 `tavily_research`:
 

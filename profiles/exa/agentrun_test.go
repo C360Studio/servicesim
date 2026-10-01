@@ -52,7 +52,7 @@ func asyncSim(t *testing.T, src string) *sim {
 func createRun(t *testing.T, s *sim, body string) string {
 	t.Helper()
 	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: body})
-	require.Equal(t, http.StatusCreated, rec.Code, "create failed: %s", rec.Body.String())
+	require.Equal(t, http.StatusOK, rec.Code, "create failed: %s", rec.Body.String())
 
 	var out struct {
 		ID     string `json:"id"`
@@ -86,8 +86,9 @@ func TestAgentRunCreateThenPollToCompletion(t *testing.T) {
 	for i := range 2 {
 		got := pollRun(t, s, id)
 		assert.Equal(t, statusRunning, got["status"], "poll %d should still be running", i)
-		assert.Nil(t, got["output"], "output must not exist before a terminal status")
-		assert.Nil(t, got["costDollars"], "a run that has not finished has spent nothing")
+		assert.Equal(t, map[string]any{"text": "", "structured": nil, "grounding": []any{}}, got["output"],
+			"output is a required non-nullable object, so a run that has not finished carries an empty one")
+		assert.Nil(t, got["completedAt"], "a run that has not finished has not completed")
 		assert.Nil(t, got["stopReason"], "a non-terminal run carries a null stop reason")
 		_, present := got["stopReason"]
 		assert.True(t, present, "stopReason must be present and explicitly null, not omitted")
@@ -117,16 +118,13 @@ func TestAgentRunCreateThenPollToCompletion(t *testing.T) {
 	assert.Equal(t, "Report A", citation["title"], "the citation did not resolve against the corpus")
 	assert.Equal(t, "https://example.test/report-a", citation["url"])
 
-	// costDollars.total is emitted on every terminal run. See the recorded
-	// inference in contracts/exa/README.md for why it ships on evidence rather
-	// than on a vendor example — and note it must be here from the FIRST
-	// release, because adding a cost key after adopters hold goldens rewrites
-	// the bytes of every one of those files.
+	// costDollars is required on every run and its total is scripted here; the
+	// components the scenario did not script are zero placeholders.
 	cost, ok := done["costDollars"].(map[string]any)
 	require.True(t, ok, "a terminal run carries costDollars: %v", done)
 	assert.InDelta(t, 0.045, cost["total"], 1e-9)
-	assert.NotContains(t, cost, "search",
-		"costDollars.search is not confirmed on this surface and must not be copied across from /search")
+	assert.Equal(t, 0.0, cost["search"],
+		"costDollars.search is a required scalar on this surface; unscripted it is a zero placeholder")
 
 	// The terminal turn is unconditional, so it answers every later poll too —
 	// which is what every real job API does with a finished run.
@@ -168,7 +166,7 @@ providers:
 		headers: map[string]string{"Authorization": sentinel},
 		noAuth:  true, // the header above IS the credential under test
 	})
-	require.Equal(t, http.StatusCreated, rec.Code, "create failed: %s", rec.Body.String())
+	require.Equal(t, http.StatusOK, rec.Code, "create failed: %s", rec.Body.String())
 
 	var out struct {
 		ID string `json:"id"`
@@ -225,7 +223,7 @@ func TestAgentRunPollUnknownIdentifier(t *testing.T) {
 	s := asyncSim(t, asyncScenario)
 	id := createRun(t, s, `{"query":"q"}`)
 
-	rec := s.do(request{method: http.MethodGet, path: "/agent/runs/run_neverminted"})
+	rec := s.do(request{method: http.MethodGet, path: "/agent/runs/agent_run_neverminted"})
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 
 	// The real run is untouched: its first poll is still poll 0.
@@ -246,7 +244,7 @@ func TestAgentRunHeadDoesNotConsumeAPoll(t *testing.T) {
 		assert.Empty(t, rec.Body.String(), "a HEAD carries no body")
 	}
 
-	rec := s.do(request{method: http.MethodHead, path: "/agent/runs/run_neverminted"})
+	rec := s.do(request{method: http.MethodHead, path: "/agent/runs/agent_run_neverminted"})
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 
 	// Three HEADs and a miss consumed nothing: the first GET is still poll 0.
@@ -265,7 +263,7 @@ func TestAgentRunPollForeignIDDiagnostic(t *testing.T) {
 	s := asyncSim(t, asyncScenario)
 	// Well-formed for Exa's own scheme (runIDPrefix + 32 hex), never minted by
 	// this process.
-	const foreignID = "run_deadbeefdeadbeefdeadbeefdeadbeef"
+	const foreignID = "agent_run_deadbeefdeadbeefdeadbeefdeadbeef"
 
 	// X: the default namespace has minted a real run.
 	createRun(t, s, `{"query":"seed X"}`)
@@ -308,38 +306,6 @@ func TestAgentRunCreateRejectsAMissingQuery(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.True(t, s.hasFinding(codeQueryMissing))
-}
-
-// A failed run carries its error, which is what a consumer's failure branch
-// reads. The scenario declaring failed without an error is a load error, tested
-// separately in the validator tests.
-func TestAgentRunFailedCarriesItsError(t *testing.T) {
-	t.Parallel()
-
-	s := asyncSim(t, `
-version: 1
-name: exa-agent-run-fails
-providers:
-  exa_agent_runs:
-    turns:
-      - when: {call_index: 0}
-        respond: {status: running}
-      - respond:
-          status: failed
-          error:
-            code: AGENT_RUN_FAILED
-            message: the run could not be completed
-`)
-	id := createRun(t, s, `{"query":"q"}`)
-	assert.Equal(t, statusRunning, pollRun(t, s, id)["status"])
-
-	got := pollRun(t, s, id)
-	assert.Equal(t, statusFailed, got["status"])
-	assert.Equal(t, stopError, got["stopReason"], "a failed run derives the error stop reason")
-
-	failure, ok := got["error"].(map[string]any)
-	require.True(t, ok, "a failed run carries an error: %v", got)
-	assert.Equal(t, "AGENT_RUN_FAILED", failure["code"])
 }
 
 // A stuck run never terminates: the consumer's own timeout is what fires, which
@@ -395,6 +361,83 @@ func TestAgentRunIdentifiersAreDeterministic(t *testing.T) {
 	assert.True(t, provider.ValidJobID(first), "a minted identifier must be resolvable: %q", first)
 }
 
+// The createAgentRun operation documents ONLY a 200 (openapi line 831), and
+// AgentRunId says new run ids carry the `agent_run_` prefix (line 4836). Both
+// were simulator-chosen before: 201 and `run_`.
+func TestAgentRunCreateAnswers200AndMintsAnAgentRunPrefixedID(t *testing.T) {
+	t.Parallel()
+
+	s := asyncSim(t, asyncScenario)
+	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"q"}`})
+
+	require.Equal(t, http.StatusOK, rec.Code, "the spec documents no 201 for createAgentRun: %s", rec.Body.String())
+
+	var out struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Regexp(t, `^agent_run_[0-9a-f]{32}$`, out.ID)
+	assert.Len(t, out.ID, 42, "agent_run_ plus 32 hex characters")
+	assert.LessOrEqual(t, len(out.ID), provider.MaxJobIDLen, "a minted id must fit the job-id bound")
+	assert.True(t, provider.ValidJobID(out.ID), "a minted identifier must be resolvable: %q", out.ID)
+}
+
+// effort is a closed enum in the spec (AgentEffort, line 4819): minimal, low,
+// medium, high, xhigh, auto, ultra. `max` is not a member and `ultra` is.
+func TestAgentRunCreateEffortIsAClosedEnum(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		body   string
+		wantOK bool
+	}{
+		{name: "absent", body: `{"query":"q"}`, wantOK: true},
+		{name: "minimal", body: `{"query":"q","effort":"minimal"}`, wantOK: true},
+		{name: "low", body: `{"query":"q","effort":"low"}`, wantOK: true},
+		{name: "medium", body: `{"query":"q","effort":"medium"}`, wantOK: true},
+		{name: "high", body: `{"query":"q","effort":"high"}`, wantOK: true},
+		{name: "xhigh", body: `{"query":"q","effort":"xhigh"}`, wantOK: true},
+		{name: "auto", body: `{"query":"q","effort":"auto"}`, wantOK: true},
+		{name: "ultra", body: `{"query":"q","effort":"ultra"}`, wantOK: true},
+		{name: "max was removed", body: `{"query":"q","effort":"max"}`},
+		{name: "unknown value", body: `{"query":"q","effort":"turbo"}`},
+		{name: "wrong case", body: `{"query":"q","effort":"High"}`},
+		{name: "not a string", body: `{"query":"q","effort":5}`},
+		{name: "null", body: `{"query":"q","effort":null}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := asyncSim(t, asyncScenario)
+			rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: tc.body})
+
+			if tc.wantOK {
+				assert.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+				assert.False(t, s.hasFinding(codeEffortInvalid))
+				return
+			}
+			assert.Equal(t, http.StatusBadRequest, rec.Code, "an off-enum effort is a documented-enum violation")
+			assert.Equal(t, journal.SeverityError, s.findingSeverity(codeEffortInvalid))
+		})
+	}
+}
+
+// A rejected create mints nothing: the effort rejection runs before MintJob, so
+// the next valid create is still call 0 and gets the first identifier.
+func TestAgentRunCreateEffortRejectionMintsNothing(t *testing.T) {
+	t.Parallel()
+
+	rejected := asyncSim(t, asyncScenario)
+	require.Equal(t, http.StatusBadRequest,
+		rejected.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"q","effort":"max"}`}).Code)
+	after := createRun(t, rejected, `{"query":"q"}`)
+
+	assert.Equal(t, createRun(t, asyncSim(t, asyncScenario), `{"query":"q"}`), after,
+		"a rejected create must not claim the call index")
+}
+
 // --- validator ------------------------------------------------------------
 
 func TestAgentRunValidatorFindings(t *testing.T) {
@@ -407,9 +450,9 @@ func TestAgentRunValidatorFindings(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name:     "failed without an error",
-			src:      `{status: failed}`,
-			wantCode: CodeAgentRunFailedWithoutError,
+			name:     "a run-level error block",
+			src:      `{status: failed, error: {code: X, message: y}}`,
+			wantCode: codeAgentRunErrorNotInSchema,
 			wantErr:  true,
 		},
 		{
@@ -451,6 +494,49 @@ func TestAgentRunValidatorFindings(t *testing.T) {
 				}
 			}
 			assert.True(t, found, "want %s, got %+v", tc.wantCode, findings)
+		})
+	}
+}
+
+// AgentStopReason (openapi line 5848) has six members. Four of them were
+// authorable before; time_limit_reached and stopped were rejected at load.
+func TestAgentRunValidatorAcceptsEverySpecStopReason(t *testing.T) {
+	t.Parallel()
+
+	for _, reason := range []string{
+		"schema_satisfied", "budget_reached", "time_limit_reached", "stopped", "error", "cancelled",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+
+			sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    turns:\n"+
+				"      - respond: {status: completed, stop_reason: "+reason+", output: {text: x}}\n")
+			findings := provider.ValidateScenario(sc, map[string]provider.Validator{
+				NameAgentRuns: agentRunValidator{},
+			})
+			for _, f := range findings {
+				assert.NotEqual(t, CodeAgentRunStopReasonUnknown, f.Code, "%s is a documented stop reason", reason)
+			}
+		})
+	}
+}
+
+// A scripted stop reason reaches the wire verbatim, including the two the
+// validator used to refuse.
+func TestAgentRunRendersEverySpecStopReason(t *testing.T) {
+	t.Parallel()
+
+	for _, reason := range []string{
+		"schema_satisfied", "budget_reached", "time_limit_reached", "stopped", "error", "cancelled",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+
+			s := asyncSim(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n"+
+				"    status: completed\n    stop_reason: "+reason+"\n    output: {text: x}\n")
+			id := createRun(t, s, `{"query":"q"}`)
+
+			assert.Equal(t, reason, pollRun(t, s, id)["stopReason"])
 		})
 	}
 }
@@ -578,7 +664,7 @@ func TestAgentRunCreateAtTheJobBound(t *testing.T) {
 	s := newSimWithJobs(t, asyncScenario, store)
 
 	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"first"}`})
-	require.Equal(t, http.StatusCreated, rec.Code)
+	require.Equal(t, http.StatusOK, rec.Code)
 
 	rec = s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"second"}`})
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code,
@@ -610,7 +696,7 @@ providers:
 	s := newSimWithJobs(t, src, store)
 
 	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"q"}`})
-	require.Equal(t, http.StatusCreated, rec.Code, "create failed: %s", rec.Body.String())
+	require.Equal(t, http.StatusOK, rec.Code, "create failed: %s", rec.Body.String())
 	assert.GreaterOrEqual(t, rec.Body.Len(), 4096, "the response must actually be padded")
 
 	var out struct {
@@ -640,7 +726,7 @@ providers:
     create:
       fault:
         attempts:
-          - {status: 201, body: {id: run_scripted, status: queued}}
+          - {status: 200, body: {id: agent_run_scripted, status: queued}}
     turns:
       - respond: {status: completed, output: {text: done}}
 `
@@ -648,8 +734,8 @@ providers:
 	s := newSimWithJobs(t, src, store)
 
 	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"q"}`})
-	require.Equal(t, http.StatusCreated, rec.Code)
-	assert.JSONEq(t, `{"id":"run_scripted","status":"queued"}`, rec.Body.String(),
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{"id":"agent_run_scripted","status":"queued"}`, rec.Body.String(),
 		"the scripted body replaces the rendered one")
 
 	assert.Zero(t, store.StatsIn(provider.DefaultNamespace).Count,
@@ -658,7 +744,7 @@ providers:
 	// The scripted identifier was never minted either, so it 404s. The retry is the
 	// next attempt in the plan — exhausted, so it succeeds — and its job resolves
 	// like any other create's.
-	missing := s.do(request{method: http.MethodGet, path: "/agent/runs/run_scripted"})
+	missing := s.do(request{method: http.MethodGet, path: "/agent/runs/agent_run_scripted"})
 	assert.Equal(t, http.StatusNotFound, missing.Code)
 
 	id := createRun(t, s, `{"query":"retry"}`)

@@ -44,7 +44,8 @@ providers:
 `
 
 // agentRunGoldenFailedScenario backs the failed-poll golden. A single
-// unconditional turn is already terminal on the first poll.
+// unconditional turn is already terminal on the first poll, and a failed run
+// needs nothing beyond its status: the schema has no run-level error.
 const agentRunGoldenFailedScenario = `
 version: 1
 name: exa-agent-runs-failed-golden
@@ -55,9 +56,6 @@ providers:
     turns:
       - respond:
           status: failed
-          error:
-            code: AGENT_RUN_FAILED
-            message: the run could not be completed
 `
 
 // agentRunGolden404Scenario backs the unknown-run-id golden. It declares no
@@ -68,20 +66,21 @@ version: 1
 name: exa-agent-runs-404-golden
 `
 
-// TestGolden_AgentRunCreated pins POST /agent/runs's 201 body: the initial
-// status and nothing else, per contracts/exa/README.md's async section.
+// TestGolden_AgentRunCreated pins POST /agent/runs's 200 body: the run in its
+// initial queued status, per contracts/exa/README.md's async section.
 func TestGolden_AgentRunCreated(t *testing.T) {
 	t.Parallel()
 
 	s := newSim(t, agentRunGoldenScenario)
 	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"find the finding"}`})
 
-	require.Equal(t, http.StatusCreated, rec.Code)
+	require.Equal(t, http.StatusOK, rec.Code)
 	assertGoldenWire(t, "exa-agent-runs-created.json", rec.Body.Bytes())
 }
 
-// TestGolden_AgentRunRunning pins a non-terminal poll: stopReason present and
-// explicitly null, output/error/usage/costDollars all absent.
+// TestGolden_AgentRunRunning pins a non-terminal poll: stopReason and
+// completedAt present and explicitly null, and output, usage and costDollars the
+// zero-valued placeholders for their required keys.
 func TestGolden_AgentRunRunning(t *testing.T) {
 	t.Parallel()
 
@@ -94,7 +93,8 @@ func TestGolden_AgentRunRunning(t *testing.T) {
 }
 
 // TestGolden_AgentRunCompleted pins a terminal, successful poll: output with
-// RESOLVED grounding (title and url, not a bare source id) and costDollars.
+// RESOLVED grounding (url and title, not a bare source id) and the scripted
+// costDollars.total beside zero-filled components.
 func TestGolden_AgentRunCompleted(t *testing.T) {
 	t.Parallel()
 
@@ -107,9 +107,9 @@ func TestGolden_AgentRunCompleted(t *testing.T) {
 	assertGoldenWire(t, "exa-agent-runs-completed.json", rec.Body.Bytes())
 }
 
-// TestGolden_AgentRunFailed pins a terminal failure: the error object, and
-// costDollars.total present as 0 rather than omitted (the terminal-run
-// inference in contracts/exa/README.md applies regardless of outcome).
+// TestGolden_AgentRunFailed pins a terminal failure: status failed and stopReason
+// error, with no error key, and the required output, usage and costDollars at
+// their placeholders.
 func TestGolden_AgentRunFailed(t *testing.T) {
 	t.Parallel()
 
@@ -122,14 +122,14 @@ func TestGolden_AgentRunFailed(t *testing.T) {
 }
 
 // TestGolden_AgentRunNotFound pins the 404 for an identifier this process
-// never minted: the same flat {requestId, error, tag} envelope and NOT_FOUND
-// tag as unmatched routing, because the Agent API documents no run-specific
-// 404 body of its own.
+// never minted: AgentErrorResponse with type NOT_FOUND and code RUN_NOT_FOUND.
+// The spec documents the 404 and both enums but not the pairing, which is
+// inference (see contracts/exa/README.md).
 func TestGolden_AgentRunNotFound(t *testing.T) {
 	t.Parallel()
 
 	s := newSim(t, agentRunGolden404Scenario)
-	rec := s.do(request{method: http.MethodGet, path: "/agent/runs/run_neverminted"})
+	rec := s.do(request{method: http.MethodGet, path: "/agent/runs/agent_run_neverminted"})
 
 	require.Equal(t, http.StatusNotFound, rec.Code)
 	assertGoldenWire(t, "exa-agent-runs-404.json", rec.Body.Bytes())
@@ -137,7 +137,8 @@ func TestGolden_AgentRunNotFound(t *testing.T) {
 
 // TestGolden_AgentRunCreateAtTheJobBound pins the 503 a create gets when its
 // namespace already holds the configured maximum of live jobs: a Servicesim
-// configuration wall, not a vendor status, and the message names the bound and
+// configuration wall, not a vendor status (the spec documents no 503 here), in
+// AgentErrorResponse's shape with SERVER_ERROR. The message names the bound and
 // the remedy.
 func TestGolden_AgentRunCreateAtTheJobBound(t *testing.T) {
 	t.Parallel()
@@ -146,7 +147,7 @@ func TestGolden_AgentRunCreateAtTheJobBound(t *testing.T) {
 	s := newSimWithJobs(t, agentRunGoldenScenario, store)
 
 	first := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"first"}`})
-	require.Equal(t, http.StatusCreated, first.Code, "the first create must succeed: %s", first.Body.String())
+	require.Equal(t, http.StatusOK, first.Code, "the first create must succeed: %s", first.Body.String())
 
 	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"second"}`})
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)

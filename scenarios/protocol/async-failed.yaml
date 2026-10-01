@@ -8,9 +8,10 @@ version: 1
 name: async-failed
 description: >-
   A well-formed 200 from every synchronous surface, and a run/task on each
-  async surface that reaches a terminal failed status — Exa's `error` object
-  carries the detail; Tavily's failed poll carries none, which a consumer's
-  failure branch must handle too.
+  async surface that reaches a terminal failed status — Exa's run is
+  `status: failed` with `stopReason: error` and no error object (the live
+  schema has none); Tavily's failed poll carries none either, which a
+  consumer's failure branch must handle too.
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -57,12 +58,12 @@ providers:
     search_results:
       - source-a
 
-  # One running poll, then a terminal FAILED status carrying the required
-  # error object — a failed run with no error is a load ERROR
-  # (exa.agent_run.failed_without_error), because a consumer's failure branch
-  # is exactly what this scenario exists to exercise.
+  # One running poll, then a terminal FAILED status. The live AgentRun schema
+  # has no run-level error object, so a failed run is expressed through its
+  # status and stopReason alone — declaring an `error:` block is a load ERROR
+  # (exa.agent_run.error.not_in_schema).
   #
-  # stop_reason is not declared: AgentRunProjection.EffectiveStopReason derives
+  # stop_reason is not declared: agentRunProjection.EffectiveStopReason derives
   # "error" for any failed run automatically, so writing it here would only
   # restate what the code already does.
   exa_agent_runs:
@@ -71,9 +72,6 @@ providers:
         respond: {status: running}
       - respond:
           status: failed
-          error:
-            code: AGENT_RUN_FAILED
-            message: The run could not be completed.
 
   # Tavily documents no distinct error shape for a failed task, and — per the
   # vendor's research-get reference, re-verified 2026-08-15 (see

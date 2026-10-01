@@ -6,7 +6,7 @@ carries the documentation URLs it was derived from and the date the shape was ve
 
 | Provider | Contract | Verified | Base URL simulated |
 |---|---|---|---|
-| Exa | [`../profiles/exa/contracts/README.md`](../profiles/exa/contracts/README.md) | 2026-08-15 | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
+| Exa | [`../profiles/exa/contracts/README.md`](../profiles/exa/contracts/README.md) | 2026-10-01 | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
 | Tavily | [`../profiles/tavily/contracts/README.md`](../profiles/tavily/contracts/README.md) | 2026-08-15 | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
 | Perplexity | [`../profiles/perplexity/contracts/README.md`](../profiles/perplexity/contracts/README.md) | 2026-08-15 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
 | MCP | [`../profiles/mcp/contracts/README.md`](../profiles/mcp/contracts/README.md) | 2026-08-16 | `POST /mcp` |
@@ -71,16 +71,19 @@ consumed fields are still verified mostly against the vendor's rendered prose pa
 Exa Websets endpoint, an unrelated Tavily `/crawl` field, and so on. A changed hash is therefore the SIGNAL that
 something may have moved, not a diff of what moved: the next step is always a person re-reading the consumed fields
 against both the cited `documentation_url` pages and the spec itself. Only the entries whose own `documentation_url`
-IS the spec's URL (all of Perplexity's, and Exa's three `/findSimilar` entries) were read from the spec directly;
-every other entry was read from an undated prose page, and re-checking it means re-reading that page, not re-hashing
-anything.
+IS the spec's URL (all of Perplexity's, and Exa's three `/findSimilar` and six agent-run entries) were read from the
+spec directly; every other entry was read from an undated prose page, and re-checking it means re-reading that page,
+not re-hashing anything.
 
 Every provider's `provenance.yaml` carries two kinds of `verified:` date — the provider-level one at the top of the
 file, matching the **Verified** column above, and one per golden entry. Both move on a refresh, but not for the
 same reason: an entry's date moves because that golden's shape was re-checked; the provider-level date and the
 **Verified** column above move together whenever any entry is checked later than they currently claim, because a
 whole-contract verification cannot be older than a fixture that was individually re-checked since. See the header of
-any `provenance.yaml` for how the two relate. Every provider's `provenance.yaml` also carries a `spec:` block —
+any `provenance.yaml` for how the two relate. Read Exa's 2026-10-01 in the table above with that rule in mind: it is
+the date `contracts.Conform` forces, not a re-read of all seven simulated routes. Only the three agent routes were
+re-read against that spec; `/search`, `/answer`, `/contents` and `/findSimilar` keep their earlier per-entry dates, and
+re-reading them is tracked in issue #11. Every provider's `provenance.yaml` also carries a `spec:` block —
 `url`, `version`, `sha256`, `retrieved` — recording the bytes its consumed contract's machine-readable source was
 generated from, readable from Go via `contracts.ProviderSpec(bundleFS)`; each reference profile's own
 `TestHasASpecBlock` (`profiles/<provider>/contract_test.go`) fails the build if it drops one — `contracts.Conform`

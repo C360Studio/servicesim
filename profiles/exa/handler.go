@@ -170,8 +170,20 @@ func handleAnswer(x *provider.Exchange) provider.Response {
 // rejection turns a request that failed authentication, validation or turn
 // selection into Exa's error envelope. It never claims a fault attempt: a
 // rejected request must not consume a retry budget.
+//
+// The three agent-run routes answer in AgentErrorResponse's nested shape and the
+// others in the flat one; the finding that classify picked decides the status
+// either way.
 func rejection(x *provider.Exchange) provider.Response {
 	status, tag, message := classify(x)
+	if isAgentRoute(x) {
+		return provider.Response{
+			Status: status,
+			Header: requestIDHeader(unclaimedRequestID(x)),
+			Body:   agentErrorBody(agentError(status, message)),
+			Label:  "exa.error." + tag,
+		}
+	}
 	return provider.Response{
 		Status: status,
 		Body:   errorBody(unclaimedRequestID(x), message, tag, status),
