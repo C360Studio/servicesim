@@ -1342,7 +1342,7 @@ landed between the read and the compare-and-set, so exhausting it takes a poll s
 **The claim rule.** Every cancel that resolved a job claims exactly one cancel-lane attempt, first, whatever it then
 decides, so a client's retry draws an index that depends on how many cancels it sent, never on the job's state. The
 response is served and fault-eligible in every outcome; a profile never builds it as a rejection, which would strip
-the attempt. The two error outcomes do strip it — any request that records an error does — but its index stays
+the attempt. The error outcome, `failed`, does strip it — any request that records an error does — but its index stays
 spent. "Commits" is the predicate create-side retention already uses (§4.3, "A faulted create must not leave a
 phantom job"): the attempt delivers its body, or it says `accepted`. The fault decision is cached on the `Exchange`,
 so `CancelJob` and `Handle` read the same attempt.

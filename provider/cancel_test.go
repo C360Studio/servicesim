@@ -117,7 +117,7 @@ func acmeAsyncProfile() Profile {
 		switch outcome {
 		case CancelNotFound:
 			status = http.StatusNotFound
-		case CancelUnscripted, CancelContended:
+		case CancelFailed:
 			status = http.StatusInternalServerError
 		default:
 			body["status"] = acmeStatus(turn)
@@ -419,7 +419,7 @@ providers:
 		id := w.create()
 		status, body := w.cancel(id)
 		require.Equal(t, http.StatusInternalServerError, status)
-		assert.Equal(t, string(CancelUnscripted), body["outcome"])
+		assert.Equal(t, string(CancelFailed), body["outcome"])
 		assert.False(t, w.job(id).CancelRequested, "no marker is recorded")
 
 		cancels := w.entries("/v1/jobs/" + id + "/cancel")
@@ -454,7 +454,7 @@ providers:
 
 		status, body := w.cancel(id)
 		require.Equal(t, http.StatusInternalServerError, status, "cancel.turns[1] does not exist")
-		assert.Equal(t, string(CancelUnscripted), body["outcome"])
+		assert.Equal(t, string(CancelFailed), body["outcome"])
 		cancels := w.entries("/v1/jobs/" + id + "/cancel")
 		assert.Equal(t, journal.SeverityError, codesOf(cancels[1])[CodeJobCancelUnscripted])
 	})
@@ -622,7 +622,7 @@ providers:
 	// The cancel peeks position 2, which the script cannot answer either.
 	status, body := w.cancel(id)
 	require.Equal(t, http.StatusInternalServerError, status)
-	assert.Equal(t, string(CancelUnscripted), body["outcome"])
+	assert.Equal(t, string(CancelFailed), body["outcome"])
 }
 
 // directExchange is an Exchange built by hand for the paths HTTP cannot reach
@@ -761,7 +761,7 @@ providers:
 	require.True(t, ResolveJob(x, "job_a"))
 
 	outcome, turn, _ := acmeCancel(x)
-	assert.Equal(t, CancelContended, outcome)
+	assert.Equal(t, CancelFailed, outcome)
 	assert.Nil(t, turn)
 	assert.True(t, x.HasFinding(CodeJobCancelContended))
 	assert.True(t, x.Failed(), "an exhausted cancel is an error")
@@ -843,7 +843,7 @@ providers:
 	close(done)
 	observed.Wait()
 
-	assert.Contains(t, []CancelOutcome{CancelRecorded, CancelContended}, outcome,
+	assert.Contains(t, []CancelOutcome{CancelRecorded, CancelFailed}, outcome,
 		"a running job's cancel either records or gives up under contention")
 	j := w.job(id)
 	assert.Equal(t, polls, j.Polls)

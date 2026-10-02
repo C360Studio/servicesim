@@ -52,15 +52,15 @@ const (
 	// terminal snapshot. It needs no cancel script.
 	CancelTerminal CancelOutcome = "terminal"
 
-	// CancelUnscripted means a cancel would take effect but the scenario cannot
-	// answer the polls that follow it; [CodeJobCancelUnscripted] is recorded and
-	// nothing is. The profile answers the vendor's 500. There is no turn.
-	CancelUnscripted CancelOutcome = "unscripted"
-
-	// CancelContended means the job's position kept moving and CancelJob gave
-	// up after [maxCancelTries]; [CodeJobCancelContended] is recorded and
-	// nothing else is. The profile answers the vendor's 500. There is no turn.
-	CancelContended CancelOutcome = "contended"
+	// CancelFailed means the cancel could not be decided, so nothing was
+	// recorded on the job, and CancelJob has recorded an error finding that says
+	// why: [CodeJobCancelUnscripted] when the cancel would take effect but the
+	// scenario cannot answer the polls that follow it, or
+	// [CodeJobCancelContended] when the job's position kept moving and CancelJob
+	// gave up after [maxCancelTries]. The profile answers the vendor's 500; the
+	// reason is the finding's, not the outcome's, because the profile renders
+	// both the same way. There is no turn.
+	CancelFailed CancelOutcome = "failed"
 
 	// CancelNotFound means the job is gone — a reset landed after ResolveJob —
 	// or, with a [CodeJobIDInvalid] error, the request never resolved one. The
@@ -161,9 +161,9 @@ func cancelTurns(cancel *scenario.CancelPolicy) []scenario.Turn {
 // lane, first, whatever it then decides — so the index a client's retry draws
 // depends on how many cancels it sent, never on the job's state. The response
 // the profile renders is a served, fault-eligible one in every outcome; it is
-// never built as a rejection, which would strip the attempt. (The two error
-// outcomes record an error finding, and Handle strips any response's attempt
-// on an error; the index is still spent.)
+// never built as a rejection, which would strip the attempt. ([CancelFailed]
+// records an error finding, and Handle strips any response's attempt on an
+// error; the index is still spent.)
 //
 // # The steps
 //
@@ -174,10 +174,10 @@ func cancelTurns(cancel *scenario.CancelPolicy) []scenario.Turn {
 //     Otherwise peek cancel.turns[0] and record the cancel at Polls with
 //     jobs.Store.MarkCancel: [CancelRecorded].
 //   - A peek that matches nothing, or a cancel with no cancel.turns to record
-//     against: [CodeJobCancelUnscripted], [CancelUnscripted], nothing recorded.
+//     against: [CodeJobCancelUnscripted], [CancelFailed], nothing recorded.
 //   - MarkCancel finding the position moved means a poll advanced in between:
 //     re-peek and retry, at most [maxCancelTries] times, then
-//     [CodeJobCancelContended] and [CancelContended] with nothing recorded.
+//     [CodeJobCancelContended] and [CancelFailed] with nothing recorded.
 //     Finding a cancel already recorded answers [CancelAlreadyCancelling].
 //   - The job gone (a reset landed): [CancelNotFound].
 //
@@ -220,7 +220,7 @@ func CancelJob(
 	unscripted := func(format string, args ...any) (CancelOutcome, *scenario.Turn, string) {
 		x.Fail(CodeJobCancelUnscripted, "", "the cancel of job %q could not be scripted: "+format+
 			"; nothing was recorded", append([]any{id}, args...)...)
-		return CancelUnscripted, nil, ""
+		return CancelFailed, nil, ""
 	}
 
 	cancelling := func(job jobs.Job) (CancelOutcome, *scenario.Turn, string) {
@@ -280,5 +280,5 @@ func CancelJob(
 		"the cancel of job %q was not recorded: its poll position moved %d times in a row while the cancel was "+
 			"being recorded, each time because another poll of the same job landed; nothing was recorded, and a "+
 			"retried cancel starts afresh", id, maxCancelTries)
-	return CancelContended, nil, ""
+	return CancelFailed, nil, ""
 }

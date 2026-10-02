@@ -934,7 +934,7 @@ rest is yours:
 | `provider.CancelAlreadyCancelling` | the cancel script's snapshot for the job's next poll | the vendor's answer to a repeated cancel |
 | `provider.CancelTerminal` | the terminal snapshot the job's next poll serves | the vendor's answer to cancelling a finished job — a success or an error, whichever the contract documents |
 | `provider.CancelUncommitted` | the job's next poll snapshot | the vendor's cancel response, built from that snapshot; the claimed fault replaces, truncates or drops it on the wire |
-| `provider.CancelUnscripted`, `provider.CancelContended` | none | the vendor's 500; `CancelJob` has already recorded the error finding |
+| `provider.CancelFailed` | none | the vendor's 500; `CancelJob` has already recorded the error finding that says why (`job.cancel_unscripted` or `job.cancel_contended`) |
 | `provider.CancelNotFound` | none | the vendor's not-found, as for an unknown identifier |
 
 For every outcome that returns a snapshot, that snapshot is exactly what the job's next poll will be served, which is
