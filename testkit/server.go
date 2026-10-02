@@ -180,28 +180,47 @@ const (
 // poll in the same namespace resolves. [Sim.Jobs] and [Namespace.Jobs] return
 // these. Fields:
 //
-//	ID          string    the identifier a create returned and a poll presents
-//	Namespace   string    the state lane this record belongs to
-//	Entry       string    the scenario entry the create was served from (Route.Entry, else the listener's name)
-//	LaneKey     string    the turn lane the create was served in
-//	CreateIndex int       the call index the create claimed
-//	CreatedAt   time.Time when the record was created (never rendered into a response)
+//	ID              string    the identifier a create returned and a poll presents
+//	Namespace       string    the state lane this record belongs to
+//	Entry           string    the scenario entry the create was served from (Route.Entry, else the listener's name)
+//	LaneKey         string    the turn lane the create was served in
+//	CreateIndex     int       the call index the create claimed
+//	CreatedAt       time.Time when the record was created (never rendered into a response)
+//	Polls           int       poll positions claimed so far: the next poll's index
+//	CancelRequested bool      a cancel was recorded; never cleared until a reset drops the job
+//	CancelAtPoll    int       the poll position the cancel was recorded at (0 is a real position)
+//
+// The last three are the job's lifecycle. Create records them as zero, and
+// they change only through the store's Advance and MarkCancel.
 type Job = jobs.Job
 
 // Jobs is the job-store contract the provider seam consumes. A consumer
 // wiring provider.Deps by hand passes one, and an implementation of its own is
 // nameable through this alias, on the same terms as [Journal]. Its methods:
 //
-//	Create(j Job) (JobStats, error)          record j, or ErrLimit/ErrDuplicate
-//	Lookup(namespace, id string) (Job, bool) find a record
-//	StatsIn(namespace string) JobStats       report one namespace's occupancy
-//	ResetIn(namespace string)                drop one namespace's records
-//	Reset()                                  drop every namespace's records
+//	Create(j Job) (JobStats, error)                                    record j, or ErrLimit/ErrDuplicate
+//	Lookup(namespace, id string) (Job, bool)                           find a record (a copy)
+//	Advance(namespace, id string, i int) (Job, bool)                   Polls = max(Polls, i+1), atomically
+//	MarkCancel(namespace, id string, atPoll int) (Job, JobMarkOutcome) record a cancel, compare-and-set
+//	StatsIn(namespace string) JobStats                                 report one namespace's occupancy
+//	ResetIn(namespace string)                                          drop one namespace's records
+//	Reset()                                                            drop every namespace's records
 //
 // Lookup must return the record exactly as Create was given it, Entry
 // included: a poll resolves a job only for a request served from the entry
 // recorded on it, so a store that drops or rewrites Entry turns every poll
-// into a miss.
+// into a miss. Create records the lifecycle fields (Polls, CancelRequested,
+// CancelAtPoll) as zero.
+//
+// Advance and MarkCancel are each ONE critical section, and neither may call
+// out of the store while holding its lock. Advance returns the record after
+// the write, or false for an unknown job. MarkCancel succeeds only when the
+// job carries no cancel yet and its Polls equals atPoll, and its outcome is one
+// of [JobMarked], [JobAlreadyMarked] (checked first), [JobPositionMoved] or
+// [JobNotFound] (with the zero Job); every outcome but the last returns the
+// record as it stands. A request in flight across a reset is undefined: a
+// re-created job with the same derived identifier can receive an old poll's
+// Advance, and max does not guard against that.
 //
 // The two failure sentinels Create can report — a duplicate id, and a
 // namespace at its bound — are not reachable from outside this module: they
@@ -211,6 +230,26 @@ type Job = jobs.Job
 // generic message rather than matching it to a specific finding code — do
 // not expect a testkit.ErrJobDuplicate to exist to compare against.
 type Jobs = jobs.Store
+
+// JobMarkOutcome reports what a [Jobs] store's MarkCancel did. It is part of
+// the [Jobs] method set, so a consumer cannot implement Jobs without naming it
+// and returning one of its four constants: [JobMarked], [JobAlreadyMarked],
+// [JobPositionMoved] and [JobNotFound].
+type JobMarkOutcome = jobs.MarkOutcome
+
+// The [JobMarkOutcome] values, re-exported as constants of the aliased type so
+// an own store implementation can return them.
+const (
+	// JobMarked means the cancel was recorded at the position asked for.
+	JobMarked = jobs.Marked
+	// JobAlreadyMarked means a cancel was recorded earlier; nothing was written.
+	JobAlreadyMarked = jobs.AlreadyMarked
+	// JobPositionMoved means the job's Polls is not the position asked for: a
+	// poll landed in between. Nothing was written.
+	JobPositionMoved = jobs.PositionMoved
+	// JobNotFound means no such job exists in the namespace.
+	JobNotFound = jobs.NotFound
+)
 
 // JobStats reports one namespace's job occupancy against its bound. It is
 // part of the [Jobs] method set — Create and StatsIn both return it — so a

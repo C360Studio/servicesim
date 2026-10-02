@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"slices"
 
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -31,20 +32,107 @@ var ErrNoMatchingTurn = errors.New("provider: no turn matches this request")
 // alternative to "unreachable and obvious" is "reachable and silent" the first
 // time Match grows an axis whose zero value stops matching.
 func SelectTurn(e *scenario.ProviderEntry, callIndex int, route string, body []byte) (*scenario.Turn, int, error) {
-	if e == nil || len(e.Turns) == 0 {
+	if e == nil {
 		return nil, -1, ErrNoMatchingTurn
 	}
-	for i := range e.Turns {
-		if e.Turns[i].When.Matches(callIndex, route, body) {
-			return &e.Turns[i], i, nil
+	return selectTurn(e.Turns, callIndex, route, body)
+}
+
+// selectTurn is SelectTurn over one script, so an entry's turns and its
+// cancel.turns are selected by the one rule rather than two copies of it.
+func selectTurn(turns []scenario.Turn, callIndex int, route string, body []byte) (*scenario.Turn, int, error) {
+	for i := range turns {
+		if turns[i].When.Matches(callIndex, route, body) {
+			return &turns[i], i, nil
 		}
 	}
-	for i := len(e.Turns) - 1; i >= 0; i-- {
-		if e.Turns[i].When == nil {
-			return &e.Turns[i], i, nil
+	for i := len(turns) - 1; i >= 0; i-- {
+		if turns[i].When == nil {
+			return &turns[i], i, nil
 		}
 	}
 	return nil, -1, ErrNoMatchingTurn
+}
+
+// TerminalRegression is one poll served a non-terminal snapshot although an
+// earlier poll was served a terminal one: a job that un-completes. It is what
+// [TerminalRegressions] reports; a profile turns it into a finding under its own
+// code.
+type TerminalRegression struct {
+	// Poll is the first poll position at which Turn regresses.
+	Poll int
+	// Turn is the index, in the script, of the non-terminal turn served there.
+	Turn int
+	// TerminalPoll is the earliest poll position served a terminal snapshot.
+	TerminalPoll int
+	// TerminalTurn is the index of the turn served at TerminalPoll.
+	TerminalTurn int
+}
+
+// TerminalRegressions checks that a poll script's terminal snapshot is
+// absorbing in the order polls are actually SERVED, and reports every turn
+// served non-terminal after a terminal one — once each, in poll order. An async
+// profile's Validator calls it on each script an entry declares (its turns, and
+// its cancel.turns when it serves a cancel), because [CancelJob] relies on it:
+// a cancel judges the job by its next poll, and a job that could leave a
+// terminal state would let a client watch a run finish and then have it
+// cancelled.
+//
+// It evaluates the script BY INDEX: the turn [SelectTurn] would serve each poll
+// on route, with no body. Declaration order is not serve order — turns are
+// selected by first match on call_index with an unconditional fallback, so a
+// script declared pending-then-terminal can serve terminal, pending, terminal.
+//
+// terminal reports whether turn i's snapshot is terminal, in the profile's own
+// vocabulary, and whether that is known at all: a turn whose projection did not
+// decode is reported by its own finding and neither sets nor breaks the order.
+//
+// It is equivalent to walking polls 0 through the highest call_index plus one,
+// without the walk: it evaluates only poll 0, every call_index a turn names, and
+// each of those plus one, so a script naming call_index 1000000 costs no more
+// than one naming 1. That is exact because call_index is the only axis of
+// [scenario.Match] that varies from one poll of a job to the next — a poll's
+// route is fixed, and it carries no body, so a body predicate never matches. A
+// test fails when Match grows a field, so the assumption is revisited rather
+// than silently broken.
+func TerminalRegressions(
+	turns []scenario.Turn, route string, terminal func(turn int) (isTerminal, known bool),
+) []TerminalRegression {
+	positions := []int{0}
+	for i := range turns {
+		if w := turns[i].When; w != nil && w.CallIndex != nil && *w.CallIndex >= 0 {
+			positions = append(positions, *w.CallIndex, *w.CallIndex+1)
+		}
+	}
+	slices.Sort(positions)
+	positions = slices.Compact(positions)
+
+	reported := make([]bool, len(turns))
+	var out []TerminalRegression
+	first := TerminalRegression{TerminalPoll: -1}
+
+	for _, poll := range positions {
+		_, at, err := selectTurn(turns, poll, route, nil)
+		if err != nil {
+			// The script runs out here; that is its own finding, and nothing is
+			// served to compare.
+			continue
+		}
+		isTerminal, known := terminal(at)
+		switch {
+		case !known:
+		case isTerminal:
+			if first.TerminalPoll < 0 {
+				first.TerminalPoll, first.TerminalTurn = poll, at
+			}
+		case first.TerminalPoll >= 0 && !reported[at]:
+			reported[at] = true
+			out = append(out, TerminalRegression{
+				Poll: poll, Turn: at, TerminalPoll: first.TerminalPoll, TerminalTurn: first.TerminalTurn,
+			})
+		}
+	}
+	return out
 }
 
 // SelectTurnFor selects the turn serving x from e, claiming the call index from

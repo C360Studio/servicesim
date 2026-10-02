@@ -411,6 +411,45 @@ providers:
 	require.Contains(t, findings[1].Message, `"tavily:search"`)
 }
 
+// A cancel script is selected exactly as the entry's own turns are, so its
+// `when.route:` values are checked against the same vocabulary and reported at
+// their own paths.
+func TestValidateScenarioChecksCancelTurnRoutes(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+version: 1
+name: cancel-routes
+providers:
+  exa_agent_runs:
+    cancel:
+      turns:
+        - when: {route: agent_runs.poll, call_index: 0}
+          respond: {status: running}
+        - when: {route: agent_runs.pol}
+          respond: {status: cancelled}
+        - respond: {status: cancelled}
+    turns:
+      - respond: {status: completed}
+`
+	s := mustScenario(t, src)
+	v := &routeListingValidator{routes: []Route{
+		{Pattern: "POST /agent/runs", FaultKey: "exa:agent_runs.create"},
+		{Pattern: "GET /agent/runs/{id}", FaultKey: "exa:agent_runs.poll"},
+	}}
+
+	p := acmeProfile(okHandler(`{}`))
+	p.Validators = map[string]Validator{"exa_agent_runs": v}
+	p.Cancellable = []string{"exa_agent_runs"}
+
+	findings := ValidateScenario(s, MustSet(p).Validators())
+
+	require.Len(t, findings, 1, "only the typo is reported")
+	require.Equal(t, CodeTurnRouteUnknown, findings[0].Code)
+	require.Equal(t, "providers.exa_agent_runs.cancel.turns[1].when.route", findings[0].Path)
+	require.Contains(t, findings[0].Message, `"agent_runs.pol"`)
+}
+
 // A validator that does not implement RouteLister must not be forced to: route
 // checking is opt-in, so an out-of-tree provider keeps loading unchanged.
 func TestValidateScenarioSkipsRouteCheckWithoutRouteLister(t *testing.T) {

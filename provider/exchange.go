@@ -57,12 +57,20 @@ type Exchange struct {
 	decision FaultDecision
 	claimed  bool
 
-	// minted records that the handler called MintJob, so Handle can tell an
-	// `accepted` attempt claimed by a request that creates a job from one claimed
-	// by a request that creates nothing (CodeAcceptedUnreachable). It says the
-	// create ran, not that it succeeded: a refused create is reported as a
-	// rejection, not as an unreachable modifier.
-	minted bool
+	// recordable records that the handler called MintJob or CancelJob — a request
+	// whose attempt decides whether job state is written — so Handle can tell an
+	// `accepted` attempt claimed by such a request from one claimed by a request
+	// that writes nothing (CodeAcceptedUnreachable). It says the operation ran,
+	// not that it wrote anything: a refused create is reported as a rejection, and
+	// a cancel of a run that is already terminal has nothing to record whatever
+	// its attempt says — neither is an unreachable modifier.
+	recordable bool
+
+	// resolvedJob is the identifier [ResolveJob] resolved for this request, in
+	// this request's namespace, or "" when it resolved none. SelectPollTurn and
+	// CancelJob act on exactly this job, so a handler cannot resolve one
+	// identifier and advance or cancel another.
+	resolvedJob string
 
 	// errorBody, defaultAuth and kind are this Exchange's profile's
 	// ErrorBody, DefaultAuth and effective Kind (Profile.effectiveKind()),

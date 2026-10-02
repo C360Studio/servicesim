@@ -173,9 +173,11 @@ Those are the three remedies, in the order the finding names them:
 2. Give each test its own namespace, the same fix `--max-namespaces` bounds describe above.
 3. Raise `--max-jobs`.
 
-`GET /__admin/jobs?namespace=<name>` shows what is currently live in a namespace — every job's id, entry and
-creation time — which is the fastest way to tell whether the bound was reached by a genuine backlog or by a
-suite that is not tearing down after itself.
+`GET /__admin/jobs?namespace=<name>` shows what is currently live in a namespace — every job's id, entry,
+creation time, how many poll positions it has claimed (`polls`, counting a poll answered with a scripted fault) and,
+once a cancel is recorded, the poll position it was
+recorded at (`cancel_at_poll`, absent otherwise) — which is the fastest way to tell whether the bound was reached by
+a genuine backlog or by a suite that is not tearing down after itself.
 
 A related finding, `job.id_collision`, means a create re-minted an identifier that is still live:
 
@@ -255,9 +257,9 @@ Two findings belong here:
   the create's body (a 2xx or 3xx status that still delivers it, a delay, `extra_fields`, `oversized_body`, any
   `stream_*` kind, ...), so the job is kept without it. Remove `accepted`, or script a failure that loses the body.
 - **`fault.accepted_unreachable`** — an error on the request's journal entry. An `accepted` attempt was claimed by a
-  request that created no job, most often because it sits in a poll plan (a turn's `fault:`) instead of
-  `create.fault`. The attempt still applied as an ordinary fault; only the "job kept" part had nothing to act on.
-  Move it to the plan of the route that creates the job.
+  request that neither created a job nor ran a cancel, most often because it sits in a poll plan (a turn's `fault:`)
+  instead of `create.fault`. The attempt still applied as an ordinary fault; only the "job kept" part had nothing to
+  act on. Move it to the plan of the route that creates the job.
 
 `accepted` counts against `--max-jobs` like any other job. At the bound the create gets the provider's rejection and
 a `job.limit_reached` finding instead of the scripted fault; see

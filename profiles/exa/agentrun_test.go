@@ -3,6 +3,7 @@ package exa
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +12,8 @@ import (
 	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
+	"github.com/c360studio/servicesim/scenario"
+	"github.com/c360studio/servicesim/scenarios"
 )
 
 // asyncScenario is the shape §2.1 of the design specifies: two pending polls,
@@ -130,6 +133,95 @@ func TestAgentRunCreateThenPollToCompletion(t *testing.T) {
 	// which is what every real job API does with a finished run.
 	again := pollRun(t, s, id)
 	assert.Equal(t, statusCompleted, again["status"])
+}
+
+// Every served poll records its position on the run, from the first poll on: a
+// cancel judges "terminal at cancel time" by the run's next poll, so a poll that
+// did not advance would leave every later cancel judging the wrong snapshot. HEAD
+// claims nothing and so advances nothing.
+func TestAgentRunPollsAdvanceTheRun(t *testing.T) {
+	t.Parallel()
+
+	store := jobs.NewRegistry(jobs.Limits{})
+	s := newSimWithJobs(t, asyncScenario, store)
+	id := createRun(t, s, `{"query":"q"}`)
+
+	for want := 1; want <= 4; want++ {
+		pollRun(t, s, id)
+		job, ok := store.Lookup(provider.DefaultNamespace, id)
+		require.True(t, ok)
+		assert.Equal(t, want, job.Polls, "after poll %d", want)
+	}
+
+	rec := s.do(request{method: http.MethodHead, path: "/agent/runs/" + id})
+	require.Equal(t, http.StatusOK, rec.Code)
+	job, _ := store.Lookup(provider.DefaultNamespace, id)
+	assert.Equal(t, 4, job.Polls, "HEAD is not a poll")
+	assert.False(t, job.CancelRequested)
+}
+
+// noAgentRunsEntry is a scenario that scripts Exa's synchronous surface and
+// declares no exa_agent_runs entry at all.
+const noAgentRunsEntry = `
+version: 1
+name: no-agent-runs-entry
+providers:
+  exa: {}
+`
+
+// codesIn lists the finding codes of one journal entry.
+func codesIn(e journal.Entry) []string {
+	var out []string
+	for _, f := range e.Findings {
+		out = append(out, f.Code)
+	}
+	return out
+}
+
+// A scenario with no exa_agent_runs entry has no poll script, so a run created
+// against it could never be polled honestly. The create fails closed — the
+// agent envelope's 404, with scenario.no_matching_turn — before it claims
+// anything, and no job is recorded. Before this, the create succeeded and every
+// poll served a pending snapshot forever while the run's position never moved.
+func TestAgentRunCreateWithNoEntryFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	store := jobs.NewRegistry(jobs.Limits{})
+	s := newSimWithJobs(t, noAgentRunsEntry, store)
+
+	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"q"}`})
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), agentCodeRunNotFound)
+
+	entries := s.journal.Snapshot()
+	require.Len(t, entries, 1)
+	assert.Contains(t, codesIn(entries[0]), provider.CodeNoMatchingTurn)
+	assert.NotContains(t, codesIn(entries[0]), provider.CodeAttemptOnRejection, "the refusal claims nothing")
+	assert.Empty(t, store.List(), "no run is recorded")
+}
+
+// A poll that reaches a scenario with no exa_agent_runs entry — one process
+// serving two scenarios, the run created under the one that declares it — fails
+// loudly rather than serving a default: scenario.no_matching_turn and a 404. It
+// still claims its poll and records it on the run, so the run's position keeps
+// matching its poll lane.
+func TestAgentRunPollWithNoEntryFailsLoudly(t *testing.T) {
+	t.Parallel()
+
+	store := jobs.NewRegistry(jobs.Limits{})
+	id := createRun(t, newSimWithJobs(t, asyncScenario, store), `{"query":"q"}`)
+
+	other := newSimWithJobs(t, noAgentRunsEntry, store)
+	rec := other.do(request{method: http.MethodGet, path: "/agent/runs/" + id})
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+
+	entries := other.journal.Snapshot()
+	require.Len(t, entries, 1)
+	assert.Contains(t, codesIn(entries[0]), provider.CodeNoMatchingTurn)
+
+	job, ok := store.Lookup(provider.DefaultNamespace, id)
+	require.True(t, ok)
+	assert.Equal(t, 1, job.Polls, "the claimed poll is recorded on the run")
 }
 
 // TestAgentRunCreateCredentialTurnKeyNeverLeaksTheToken is the async half of the
@@ -595,6 +687,197 @@ providers:
 		}
 	}
 	assert.True(t, found, "a run that un-completes must be an error: %+v", findings)
+}
+
+// TestAgentRunTerminalIsAbsorbingInServeOrder is D3
+// (docs/proposals/cancellation-and-accepted-create.md): turns are served by
+// first match on call_index, not in declaration order, so "terminal is
+// absorbing" has to be judged on the order polls are actually served in.
+// Judged in declaration order, the built-in async-failed scenario with its
+// first Exa turn moved from call_index 0 to 1 loaded clean and served failed,
+// running, failed — a run a client watched fail, then resume.
+func TestAgentRunTerminalIsAbsorbingInServeOrder(t *testing.T) {
+	t.Parallel()
+
+	validate := func(t *testing.T, sc *scenario.Scenario) []scenario.Finding {
+		t.Helper()
+		var found []scenario.Finding
+		for _, f := range provider.ValidateScenario(sc, map[string]provider.Validator{NameAgentRuns: agentRunValidator{}}) {
+			if f.Code == CodeAgentRunTerminalThenPending {
+				found = append(found, f)
+			}
+		}
+		return found
+	}
+
+	t.Run("the async-failed reproduction", func(t *testing.T) {
+		t.Parallel()
+
+		src, err := scenarios.Read("async-failed")
+		require.NoError(t, err)
+		const running = "      - when: {call_index: 0}\n        respond: {status: running}\n"
+		require.Equal(t, 1, strings.Count(string(src), running), "the Exa poll script changed shape; update this test")
+		sc := mustScenario(t, strings.Replace(string(src), running,
+			"      - when: {call_index: 1}\n        respond: {status: running}\n", 1))
+
+		// The defect's mechanics, through the selector the poll route uses.
+		e := sc.Provider(NameAgentRuns)
+		var served []string
+		for poll := range 3 {
+			turn, at, err := provider.SelectTurn(e, poll, faultKeyRunPoll, nil)
+			require.NoError(t, err)
+			var p agentRunProjection
+			require.NoError(t, turn.DecodeProjection(e.Name, at, &p))
+			served = append(served, p.EffectiveStatus())
+		}
+		require.Equal(t, []string{statusFailed, statusRunning, statusFailed}, served)
+
+		found := validate(t, sc)
+		require.Len(t, found, 1, "the run un-fails at poll 1, so load must refuse it")
+		assert.Equal(t, scenario.SeverityError, found[0].Severity)
+		assert.Equal(t, "providers.exa_agent_runs.turns[0].respond.status", found[0].Path)
+		assert.Contains(t, found[0].Message, "poll 1")
+	})
+
+	t.Run("a shadowed turn is never served, so it cannot un-complete anything", func(t *testing.T) {
+		t.Parallel()
+
+		sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    turns:\n"+
+			"      - when: {call_index: 0}\n        respond: {status: completed, output: {text: x}}\n"+
+			"      - when: {call_index: 0}\n        respond: {status: running}\n"+
+			"      - respond: {status: completed, output: {text: x}}\n")
+		assert.Empty(t, validate(t, sc))
+	})
+
+	t.Run("a terminal snapshot scheduled after the fallback", func(t *testing.T) {
+		t.Parallel()
+
+		// Polls 0 and 1 fall through to running, poll 2 completes, and poll 3
+		// falls through to running again.
+		sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    turns:\n"+
+			"      - when: {call_index: 2}\n        respond: {status: completed, output: {text: x}}\n"+
+			"      - respond: {status: running}\n")
+		found := validate(t, sc)
+		require.Len(t, found, 1)
+		assert.Equal(t, "providers.exa_agent_runs.turns[1].respond.status", found[0].Path)
+		assert.Contains(t, found[0].Message, "poll 3")
+	})
+
+	t.Run("the cancel script is checked on its own", func(t *testing.T) {
+		t.Parallel()
+
+		sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    cancel:\n      turns:\n"+
+			"        - when: {call_index: 1}\n          respond: {status: running}\n"+
+			"        - respond: {status: cancelled}\n"+
+			"    turns:\n      - respond: {status: running}\n")
+		found := validate(t, sc)
+		require.Len(t, found, 1)
+		assert.Equal(t, "providers.exa_agent_runs.cancel.turns[0].respond.status", found[0].Path)
+	})
+
+	t.Run("each script is judged independently", func(t *testing.T) {
+		t.Parallel()
+
+		// A cancel is recorded only while the next poll is non-terminal, so a
+		// poll script that ends terminal says nothing about how a cancel script
+		// may start.
+		sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    cancel:\n      turns:\n"+
+			"        - when: {call_index: 0}\n          respond: {status: running}\n"+
+			"        - respond: {status: cancelled}\n"+
+			"    turns:\n      - when: {call_index: 0}\n        respond: {status: running}\n"+
+			"      - respond: {status: completed, output: {text: x}}\n")
+		assert.Empty(t, validate(t, sc))
+	})
+}
+
+// cancel.turns are poll snapshots of the same run, so every check a poll
+// snapshot gets applies to them, addressed by their own paths. `completed` is
+// allowed there: "acknowledged, then completed anyway" is a real outcome.
+func TestAgentRunValidatorChecksCancelTurns(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		turns    string
+		fault    string
+		wantCode string
+		wantPath string
+		wantErr  bool
+	}{
+		{
+			name:     "an undecodable snapshot",
+			turns:    "        - respond: {status: cancelled, bogus: 1}\n",
+			wantCode: codeProjectionInvalid,
+			wantPath: "providers.exa_agent_runs.cancel.turns[0].respond",
+			wantErr:  true,
+		},
+		{
+			name:     "an unknown status",
+			turns:    "        - respond: {status: stopping}\n",
+			wantCode: CodeAgentRunStatusUnknown,
+			wantPath: "providers.exa_agent_runs.cancel.turns[0].respond.status",
+			wantErr:  true,
+		},
+		{
+			name:     "a negative usage value",
+			turns:    "        - respond: {status: cancelled, usage: {agent_compute_units: -1}}\n",
+			wantCode: codeAgentRunValueRange,
+			wantPath: "providers.exa_agent_runs.cancel.turns[0].respond.usage.agent_compute_units",
+			wantErr:  true,
+		},
+		{
+			name:     "a body predicate",
+			turns:    "        - when: {body_contains: x}\n          respond: {status: running}\n        - respond: {status: cancelled}\n",
+			wantCode: CodeAgentRunBodyPredicateOnPoll,
+			wantPath: "providers.exa_agent_runs.cancel.turns[0].when",
+		},
+		{
+			name:     "a script that runs out",
+			turns:    "        - when: {call_index: 0}\n          respond: {status: cancelled}\n",
+			wantCode: CodeAgentRunScriptExhausted,
+			wantPath: "providers.exa_agent_runs.cancel.turns[0].when",
+		},
+		{
+			name:     "an off-vocabulary tag on the cancel plan",
+			turns:    "        - respond: {status: cancelled}\n",
+			fault:    "      fault: {attempts: [{status: 500, tag: RATE_LIMITED_FLAT}]}\n",
+			wantCode: codeAgentRunFaultTagUnknown,
+			wantPath: "providers.exa_agent_runs.cancel.fault.attempts[0].tag",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    cancel:\n"+tc.fault+
+				"      turns:\n"+tc.turns+"    turns:\n      - respond: {status: completed, output: {text: x}}\n")
+			findings := provider.ValidateScenario(sc, provider.MustSet(Profile()).Validators())
+
+			var found []scenario.Finding
+			for _, f := range findings {
+				if f.Code == tc.wantCode {
+					found = append(found, f)
+				}
+			}
+			require.Len(t, found, 1, "want one %s, got %+v", tc.wantCode, findings)
+			assert.Equal(t, tc.wantPath, found[0].Path)
+			if tc.wantErr {
+				assert.Equal(t, scenario.SeverityError, found[0].Severity)
+			}
+		})
+	}
+
+	t.Run("completed is allowed", func(t *testing.T) {
+		t.Parallel()
+
+		sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    cancel:\n      turns:\n"+
+			"        - when: {call_index: 0}\n          respond: {status: running}\n"+
+			"        - respond: {status: completed, output: {text: x}}\n"+
+			"    turns:\n      - respond: {status: running}\n")
+		for _, f := range provider.ValidateScenario(sc, provider.MustSet(Profile()).Validators()) {
+			assert.NotEqual(t, scenario.SeverityError, f.Severity, "unexpected error: %+v", f)
+		}
+	})
 }
 
 // --- create.fault ---------------------------------------------------------

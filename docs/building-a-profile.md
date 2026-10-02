@@ -287,6 +287,9 @@ func Profile() provider.Profile {
   forgotten in the other fails at composition, not on the first request.
 - `Validators` is keyed by scenario **entry kind**, not by listener — one listener may contribute several
   (Perplexity's Sonar and Agent surfaces). Acme has one, under its own name.
+- `Cancellable` is absent from Acme on purpose. It names the entry kinds whose jobs your routes can cancel, and
+  the framework rejects a scenario's `cancel:` block on every other entry, so a profile with no create-then-poll
+  lifecycle leaves it out and fails closed. See [Async jobs](#async-jobs).
 - `ErrorBody` is **required**. House rule 3: an unmatched path, method, provider or scenario answers in the
   vendor's own error shape, never with an empty body. `provider.NewSet` refuses a `Profile` without it.
 - `DefaultAuth` is the mode an entry with no `auth:` block of its own gets — a *default your handler reads*, not
@@ -901,13 +904,83 @@ create with no `FaultBody` serves its own rendered body, identifier included, un
 above, so the client learns the id of a job the scenario said it lost. Exa and Tavily register one; so should you,
 and the `x-request-id` or equivalent you put on a faulted create must not derive from the job id either.
 
+#### Polls and cancels
+
+**A profile whose polls can be cancelled must select each poll's snapshot with `provider.SelectPollTurn`, never
+`provider.SelectTurnFor`.** `SelectPollTurn` claims the poll's call index and records it on the job in one step —
+unconditionally, even when no turn then matches, because the index is spent either way — and once a cancel is recorded
+it serves `cancel.turns` from the recorded position on. `SelectTurnFor` does neither, so a poll it serves leaves the
+job's position behind (a later cancel then judges the wrong snapshot) and never sees a cancel. It takes the scripts
+rather than an entry — `SelectPollTurn(x, base, turns, cancel)`, where `turns` is the poll script, `cancel` the
+`cancel:` block beside it (nil when there is none), and `base` their YAML path, `providers.<entry>` for an entry's own
+scripts — so a lifecycle nested inside an entry is served the same way, with `base` naming the nested block. `base` is
+used only in the path it returns and in finding messages. Call `SelectPollTurn` only after `provider.ResolveJob`
+returned true: on an exchange that resolved no job it records a `job.id_invalid` error, claims nothing and returns a nil
+turn. It selects by position alone and never reads the request body. `profiles/exa`'s `agentrun_handler.go` is the
+worked example; the Tavily research poll still uses `SelectTurnFor`, because Tavily has no cancel. Both operations
+read and write the job through `Deps.Jobs`; the framework wires its own store there, and a store written to replace
+it implements `testkit.Jobs` — whose `Create` must record the zero lifecycle, no polls and no cancel, whatever job it
+is given, or a fresh job would start cancelled.
+
+A cancel route's handler resolves the job with `ResolveJob`, exactly as a poll does, then calls
+`provider.CancelJob(x, base, turns, cancel, pollRoute, terminal)`, passing the same scripts the poll is served from.
+`pollRoute` is the poll route's `FaultKey` as you declared it, so a `when.route` in the scripts selects as it does on
+the poll; `terminal` reports whether a snapshot ends the job, in your vendor's status vocabulary. `CancelJob` claims the
+cancel route's attempt — **exactly one per cancel that resolved a job, whatever it decides** — records the cancel on the
+job only when that attempt commits (the predicate `MintJob` keeps a job on), and returns a `provider.CancelOutcome`, the
+snapshot to render and that snapshot's YAML path. It decides and records; it knows nothing of your wire shape, so the
+rest is yours:
+
+| Outcome | The snapshot | What the profile renders |
+|---|---|---|
+| `provider.CancelRecorded` | `cancel.turns` at call index 0 | the vendor's cancel response, built from that snapshot |
+| `provider.CancelAlreadyCancelling` | the cancel script's snapshot for the job's next poll | the vendor's answer to a repeated cancel |
+| `provider.CancelTerminal` | the terminal snapshot the job's next poll serves | the vendor's answer to cancelling a finished job — a success or an error, whichever the contract documents |
+| `provider.CancelUncommitted` | the job's next poll snapshot | the vendor's cancel response, built from that snapshot; the claimed fault replaces, truncates or drops it on the wire |
+| `provider.CancelFailed` | none | the vendor's 500; `CancelJob` has already recorded the error finding that says why (`job.cancel_unscripted` or `job.cancel_contended`) |
+| `provider.CancelNotFound` | none | the vendor's not-found, as for an unknown identifier |
+
+For every outcome that returns a snapshot, that snapshot is exactly what the job's next poll will be served, which is
+what keeps the cancel's answer and the polls after it consistent however a cancel and a poll race. Render each of them
+as a **served, fault-eligible** response — never as a rejection, even when the contract says cancelling a finished
+job is an error status: a rejection strips the claimed attempt and raises `fault.attempt_on_rejection`, and the
+scenario's cancel plan would silently stop applying.
+
+What else the cancel route owes:
+
+- Its own fault key, distinct from the create's and the poll's, so `cancel.fault` is its plan and nobody else's.
+- `LaneFrom: []string{"path:id"}` (or your path wildcard's name), so each job's cancels draw from their own attempt
+  budget, as its polls do.
+- The same `Entry` as the create and the poll, by the rule above.
+- A `FaultBody` on its responses, built from the attempt alone, for the reason a create needs one: under an
+  `accepted` attempt with an error status, a response without one serves its own rendered body, so the client is
+  told the cancel succeeded by a reply the scenario said was lost.
+
+**The framework rejects a `cancel:` block by default.** `provider.ValidateScenario` refuses it on every entry, with
+`provider.CodeCancelUnsupported`, unless the entry's profile names it in `Profile.Cancellable` — so a profile with no
+cancel writes nothing and fails closed, and one with a cancel opts in exactly the entries whose poll routes use
+`SelectPollTurn`: `Cancellable: []string{"acme_runs"}`. `NewSet` refuses a name that is not one of the profile's own
+entry kinds. The opt-in reaches validation through `Set.Validators`, which is what `servicesim.Main` and
+`testkit.Start` use; a validator map you build by hand carries none, and rejects every `cancel:` block.
+
+**Your validator enforces what `CancelJob` relies on: a terminal snapshot is absorbing in the order polls are
+served.** A cancel judges the job by its next poll, so a script that can serve a pending snapshot after a terminal
+one lets a client watch a run finish and then have it cancelled. Call `provider.TerminalRegressions` on each script
+an async entry declares — its `turns`, and its `cancel.turns` when it is cancellable — passing the poll route's
+`FaultKey` and whether each turn's snapshot is terminal in your vendor's vocabulary. It evaluates the turns
+`provider.SelectTurn` would actually serve, which is not declaration order
+([the schema](scenario-schema.md#terminal-is-judged-in-serve-order)), and returns one `provider.TerminalRegression`
+per offending turn; report each as an error under your own code at that turn's path. Exa's `agentrun.go` and
+Tavily's `research.go` are the worked examples, reporting `exa.agent_run.terminal_then_pending` and
+`tavily.research.terminal_then_pending`.
+
 ## Step 3 — scenarios
 
 Your scenarios are your own YAML files, in your own repository. The schema is `docs/scenario-schema.md`; the
 `providers:` block for your listener is keyed by your `Name`, and its `respond:` body uses your `ProjectionKeys`.
 Acme's tests carry theirs as constants, which is what lets this guide quote them:
 
-<!-- excerpt: examples/profile/acme/acme_test.go#L24-L32 -->
+<!-- excerpt: examples/profile/acme/acme_test.go#L25-L33 -->
 ```yaml
 version: 1
 name: acme-scenario
@@ -923,7 +996,7 @@ providers:
 A scripted fault plan is a `fault:` block on the entry — attempts in order, one per call, addressed to the route's
 `FaultKey` through `Route.Fault`. `[{status: 429}, {}]` is "a 429, then whatever the scenario renders":
 
-<!-- excerpt: examples/profile/acme/acme_test.go#L41-L48 -->
+<!-- excerpt: examples/profile/acme/acme_test.go#L42-L49 -->
 ```yaml
 version: 1
 name: acme-fault-scenario
@@ -953,7 +1026,7 @@ defaulted, so a team simulating one vendor never pulls four other vendors' contr
 graph — starts one in-process server per profile with nothing to defer, and every assertion reads the journal, so a
 test proves the request was *correct*, not merely answered:
 
-<!-- excerpt: examples/profile/acme/acme_test.go#L96-L139 -->
+<!-- excerpt: examples/profile/acme/acme_test.go#L97-L140 -->
 ```go
 // TestAcmeAnswerServesTheScriptedTurn proves a correct request from the
 // journal: the response decodes to the scripted fields, and the journal
@@ -1017,7 +1090,7 @@ a template is copied.
 
 And this one, which is house rule 4 with no redaction code of Acme's own:
 
-<!-- excerpt: examples/profile/acme/acme_test.go#L338-L371 -->
+<!-- excerpt: examples/profile/acme/acme_test.go#L339-L372 -->
 ```go
 // TestAcmeCredentialNeverReachesTheJournalRaw covers house rule 4 with no
 // redaction code of Acme's own: a request presenting Authorization and
@@ -1060,7 +1133,7 @@ composed set's own `Hosts`, scans every file — Go source included, because a b
 not in a fixture — with your contracts directory skipped, since its provenance record legitimately names the
 vendor's real documentation URL:
 
-<!-- excerpt: examples/profile/acme/acme_test.go#L373-L386 -->
+<!-- excerpt: examples/profile/acme/acme_test.go#L374-L387 -->
 ```go
 // TestModuleHasNoLiveHosts is the two-line idiom testkit.AssertNoLiveHosts
 // documents, run against this whole module (Go sets a test binary's working

@@ -228,8 +228,11 @@ const (
 	// documented set.
 	CodeAgentRunStopReasonUnknown = "exa.agent_run.stop_reason.unknown"
 
-	// CodeAgentRunTerminalThenPending is raised for a non-terminal turn declared
-	// after a terminal one — a run that un-completes, which no real job API does.
+	// CodeAgentRunTerminalThenPending is raised for a non-terminal snapshot
+	// SERVED after a terminal one — a run that un-completes, which no real job
+	// API does. It is judged by poll index, the order SelectTurn actually serves
+	// turns in, not by declaration order, and on the poll script and the cancel
+	// script each on its own.
 	CodeAgentRunTerminalThenPending = "exa.agent_run.terminal_then_pending"
 
 	// CodeAgentRunScriptExhausted warns that no unconditional final turn exists,
@@ -276,8 +279,9 @@ func (agentRunValidator) ProjectionKeys() []string {
 	return []string{"status", "stop_reason", "output", "error", "cost_dollars", "usage", "extra_fields"}
 }
 
-// ValidateProjections decodes every turn of the async entry and reports what it
-// finds, addressed by the turn's YAML path.
+// ValidateProjections decodes every turn of the async entry — its poll script and
+// its cancel script, each a list of poll snapshots — and reports what it finds,
+// addressed by the turn's YAML path.
 //
 // The last two findings are the ones a fixture author actually hits, and both
 // are silent failures without a load-time check: a body predicate on a poll can
@@ -288,49 +292,70 @@ func (agentRunValidator) ValidateProjections(s *scenario.Scenario, e *scenario.P
 		return nil
 	}
 
-	var findings []scenario.Finding
-	seenTerminal := false
+	turnsPath := fmt.Sprintf("providers.%s.turns", e.Name)
+	findings := validateAgentRunTurns(s, turnsPath, e.Turns)
+	var cancelTurns []scenario.Turn
+	cancelPath := fmt.Sprintf("providers.%s.cancel.turns", e.Name)
+	if e.Cancel != nil {
+		cancelTurns = e.Cancel.Turns
+		findings = append(findings, validateAgentRunTurns(s, cancelPath, cancelTurns)...)
+	}
 
-	for i := range e.Turns {
-		path := fmt.Sprintf("providers.%s.turns[%d].respond", e.Name, i)
+	findings = append(findings, validateAgentRunFaultTags(e)...)
+	findings = append(findings, validateAgentRunScript(turnsPath, e.Turns)...)
+	return append(findings, validateAgentRunScript(cancelPath, cancelTurns)...)
+}
+
+// validateAgentRunTurns decodes and checks one script of poll snapshots, each
+// turn addressed as base[i]. It is the one walk the poll script and the cancel
+// script share; each script is judged on its own.
+func validateAgentRunTurns(s *scenario.Scenario, base string, turns []scenario.Turn) []scenario.Finding {
+	var findings []scenario.Finding
+	decoded := make([]*agentRunProjection, len(turns))
+
+	for i := range turns {
+		turnPath := fmt.Sprintf("%s[%d]", base, i)
+		path := turnPath + ".respond"
 
 		var p agentRunProjection
-		if err := e.Turns[i].DecodeProjection(e.Name, i, &p); err != nil {
+		if err := scenario.DecodeStrict(&turns[i].Respond, &p); err != nil {
 			findings = append(findings, scenario.Finding{
 				Severity: scenario.SeverityError,
 				Code:     codeProjectionInvalid,
 				Path:     path,
-				Message:  err.Error(),
+				Message:  fmt.Sprintf("%s: %v", path, err),
 			})
 			continue
 		}
+		decoded[i] = &p
 
-		findings = append(findings, validateAgentRunTurn(s, path, &p, e, i)...)
-
-		// A run that un-completes: a non-terminal snapshot after a terminal one
-		// can only be reached by a cursor that has already stopped advancing, so
-		// it is unreachable as well as wrong.
-		if seenTerminal && !p.IsTerminal() {
-			findings = append(findings, scenario.Finding{
-				Severity: scenario.SeverityError,
-				Code:     CodeAgentRunTerminalThenPending,
-				Path:     path + ".status",
-				Message: fmt.Sprintf("turn %d is %q after an earlier turn reached a terminal status; a run does not un-complete",
-					i, p.EffectiveStatus()),
-			})
-		}
-		if p.IsTerminal() {
-			seenTerminal = true
-		}
+		findings = append(findings, validateAgentRunTurn(s, path, &p, turnPath, &turns[i])...)
 	}
 
-	findings = append(findings, validateAgentRunFaultTags(e)...)
-	return append(findings, validateAgentRunScript(e)...)
+	// A run that un-completes, judged in the order polls are SERVED (D3): a
+	// client that saw a terminal snapshot must never see a pending one after it.
+	regressions := provider.TerminalRegressions(turns, faultKeyRunPoll, func(i int) (bool, bool) {
+		return decoded[i] != nil && decoded[i].IsTerminal(), decoded[i] != nil
+	})
+	for _, r := range regressions {
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityError,
+			Code:     CodeAgentRunTerminalThenPending,
+			Path:     fmt.Sprintf("%s[%d].respond.status", base, r.Turn),
+			Message: fmt.Sprintf("poll %d is served turn %d (%q) after poll %d was served turn %d (%q), which is "+
+				"terminal; turns are served by first match on call_index, not in declaration order, and a run "+
+				"does not un-complete",
+				r.Poll, r.Turn, decoded[r.Turn].EffectiveStatus(),
+				r.TerminalPoll, r.TerminalTurn, decoded[r.TerminalTurn].EffectiveStatus()),
+		})
+	}
+	return findings
 }
 
-// validateAgentRunTurn checks one snapshot in isolation.
+// validateAgentRunTurn checks one snapshot in isolation. path addresses its
+// respond body, turnPath the turn itself.
 func validateAgentRunTurn(
-	s *scenario.Scenario, path string, p *agentRunProjection, e *scenario.ProviderEntry, index int,
+	s *scenario.Scenario, path string, p *agentRunProjection, turnPath string, turn *scenario.Turn,
 ) []scenario.Finding {
 	var findings []scenario.Finding
 
@@ -379,11 +404,11 @@ func validateAgentRunTurn(
 
 	// A GET poll has no body, so a body predicate can never match. The turn is
 	// dead and nothing at request time would ever say so.
-	if when := e.Turns[index].When; when != nil && (when.BodyContains != "" || len(when.BodyJSON) > 0) {
+	if when := turn.When; when != nil && (when.BodyContains != "" || len(when.BodyJSON) > 0) {
 		findings = append(findings, scenario.Finding{
 			Severity: scenario.SeverityWarning,
 			Code:     CodeAgentRunBodyPredicateOnPoll,
-			Path:     fmt.Sprintf("providers.%s.turns[%d].when", e.Name, index),
+			Path:     turnPath + ".when",
 			Message:  "a poll is a GET and carries no body, so body_contains and body_json can never match here; use call_index or route",
 		})
 	}
@@ -440,20 +465,21 @@ func validateAgentRunValues(path string, p *agentRunProjection) []scenario.Findi
 	return findings
 }
 
-// validateAgentRunScript checks the turn list as a whole.
-func validateAgentRunScript(e *scenario.ProviderEntry) []scenario.Finding {
-	if len(e.Turns) == 0 {
+// validateAgentRunScript checks one script — the poll script or the cancel
+// script, addressed as base[i] — as a whole.
+func validateAgentRunScript(base string, turns []scenario.Turn) []scenario.Finding {
+	if len(turns) == 0 {
 		return nil
 	}
 	// A script whose last turn is conditional runs out: the poll after its final
 	// snapshot matches nothing, and the consumer sees a 404 for a job that
 	// exists. The single-shot form normalises to one unconditional turn, so this
 	// only ever fires on a hand-written multi-turn script.
-	if last := e.Turns[len(e.Turns)-1]; !last.When.IsEmpty() {
+	if last := turns[len(turns)-1]; !last.When.IsEmpty() {
 		return []scenario.Finding{{
 			Severity: scenario.SeverityWarning,
 			Code:     CodeAgentRunScriptExhausted,
-			Path:     fmt.Sprintf("providers.%s.turns[%d].when", e.Name, len(e.Turns)-1),
+			Path:     fmt.Sprintf("%s[%d].when", base, len(turns)-1),
 			Message:  "the last turn is conditional, so the poll after it matches no turn and answers 404 for a job that exists",
 		}}
 	}

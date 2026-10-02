@@ -14,6 +14,14 @@ import (
 // consumer pins an older Servicesim.
 const CodeProviderUnimplemented = "scenario.provider.unimplemented"
 
+// CodeCancelUnsupported is the finding raised for a `cancel:` block on an entry
+// whose profile has no cancel lifecycle for it — an entry kind its profile does
+// not name in [Profile.Cancellable]. It is an ERROR: the block could never take
+// effect, and a block nothing reads lets its author believe a cancellation was
+// scripted. Rejection is the default, so a profile that never declared a cancel
+// fails closed without writing a line for it.
+const CodeCancelUnsupported = "scenario.provider.cancel_unsupported"
+
 // CodeTurnRouteUnknown is the finding raised for a `when.route:` naming a route
 // the provider kind does not serve. It is an ERROR, not a warning: a turn whose
 // route name matches nothing never fires, so the scenario quietly serves some
@@ -87,6 +95,10 @@ type Validator interface {
 // A provider named in the scenario with no registered handler yields a warning
 // naming it, never an error.
 //
+// A `cancel:` block is rejected with [CodeCancelUnsupported] on every entry
+// whose validator does not carry its profile's [Profile.Cancellable] opt-in —
+// which only [Set.Validators] attaches, so a hand-built map rejects them all.
+//
 // handlers is keyed on ProviderEntry.Kind, which defaults to the block's name, so
 // a scenario declaring an "openai" and an "openai_fallback" against one
 // implementation registers that implementation once.
@@ -113,6 +125,10 @@ func ValidateScenario(s *scenario.Scenario, handlers map[string]Validator) []sce
 			kind = e.Name
 		}
 		v, ok := handlers[kind]
+		canCancel := false
+		if c, marked := v.(cancellable); marked {
+			v, canCancel = c.Validator, true
+		}
 		if !ok || v == nil {
 			e.Implemented = false
 			findings = append(findings, scenario.Finding{
@@ -125,28 +141,44 @@ func ValidateScenario(s *scenario.Scenario, handlers map[string]Validator) []sce
 			continue
 		}
 		e.Implemented = true
+		if e.Cancel != nil && !canCancel {
+			findings = append(findings, scenario.Finding{
+				Severity: scenario.SeverityError,
+				Code:     CodeCancelUnsupported,
+				Path:     "providers." + name + ".cancel",
+				Message: fmt.Sprintf("entry %q declares a cancel: block, but provider kind %q has no cancel "+
+					"lifecycle for it, so the block could never take effect; remove it, or move it to an entry "+
+					"whose profile serves a cancel (provider.Profile.Cancellable)", name, kind),
+			})
+		}
 		if lister, ok := v.(RouteLister); ok {
-			findings = append(findings, validateTurnRoutes(name, kind, e, lister.Routes())...)
+			routes := lister.Routes()
+			findings = append(findings, validateTurnRoutes("providers."+name+".turns", kind, e.Turns, routes)...)
+			if e.Cancel != nil && canCancel {
+				findings = append(findings,
+					validateTurnRoutes("providers."+name+".cancel.turns", kind, e.Cancel.Turns, routes)...)
+			}
 		}
 		findings = append(findings, v.ValidateProjections(s, e)...)
 	}
 	return findings
 }
 
-// validateTurnRoutes checks every `when.route:` in an entry against the routes
-// its kind actually serves, so a misspelled or misplaced name fails at load.
+// validateTurnRoutes checks every `when.route:` in one script of an entry — its
+// turns, or its cancel.turns, addressed as base[i] — against the routes its kind
+// actually serves, so a misspelled or misplaced name fails at load.
 //
 // It reports the served names in the message. A bare "route X is unknown" leaves
 // the author guessing at a vocabulary they cannot see from the scenario file —
 // the names come from Go source in a provider package, not from anything in
 // their repository.
-func validateTurnRoutes(name, kind string, e *scenario.ProviderEntry, routes []Route) []scenario.Finding {
+func validateTurnRoutes(base, kind string, turns []scenario.Turn, routes []Route) []scenario.Finding {
 	if len(routes) == 0 {
 		return nil
 	}
 	var findings []scenario.Finding
-	for i := range e.Turns {
-		when := e.Turns[i].When
+	for i := range turns {
+		when := turns[i].When
 		if when == nil || when.Route == "" {
 			continue
 		}
@@ -158,7 +190,7 @@ func validateTurnRoutes(name, kind string, e *scenario.ProviderEntry, routes []R
 		findings = append(findings, scenario.Finding{
 			Severity: scenario.SeverityError,
 			Code:     CodeTurnRouteUnknown,
-			Path:     fmt.Sprintf("providers.%s.turns[%d].when.route", name, i),
+			Path:     fmt.Sprintf("%s[%d].when.route", base, i),
 			Message: fmt.Sprintf("route %q matches no route served by provider kind %q; it serves %s",
 				when.Route, kind, strings.Join(routeNames(routes), ", ")),
 		})

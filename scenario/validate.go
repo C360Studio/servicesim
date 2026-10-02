@@ -214,20 +214,36 @@ func validateProvider(r *Report, e *ProviderEntry) {
 	if e.Create != nil {
 		validateFault(r, base+".create.fault", e.Create.Fault)
 	}
+	if e.Cancel != nil {
+		validateFault(r, base+".cancel.fault", e.Cancel.Fault)
+		// A cancel script is selected exactly as the entry's own is, so it gets the
+		// same per-turn and reachability checks, addressed by its own paths. It
+		// may be empty: an entry that never accepts a cancel needs no snapshots.
+		validateTurns(r, e.Cancel.Turns, func(i int) string {
+			return fmt.Sprintf("%s.cancel.turns[%d]", base, i)
+		})
+	}
 
 	if len(e.Turns) == 0 {
 		r.add(SeverityError, "scenario.provider.turns.empty", base+".turns",
 			"a provider block must declare at least one turn")
 		return
 	}
-	for i := range e.Turns {
-		validateTurn(r, e, i)
+	validateTurns(r, e.Turns, e.turnPath)
+}
+
+// validateTurns checks every turn of one script, each addressed by path(i), and
+// that no unconditional turn shadows the ones after it. It is the one walk both
+// an entry's turns and its cancel.turns go through.
+func validateTurns(r *Report, turns []Turn, path func(int) string) {
+	for i := range turns {
+		validateTurn(r, &turns[i], path(i))
 	}
-	for i := 0; i < len(e.Turns)-1; i++ {
-		if e.Turns[i].When.IsEmpty() {
-			r.add(SeverityError, "scenario.turn.unreachable", e.turnPath(i),
+	for i := 0; i < len(turns)-1; i++ {
+		if turns[i].When.IsEmpty() {
+			r.add(SeverityError, "scenario.turn.unreachable", path(i),
 				"turn %d has no `when`, so it always matches and turns %d..%d can never be selected; move the unconditional turn last",
-				i, i+1, len(e.Turns)-1)
+				i, i+1, len(turns)-1)
 			break
 		}
 	}
@@ -268,10 +284,7 @@ func (e *ProviderEntry) turnPath(i int) string {
 	return fmt.Sprintf("providers.%s.turns[%d]", e.Name, i)
 }
 
-func validateTurn(r *Report, e *ProviderEntry, i int) {
-	turn := &e.Turns[i]
-	path := e.turnPath(i)
-
+func validateTurn(r *Report, turn *Turn, path string) {
 	if turn.Respond.Kind != yaml.MappingNode {
 		r.add(SeverityError, "scenario.turn.respond.not_mapping", path+".respond",
 			"a turn's projection body must be a mapping, got a %s", nodeKindName(turn.Respond.Kind))

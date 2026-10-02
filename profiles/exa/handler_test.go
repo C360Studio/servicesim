@@ -62,10 +62,7 @@ func newSimWithJobs(t *testing.T, src string, store *jobs.Registry) *sim {
 	// Projection bodies are invisible to scenario.Validate, so the seam that
 	// checks them runs here too: a fixture with a bad field must fail in this
 	// test, not on the first request.
-	findings := provider.ValidateScenario(s, map[string]provider.Validator{
-		providerName:  validator{},
-		NameAgentRuns: agentRunValidator{},
-	})
+	findings := provider.ValidateScenario(s, provider.MustSet(Profile()).Validators())
 	for _, f := range findings {
 		require.NotEqualf(t, scenario.SeverityError, f.Severity, "%s: %s", f.Path, f.Message)
 	}

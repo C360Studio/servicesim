@@ -45,6 +45,11 @@ const (
 	// their scenario for a key they never wrote and cannot add. The field is the
 	// path wildcard's own name, which is the part of the request the client
 	// actually got wrong.
+	//
+	// It is raised a second way, as an error: [SelectPollTurn] or [CancelJob]
+	// called on a request that resolved no job. That is a programming error in
+	// the profile — it must call [ResolveJob] first and act only when it returns
+	// true — and it fails loudly rather than serving a default.
 	CodeJobIDInvalid = "job.id_invalid"
 
 	// CodeJobLimitNear warns that a create took its namespace past
@@ -96,6 +101,30 @@ const (
 	// still the vendor's ordinary 404. A suite that polls HEAD or GET for ids
 	// it knows are absent should demote this code rather than run strict.
 	CodeJobForeignID = "job.foreign_id"
+
+	// CodeJobCancelUnscripted is raised by [CancelJob] when a cancel would take
+	// effect but the scenario cannot say what the job's polls answer next: the
+	// entry scripts no `cancel.turns`, or the snapshot the job's next poll would
+	// be served — from its turns or from its cancel.turns — matches no turn. The
+	// profile answers the vendor's 500 and NOTHING is recorded, so later polls
+	// never index into a cancel script that does not exist. It is an error:
+	// the scenario is incomplete for the request it was sent. A cancel of a run
+	// that is already terminal needs no cancel script and never raises it.
+	CodeJobCancelUnscripted = "job.cancel_unscripted"
+
+	// CodeJobCancelContended is raised by [CancelJob] when it gave up recording a
+	// cancel because the job's poll position kept moving under it: each retry
+	// means another poll of the same job completed in between, so reaching the
+	// bound takes a storm of concurrent polls on one job. The profile answers
+	// the vendor's 500 and nothing is recorded; the client's retry is a fresh
+	// cancel. It is an error, because the cancel the client sent did not take
+	// effect for a reason no vendor would give.
+	//
+	// It is raised a second way, with its own message: the job store answered
+	// MarkCancel with an outcome outside jobs.Store's contract. That is a broken
+	// store rather than contention, so it is not retried, and the message names
+	// the outcome and the store as the cause.
+	CodeJobCancelContended = "job.cancel_contended"
 )
 
 // foreignIDMessage is the [CodeJobForeignID] finding text, split at its
@@ -249,7 +278,7 @@ func commits(dec FaultDecision) bool {
 func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (id string, ok bool) {
 	lane := x.Lane()
 	index := x.CallIndex()
-	x.minted = true
+	x.recordable = true
 
 	job := jobs.Job{
 		ID: prefix + encode(
@@ -341,8 +370,10 @@ func MintJob(x *Exchange, entry, prefix string, encode func(...string) string) (
 //
 // It CLAIMS NO ATTEMPT and advances no cursor, which is what makes it usable
 // from a request that must not consume a poll — a HEAD asking only whether a run
-// exists. A poll that means to consume one calls SelectTurnFor separately, after
-// this has confirmed the job is real.
+// exists. A poll that means to consume one calls [SelectPollTurn] separately,
+// after this has confirmed the job is real, and a cancel calls [CancelJob]. Both
+// act on the job this resolved, which it retains on the Exchange; neither takes
+// an identifier of its own.
 //
 // It records one finding, [CodeJobForeignID], on exactly two conditions, each
 // logged once at WARN as servicesim.job_foreign:
@@ -368,6 +399,7 @@ func ResolveJob(x *Exchange, id string) bool {
 	entry := x.entryName()
 	if job, found := x.Deps.Jobs.Lookup(namespace, id); found {
 		if job.Entry == entry {
+			x.resolvedJob = id
 			return true
 		}
 		x.Warn(CodeJobForeignID, "id", wrongEntryMessage, id, namespace, job.Entry, entry)

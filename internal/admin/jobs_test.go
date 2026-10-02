@@ -32,6 +32,13 @@ func (unlistableJobs) Lookup(string, string) (jobs.Job, bool) { return jobs.Job{
 func (unlistableJobs) StatsIn(string) jobs.Stats              { return jobs.Stats{Bound: jobs.DefaultMaxJobs} }
 func (unlistableJobs) ResetIn(string)                         {}
 func (unlistableJobs) Reset()                                 {}
+func (unlistableJobs) Advance(string, string, int) (jobs.Job, bool) {
+	return jobs.Job{}, false
+}
+
+func (unlistableJobs) MarkCancel(string, string, int) (jobs.Job, jobs.MarkOutcome) {
+	return jobs.Job{}, jobs.NotFound
+}
 
 // TestHandler_Jobs pins the declared total order: namespace ascending, then
 // entry, then create index, then id. Records are seeded out of that order,
@@ -77,6 +84,72 @@ func TestHandler_Jobs(t *testing.T) {
 	for range 10 {
 		assert.Equal(t, first, serve(t, h, http.MethodGet, "/__admin/jobs").Body.String())
 	}
+}
+
+// TestHandler_JobsCarriesTheLifecycle: each record reports how many polls it has
+// served and, only when a cancel was recorded, the position it was recorded at.
+// cancel_at_poll is ABSENT rather than 0 when there is no cancel, because 0 is a
+// real position — a cancel before the first poll — and a test controller must be
+// able to tell "accepted but the reply was lost" from "never recorded". Nothing
+// else is added: the listing still carries no lane key and no cancel flag of its
+// own.
+func TestHandler_JobsCarriesTheLifecycle(t *testing.T) {
+	store := jobs.NewRegistry(jobs.Limits{})
+	for _, id := range []string{"run_a", "run_b", "run_c", "run_d"} {
+		_, err := store.Create(jobs.Job{ID: id, Namespace: "t-1", Entry: "exa_agent_runs", CreatedAt: baseTime})
+		require.NoError(t, err)
+	}
+	// run_a: never polled. run_b: two polls, no cancel. run_c: cancelled before
+	// its first poll. run_d: three polls, then cancelled.
+	store.Advance("t-1", "run_b", 0)
+	store.Advance("t-1", "run_b", 1)
+	_, outcome := store.MarkCancel("t-1", "run_c", 0)
+	require.Equal(t, jobs.Marked, outcome)
+	for i := range 3 {
+		store.Advance("t-1", "run_d", i)
+	}
+	_, outcome = store.MarkCancel("t-1", "run_d", 3)
+	require.Equal(t, jobs.Marked, outcome)
+
+	rec := serve(t, admin.Handler(admin.Deps{Jobs: store}), http.MethodGet, "/__admin/jobs")
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var raw struct {
+		Jobs []map[string]any `json:"jobs"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+	require.Len(t, raw.Jobs, 4)
+
+	want := []struct {
+		id           string
+		polls        float64
+		cancelAtPoll any // nil: the key must be absent
+	}{
+		{"run_a", 0, nil},
+		{"run_b", 2, nil},
+		{"run_c", 0, float64(0)},
+		{"run_d", 3, float64(3)},
+	}
+	for i, w := range want {
+		got := raw.Jobs[i]
+		assert.Equal(t, w.id, got["id"])
+		assert.Equal(t, w.polls, got["polls"], "%s polls", w.id)
+		at, present := got["cancel_at_poll"]
+		if w.cancelAtPoll == nil {
+			assert.False(t, present, "%s has no cancel, so cancel_at_poll must be absent, not 0", w.id)
+			continue
+		}
+		require.True(t, present, "%s carries a cancel", w.id)
+		assert.Equal(t, w.cancelAtPoll, at, "%s cancel_at_poll", w.id)
+	}
+
+	keys := make([]string, 0, len(raw.Jobs[3]))
+	for k := range raw.Jobs[3] {
+		keys = append(keys, k)
+	}
+	assert.ElementsMatch(t,
+		[]string{"id", "namespace", "entry", "create_index", "created_at", "polls", "cancel_at_poll"}, keys,
+		"the listing adds polls and cancel_at_poll and nothing else")
 }
 
 // TestHandler_JobsNamespaceFilter covers the ?namespace= scope: only the

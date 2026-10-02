@@ -91,6 +91,9 @@ func validateAgentRunFaultTags(e *scenario.ProviderEntry) []scenario.Finding {
 	if e.Create != nil {
 		check(fmt.Sprintf("providers.%s.create.fault", e.Name), e.Create.Fault)
 	}
+	if e.Cancel != nil {
+		check(fmt.Sprintf("providers.%s.cancel.fault", e.Name), e.Cancel.Fault)
+	}
 	for i := range e.Turns {
 		check(fmt.Sprintf("providers.%s.turns[%d].fault", e.Name, i), e.Turns[i].Fault)
 	}
