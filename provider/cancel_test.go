@@ -328,6 +328,22 @@ func TestCancelIsJudgedByTheJobsNextPoll(t *testing.T) {
 			wantMarker: true, wantAt: 0,
 		},
 		{
+			// The repeat is judged from the recorded position, not the absolute
+			// one: Polls 1 minus CancelAtPoll 1 is cancel.turns[0], and the two
+			// cancel turns differ, so peeking at Polls (1) or one past it is caught.
+			name: "create, poll, cancel, cancel: a repeat answers from the cancel position",
+			src:  runningThenCompleted,
+			steps: []step{
+				{op: "poll", status: "running", path: "providers.acme.turns[0]"},
+				{op: "cancel", outcome: CancelRecorded, status: "running", path: "providers.acme.cancel.turns[0]"},
+				{op: "cancel", outcome: CancelAlreadyCancelling, status: "running", path: "providers.acme.cancel.turns[0]"},
+				{op: "poll", status: "running", path: "providers.acme.cancel.turns[0]"},
+				{op: "cancel", outcome: CancelAlreadyCancelling, status: "cancelled", path: "providers.acme.cancel.turns[1]"},
+				{op: "poll", status: "cancelled", path: "providers.acme.cancel.turns[1]"},
+			},
+			wantMarker: true, wantAt: 1,
+		},
+		{
 			name: "create, poll, poll, cancel: completion wins though the client saw only running",
 			src:  runningThenCompleted,
 			steps: []step{
@@ -590,6 +606,36 @@ providers:
 			assert.Contains(t, codesOf(e), CodeJobCancelUnscripted)
 		}
 	})
+
+	t.Run("a cancel unscripted at its first peek still claims exactly one", func(t *testing.T) {
+		t.Parallel()
+
+		// The poll script cannot answer position 2, so whether the job is
+		// terminal cannot be judged: the cancel fails before it reaches the
+		// commit check, and must have claimed already.
+		w := newAsyncWorld(t, `
+version: 1
+name: runs-out
+providers:
+  acme:
+    cancel:
+      turns:
+        - respond: {status: cancelled}
+    turns:
+      - when: {call_index: 0}
+        respond: {status: running}
+`)
+		id := w.create()
+		w.poll(id)
+		w.poll(id)
+		for range 2 {
+			_, body := w.cancel(id)
+			require.Equal(t, string(CancelFailed), body["outcome"])
+		}
+		for i, e := range w.entries("/v1/jobs/" + id + "/cancel") {
+			assert.Equal(t, i, e.Outcome.AttemptIndex, "cancel %d", i)
+		}
+	})
 }
 
 // --- SelectPollTurn ----------------------------------------------------------
@@ -704,7 +750,25 @@ func TestAResetBetweenResolutionAndTheStoreCall(t *testing.T) {
 		assert.Equal(t, CancelNotFound, outcome)
 		assert.Nil(t, turn)
 		assert.False(t, x.Failed())
-		assert.Equal(t, 0, x.decision.Index, "the cancel still claimed its one attempt")
+		assert.True(t, x.claimed, "the cancel still claimed its one attempt")
+		assert.Equal(t, 1, x.Deps.Faults.(*scriptedFaults).calls)
+	})
+
+	t.Run("CancelJob, between its Lookup and its MarkCancel", func(t *testing.T) {
+		t.Parallel()
+
+		store := &resetBeforeMark{Registry: jobs.NewRegistry(jobs.Limits{})}
+		seedJob(t, store, "job_a")
+		x := directExchange(t, store, runningThenCompleted, acmeCancelRoute)
+		require.True(t, ResolveJob(x, "job_a"))
+
+		outcome, turn, _ := acmeCancel(x)
+		assert.Equal(t, CancelNotFound, outcome, "a job gone mid-cancel is not found, not a contended 500")
+		assert.Nil(t, turn)
+		assert.False(t, x.Failed())
+		assert.Equal(t, 1, store.marks, "not found is not retried")
+		_, live := store.Lookup(DefaultNamespace, "job_a")
+		assert.False(t, live, "nothing was recorded, and nothing re-created the job")
 	})
 
 	t.Run("SelectPollTurn", func(t *testing.T) {
@@ -765,8 +829,11 @@ providers:
 	assert.Nil(t, turn)
 	assert.True(t, x.HasFinding(CodeJobCancelContended))
 	assert.True(t, x.Failed(), "an exhausted cancel is an error")
-	assert.Equal(t, maxCancelTries, store.marks, "the loop is bounded")
-	assert.Equal(t, 0, x.decision.Index, "exactly one attempt was claimed")
+	// Counted against a literal, not the constant: a bound of one would pass a
+	// comparison with itself.
+	assert.Equal(t, 8, store.marks, "the loop is bounded at eight tries")
+	assert.True(t, x.claimed)
+	assert.Equal(t, 1, x.Deps.Faults.(*scriptedFaults).calls, "exactly one attempt was claimed")
 
 	j, _ := store.Lookup(DefaultNamespace, "job_a")
 	assert.False(t, j.CancelRequested, "nothing was recorded")
@@ -823,9 +890,248 @@ func TestACancelReportsAnOutcomeTheStoreShouldNeverAnswer(t *testing.T) {
 	}
 }
 
-// A cancel racing a storm of polls on one job: the outcome is one of the
-// documented ones, Polls never decreases, and it ends equal to the number of
-// polls served.
+// --- the store races, made deterministic -------------------------------------
+//
+// Each double below injects one interleaving at the exact point a real race
+// would land, so a test can assert what CancelJob and SelectPollTurn do there
+// without depending on a scheduler.
+
+// onceMovingJobs: the FIRST MarkCancel finds that a poll of the job landed
+// between the cancel's read and its compare-and-set.
+type onceMovingJobs struct {
+	*jobs.Registry
+	mu    sync.Mutex
+	marks int
+}
+
+func (o *onceMovingJobs) MarkCancel(namespace, id string, atPoll int) (jobs.Job, jobs.MarkOutcome) {
+	o.mu.Lock()
+	o.marks++
+	first := o.marks == 1
+	o.mu.Unlock()
+	if first {
+		o.Advance(namespace, id, atPoll)
+	}
+	return o.Registry.MarkCancel(namespace, id, atPoll)
+}
+
+// otherCancelWinsJobs: another cancel of the same job wins the compare-and-set
+// between this cancel's read and its own.
+type otherCancelWinsJobs struct {
+	*jobs.Registry
+	once sync.Once
+}
+
+func (o *otherCancelWinsJobs) MarkCancel(namespace, id string, atPoll int) (jobs.Job, jobs.MarkOutcome) {
+	o.once.Do(func() { o.Registry.MarkCancel(namespace, id, atPoll) })
+	return o.Registry.MarkCancel(namespace, id, atPoll)
+}
+
+// cancelBeforeAdvanceJobs: a cancel is recorded after a poll claimed its index
+// and before that poll's Advance lands.
+type cancelBeforeAdvanceJobs struct {
+	*jobs.Registry
+	once sync.Once
+}
+
+func (c *cancelBeforeAdvanceJobs) Advance(namespace, id string, i int) (jobs.Job, bool) {
+	c.once.Do(func() { c.Registry.MarkCancel(namespace, id, i) })
+	return c.Registry.Advance(namespace, id, i)
+}
+
+// resetBeforeMark: a reset lands between CancelJob's Lookup and its
+// MarkCancel.
+type resetBeforeMark struct {
+	*jobs.Registry
+	marks int
+}
+
+func (r *resetBeforeMark) MarkCancel(namespace, id string, atPoll int) (jobs.Job, jobs.MarkOutcome) {
+	r.marks++
+	r.Reset()
+	return r.Registry.MarkCancel(namespace, id, atPoll)
+}
+
+// A compare-and-set that loses to a poll is retried from the position the store
+// returned, never the stale one, so the retry can find the job terminal by
+// then — and a bound of one try would have given up instead.
+func TestACancelRetriesFromTheMovedPosition(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the moved position is terminal: completion wins", func(t *testing.T) {
+		t.Parallel()
+
+		store := &onceMovingJobs{Registry: jobs.NewRegistry(jobs.Limits{})}
+		seedJob(t, store, "job_a")
+		store.Registry.Advance(DefaultNamespace, "job_a", 0) // one poll served: next is turns[1], running
+		x := directExchange(t, store, runningThenCompleted, acmeCancelRoute)
+		require.True(t, ResolveJob(x, "job_a"))
+
+		outcome, turn, path := acmeCancel(x)
+		assert.Equal(t, CancelTerminal, outcome)
+		require.NotNil(t, turn)
+		assert.Equal(t, "providers.acme.turns[2]", path, "the re-peek used the moved position, 2")
+		assert.Equal(t, 1, store.marks, "the terminal re-peek needs no second compare-and-set")
+		j, _ := store.Lookup(DefaultNamespace, "job_a")
+		assert.False(t, j.CancelRequested)
+	})
+
+	t.Run("the moved position is still running: recorded there", func(t *testing.T) {
+		t.Parallel()
+
+		store := &onceMovingJobs{Registry: jobs.NewRegistry(jobs.Limits{})}
+		seedJob(t, store, "job_a")
+		x := directExchange(t, store, runningThenCompleted, acmeCancelRoute)
+		require.True(t, ResolveJob(x, "job_a"))
+
+		outcome, _, path := acmeCancel(x)
+		assert.Equal(t, CancelRecorded, outcome)
+		assert.Equal(t, "providers.acme.cancel.turns[0]", path)
+		j, _ := store.Lookup(DefaultNamespace, "job_a")
+		assert.True(t, j.CancelRequested)
+		assert.Equal(t, 1, j.CancelAtPoll, "recorded at the moved position, not the one first read")
+	})
+}
+
+// A cancel that loses the compare-and-set to another cancel answers as a repeat
+// of the winner — from the record the store returned, at the winner's position —
+// and does not claim it recorded anything.
+func TestACancelThatLosesToAnotherCancelAnswersAsARepeat(t *testing.T) {
+	t.Parallel()
+
+	store := &otherCancelWinsJobs{Registry: jobs.NewRegistry(jobs.Limits{})}
+	seedJob(t, store, "job_a")
+	store.Registry.Advance(DefaultNamespace, "job_a", 0) // Polls 1, so a stale record would peek cancel.turns[1]
+	x := directExchange(t, store, runningThenCompleted, acmeCancelRoute)
+	require.True(t, ResolveJob(x, "job_a"))
+
+	outcome, _, path := acmeCancel(x)
+	assert.Equal(t, CancelAlreadyCancelling, outcome)
+	assert.Equal(t, "providers.acme.cancel.turns[0]", path, "Polls 1 minus the winner's position 1")
+	j, _ := store.Lookup(DefaultNamespace, "job_a")
+	assert.Equal(t, 1, j.CancelAtPoll)
+}
+
+// A poll reads the job's record from its own Advance, after its claim, so a
+// cancel recorded between the two is seen: this poll is served from the cancel
+// script, as every poll at or past the cancel's position must be.
+func TestAPollSeesACancelRecordedBetweenItsClaimAndItsAdvance(t *testing.T) {
+	t.Parallel()
+
+	store := &cancelBeforeAdvanceJobs{Registry: jobs.NewRegistry(jobs.Limits{})}
+	seedJob(t, store, "job_a")
+	x := directExchange(t, store, runningThenCompleted, acmePollRoute)
+	require.True(t, ResolveJob(x, "job_a"))
+
+	turn, path := acmePoll(x)
+	require.NotNil(t, turn)
+	assert.Equal(t, "providers.acme.cancel.turns[0]", path)
+}
+
+// TestCancelJobClaimsExactlyOnceOnEveryPath: whatever CancelJob decides, it has
+// drawn exactly one attempt from the cancel lane when it returns — counted on
+// the fault plan itself, not inferred from an index an unclaimed exchange would
+// also report as 0. Over HTTP Handle would claim a fault-eligible response's
+// attempt anyway, so this is the test that sees a claim CancelJob skipped.
+func TestCancelJobClaimsExactlyOnceOnEveryPath(t *testing.T) {
+	t.Parallel()
+
+	const noCancelScript = `
+version: 1
+name: n
+providers:
+  acme:
+    turns:
+      - respond: {status: running}
+`
+	const runsOut = `
+version: 1
+name: n
+providers:
+  acme:
+    cancel:
+      turns:
+        - respond: {status: cancelled}
+    turns:
+      - when: {call_index: 0}
+        respond: {status: running}
+`
+	// alwaysRunning never turns terminal, so a position that keeps moving keeps
+	// the cancel retrying until it gives up.
+	const alwaysRunning = `
+version: 1
+name: n
+providers:
+  acme:
+    cancel:
+      turns:
+        - respond: {status: cancelled}
+    turns:
+      - respond: {status: running}
+`
+	tests := []struct {
+		name    string
+		src     string
+		store   func() jobs.Store
+		prepare func(jobs.Store)
+		want    CancelOutcome
+	}{
+		{name: "recorded", src: runningThenCompleted, want: CancelRecorded},
+		{
+			name: "terminal", src: runningThenCompleted, want: CancelTerminal,
+			prepare: func(s jobs.Store) {
+				s.Advance(DefaultNamespace, "job_a", 0)
+				s.Advance(DefaultNamespace, "job_a", 1)
+			},
+		},
+		{
+			name: "already cancelling", src: runningThenCompleted, want: CancelAlreadyCancelling,
+			prepare: func(s jobs.Store) { s.MarkCancel(DefaultNamespace, "job_a", 0) },
+		},
+		{name: "unscripted: no cancel script", src: noCancelScript, want: CancelFailed},
+		{
+			name: "unscripted at the first peek", src: runsOut, want: CancelFailed,
+			prepare: func(s jobs.Store) { s.Advance(DefaultNamespace, "job_a", 1) },
+		},
+		{
+			name: "not found", src: runningThenCompleted, want: CancelNotFound,
+			prepare: func(s jobs.Store) { s.Reset() },
+		},
+		{
+			name: "contended", src: alwaysRunning, want: CancelFailed,
+			store: func() jobs.Store { return &movingJobs{Registry: jobs.NewRegistry(jobs.Limits{})} },
+		},
+		{
+			name: "an unknown store outcome", src: runningThenCompleted, want: CancelFailed,
+			store: func() jobs.Store { return &unknownOutcomeJobs{Registry: jobs.NewRegistry(jobs.Limits{})} },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var store jobs.Store = jobs.NewRegistry(jobs.Limits{})
+			if tc.store != nil {
+				store = tc.store()
+			}
+			seedJob(t, store, "job_a")
+			x := directExchange(t, store, tc.src, acmeCancelRoute)
+			require.True(t, ResolveJob(x, "job_a"))
+			if tc.prepare != nil {
+				tc.prepare(store)
+			}
+
+			outcome, _, _ := acmeCancel(x)
+			assert.Equal(t, tc.want, outcome)
+			assert.True(t, x.claimed)
+			assert.Equal(t, 1, x.Deps.Faults.(*scriptedFaults).calls, "exactly one attempt drawn")
+		})
+	}
+}
+
+// A cancel racing a storm of polls on one job: it records, Polls never
+// decreases and ends equal to the number of polls served, and exactly the polls
+// at or past the recorded position are answered from the cancel script.
 func TestACancelRacingAPollStorm(t *testing.T) {
 	t.Parallel()
 
@@ -872,13 +1178,20 @@ providers:
 	}()
 
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	cancelled := 0
 	for range polls {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			status, _ := w.poll(id)
+			status, body := w.poll(id)
 			assert.Equal(t, http.StatusOK, status)
+			if body["status"] == "cancelled" {
+				mu.Lock()
+				cancelled++
+				mu.Unlock()
+			}
 		}()
 	}
 	var outcome CancelOutcome
@@ -894,14 +1207,17 @@ providers:
 	close(done)
 	observed.Wait()
 
-	assert.Contains(t, []CancelOutcome{CancelRecorded, CancelFailed}, outcome,
-		"a running job's cancel either records or gives up under contention")
+	// The job never turns terminal, so the cancel records: giving up takes
+	// eight polls landing inside eight consecutive read-to-compare windows of a
+	// few microseconds each, which forty polls over real sockets do not produce.
+	require.Equal(t, CancelRecorded, outcome)
 	j := w.job(id)
 	assert.Equal(t, polls, j.Polls)
-	if outcome == CancelRecorded {
-		assert.True(t, j.CancelRequested)
-		assert.LessOrEqual(t, j.CancelAtPoll, j.Polls)
-	}
+	require.True(t, j.CancelRequested)
+	// Every poll at or past the recorded position — and only those — was
+	// answered from the cancel script: the invariant the claim-then-Advance
+	// order exists for.
+	assert.Equal(t, polls-j.CancelAtPoll, cancelled, "CancelAtPoll %d", j.CancelAtPoll)
 }
 
 // --- scripts that are not an entry --------------------------------------------
