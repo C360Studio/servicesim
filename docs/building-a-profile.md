@@ -908,21 +908,25 @@ and the `x-request-id` or equivalent you put on a faulted create must not derive
 
 **A profile whose polls can be cancelled must select each poll's snapshot with `provider.SelectPollTurn`, never
 `provider.SelectTurnFor`.** `SelectPollTurn` claims the poll's call index and records it on the job in one step —
-unconditionally, even when no turn then matches, because the index is spent either way — and once a cancel is
-recorded it serves the entry's `cancel.turns` from the recorded position on. `SelectTurnFor` does neither, so a poll it
-serves leaves the job's position behind (a later cancel then judges the wrong snapshot) and never sees a cancel. Call
-`SelectPollTurn` only after `provider.ResolveJob` returned true: on an exchange that resolved no job it records a
-`job.id_invalid` error, claims nothing and returns a nil turn. It selects by position alone and never reads the
-request body. `profiles/exa`'s `agentrun_handler.go` is the worked example; the Tavily research poll still uses
-`SelectTurnFor`, because Tavily has no cancel.
+unconditionally, even when no turn then matches, because the index is spent either way — and once a cancel is recorded
+it serves `cancel.turns` from the recorded position on. `SelectTurnFor` does neither, so a poll it serves leaves the
+job's position behind (a later cancel then judges the wrong snapshot) and never sees a cancel. It takes the scripts
+rather than an entry — `SelectPollTurn(x, base, turns, cancel)`, where `turns` is the poll script, `cancel` the
+`cancel:` block beside it (nil when there is none), and `base` their YAML path, `providers.<entry>` for an entry's own
+scripts — so a lifecycle nested inside an entry is served the same way, with `base` naming the nested block. `base` is
+used only in the path it returns and in finding messages. Call `SelectPollTurn` only after `provider.ResolveJob`
+returned true: on an exchange that resolved no job it records a `job.id_invalid` error, claims nothing and returns a nil
+turn. It selects by position alone and never reads the request body. `profiles/exa`'s `agentrun_handler.go` is the
+worked example; the Tavily research poll still uses `SelectTurnFor`, because Tavily has no cancel.
 
 A cancel route's handler resolves the job with `ResolveJob`, exactly as a poll does, then calls
-`provider.CancelJob(x, entry, pollRoute, terminal)`. `pollRoute` is the poll route's `FaultKey` as you declared it, so
-a `when.route` in the scripts selects as it does on the poll; `terminal` reports whether a snapshot ends the job, in
-your vendor's status vocabulary. `CancelJob` claims the cancel route's attempt — **exactly one per cancel that
-resolved a job, whatever it decides** — records the cancel on the job only when that attempt commits (the predicate
-`MintJob` keeps a job on), and returns a `provider.CancelOutcome`, the snapshot to render and that snapshot's YAML
-path. It decides and records; it knows nothing of your wire shape, so the rest is yours:
+`provider.CancelJob(x, base, turns, cancel, pollRoute, terminal)`, passing the same scripts the poll is served from.
+`pollRoute` is the poll route's `FaultKey` as you declared it, so a `when.route` in the scripts selects as it does on
+the poll; `terminal` reports whether a snapshot ends the job, in your vendor's status vocabulary. `CancelJob` claims the
+cancel route's attempt — **exactly one per cancel that resolved a job, whatever it decides** — records the cancel on the
+job only when that attempt commits (the predicate `MintJob` keeps a job on), and returns a `provider.CancelOutcome`, the
+snapshot to render and that snapshot's YAML path. It decides and records; it knows nothing of your wire shape, so the
+rest is yours:
 
 | Outcome | The snapshot | What the profile renders |
 |---|---|---|

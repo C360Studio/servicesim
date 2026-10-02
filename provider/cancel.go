@@ -69,9 +69,16 @@ const (
 )
 
 // SelectPollTurn selects the snapshot serving one poll of the job this request
-// resolved, and returns it with its YAML path — providers.<name>.turns[i], or
-// providers.<name>.cancel.turns[j] once a cancel is recorded — or a nil turn and
-// "" when nothing can be served.
+// resolved, and returns it with its YAML path — base.turns[i], or
+// base.cancel.turns[j] once a cancel is recorded — or a nil turn and "" when
+// nothing can be served.
+//
+// turns is the job's poll script and cancel the block beside it (nil when there
+// is none). base is the YAML path of the block that holds them —
+// providers.<entry> for an entry's own scripts, or a nested path such as
+// providers.<entry>.background — and is used only in the returned path and in
+// finding messages, so a lifecycle nested inside an entry needs no entry of its
+// own.
 //
 // It owns the poll's claim AND its record on the job, so an async profile never
 // calls CallIndex on a poll route itself:
@@ -98,7 +105,9 @@ const (
 // vanished after it was resolved — a reset landed — is served from its own turns
 // at the claimed index; a request in flight across a reset is undefined (see
 // jobs.Store).
-func SelectPollTurn(x *Exchange, e *scenario.ProviderEntry) (*scenario.Turn, string) {
+func SelectPollTurn(
+	x *Exchange, base string, turns []scenario.Turn, cancel *scenario.CancelPolicy,
+) (*scenario.Turn, string) {
 	if x.resolvedJob == "" {
 		x.Fail(CodeJobIDInvalid, "",
 			"SelectPollTurn was called on a request that resolved no job; call ResolveJob first and poll only when it returns true")
@@ -108,37 +117,39 @@ func SelectPollTurn(x *Exchange, e *scenario.ProviderEntry) (*scenario.Turn, str
 	index := x.CallIndex()
 	job, _ := x.Deps.Jobs.Advance(x.Lane().Namespace, x.resolvedJob, index)
 
-	turns, base, at := pollScript(e, job, index)
-	turn, i, err := selectTurn(turns, at, x.Route.FaultKey, nil)
+	script, path, at := pollScript(base, turns, cancel, job, index)
+	turn, i, err := selectTurn(script, at, x.Route.FaultKey, nil)
 	if err != nil {
 		x.Fail(CodeNoMatchingTurn, "", "no turn in %s matches poll %d of job %q (call %d of that script) on route %q",
-			base, index, x.resolvedJob, at, x.Route.FaultKey)
+			path, index, x.resolvedJob, at, x.Route.FaultKey)
 		return nil, ""
 	}
-	return turn, fmt.Sprintf("%s[%d]", base, i)
+	return turn, fmt.Sprintf("%s[%d]", path, i)
 }
 
 // pollScript returns the script a poll at position index of job is served from,
 // that script's YAML path, and the call index within it.
-func pollScript(e *scenario.ProviderEntry, job jobs.Job, index int) ([]scenario.Turn, string, int) {
-	name := entryName(e)
+func pollScript(
+	base string, turns []scenario.Turn, cancel *scenario.CancelPolicy, job jobs.Job, index int,
+) ([]scenario.Turn, string, int) {
 	if job.CancelRequested && index >= job.CancelAtPoll {
-		var turns []scenario.Turn
-		if e != nil && e.Cancel != nil {
-			turns = e.Cancel.Turns
-		}
-		return turns, "providers." + name + ".cancel.turns", index - job.CancelAtPoll
+		return cancelTurns(cancel), base + ".cancel.turns", index - job.CancelAtPoll
 	}
-	var turns []scenario.Turn
-	if e != nil {
-		turns = e.Turns
+	return turns, base + ".turns", index
+}
+
+// cancelTurns is cancel's script, nil-safe.
+func cancelTurns(cancel *scenario.CancelPolicy) []scenario.Turn {
+	if cancel == nil {
+		return nil
 	}
-	return turns, "providers." + name + ".turns", index
+	return cancel.Turns
 }
 
 // CancelJob decides and records one cancel of the job this request resolved,
 // and returns what it decided together with the snapshot the profile renders and
-// that snapshot's YAML path. It is provider-agnostic: pollRoute is the poll
+// that snapshot's YAML path. It is provider-agnostic: base, turns and cancel are
+// the job's scripts exactly as [SelectPollTurn] takes them; pollRoute is the poll
 // route's FaultKey as the profile declares it, so a `when.route:` in the scripts
 // selects exactly as it would on the poll; terminal reports whether a snapshot
 // ends the job, in the profile's own vocabulary (a snapshot it cannot decode is
@@ -179,7 +190,8 @@ func pollScript(e *scenario.ProviderEntry, job jobs.Job, index int) ([]scenario.
 // error: it records a [CodeJobIDInvalid] error, claims nothing, and returns
 // [CancelNotFound].
 func CancelJob(
-	x *Exchange, e *scenario.ProviderEntry, pollRoute string, terminal func(*scenario.Turn) bool,
+	x *Exchange, base string, turns []scenario.Turn, cancel *scenario.CancelPolicy,
+	pollRoute string, terminal func(*scenario.Turn) bool,
 ) (CancelOutcome, *scenario.Turn, string) {
 	if x.resolvedJob == "" {
 		x.Fail(CodeJobIDInvalid, "",
@@ -196,21 +208,14 @@ func CancelJob(
 	// The poll route's key as THIS listener serves it, so an instanced
 	// listener's peek selects as its own polls do.
 	route := namespacedFaultKey(x.Provider, x.kind, pollRoute)
-	name := entryName(e)
+	scripted := cancelTurns(cancel)
 
-	var turns, cancelTurns []scenario.Turn
-	if e != nil {
-		turns = e.Turns
-		if e.Cancel != nil {
-			cancelTurns = e.Cancel.Turns
-		}
-	}
-	peek := func(script []scenario.Turn, base string, at int) (*scenario.Turn, string, bool) {
+	peek := func(script []scenario.Turn, name string, at int) (*scenario.Turn, string, bool) {
 		turn, i, err := selectTurn(script, at, route, nil)
 		if err != nil {
 			return nil, "", false
 		}
-		return turn, fmt.Sprintf("providers.%s.%s[%d]", name, base, i), true
+		return turn, fmt.Sprintf("%s.%s[%d]", base, name, i), true
 	}
 	unscripted := func(format string, args ...any) (CancelOutcome, *scenario.Turn, string) {
 		x.Fail(CodeJobCancelUnscripted, "", "the cancel of job %q could not be scripted: "+format+
@@ -220,10 +225,10 @@ func CancelJob(
 
 	cancelling := func(job jobs.Job) (CancelOutcome, *scenario.Turn, string) {
 		at := job.Polls - job.CancelAtPoll
-		turn, path, ok := peek(cancelTurns, "cancel.turns", at)
+		turn, path, ok := peek(scripted, "cancel.turns", at)
 		if !ok {
-			return unscripted("no turn in providers.%s.cancel.turns answers its next poll (call %d of that script)",
-				name, at)
+			return unscripted("no turn in %s.cancel.turns answers its next poll (call %d of that script)",
+				base, at)
 		}
 		return CancelAlreadyCancelling, turn, path
 	}
@@ -239,8 +244,8 @@ func CancelJob(
 
 		next, nextPath, ok := peek(turns, "turns", job.Polls)
 		if !ok {
-			return unscripted("no turn in providers.%s.turns answers its next poll (call %d), so whether it is "+
-				"terminal cannot be judged", name, job.Polls)
+			return unscripted("no turn in %s.turns answers its next poll (call %d), so whether it is "+
+				"terminal cannot be judged", base, job.Polls)
 		}
 		if terminal(next) {
 			return CancelTerminal, next, nextPath
@@ -249,10 +254,10 @@ func CancelJob(
 			return CancelUncommitted, next, nextPath
 		}
 
-		first, firstPath, ok := peek(cancelTurns, "cancel.turns", 0)
+		first, firstPath, ok := peek(scripted, "cancel.turns", 0)
 		if !ok {
-			return unscripted("providers.%s scripts no cancel.turns snapshot for the poll after a cancel "+
-				"(call 0 of that script)", name)
+			return unscripted("%s scripts no cancel.turns snapshot for the poll after a cancel "+
+				"(call 0 of that script)", base)
 		}
 
 		after, outcome := x.Deps.Jobs.MarkCancel(namespace, id, job.Polls)

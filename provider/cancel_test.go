@@ -52,6 +52,27 @@ func acmeTerminal(t *scenario.Turn) bool {
 	return false
 }
 
+// acmePoll and acmeCancel call SelectPollTurn and CancelJob with the acme
+// entry's own scripts, the way a profile serving a lifecycle from its entry
+// does.
+func acmePoll(x *Exchange) (*scenario.Turn, string) {
+	base, turns, cancel := acmeScripts(x)
+	return SelectPollTurn(x, base, turns, cancel)
+}
+
+func acmeCancel(x *Exchange) (CancelOutcome, *scenario.Turn, string) {
+	base, turns, cancel := acmeScripts(x)
+	return CancelJob(x, base, turns, cancel, acmeAsyncPollKey, acmeTerminal)
+}
+
+func acmeScripts(x *Exchange) (string, []scenario.Turn, *scenario.CancelPolicy) {
+	e := x.Entry()
+	if e == nil {
+		return "providers.acme", nil, nil
+	}
+	return "providers." + e.Name, e.Turns, e.Cancel
+}
+
 func acmeJSON(v map[string]any) []byte {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -78,7 +99,7 @@ func acmeAsyncProfile() Profile {
 		if !ResolveJob(x, x.Request.PathValue("id")) {
 			return Response{Status: http.StatusNotFound, Body: []byte(`{"error":"not found"}`), Label: "acme.missing"}
 		}
-		turn, path := SelectPollTurn(x, x.Entry())
+		turn, path := acmePoll(x)
 		if turn == nil {
 			return Response{Status: http.StatusInternalServerError, Body: []byte(`{"error":"no turn"}`),
 				Label: "acme.poll.unscripted"}
@@ -90,7 +111,7 @@ func acmeAsyncProfile() Profile {
 		if !ResolveJob(x, x.Request.PathValue("id")) {
 			return Response{Status: http.StatusNotFound, Body: []byte(`{"error":"not found"}`), Label: "acme.missing"}
 		}
-		outcome, turn, path := CancelJob(x, x.Entry(), acmeAsyncPollKey, acmeTerminal)
+		outcome, turn, path := acmeCancel(x)
 		body := map[string]any{"outcome": string(outcome), "path": path}
 		status := http.StatusOK
 		switch outcome {
@@ -642,7 +663,7 @@ func TestPollAndCancelOnAnUnresolvedExchangeFailLoudly(t *testing.T) {
 		t.Parallel()
 
 		x := directExchange(t, store, runningThenCompleted, acmePollRoute)
-		turn, path := SelectPollTurn(x, x.Entry())
+		turn, path := acmePoll(x)
 		assert.Nil(t, turn)
 		assert.Empty(t, path)
 		require.True(t, x.Failed())
@@ -654,7 +675,7 @@ func TestPollAndCancelOnAnUnresolvedExchangeFailLoudly(t *testing.T) {
 		t.Parallel()
 
 		x := directExchange(t, store, runningThenCompleted, acmeCancelRoute)
-		outcome, turn, _ := CancelJob(x, x.Entry(), acmeAsyncPollKey, acmeTerminal)
+		outcome, turn, _ := acmeCancel(x)
 		assert.Equal(t, CancelNotFound, outcome)
 		assert.Nil(t, turn)
 		require.True(t, x.Failed())
@@ -679,7 +700,7 @@ func TestAResetBetweenResolutionAndTheStoreCall(t *testing.T) {
 		require.True(t, ResolveJob(x, "job_a"))
 		store.Reset()
 
-		outcome, turn, _ := CancelJob(x, x.Entry(), acmeAsyncPollKey, acmeTerminal)
+		outcome, turn, _ := acmeCancel(x)
 		assert.Equal(t, CancelNotFound, outcome)
 		assert.Nil(t, turn)
 		assert.False(t, x.Failed())
@@ -695,7 +716,7 @@ func TestAResetBetweenResolutionAndTheStoreCall(t *testing.T) {
 		require.True(t, ResolveJob(x, "job_a"))
 		store.Reset()
 
-		turn, path := SelectPollTurn(x, x.Entry())
+		turn, path := acmePoll(x)
 		require.NotNil(t, turn)
 		assert.Equal(t, "providers.acme.turns[0]", path)
 		assert.False(t, x.Failed())
@@ -739,7 +760,7 @@ providers:
 `, acmeCancelRoute)
 	require.True(t, ResolveJob(x, "job_a"))
 
-	outcome, turn, _ := CancelJob(x, x.Entry(), acmeAsyncPollKey, acmeTerminal)
+	outcome, turn, _ := acmeCancel(x)
 	assert.Equal(t, CancelContended, outcome)
 	assert.Nil(t, turn)
 	assert.True(t, x.HasFinding(CodeJobCancelContended))
@@ -830,4 +851,41 @@ providers:
 		assert.True(t, j.CancelRequested)
 		assert.LessOrEqual(t, j.CancelAtPoll, j.Polls)
 	}
+}
+
+// --- scripts that are not an entry --------------------------------------------
+
+// SelectPollTurn and CancelJob take a poll script and its cancel block, not a
+// provider entry, so a profile can serve a lifecycle nested inside an entry — a
+// background block under an agent entry, say — without faking an entry to hold
+// it. base is that block's YAML path, and it addresses every path they return
+// and every finding they raise.
+func TestPollAndCancelServeAScriptNestedInAnEntry(t *testing.T) {
+	t.Parallel()
+
+	const base = "providers.acme.background"
+	e := mustScenario(t, runningThenCompleted).Provider("acme")
+	store := jobs.NewRegistry(jobs.Limits{})
+	seedJob(t, store, "job_a")
+
+	x := directExchange(t, store, runningThenCompleted, acmeCancelRoute)
+	require.True(t, ResolveJob(x, "job_a"))
+	outcome, _, path := CancelJob(x, base, e.Turns, e.Cancel, acmeAsyncPollKey, acmeTerminal)
+	assert.Equal(t, CancelRecorded, outcome)
+	assert.Equal(t, base+".cancel.turns[0]", path)
+
+	poll := directExchange(t, store, runningThenCompleted, acmePollRoute)
+	require.True(t, ResolveJob(poll, "job_a"))
+	_, path = SelectPollTurn(poll, base, e.Turns, e.Cancel)
+	assert.Equal(t, base+".cancel.turns[0]", path)
+
+	// A block with no cancel script cannot answer a cancelled job's poll, and the
+	// finding says which block.
+	poll = directExchange(t, store, runningThenCompleted, acmePollRoute)
+	require.True(t, ResolveJob(poll, "job_a"))
+	turn, _ := SelectPollTurn(poll, base, e.Turns, nil)
+	assert.Nil(t, turn)
+	require.Len(t, poll.Findings(), 1)
+	assert.Equal(t, CodeNoMatchingTurn, poll.Findings()[0].Code)
+	assert.Contains(t, poll.Findings()[0].Message, base+".cancel.turns")
 }

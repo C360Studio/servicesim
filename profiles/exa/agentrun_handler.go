@@ -256,7 +256,7 @@ func selectAgentRunProjection(x *provider.Exchange, e *scenario.ProviderEntry) (
 		return &agentRunProjection{}, true
 	}
 
-	turn, turnPath := provider.SelectPollTurn(x, e)
+	turn, turnPath := provider.SelectPollTurn(x, "providers."+e.Name, e.Turns, e.Cancel)
 	if turn == nil {
 		return nil, false
 	}
