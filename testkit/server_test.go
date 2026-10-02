@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -53,10 +54,11 @@ func handlerFor(tb testing.TB, set *provider.Set, name provider.Name, deps provi
 	return p.Handler(deps)
 }
 
-// delayScenario delays the first attempt against Exa and Tavily and then serves
-// the ordinary response. Both surfaces are needed because the overlap assertion
-// compares two providers' entries.
-const delayScenario = `
+// attemptScenarioTemplate is the two-surface scenario the timing tests share:
+// one scripted fault attempt, the same on Exa and Tavily, and then the ordinary
+// response. Both surfaces are needed because the overlap assertion compares two
+// providers' entries.
+const attemptScenarioTemplate = `
 version: 1
 name: testkit-delay
 sources:
@@ -67,17 +69,28 @@ providers:
   exa:
     fault:
       attempts:
-        - delay: 150ms
+        - %[1]s
     results:
       - source: source-a
   tavily:
     fault:
       attempts:
-        - delay: 150ms
+        - %[1]s
     results:
       - source: source-a
         score: 0.9
 `
+
+// attemptScenario is attemptScenarioTemplate with attempt as the scripted fault
+// attempt. It is a template, not a string replacement, so a scenario edit that
+// stops matching fails loudly instead of silently changing what a test proves.
+func attemptScenario(attempt string) string {
+	return fmt.Sprintf(attemptScenarioTemplate, attempt)
+}
+
+// delayScenario delays the first attempt against Exa and Tavily by 150 ms and
+// then serves the ordinary response.
+var delayScenario = attemptScenario("delay: 150ms")
 
 // abortScenario closes the connection before any header reaches the client, so
 // the client observes a transport error and the entry is completed by a server
@@ -292,19 +305,30 @@ func TestAssertOverlapped(t *testing.T) {
 	t.Run("concurrent requests overlap", func(t *testing.T) {
 		t.Parallel()
 
-		sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(delayScenario))
+		// Overlap is proved by construction, with no timing window to tune. Both
+		// providers flush their headers and then hold the response for an hour, so
+		// once a client's Do has returned its request is known to be in flight at
+		// the server. Both requests are held before either is ended, and ending
+		// them is what stamps CompletedAt, so each arrived before the other
+		// completed whatever the scheduler did in between.
+		sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
+			testkit.WithScenarioYAML(attemptScenario("delay_after_headers: 1h")))
 
-		var wg sync.WaitGroup
-		wg.Add(2)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		for _, p := range []provider.Name{exa.Name, tavily.Name} {
-			go func() {
-				defer wg.Done()
-				search(t, sim, p, "/search", `{"query":"report a"}`)
-			}()
+			resp, err := sim.Client().Do(newRequest(ctx, t, sim.URL(p)+"/search", p, `{"query":"report a"}`))
+			require.NoError(t, err, "%s did not begin its response", p)
+			t.Cleanup(func() { _ = resp.Body.Close() })
 		}
-		wg.Wait()
+		cancel()
 
-		testkit.AssertOverlapped(t, sim.Requests(exa.Name)[0], sim.Requests(tavily.Name)[0])
+		// Cancelled requests are journaled by a server goroutine after the client
+		// has returned, so they are read with AwaitRequests.
+		exaEntry := sim.AwaitRequests(t, exa.Name, 1)[0]
+		tavilyEntry := sim.AwaitRequests(t, tavily.Name, 1)[0]
+		testkit.AssertOverlapped(t, exaEntry, tavilyEntry)
 	})
 
 	t.Run("serial requests do not overlap", func(t *testing.T) {
@@ -345,18 +369,27 @@ func TestClientDeadlineObservesRealDelay(t *testing.T) {
 
 // TestSkippedDelaysStillRecordTheRequest proves WithSkippedDelays pays no wall
 // clock while still reporting what the scenario asked for.
+//
+// The scripted delay is an hour, so "skipped" and "paid" are an hour apart and
+// the test needs no stopwatch: a skipped delay returns at once, a paid one holds
+// the request until the client's deadline and fails it. The deadline only makes a
+// regression end the test; a loaded runner cannot make a skipped delay take
+// anything near it, which is what an elapsed-time bound on a delay of
+// milliseconds could not promise.
 func TestSkippedDelaysStillRecordTheRequest(t *testing.T) {
 	t.Parallel()
 
-	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(delayScenario), testkit.WithSkippedDelays())
+	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...), testkit.WithScenarioYAML(attemptScenario("delay: 1h")), testkit.WithSkippedDelays())
 
-	started := time.Now()
-	resp := search(t, sim, exa.Name, "/search", `{"query":"report a"}`)
-	elapsed := time.Since(started)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := sim.Client().Do(newRequest(ctx, t, sim.URL(exa.Name)+"/search", exa.Name, `{"query":"report a"}`))
+	require.NoError(t, err, "the hour-long delay was paid instead of skipped")
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Less(t, elapsed, 150*time.Millisecond, "the delay must not have been paid")
-	assert.Equal(t, int64(150), sim.Requests(exa.Name)[0].Outcome.DelayMS)
+	assert.Equal(t, time.Hour.Milliseconds(), sim.Requests(exa.Name)[0].Outcome.DelayMS)
 }
 
 // TestAwaitRequestsAfterAbortingFault is the third mandatory test: an entry
