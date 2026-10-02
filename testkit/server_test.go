@@ -1108,6 +1108,41 @@ func (o *ownJobs) Lookup(namespace, id string) (testkit.Job, bool) {
 	return j, ok
 }
 
+func (o *ownJobs) Advance(namespace, id string, i int) (testkit.Job, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	live := o.jobs[o.namespaceOf(namespace)]
+	j, ok := live[id]
+	if !ok {
+		return testkit.Job{}, false
+	}
+	j.Polls = max(j.Polls, i+1)
+	live[id] = j
+	return j, true
+}
+
+// MarkCancel returns only aliased outcome constants: an own store has no other
+// way to name them, which is the point of re-exporting them.
+func (o *ownJobs) MarkCancel(namespace, id string, atPoll int) (testkit.Job, testkit.JobMarkOutcome) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	live := o.jobs[o.namespaceOf(namespace)]
+	j, ok := live[id]
+	switch {
+	case !ok:
+		return testkit.Job{}, testkit.JobNotFound
+	case j.CancelRequested:
+		return j, testkit.JobAlreadyMarked
+	case j.Polls != atPoll:
+		return j, testkit.JobPositionMoved
+	}
+	j.CancelRequested, j.CancelAtPoll = true, atPoll
+	live[id] = j
+	return j, testkit.JobMarked
+}
+
 func (o *ownJobs) StatsIn(namespace string) testkit.JobStats {
 	o.mu.Lock()
 	defer o.mu.Unlock()

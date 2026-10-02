@@ -32,6 +32,13 @@ func (unlistableJobs) Lookup(string, string) (jobs.Job, bool) { return jobs.Job{
 func (unlistableJobs) StatsIn(string) jobs.Stats              { return jobs.Stats{Bound: jobs.DefaultMaxJobs} }
 func (unlistableJobs) ResetIn(string)                         {}
 func (unlistableJobs) Reset()                                 {}
+func (unlistableJobs) Advance(string, string, int) (jobs.Job, bool) {
+	return jobs.Job{}, false
+}
+
+func (unlistableJobs) MarkCancel(string, string, int) (jobs.Job, jobs.MarkOutcome) {
+	return jobs.Job{}, jobs.NotFound
+}
 
 // TestHandler_Jobs pins the declared total order: namespace ascending, then
 // entry, then create index, then id. Records are seeded out of that order,

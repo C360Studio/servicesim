@@ -86,6 +86,14 @@ var (
 // replaying a stored copy, so nothing here can drift from what the scenario
 // says, and a record stays small enough that the bound above is about
 // bookkeeping rather than memory.
+//
+// The first six fields are the coordinates a create fixed and never change. The
+// last three are the job's lifecycle — how many polls it has served and whether
+// a cancel was recorded — and change only through [Store.Advance] and
+// [Store.MarkCancel]. They live on this record rather than in a store of their
+// own so that a reset drops them with the job, they count against the same slot
+// bound, and they are isolated by namespace and identifier exactly as the record
+// is.
 type Job struct {
 	// ID is the identifier the create returned and a poll presents. It is unique
 	// within a namespace and deliberately NOT unique across them.
@@ -119,7 +127,54 @@ type Job struct {
 	// stop being byte-identical between runs, which is the property this whole
 	// simulator exists to provide.
 	CreatedAt time.Time
+
+	// Polls is how many poll positions this job's poll lane has claimed: the
+	// highest claimed call index plus one, set by [Store.Advance]. It is the
+	// position of the job's NEXT poll, which is what "terminal at cancel time"
+	// is judged by. Create records zero whatever it is given.
+	Polls int
+
+	// CancelRequested reports that a cancel was recorded for this job, by
+	// [Store.MarkCancel]. It is never cleared: a cancelled job stays cancelled
+	// until a reset drops the record. Create records false whatever it is
+	// given.
+	CancelRequested bool
+
+	// CancelAtPoll is the poll position the cancel was recorded at — Polls at
+	// the moment [Store.MarkCancel] succeeded. A poll at position i >= CancelAtPoll
+	// is answered from the cancel script at index i-CancelAtPoll. It means
+	// nothing unless CancelRequested is true; 0 is a real position (a cancel
+	// before the first poll), not "unset".
+	CancelAtPoll int
 }
+
+// MarkOutcome reports what [Store.MarkCancel] did. The four values are four
+// different reasons, and a caller needs each one to decide its next step without
+// a second Lookup.
+type MarkOutcome string
+
+// The [MarkOutcome] values.
+const (
+	// Marked means the cancel was recorded at the position the caller asked
+	// for.
+	Marked MarkOutcome = "marked"
+
+	// AlreadyMarked means a cancel was recorded earlier; nothing was written.
+	// It is reported whatever position the caller asked for, because once a
+	// cancel is recorded the job answers from the cancel script wherever its
+	// position is now.
+	AlreadyMarked MarkOutcome = "already_marked"
+
+	// PositionMoved means the job carries no cancel but its Polls is not the
+	// position the caller asked for: a poll claimed and advanced in between the
+	// caller's read and this call. Nothing was written; the caller re-reads the
+	// position and retries.
+	PositionMoved MarkOutcome = "position_moved"
+
+	// NotFound means no such job exists in the namespace — typically a reset
+	// landed between the caller resolving the job and this call.
+	NotFound MarkOutcome = "not_found"
+)
 
 // Stats reports one namespace's occupancy against its bound.
 type Stats struct {
@@ -153,6 +208,20 @@ func (s Stats) Full() bool {
 // namespace explicitly rather than reading it from ambient state, because the
 // namespace is resolved once per request by provider.Handle and passing it is
 // what keeps this package from needing to know how that resolution works.
+//
+// # A request in flight across a reset is undefined
+//
+// A poll can resolve its job, a reset can then drop every job and fault cursor
+// in the namespace, a new create can re-mint the SAME derived identifier, and
+// the old poll's Advance then lands on the new job. Advance keeps the maximum
+// position, so the new job keeps the inflated count — max is ordering within one
+// job's life, NOT a guard against this. Nothing in the store can tell the two
+// jobs apart, because the identifier is the same by design. Reset is a
+// local-development convenience, not a concurrency mechanism (CLAUDE.md house
+// rule 6): a test that resets while its own requests are in flight gets
+// whatever interleaving it happened to get. The narrower case IS defined: a
+// reset landing between a request resolving its job and either Advance or
+// MarkCancel makes that call report not-found.
 type Store interface {
 	// Create records j and reports the namespace's occupancy afterwards.
 	//
@@ -160,12 +229,40 @@ type Store interface {
 	// [ErrDuplicate] when the identifier is already live there. In both cases
 	// nothing is recorded, and the returned Stats still describes the namespace
 	// so a caller can report how full it is.
+	//
+	// It records the zero lifecycle — Polls 0, no cancel — whatever j carries in
+	// those fields: they change only through Advance and MarkCancel.
 	Create(j Job) (Stats, error)
 
-	// Lookup returns the record for id in namespace, and whether one exists.
-	// The record carries the Entry that Create was given: a poll resolves a job
-	// only through that entry, so a store that drops it makes every poll a miss.
+	// Lookup returns a copy of the record for id in namespace, and whether one
+	// exists. The record carries the Entry that Create was given: a poll
+	// resolves a job only through that entry, so a store that drops it makes
+	// every poll a miss.
 	Lookup(namespace, id string) (Job, bool)
+
+	// Advance records that the job's poll lane claimed call index i: in ONE
+	// critical section it sets Polls to max(Polls, i+1) and returns a copy of
+	// the record as it stands afterwards. It returns false, and records nothing,
+	// when no such job exists — a reset can land between a poll resolving its
+	// job and this call.
+	//
+	// max rather than assignment because two polls of one job claim indices in
+	// order but may reach Advance out of order; the position must still end at
+	// the claimed count. See the type comment for why it is not a guard against
+	// a reset.
+	Advance(namespace, id string, i int) (Job, bool)
+
+	// MarkCancel records a cancel at poll position atPoll, as a compare-and-set
+	// in ONE critical section: it succeeds only when the job carries no cancel
+	// yet AND its Polls equals atPoll, setting CancelRequested and CancelAtPoll.
+	// It returns a copy of the record as it stands afterwards — written or not —
+	// and a [MarkOutcome] naming which of the four cases applied: [Marked],
+	// [AlreadyMarked] (checked first), [PositionMoved] or [NotFound] (with the
+	// zero Job).
+	//
+	// Neither this nor Advance may invoke a callback, or anything else outside
+	// the store, while holding the store's lock.
+	MarkCancel(namespace, id string, atPoll int) (Job, MarkOutcome)
 
 	// StatsIn reports one namespace's occupancy against its bound.
 	StatsIn(namespace string) Stats
@@ -226,6 +323,13 @@ func (l Limits) normalized() Limits {
 // lines earlier. Adding a third admission authority would mean three stores that
 // must agree about exactly which namespaces are live, and making two agree
 // already takes a careful paragraph in journal.Ring.
+//
+// # Lifecycle writes
+//
+// Advance and MarkCancel each take the write lock once and do their whole
+// read-modify-write inside it, so a poll's position and a cancel's
+// compare-and-set can never interleave half-way. A request in flight across a
+// reset is undefined; see [Store].
 type Registry struct {
 	mu     sync.RWMutex
 	limits Limits
@@ -263,6 +367,7 @@ func namespaceOf(namespace string) string {
 func (r *Registry) Create(j Job) (Stats, error) {
 	ns := namespaceOf(j.Namespace)
 	j.Namespace = ns
+	j.Polls, j.CancelRequested, j.CancelAtPoll = 0, false, 0
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -294,6 +399,44 @@ func (r *Registry) Lookup(namespace, id string) (Job, bool) {
 
 	j, ok := r.jobs[namespaceOf(namespace)][id]
 	return j, ok
+}
+
+// Advance sets the job's Polls to max(Polls, i+1) and returns the record as it
+// stands afterwards, or false when no such job exists.
+func (r *Registry) Advance(namespace, id string, i int) (Job, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live := r.jobs[namespaceOf(namespace)]
+	j, ok := live[id]
+	if !ok {
+		return Job{}, false
+	}
+	j.Polls = max(j.Polls, i+1)
+	live[id] = j
+	return j, true
+}
+
+// MarkCancel records a cancel at atPoll when the job carries none yet and its
+// Polls equals atPoll, and reports which of the four [MarkOutcome] cases applied.
+func (r *Registry) MarkCancel(namespace, id string, atPoll int) (Job, MarkOutcome) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live := r.jobs[namespaceOf(namespace)]
+	j, ok := live[id]
+	switch {
+	case !ok:
+		return Job{}, NotFound
+	case j.CancelRequested:
+		return j, AlreadyMarked
+	case j.Polls != atPoll:
+		return j, PositionMoved
+	}
+	j.CancelRequested = true
+	j.CancelAtPoll = atPoll
+	live[id] = j
+	return j, Marked
 }
 
 // StatsIn reports one namespace's occupancy against its bound. A namespace
