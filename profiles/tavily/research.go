@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/c360studio/servicesim/internal/pollscript"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -468,7 +467,7 @@ func (researchValidator) ValidateProjections(s *scenario.Scenario, e *scenario.P
 	// A task that un-completes, judged in the order polls are SERVED (D3), with
 	// the same check Exa's agent runs use. Tavily has no cancel, so this is the
 	// only script it applies to.
-	regressions := pollscript.TerminalRegressions(e.Turns, FaultKeyResearchPoll, func(i int) (bool, bool) {
+	regressions := provider.TerminalRegressions(e.Turns, FaultKeyResearchPoll, func(i int) (bool, bool) {
 		return decoded[i] != nil && decoded[i].IsTerminal(), decoded[i] != nil
 	})
 	for _, r := range regressions {

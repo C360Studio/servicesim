@@ -71,9 +71,11 @@ Six packages are the framework surface: `provider`, `scenario`, `testkit`, `cont
 repository's built-in corpus, reference-only — see D-7 below) and the root `servicesim` package (`Main`, for
 composing a binary) — plus `profiles/<name>` for any of ours you want to compose alongside your own. Everything
 else is under `internal/` and unreachable by Go's own import rules. The four reference profiles this repository
-ships carry no privilege yours would lack — `profiles/no_privilege_test.go` proves it by parsing every non-test
-file under `provider/`, `internal/`, `testkit/`, `scenario/` and `contracts/`, and the repository root, and
-failing the build on an import of a profile package.
+ships carry no privilege yours would lack, and `profiles/no_privilege_test.go` proves it in both directions: it
+parses every non-test file under `provider/`, `internal/`, `testkit/`, `scenario/` and `contracts/`, and the
+repository root, and fails the build on an import of a profile package; and it parses every non-test file under
+`profiles/` and fails the build on an import of an `internal/` package, which Go permits inside this module but not
+from yours. A check a reference profile needs is exported where your profile can call it too.
 
 **The seam is pre-1.0.** Read `docs/building-a-profile.md`'s "The 1.0 trigger" before pinning a version: until at
 least one profile written by someone who has not read this repository has shipped and survived a framework minor

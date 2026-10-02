@@ -6,7 +6,6 @@ import (
 	"math"
 	"slices"
 
-	"github.com/c360studio/servicesim/internal/pollscript"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -335,7 +334,7 @@ func validateAgentRunTurns(s *scenario.Scenario, base string, turns []scenario.T
 
 	// A run that un-completes, judged in the order polls are SERVED (D3): a
 	// client that saw a terminal snapshot must never see a pending one after it.
-	regressions := pollscript.TerminalRegressions(turns, faultKeyRunPoll, func(i int) (bool, bool) {
+	regressions := provider.TerminalRegressions(turns, faultKeyRunPoll, func(i int) (bool, bool) {
 		return decoded[i] != nil && decoded[i].IsTerminal(), decoded[i] != nil
 	})
 	for _, r := range regressions {

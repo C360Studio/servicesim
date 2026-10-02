@@ -47,6 +47,9 @@ const repoRoot = ".."
 // way examples/imports_test.go's wantExampleFiles does.
 const wantScannedFiles = 40
 
+// wantProfileFiles is the same floor for the converse walk over profiles/.
+const wantProfileFiles = 40
+
 // TestNoRootImportsAProfilePackage is the no-privilege proof: it parses every
 // non-test .go file under the roots above and fails if any of them imports
 // github.com/c360studio/servicesim/profiles or one of its subpackages.
@@ -64,17 +67,57 @@ func TestNoRootImportsAProfilePackage(t *testing.T) {
 	scanned := 0
 
 	for _, root := range noPrivilegeRoots {
-		scanned += checkTree(t, fset, root)
+		scanned += checkTree(t, fset, root, noProfileImport)
 	}
-	scanned += checkDir(t, fset, repoRoot)
+	scanned += checkDir(t, fset, repoRoot, noProfileImport)
 
 	require.GreaterOrEqual(t, scanned, wantScannedFiles,
 		"the guard scanned %d non-test .go files; if package layout changed, update wantScannedFiles", scanned)
 }
 
+// TestNoProfileImportsAnInternalPackage is the other direction of the same rule:
+// no non-test file under profiles/ imports
+// github.com/c360studio/servicesim/internal/... . Go's own import rules let a
+// reference profile reach internal/ because it lives in this module; an
+// out-of-tree profile cannot. Anything a reference profile needs from below
+// the seam must therefore be exported from provider, scenario or testkit, where
+// every profile can reach it — otherwise the reference profiles stop being
+// proof that the seam is enough.
+func TestNoProfileImportsAnInternalPackage(t *testing.T) {
+	t.Parallel()
+
+	scanned := checkTree(t, token.NewFileSet(), ".", noInternalImport)
+	require.GreaterOrEqual(t, scanned, wantProfileFiles,
+		"the guard scanned %d non-test .go files under profiles/; if the layout changed, update wantProfileFiles",
+		scanned)
+}
+
+// importRule reports why importing imp from a file is forbidden, or "" when it
+// is allowed.
+type importRule func(imp string) string
+
+// noProfileImport forbids the framework from importing a profile package.
+func noProfileImport(imp string) string {
+	if !isProfilePath(imp) {
+		return ""
+	}
+	return "nothing under provider/, internal/, testkit/, scenario/, contracts/ or the repository root may " +
+		"import a profile package — a reference profile has no privilege an out-of-tree one lacks"
+}
+
+// noInternalImport forbids a profile from importing an internal package.
+func noInternalImport(imp string) string {
+	const internal = "github.com/c360studio/servicesim/internal"
+	if imp != internal && !strings.HasPrefix(imp, internal+"/") {
+		return ""
+	}
+	return "a reference profile may not import an internal package, because an out-of-tree profile cannot; " +
+		"export what it needs from provider, scenario or testkit instead"
+}
+
 // checkTree walks root recursively and checks every non-test .go file it
 // finds, returning how many it checked.
-func checkTree(t *testing.T, fset *token.FileSet, root string) int {
+func checkTree(t *testing.T, fset *token.FileSet, root string, rule importRule) int {
 	t.Helper()
 
 	scanned := 0
@@ -83,7 +126,7 @@ func checkTree(t *testing.T, fset *token.FileSet, root string) int {
 		if d.IsDir() {
 			return nil
 		}
-		if checkFile(t, fset, path) {
+		if checkFile(t, fset, path, rule) {
 			scanned++
 		}
 		return nil
@@ -94,7 +137,7 @@ func checkTree(t *testing.T, fset *token.FileSet, root string) int {
 
 // checkDir checks every non-test .go file directly inside dir, without
 // descending into subdirectories, returning how many it checked.
-func checkDir(t *testing.T, fset *token.FileSet, dir string) int {
+func checkDir(t *testing.T, fset *token.FileSet, dir string, rule importRule) int {
 	t.Helper()
 
 	entries, err := os.ReadDir(dir)
@@ -105,17 +148,17 @@ func checkDir(t *testing.T, fset *token.FileSet, dir string) int {
 		if entry.IsDir() {
 			continue
 		}
-		if checkFile(t, fset, filepath.Join(dir, entry.Name())) {
+		if checkFile(t, fset, filepath.Join(dir, entry.Name()), rule) {
 			scanned++
 		}
 	}
 	return scanned
 }
 
-// checkFile parses path (a candidate .go file) and fails the test if it
-// imports a profile package. It reports whether path was a non-test .go file
-// it actually checked, so callers can count the files the guard covered.
-func checkFile(t *testing.T, fset *token.FileSet, path string) bool {
+// checkFile parses path (a candidate .go file) and fails the test on every
+// import rule forbids. It reports whether path was a non-test .go file it
+// actually checked, so callers can count the files the guard covered.
+func checkFile(t *testing.T, fset *token.FileSet, path string, rule importRule) bool {
 	t.Helper()
 
 	if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
@@ -129,11 +172,8 @@ func checkFile(t *testing.T, fset *token.FileSet, path string) bool {
 		imp, err := strconv.Unquote(spec.Path.Value)
 		require.NoError(t, err, "unquoting an import path in %s", path)
 
-		if isProfilePath(imp) {
-			t.Errorf("%s imports %q: nothing under provider/, internal/, testkit/, "+
-				"scenario/, contracts/ or the repository root may import a profile "+
-				"package — a reference profile has no privilege an out-of-tree one lacks",
-				path, imp)
+		if why := rule(imp); why != "" {
+			t.Errorf("%s imports %q: %s", path, imp, why)
 		}
 	}
 	return true

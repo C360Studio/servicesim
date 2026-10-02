@@ -954,12 +954,18 @@ What else the cancel route owes:
 cancel writes nothing and fails closed, and one with a cancel opts in exactly the entries whose poll routes use
 `SelectPollTurn`: `Cancellable: []string{"acme_runs"}`. `NewSet` refuses a name that is not one of the profile's own
 entry kinds. The opt-in reaches validation through `Set.Validators`, which is what `servicesim.Main` and
-`testkit.Start` use; a validator map you build by hand carries none, and rejects every `cancel:` block. An async
-validator should also reject a script that un-terminates in the order polls are **served**, which is not the order
-turns are declared: evaluate the turn `provider.SelectTurn` serves at poll 0, at every `call_index` a turn names and
-at each of those plus one, and run it on `turns` and `cancel.turns` separately
-([the schema](scenario-schema.md#terminal-is-judged-in-serve-order)). The in-tree profiles share an internal helper
-for it; it needs nothing an out-of-tree profile lacks.
+`testkit.Start` use; a validator map you build by hand carries none, and rejects every `cancel:` block.
+
+**Your validator enforces what `CancelJob` relies on: a terminal snapshot is absorbing in the order polls are
+served.** A cancel judges the job by its next poll, so a script that can serve a pending snapshot after a terminal
+one lets a client watch a run finish and then have it cancelled. Call `provider.TerminalRegressions` on each script
+an async entry declares — its `turns`, and its `cancel.turns` when it is cancellable — passing the poll route's
+`FaultKey` and whether each turn's snapshot is terminal in your vendor's vocabulary. It evaluates the turns
+`provider.SelectTurn` would actually serve, which is not declaration order
+([the schema](scenario-schema.md#terminal-is-judged-in-serve-order)), and returns one `provider.TerminalRegression`
+per offending turn; report each as an error under your own code at that turn's path. Exa's `agentrun.go` and
+Tavily's `research.go` are the worked examples, reporting `exa.agent_run.terminal_then_pending` and
+`tavily.research.terminal_then_pending`.
 
 ## Step 3 — scenarios
 

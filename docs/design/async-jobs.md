@@ -1351,11 +1351,19 @@ so `CancelJob` and `Handle` read the same attempt.
 declaration order, which is not the order they are served: a `running` turn conditioned on `call_index: 1`
 followed by an unconditional `failed` one serves `failed`, `running`, `failed`, and loaded clean. Both async
 validators now evaluate the turn `SelectTurn` would serve at poll 0, at every named `call_index` and at each plus one,
-per script — Exa's `turns` and `cancel.turns` independently, Tavily's `turns` — through one helper in
-`internal/pollscript`. The finding codes and severities are unchanged. That helper, and the rejection of a `cancel:`
-block on an entry that serves no cancel, are the reference profiles' first non-test import of an `internal/`
-package: both are pure functions over exported types (`provider.SelectTurn`, `scenario.Turn`), so they save the
-reference profiles code without granting them anything an out-of-tree profile cannot write for itself.
+per script — Exa's `turns` and `cancel.turns` independently, Tavily's `turns` — through
+`provider.TerminalRegressions`, exported beside `SelectTurn` (owner ruling R1) so an out-of-tree async profile
+enforces the same thing `CancelJob` relies on with the same code. Each profile maps its result to its own finding
+code; the codes and severities are unchanged. The check evaluates only those positions because `call_index` is the
+one axis of `scenario.Match` that varies across a job's polls; a test over `Match`'s fields fails the day it grows
+another.
+
+**A stray `cancel:` is the framework's to reject** (owner ruling R2). `provider.ValidateScenario` refuses the block,
+with `scenario.provider.cancel_unsupported`, on every entry its profile does not name in `Profile.Cancellable`, so a
+profile with no cancel fails closed without a line of code; Exa names `exa_agent_runs`. A first cut had each
+reference profile reject the block in its own validator, through a helper in `internal/`, which an out-of-tree
+profile could not call — its stray block loaded silently. `profiles/no_privilege_test.go` now also fails the build
+if a reference profile imports an `internal/` package.
 
 ---
 

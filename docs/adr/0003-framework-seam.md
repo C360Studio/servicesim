@@ -42,10 +42,14 @@ own profile list.
 
 **`profiles/<name>` as reference examples.** The four shipped profiles moved from `provider/<name>` to
 `profiles/{exa,tavily,perplexity,mcp}` (`9f08da03`), each a package returning its own `Profile()` and embedding
-its own `contracts/` bundle. `profiles/no_privilege_test.go` parses every non-test file under `provider/`, `internal/`,
-`testkit/`, `scenario/`, `contracts/` and the repository root and fails the build if any imports a profile
-package — a reference profile has no privilege an out-of-tree one lacks, proved by construction rather than by
-review. `profiles.Reference()` (`profiles/profiles.go`) is the single place that names all four;
+its own `contracts/` bundle. `profiles/no_privilege_test.go` holds the rule in both directions, proved by
+construction rather than by review: it parses every non-test file under `provider/`, `internal/`, `testkit/`,
+`scenario/`, `contracts/` and the repository root and fails the build if any imports a profile package — the
+framework knows no profile by name — and it parses every non-test file under `profiles/` and fails the build if any
+imports an `internal/` package, which Go would allow in this module and forbids an out-of-tree profile. A reference
+profile has no privilege an out-of-tree one lacks: what one needs from below the seam is exported from `provider`,
+`scenario` or `testkit` (issue #6 added the second direction, after a shared check had briefly lived in
+`internal/`). `profiles.Reference()` (`profiles/profiles.go`) is the single place that names all four;
 `cmd/servicesim/main.go` calls it and names none of them, and `TestReference_NamesAndOrder` pins the four names
 and the order main registers them in.
 
