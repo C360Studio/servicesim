@@ -3,6 +3,7 @@ package exa
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,6 +13,7 @@ import (
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
+	"github.com/c360studio/servicesim/scenarios"
 )
 
 // asyncScenario is the shape §2.1 of the design specifies: two pending polls,
@@ -596,6 +598,107 @@ providers:
 		}
 	}
 	assert.True(t, found, "a run that un-completes must be an error: %+v", findings)
+}
+
+// TestAgentRunTerminalIsAbsorbingInServeOrder is D3
+// (docs/proposals/cancellation-and-accepted-create.md): turns are served by
+// first match on call_index, not in declaration order, so "terminal is
+// absorbing" has to be judged on the order polls are actually served in.
+// Judged in declaration order, the built-in async-failed scenario with its
+// first Exa turn moved from call_index 0 to 1 loaded clean and served failed,
+// running, failed — a run a client watched fail, then resume.
+func TestAgentRunTerminalIsAbsorbingInServeOrder(t *testing.T) {
+	t.Parallel()
+
+	validate := func(t *testing.T, sc *scenario.Scenario) []scenario.Finding {
+		t.Helper()
+		var found []scenario.Finding
+		for _, f := range provider.ValidateScenario(sc, map[string]provider.Validator{NameAgentRuns: agentRunValidator{}}) {
+			if f.Code == CodeAgentRunTerminalThenPending {
+				found = append(found, f)
+			}
+		}
+		return found
+	}
+
+	t.Run("the async-failed reproduction", func(t *testing.T) {
+		t.Parallel()
+
+		src, err := scenarios.Read("async-failed")
+		require.NoError(t, err)
+		const running = "      - when: {call_index: 0}\n        respond: {status: running}\n"
+		require.Equal(t, 1, strings.Count(string(src), running), "the Exa poll script changed shape; update this test")
+		sc := mustScenario(t, strings.Replace(string(src), running,
+			"      - when: {call_index: 1}\n        respond: {status: running}\n", 1))
+
+		// The defect's mechanics, through the selector the poll route uses.
+		e := sc.Provider(NameAgentRuns)
+		var served []string
+		for poll := range 3 {
+			turn, at, err := provider.SelectTurn(e, poll, faultKeyRunPoll, nil)
+			require.NoError(t, err)
+			var p agentRunProjection
+			require.NoError(t, turn.DecodeProjection(e.Name, at, &p))
+			served = append(served, p.EffectiveStatus())
+		}
+		require.Equal(t, []string{statusFailed, statusRunning, statusFailed}, served)
+
+		found := validate(t, sc)
+		require.Len(t, found, 1, "the run un-fails at poll 1, so load must refuse it")
+		assert.Equal(t, scenario.SeverityError, found[0].Severity)
+		assert.Equal(t, "providers.exa_agent_runs.turns[0].respond.status", found[0].Path)
+		assert.Contains(t, found[0].Message, "poll 1")
+	})
+
+	t.Run("a shadowed turn is never served, so it cannot un-complete anything", func(t *testing.T) {
+		t.Parallel()
+
+		sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    turns:\n"+
+			"      - when: {call_index: 0}\n        respond: {status: completed, output: {text: x}}\n"+
+			"      - when: {call_index: 0}\n        respond: {status: running}\n"+
+			"      - respond: {status: completed, output: {text: x}}\n")
+		assert.Empty(t, validate(t, sc))
+	})
+
+	t.Run("a terminal snapshot scheduled after the fallback", func(t *testing.T) {
+		t.Parallel()
+
+		// Polls 0 and 1 fall through to running, poll 2 completes, and poll 3
+		// falls through to running again.
+		sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    turns:\n"+
+			"      - when: {call_index: 2}\n        respond: {status: completed, output: {text: x}}\n"+
+			"      - respond: {status: running}\n")
+		found := validate(t, sc)
+		require.Len(t, found, 1)
+		assert.Equal(t, "providers.exa_agent_runs.turns[1].respond.status", found[0].Path)
+		assert.Contains(t, found[0].Message, "poll 3")
+	})
+
+	t.Run("the cancel script is checked on its own", func(t *testing.T) {
+		t.Parallel()
+
+		sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    cancel:\n      turns:\n"+
+			"        - when: {call_index: 1}\n          respond: {status: running}\n"+
+			"        - respond: {status: cancelled}\n"+
+			"    turns:\n      - respond: {status: running}\n")
+		found := validate(t, sc)
+		require.Len(t, found, 1)
+		assert.Equal(t, "providers.exa_agent_runs.cancel.turns[0].respond.status", found[0].Path)
+	})
+
+	t.Run("each script is judged independently", func(t *testing.T) {
+		t.Parallel()
+
+		// A cancel is recorded only while the next poll is non-terminal, so a
+		// poll script that ends terminal says nothing about how a cancel script
+		// may start.
+		sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    cancel:\n      turns:\n"+
+			"        - when: {call_index: 0}\n          respond: {status: running}\n"+
+			"        - respond: {status: cancelled}\n"+
+			"    turns:\n      - when: {call_index: 0}\n        respond: {status: running}\n"+
+			"      - respond: {status: completed, output: {text: x}}\n")
+		assert.Empty(t, validate(t, sc))
+	})
 }
 
 // cancel.turns are poll snapshots of the same run, so every check a poll

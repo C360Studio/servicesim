@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +14,7 @@ import (
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
+	"github.com/c360studio/servicesim/scenarios"
 )
 
 // researchScenario walks pending -> in_progress -> completed, which is the
@@ -435,6 +437,42 @@ providers:
 		}
 	}
 	assert.True(t, found, "a task that un-completes must be an error: %+v", findings)
+}
+
+// TestResearchTerminalIsAbsorbingInServeOrder is D3 on the Tavily surface,
+// which carried the same declaration-order walk as Exa: the built-in
+// async-failed scenario with its research turn moved from call_index 0 to 1
+// loaded clean and served failed, pending, failed.
+func TestResearchTerminalIsAbsorbingInServeOrder(t *testing.T) {
+	t.Parallel()
+
+	src, err := scenarios.Read("async-failed")
+	require.NoError(t, err)
+	const pending = "      - when: {call_index: 0}\n        respond: {status: pending}\n"
+	require.Equal(t, 1, strings.Count(string(src), pending), "the research script changed shape; update this test")
+	loaded := mustParse(t, strings.Replace(string(src), pending,
+		"      - when: {call_index: 1}\n        respond: {status: pending}\n", 1))
+
+	e := loaded.Provider(NameResearch)
+	var served []string
+	for poll := range 3 {
+		turn, at, err := provider.SelectTurn(e, poll, FaultKeyResearchPoll, nil)
+		require.NoError(t, err)
+		var p researchProjection
+		require.NoError(t, turn.DecodeProjection(e.Name, at, &p))
+		served = append(served, p.EffectiveStatus())
+	}
+	require.Equal(t, []string{statusFailed, statusPending, statusFailed}, served)
+
+	var found []scenario.Finding
+	for _, f := range provider.ValidateScenario(loaded, map[string]provider.Validator{NameResearch: researchValidator{}}) {
+		if f.Code == CodeResearchTerminalThenPending {
+			found = append(found, f)
+		}
+	}
+	require.Len(t, found, 1, "the task un-fails at poll 1, so load must refuse it")
+	assert.Equal(t, scenario.SeverityError, found[0].Severity)
+	assert.Equal(t, "providers.tavily_research.turns[0].respond.status", found[0].Path)
 }
 
 // mustParse loads a scenario WITHOUT running the projection validators, which

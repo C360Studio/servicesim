@@ -173,8 +173,10 @@ const (
 	// content, which is almost always an unfinished fixture.
 	CodeResearchCompletedWithoutContent = "tavily.research.completed_without_content"
 
-	// CodeResearchTerminalThenPending is raised for a non-terminal snapshot after
-	// a terminal one — a task that un-completes.
+	// CodeResearchTerminalThenPending is raised for a non-terminal snapshot
+	// SERVED after a terminal one — a task that un-completes. It is judged by
+	// poll index, the order SelectTurn actually serves turns in, not by
+	// declaration order.
 	CodeResearchTerminalThenPending = "tavily.research.terminal_then_pending"
 
 	// CodeResearchInputMissing reports an absent or non-string input, the only
@@ -425,7 +427,7 @@ func (researchValidator) ValidateProjections(s *scenario.Scenario, e *scenario.P
 	}
 
 	var findings []scenario.Finding
-	seenTerminal := false
+	decoded := make([]*researchProjection, len(e.Turns))
 
 	for i := range e.Turns {
 		path := fmt.Sprintf("providers.%s.turns[%d].respond", e.Name, i)
@@ -440,6 +442,7 @@ func (researchValidator) ValidateProjections(s *scenario.Scenario, e *scenario.P
 			})
 			continue
 		}
+		decoded[i] = &p
 
 		status := p.EffectiveStatus()
 		if !knownResearchStatus(status) {
@@ -459,20 +462,26 @@ func (researchValidator) ValidateProjections(s *scenario.Scenario, e *scenario.P
 				Message:  "a completed research task declares no content; this is usually an unfinished fixture",
 			})
 		}
-		if seenTerminal && !p.IsTerminal() {
-			findings = append(findings, scenario.Finding{
-				Severity: scenario.SeverityError,
-				Code:     CodeResearchTerminalThenPending,
-				Path:     path + ".status",
-				Message: fmt.Sprintf("turn %d is %q after an earlier turn reached a terminal status; a task does not un-complete",
-					i, status),
-			})
-		}
-		if p.IsTerminal() {
-			seenTerminal = true
-		}
-
 		findings = append(findings, s.ResolveRefs(path, &p)...)
+	}
+
+	// A task that un-completes, judged in the order polls are SERVED (D3), with
+	// the same check Exa's agent runs use. Tavily has no cancel, so this is the
+	// only script it applies to.
+	regressions := pollscript.TerminalRegressions(e.Turns, FaultKeyResearchPoll, func(i int) (bool, bool) {
+		return decoded[i] != nil && decoded[i].IsTerminal(), decoded[i] != nil
+	})
+	for _, r := range regressions {
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityError,
+			Code:     CodeResearchTerminalThenPending,
+			Path:     fmt.Sprintf("providers.%s.turns[%d].respond.status", e.Name, r.Turn),
+			Message: fmt.Sprintf("poll %d is served turn %d (%q) after poll %d was served turn %d (%q), which is "+
+				"terminal; turns are served by first match on call_index, not in declaration order, and a task "+
+				"does not un-complete",
+				r.Poll, r.Turn, decoded[r.Turn].EffectiveStatus(),
+				r.TerminalPoll, r.TerminalTurn, decoded[r.TerminalTurn].EffectiveStatus()),
+		})
 	}
 	// A research task has a poll lifecycle but Tavily documents no cancel for it,
 	// and this profile serves none: accepting the block would promise one.

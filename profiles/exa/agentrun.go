@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/c360studio/servicesim/internal/pollscript"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -228,8 +229,11 @@ const (
 	// documented set.
 	CodeAgentRunStopReasonUnknown = "exa.agent_run.stop_reason.unknown"
 
-	// CodeAgentRunTerminalThenPending is raised for a non-terminal turn declared
-	// after a terminal one — a run that un-completes, which no real job API does.
+	// CodeAgentRunTerminalThenPending is raised for a non-terminal snapshot
+	// SERVED after a terminal one — a run that un-completes, which no real job
+	// API does. It is judged by poll index, the order SelectTurn actually serves
+	// turns in, not by declaration order, and on the poll script and the cancel
+	// script each on its own.
 	CodeAgentRunTerminalThenPending = "exa.agent_run.terminal_then_pending"
 
 	// CodeAgentRunScriptExhausted warns that no unconditional final turn exists,
@@ -305,10 +309,10 @@ func (agentRunValidator) ValidateProjections(s *scenario.Scenario, e *scenario.P
 
 // validateAgentRunTurns decodes and checks one script of poll snapshots, each
 // turn addressed as base[i]. It is the one walk the poll script and the cancel
-// script share.
+// script share; each script is judged on its own.
 func validateAgentRunTurns(s *scenario.Scenario, base string, turns []scenario.Turn) []scenario.Finding {
 	var findings []scenario.Finding
-	seenTerminal := false
+	decoded := make([]*agentRunProjection, len(turns))
 
 	for i := range turns {
 		turnPath := fmt.Sprintf("%s[%d]", base, i)
@@ -324,24 +328,27 @@ func validateAgentRunTurns(s *scenario.Scenario, base string, turns []scenario.T
 			})
 			continue
 		}
+		decoded[i] = &p
 
 		findings = append(findings, validateAgentRunTurn(s, path, &p, turnPath, &turns[i])...)
+	}
 
-		// A run that un-completes: a non-terminal snapshot after a terminal one
-		// can only be reached by a cursor that has already stopped advancing, so
-		// it is unreachable as well as wrong.
-		if seenTerminal && !p.IsTerminal() {
-			findings = append(findings, scenario.Finding{
-				Severity: scenario.SeverityError,
-				Code:     CodeAgentRunTerminalThenPending,
-				Path:     path + ".status",
-				Message: fmt.Sprintf("turn %d is %q after an earlier turn reached a terminal status; a run does not un-complete",
-					i, p.EffectiveStatus()),
-			})
-		}
-		if p.IsTerminal() {
-			seenTerminal = true
-		}
+	// A run that un-completes, judged in the order polls are SERVED (D3): a
+	// client that saw a terminal snapshot must never see a pending one after it.
+	regressions := pollscript.TerminalRegressions(turns, faultKeyRunPoll, func(i int) (bool, bool) {
+		return decoded[i] != nil && decoded[i].IsTerminal(), decoded[i] != nil
+	})
+	for _, r := range regressions {
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityError,
+			Code:     CodeAgentRunTerminalThenPending,
+			Path:     fmt.Sprintf("%s[%d].respond.status", base, r.Turn),
+			Message: fmt.Sprintf("poll %d is served turn %d (%q) after poll %d was served turn %d (%q), which is "+
+				"terminal; turns are served by first match on call_index, not in declaration order, and a run "+
+				"does not un-complete",
+				r.Poll, r.Turn, decoded[r.Turn].EffectiveStatus(),
+				r.TerminalPoll, r.TerminalTurn, decoded[r.TerminalTurn].EffectiveStatus()),
+		})
 	}
 	return findings
 }
