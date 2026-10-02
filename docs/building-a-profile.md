@@ -917,7 +917,10 @@ scripts — so a lifecycle nested inside an entry is served the same way, with `
 used only in the path it returns and in finding messages. Call `SelectPollTurn` only after `provider.ResolveJob`
 returned true: on an exchange that resolved no job it records a `job.id_invalid` error, claims nothing and returns a nil
 turn. It selects by position alone and never reads the request body. `profiles/exa`'s `agentrun_handler.go` is the
-worked example; the Tavily research poll still uses `SelectTurnFor`, because Tavily has no cancel.
+worked example; the Tavily research poll still uses `SelectTurnFor`, because Tavily has no cancel. Both operations
+read and write the job through `Deps.Jobs`; the framework wires its own store there, and a store written to replace
+it implements `testkit.Jobs` — whose `Create` must record the zero lifecycle, no polls and no cancel, whatever job it
+is given, or a fresh job would start cancelled.
 
 A cancel route's handler resolves the job with `ResolveJob`, exactly as a poll does, then calls
 `provider.CancelJob(x, base, turns, cancel, pollRoute, terminal)`, passing the same scripts the poll is served from.

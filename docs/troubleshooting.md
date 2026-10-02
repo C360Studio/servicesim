@@ -174,7 +174,8 @@ Those are the three remedies, in the order the finding names them:
 3. Raise `--max-jobs`.
 
 `GET /__admin/jobs?namespace=<name>` shows what is currently live in a namespace — every job's id, entry,
-creation time, how many polls it has been served (`polls`) and, once a cancel is recorded, the poll position it was
+creation time, how many poll positions it has claimed (`polls`, counting a poll answered with a scripted fault) and,
+once a cancel is recorded, the poll position it was
 recorded at (`cancel_at_poll`, absent otherwise) — which is the fastest way to tell whether the bound was reached by
 a genuine backlog or by a suite that is not tearing down after itself.
 

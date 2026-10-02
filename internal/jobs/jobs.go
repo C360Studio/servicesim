@@ -88,8 +88,9 @@ var (
 // bookkeeping rather than memory.
 //
 // The first six fields are the coordinates a create fixed and never change. The
-// last three are the job's lifecycle — how many polls it has served and whether
-// a cancel was recorded — and change only through [Store.Advance] and
+// last three are the job's lifecycle — how many poll positions its lane has
+// claimed (a poll answered with a scripted fault counts) and whether a cancel
+// was recorded — and change only through [Store.Advance] and
 // [Store.MarkCancel]. They live on this record rather than in a store of their
 // own so that a reset drops them with the job, they count against the same slot
 // bound, and they are isolated by namespace and identifier exactly as the record

@@ -1087,6 +1087,9 @@ func (o *ownJobs) Create(j testkit.Job) (testkit.JobStats, error) {
 
 	ns := o.namespaceOf(j.Namespace)
 	j.Namespace = ns
+	// The contract: a new job has been polled zero times and never cancelled,
+	// whatever the caller passed.
+	j.Polls, j.CancelRequested, j.CancelAtPoll = 0, false, 0
 	if o.jobs == nil {
 		o.jobs = map[string]map[string]testkit.Job{}
 	}
@@ -1178,6 +1181,16 @@ func TestJobsAliasIsImplementable(t *testing.T) {
 	require.NoError(t, err)
 
 	own := &ownJobs{}
+
+	// The example store keeps the contract testkit.Jobs documents: Create
+	// records the zero lifecycle whatever the caller passed.
+	_, err = own.Create(testkit.Job{ID: "job_dirty", Polls: 3, CancelRequested: true, CancelAtPoll: 2})
+	require.NoError(t, err)
+	dirty, _ := own.Lookup(provider.DefaultNamespace, "job_dirty")
+	assert.Zero(t, dirty.Polls)
+	assert.False(t, dirty.CancelRequested)
+	assert.Zero(t, dirty.CancelAtPoll)
+
 	set := referenceSet(t)
 	srv := httptest.NewServer(handlerFor(t, set, exa.Name, provider.Deps{Scenario: s, Faults: set.Faults(s), Jobs: own}))
 	t.Cleanup(srv.Close)
@@ -1206,6 +1219,8 @@ func TestJobsAliasIsImplementable(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, pollResp.Body.Close())
 	assert.Equal(t, http.StatusOK, pollResp.StatusCode, "the own store must resolve the poll too")
+	job, _ = own.Lookup(provider.DefaultNamespace, out.ID)
+	assert.Equal(t, 1, job.Polls, "the poll recorded its position through the own store's Advance")
 }
 
 // searchIn issues the vendor request an adapter would issue against a base URL

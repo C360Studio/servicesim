@@ -1305,9 +1305,10 @@ consumer implementation of `testkit.Jobs`, taken deliberately while the seam is 
   and false when the job is gone.
 - `MarkCancel(namespace, id, atPoll) (Job, MarkOutcome)` is a compare-and-set: it records a cancel at `atPoll` only
   if no cancel is recorded and `Polls` still equals `atPoll`. Its outcomes are `marked`, `already_marked`,
-  `position_moved` (a poll advanced the job since the caller read it) and `not_found`, each returning the record as it
-  stands. `testkit` re-exports the outcome type and constants (`JobMarkOutcome`, `JobMarked`, …), because an
-  out-of-tree store cannot implement the interface without naming them.
+  `position_moved` (a poll advanced the job since the caller read it) and `not_found`; the first three return the
+  record as it stands, and `not_found` the zero `Job`. `testkit` re-exports the outcome type and constants
+  (`JobMarkOutcome`, `JobMarked`, …), because an out-of-tree store cannot implement the interface without naming
+  them.
 
 Each is one critical section on the existing record — no second map, nothing a reset has to clear separately — so
 reset stays the three-store operation of §7.3. **A request in flight across a reset is undefined**: a poll or cancel

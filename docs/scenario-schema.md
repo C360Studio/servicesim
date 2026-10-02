@@ -1271,6 +1271,12 @@ Every row that judges a turn applies to `cancel.turns` too, addressed `providers
 the two scripts are judged independently: `cancel.turns` needs its own unconditional final turn, and a terminal
 snapshot in `turns` says nothing about one in `cancel.turns`.
 
+`exa.agent_run.body_predicate_on_poll` now describes exactly what happens. An `exa_agent_runs` poll is selected by its
+position alone and never reads the request body — not even a body a client sends on the `GET` — so a
+`body_contains` or `body_json` on a poll turn never matches. Earlier builds matched it against whatever body a poll
+happened to carry, so a poll sent with a body could be served a different turn than the same poll without one.
+`tavily_research`'s poll is unchanged and still reads the body.
+
 `exa_agent_runs` also checks the **create request** when it arrives, with these findings (the schema documents the
 values; what the live API answers to a violation is not documented, so rejecting is this simulator's policy):
 
@@ -1469,7 +1475,8 @@ providers:
         - respond: {status: cancelled}
 ```
 
-**Positions.** A job's *poll position* is how many polls it has been served — 0 before its first. A cancel is
+**Positions.** A job's *poll position* is how many poll positions its lane has claimed — every poll counts, a poll
+answered with a scripted fault included — so 0 before its first. A cancel is
 recorded *at* a position, the one the job's next poll will be served at. From then on, the job's poll at position `i`
 is answered from `cancel.turns` with a call index of `i` minus that position, so inside `cancel.turns`
 `when.call_index` counts polls **since the cancel**. The journal's `attempt_index` for the same poll stays absolute —
@@ -1540,7 +1547,8 @@ block is left alone with the rest of it.
 
 ##### What a test can see
 
-`GET /__admin/jobs` carries each job's `polls`, the position its next poll will be served at, and `cancel_at_poll`,
+`GET /__admin/jobs` carries each job's `polls`, the number of poll positions claimed and so the position its next
+poll will be served at, and `cancel_at_poll`,
 the position a cancel was recorded at — **absent**, not 0, when none was, because 0 is a real position: a cancel
 before the first poll. That is how a test tells "the cancel took effect and its reply was lost" from "the cancel was
 never recorded" without a new endpoint. In Go, `sim.Jobs()` carries the same facts as `Polls`, `CancelRequested` and

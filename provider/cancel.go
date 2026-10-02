@@ -57,7 +57,8 @@ const (
 	// why: [CodeJobCancelUnscripted] when the cancel would take effect but the
 	// scenario cannot answer the polls that follow it, or
 	// [CodeJobCancelContended] when the job's position kept moving and CancelJob
-	// gave up after [maxCancelTries]. The profile answers the vendor's 500; the
+	// gave up after [maxCancelTries], or when the job store answered an outcome
+	// outside its contract. The profile answers the vendor's 500; the
 	// reason is the finding's, not the outcome's, because the profile renders
 	// both the same way. There is no turn.
 	CancelFailed CancelOutcome = "failed"
