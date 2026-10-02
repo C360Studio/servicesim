@@ -119,7 +119,7 @@ body.
 | `turns` | list of [Turn](#the-multi-turn-form) | A conversation script. Mutually exclusive with a projection body at block level. |
 | `turn_key` | list of string | What the turn cursor is keyed on. Defaults to `["route"]`. See [`turn_key`](#turn_key--what-the-cursor-counts-per). |
 | `create` | `{fault}` | The create route's own attempt budget, on a create-then-poll async entry (`exa_agent_runs`, `tavily_research`). See [The async surfaces](#the-async-surfaces-exa_agent_runs-and-tavily_research). |
-| `cancel` | `{fault, turns}` | What cancelling a create-then-poll job answers, and what the job's polls serve after a recorded cancel. Loads on `exa_agent_runs` only; every other in-tree entry rejects it. See [Cancelling a job](#cancelling-a-job). |
+| `cancel` | `{fault, turns}` | What cancelling a create-then-poll job answers, and what the job's polls serve after a recorded cancel. Loads only on an entry whose profile serves a cancel for it — `exa_agent_runs` in tree; every other entry rejects it. See [Cancelling a job](#cancelling-a-job). |
 
 `extra_fields` is **not** in that list, even though it reads like envelope machinery. Every provider projection
 declares its own `extra_fields`, so the key is left in the body and behaves identically in a single-shot block and
@@ -1290,7 +1290,8 @@ A budget member of the wrong type (`exa.request.field_type`) is always an error,
 
 `tavily_research`'s validator has no equivalent to `script_exhausted` or `body_predicate_on_poll` today: a body
 predicate on a Tavily poll turn is dead in exactly the same way as Exa's, silently, with no load-time warning yet.
-It rejects a `cancel:` block (`tavily.cancel.unsupported`, below): Tavily's Research API documents no cancel.
+A `cancel:` block on it is rejected ([below](#entries-that-serve-no-cancel)): Tavily's Research API documents no
+cancel.
 
 **Reset.** `POST /__admin/reset` (scoped with `?namespace=`) drops one namespace's async job records together with
 its fault and turn cursors, in the same call; `testkit.Sim.Reset()` does the same but for every namespace at once,
@@ -1444,7 +1445,7 @@ with the snapshot the job's next poll will be served, so the cancel and the poll
 > **This build records and selects; it serves no cancel route.** The block loads and is validated on
 > `exa_agent_runs`, and every Exa poll records its position on the job, but no in-tree listener serves a cancel
 > route yet, so a scenario's `cancel:` block has no effect on the wire. What follows is the contract those routes are
-> built on. Every other in-tree entry rejects the block at load ([below](#entries-that-serve-no-cancel)).
+> built on. Every other entry rejects the block at load ([below](#entries-that-serve-no-cancel)).
 
 ```yaml
 providers:
@@ -1523,15 +1524,17 @@ snapshot the next poll will serve.
 
 ##### Entries that serve no cancel
 
-An entry whose profile serves no cancel rejects the block at load, with one error at `providers.<entry>.cancel`: a
-block that could never take effect is a scenario bug, not a no-op.
+A `cancel:` block loads only on an entry whose profile declares a cancel lifecycle for it; on every other entry the
+framework itself rejects it at load, whichever profile serves the entry, because a block that could never take effect
+is a scenario bug, not a no-op. In tree, `exa_agent_runs` is the one entry that accepts it — `tavily_research` has a
+poll lifecycle, but Tavily's Research API documents no cancel.
 
-| Code | Entries |
-|---|---|
-| `exa.cancel.unsupported` | `exa` |
-| `tavily.cancel.unsupported` | `tavily`, `tavily_research` — Tavily's Research API documents no cancel |
-| `perplexity.cancel.unsupported` | `perplexity`, `perplexity_agent` |
-| `mcp.cancel.unsupported` | `mcp` |
+| Code | Severity | Condition |
+|---|---|---|
+| `scenario.provider.cancel_unsupported` | error, at load | a `cancel:` block on an entry whose profile has no cancel lifecycle for it, reported at `providers.<entry>.cancel` |
+
+An entry no registered profile serves is reported as `scenario.provider.unimplemented`, a warning, and its `cancel:`
+block is left alone with the rest of it.
 
 ##### What a test can see
 

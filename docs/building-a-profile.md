@@ -287,6 +287,9 @@ func Profile() provider.Profile {
   forgotten in the other fails at composition, not on the first request.
 - `Validators` is keyed by scenario **entry kind**, not by listener — one listener may contribute several
   (Perplexity's Sonar and Agent surfaces). Acme has one, under its own name.
+- `Cancellable` is absent from Acme on purpose. It names the entry kinds whose jobs your routes can cancel, and
+  the framework rejects a scenario's `cancel:` block on every other entry, so a profile with no create-then-poll
+  lifecycle leaves it out and fails closed. See [Async jobs](#async-jobs).
 - `ErrorBody` is **required**. House rule 3: an unmatched path, method, provider or scenario answers in the
   vendor's own error shape, never with an empty body. `provider.NewSet` refuses a `Profile` without it.
 - `DefaultAuth` is the mode an entry with no `auth:` block of its own gets — a *default your handler reads*, not
@@ -946,13 +949,17 @@ What else the cancel route owes:
   `accepted` attempt with an error status, a response without one serves its own rendered body, so the client is
   told the cancel succeeded by a reply the scenario said was lost.
 
-An entry whose routes serve no cancel should reject a `cancel:` block in its `Validator`, with an error at
-`providers.<entry>.cancel`; every in-tree profile does, under a `<profile>.cancel.unsupported` code. An async
+**The framework rejects a `cancel:` block by default.** `provider.ValidateScenario` refuses it on every entry, with
+`provider.CodeCancelUnsupported`, unless the entry's profile names it in `Profile.Cancellable` — so a profile with no
+cancel writes nothing and fails closed, and one with a cancel opts in exactly the entries whose poll routes use
+`SelectPollTurn`: `Cancellable: []string{"acme_runs"}`. `NewSet` refuses a name that is not one of the profile's own
+entry kinds. The opt-in reaches validation through `Set.Validators`, which is what `servicesim.Main` and
+`testkit.Start` use; a validator map you build by hand carries none, and rejects every `cancel:` block. An async
 validator should also reject a script that un-terminates in the order polls are **served**, which is not the order
 turns are declared: evaluate the turn `provider.SelectTurn` serves at poll 0, at every `call_index` a turn names and
 at each of those plus one, and run it on `turns` and `cancel.turns` separately
 ([the schema](scenario-schema.md#terminal-is-judged-in-serve-order)). The in-tree profiles share an internal helper
-for both checks; neither needs anything an out-of-tree profile lacks.
+for it; it needs nothing an out-of-tree profile lacks.
 
 ## Step 3 — scenarios
 
@@ -960,7 +967,7 @@ Your scenarios are your own YAML files, in your own repository. The schema is `d
 `providers:` block for your listener is keyed by your `Name`, and its `respond:` body uses your `ProjectionKeys`.
 Acme's tests carry theirs as constants, which is what lets this guide quote them:
 
-<!-- excerpt: examples/profile/acme/acme_test.go#L24-L32 -->
+<!-- excerpt: examples/profile/acme/acme_test.go#L25-L33 -->
 ```yaml
 version: 1
 name: acme-scenario
@@ -976,7 +983,7 @@ providers:
 A scripted fault plan is a `fault:` block on the entry — attempts in order, one per call, addressed to the route's
 `FaultKey` through `Route.Fault`. `[{status: 429}, {}]` is "a 429, then whatever the scenario renders":
 
-<!-- excerpt: examples/profile/acme/acme_test.go#L41-L48 -->
+<!-- excerpt: examples/profile/acme/acme_test.go#L42-L49 -->
 ```yaml
 version: 1
 name: acme-fault-scenario
@@ -1006,7 +1013,7 @@ defaulted, so a team simulating one vendor never pulls four other vendors' contr
 graph — starts one in-process server per profile with nothing to defer, and every assertion reads the journal, so a
 test proves the request was *correct*, not merely answered:
 
-<!-- excerpt: examples/profile/acme/acme_test.go#L96-L139 -->
+<!-- excerpt: examples/profile/acme/acme_test.go#L97-L140 -->
 ```go
 // TestAcmeAnswerServesTheScriptedTurn proves a correct request from the
 // journal: the response decodes to the scripted fields, and the journal
@@ -1070,7 +1077,7 @@ a template is copied.
 
 And this one, which is house rule 4 with no redaction code of Acme's own:
 
-<!-- excerpt: examples/profile/acme/acme_test.go#L338-L371 -->
+<!-- excerpt: examples/profile/acme/acme_test.go#L339-L372 -->
 ```go
 // TestAcmeCredentialNeverReachesTheJournalRaw covers house rule 4 with no
 // redaction code of Acme's own: a request presenting Authorization and
@@ -1113,7 +1120,7 @@ composed set's own `Hosts`, scans every file — Go source included, because a b
 not in a fixture — with your contracts directory skipped, since its provenance record legitimately names the
 vendor's real documentation URL:
 
-<!-- excerpt: examples/profile/acme/acme_test.go#L373-L386 -->
+<!-- excerpt: examples/profile/acme/acme_test.go#L374-L387 -->
 ```go
 // TestModuleHasNoLiveHosts is the two-line idiom testkit.AssertNoLiveHosts
 // documents, run against this whole module (Go sets a test binary's working

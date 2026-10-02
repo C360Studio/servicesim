@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"slices"
 
-	"github.com/c360studio/servicesim/internal/pollscript"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -310,14 +309,8 @@ func (validator) ValidateProjections(s *scenario.Scenario, e *scenario.ProviderE
 		})
 	}
 	findings = append(findings, scenario.ValidateStreamFaultMismatch(e, entryPolicy, streamTurns)...)
-	// A JSON-RPC call is answered in its own exchange; nothing here can be
-	// cancelled, so a cancel: block is never read.
-	return append(findings, pollscript.RejectCancel(e, codeCancelUnsupported)...)
+	return findings
 }
-
-// codeCancelUnsupported is the load error for a `cancel:` block on the MCP
-// entry. It is unexported: a consumer asserts on the string.
-const codeCancelUnsupported = "mcp.cancel.unsupported"
 
 // checkProjection reports the projection values that would render an
 // implausible or invalid response: decision 8's tool-name and

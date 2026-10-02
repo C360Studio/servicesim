@@ -2,6 +2,7 @@ package acme_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -609,6 +610,49 @@ providers:
 	}
 }
 
+// TestAcmeRejectsAStrayCancelBlock is the out-of-tree half of the framework's
+// cancel rule. Acme has no create-then-poll lifecycle and names no entry in
+// provider.Profile.Cancellable, so a `cancel:` block in its scenario entry could
+// never take effect — and the framework, not Acme's own validator, refuses it at
+// load. Acme writes no code for this: a profile that forgot about cancels must
+// still fail closed. The simulator does not start on such a scenario.
+func TestAcmeRejectsAStrayCancelBlock(t *testing.T) {
+	const src = `
+version: 1
+name: acme-stray-cancel-scenario
+providers:
+  acme:
+    cancel:
+      turns:
+        - respond:
+            answer: "cancelled"
+    turns:
+      - respond:
+          answer: "a"
+`
+	s, _, err := scenario.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("the scenario must parse — scenario decodes cancel: on any entry: %v", err)
+	}
+	findings := provider.ValidateScenario(s, acme.Profile().Validators)
+	var rejected []scenario.Finding
+	for _, f := range findings {
+		if f.Code == provider.CodeCancelUnsupported {
+			rejected = append(rejected, f)
+		}
+	}
+	if len(rejected) != 1 || rejected[0].Severity != scenario.SeverityError || rejected[0].Path != "providers.acme.cancel" {
+		t.Fatalf("findings = %+v, want one %s error at providers.acme.cancel", findings, provider.CodeCancelUnsupported)
+	}
+
+	stub := &fatalRecorder{TB: t}
+	testkit.Start(stub, testkit.WithProfiles(acme.Profile()), testkit.WithScenarioYAML(src))
+	if !stub.failed || !strings.Contains(stub.message, provider.CodeCancelUnsupported) {
+		t.Fatalf("testkit.Start must refuse the scenario, naming %s; failed=%v message=%q",
+			provider.CodeCancelUnsupported, stub.failed, stub.message)
+	}
+}
+
 // TestAcmeFaultCursorsAreIndependentPerRoute pins what distinct FaultKeys
 // actually buy, which is easy to state wrongly: both routes read the ONE
 // providers.acme.fault plan, and each keeps its own cursor into it. So the
@@ -821,7 +865,8 @@ func statusOf(t *testing.T, sim *testkit.Sim, req *http.Request) int {
 // never promised otherwise.
 type fatalRecorder struct {
 	testing.TB
-	failed bool
+	failed  bool
+	message string
 }
 
 func (f *fatalRecorder) Helper() {}
@@ -841,7 +886,10 @@ func (f *fatalRecorder) Logf(string, ...any) {}
 // real test — so a testkit helper that starts calling Fatalf would run on past
 // this point. That is a deliberate, bounded compromise for a double used by
 // exactly one assertion.
-func (f *fatalRecorder) Fatalf(string, ...any) { f.failed = true }
+func (f *fatalRecorder) Fatalf(format string, args ...any) {
+	f.failed = true
+	f.message += fmt.Sprintf(format, args...)
+}
 
 func (f *fatalRecorder) Fatal(...any) { f.failed = true }
 

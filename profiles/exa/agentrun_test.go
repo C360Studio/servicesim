@@ -787,7 +787,7 @@ func TestAgentRunValidatorChecksCancelTurns(t *testing.T) {
 
 			sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    cancel:\n"+tc.fault+
 				"      turns:\n"+tc.turns+"    turns:\n      - respond: {status: completed, output: {text: x}}\n")
-			findings := provider.ValidateScenario(sc, map[string]provider.Validator{NameAgentRuns: agentRunValidator{}})
+			findings := provider.ValidateScenario(sc, provider.MustSet(Profile()).Validators())
 
 			var found []scenario.Finding
 			for _, f := range findings {
@@ -810,7 +810,7 @@ func TestAgentRunValidatorChecksCancelTurns(t *testing.T) {
 			"        - when: {call_index: 0}\n          respond: {status: running}\n"+
 			"        - respond: {status: completed, output: {text: x}}\n"+
 			"    turns:\n      - respond: {status: running}\n")
-		for _, f := range provider.ValidateScenario(sc, map[string]provider.Validator{NameAgentRuns: agentRunValidator{}}) {
+		for _, f := range provider.ValidateScenario(sc, provider.MustSet(Profile()).Validators()) {
 			assert.NotEqual(t, scenario.SeverityError, f.Severity, "unexpected error: %+v", f)
 		}
 	})

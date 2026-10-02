@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
 	"github.com/c360studio/servicesim/scenario"
@@ -99,21 +98,4 @@ func TestTerminalRegressions(t *testing.T) {
 			assert.Equal(t, tc.want, TerminalRegressions(turns, pollRoute, terminal))
 		})
 	}
-}
-
-func TestRejectCancel(t *testing.T) {
-	t.Parallel()
-
-	assert.Nil(t, RejectCancel(nil, "acme.cancel.unsupported"))
-	assert.Nil(t, RejectCancel(&scenario.ProviderEntry{Name: "acme"}, "acme.cancel.unsupported"))
-
-	got := RejectCancel(&scenario.ProviderEntry{Name: "acme", Cancel: &scenario.CancelPolicy{}}, "acme.cancel.unsupported")
-	require.Len(t, got, 1)
-	assert.Equal(t, scenario.Finding{
-		Severity: scenario.SeverityError,
-		Code:     "acme.cancel.unsupported",
-		Path:     "providers.acme.cancel",
-		Message:  got[0].Message,
-	}, got[0])
-	assert.Contains(t, got[0].Message, `"acme"`)
 }

@@ -7,7 +7,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/c360studio/servicesim/internal/pollscript"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -510,14 +509,8 @@ func (validator) ValidateProjections(s *scenario.Scenario, e *scenario.ProviderE
 		findings = append(findings, s.ResolveRefs(path, &p)...)
 		findings = append(findings, validateProjection(&p, path)...)
 	}
-	// /search, /answer, /contents and /findSimilar are synchronous: nothing on
-	// this entry can be cancelled, so a cancel: block here is never read.
-	return append(findings, pollscript.RejectCancel(e, codeCancelUnsupported)...)
+	return findings
 }
-
-// codeCancelUnsupported is the load error for a `cancel:` block on an Exa entry
-// that serves no cancel. It is unexported: a consumer asserts on the string.
-const codeCancelUnsupported = "exa.cancel.unsupported"
 
 // respondPath addresses a turn's projection body the way provider.Validator
 // documents: providers.<name>.turns[i].respond, whichever form the author wrote.

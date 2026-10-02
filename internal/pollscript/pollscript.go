@@ -1,17 +1,13 @@
-// Package pollscript holds the load-time checks over an entry's scripts that
+// Package pollscript holds the load-time check over an entry's scripts that
 // more than one reference profile needs: that a terminal snapshot is absorbing
-// in the order polls are actually SERVED, and rejecting a `cancel:` block on an
-// entry that has no cancel.
+// in the order polls are actually SERVED.
 //
-// It is internal on purpose. Each check is the reference profiles' policy, not
-// framework surface (CLAUDE.md house rule 7), and it grants no capability an
-// out-of-tree profile lacks: both are pure functions over exported types, built
-// on provider.SelectTurn, which any profile can call. It may import provider and
-// scenario; neither may import it.
+// It grants no capability an out-of-tree profile lacks: it is a pure function
+// over exported types, built on provider.SelectTurn, which any profile can call.
+// It may import provider and scenario; neither may import it.
 package pollscript
 
 import (
-	"fmt"
 	"slices"
 
 	"github.com/c360studio/servicesim/provider"
@@ -90,24 +86,4 @@ func TerminalRegressions(turns []scenario.Turn, route string, terminal func(turn
 		}
 	}
 	return out
-}
-
-// RejectCancel returns one load error, under the calling profile's own code,
-// when e declares a `cancel:` block, and nil otherwise.
-//
-// scenario decodes `cancel:` on any entry because which entries have a cancel
-// is a profile's knowledge. A profile calls this from the validator of every
-// entry it serves no cancel on, so a block nothing would ever read stops the
-// load instead of letting its author believe a cancellation was scripted.
-func RejectCancel(e *scenario.ProviderEntry, code string) []scenario.Finding {
-	if e == nil || e.Cancel == nil {
-		return nil
-	}
-	return []scenario.Finding{{
-		Severity: scenario.SeverityError,
-		Code:     code,
-		Path:     "providers." + e.Name + ".cancel",
-		Message: fmt.Sprintf("entry %q serves no cancel operation, so this cancel: block could never take effect; "+
-			"remove it, or move it to an entry whose profile serves a cancel", e.Name),
-	}}
 }

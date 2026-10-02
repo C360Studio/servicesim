@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -159,6 +160,22 @@ type Profile struct {
 	// and Agent surfaces today).
 	Validators map[string]Validator
 
+	// Cancellable names the entry kinds — keys of Validators, or the
+	// profile's own kind when it declares none — whose jobs this profile's
+	// routes can cancel: the entries on which a scenario's `cancel:` block is
+	// accepted. Nil means none, and [ValidateScenario] then rejects a
+	// `cancel:` block on every entry of this profile with
+	// [CodeCancelUnsupported]. That is the default on purpose: a profile with
+	// no create-then-poll lifecycle sets nothing and fails closed.
+	//
+	// Naming an entry is a promise the profile keeps in Go: its poll route
+	// selects with [SelectPollTurn], and a cancel route decides with
+	// [CancelJob]. NewSet refuses a name that is not one of the profile's own
+	// entry kinds. It replaces the per-validator rejection every profile
+	// without a cancel had to remember to call, which an out-of-tree profile
+	// could not call at all.
+	Cancellable []string
+
 	// ErrorBody renders a Refusal in this vendor's own error shape. REQUIRED:
 	// NewSet refuses a Profile whose ErrorBody is nil (house rule 3 — an
 	// unmatched path, method, provider or scenario must never answer with an
@@ -288,6 +305,15 @@ func (p Profile) Validate() error {
 	default:
 		return fmt.Errorf("provider: profile %q: DefaultAuth %q must be \"\", %q or %q",
 			p.Name, p.DefaultAuth, scenario.AuthRequired, scenario.AuthOptional)
+	}
+	own := p.entryValidators()
+	for _, name := range p.Cancellable {
+		if _, ok := own[name]; !ok {
+			return fmt.Errorf(
+				"provider: profile %q: Cancellable names %q, which is not one of its entry kinds (%s); "+
+					"only an entry this profile serves can accept a cancel: block",
+				p.Name, name, strings.Join(slices.Sorted(maps.Keys(own)), ", "))
+		}
 	}
 	if p.Kind != "" && p.Kind != string(p.Name) && len(p.Validators) > 1 {
 		return fmt.Errorf(
@@ -457,7 +483,8 @@ func (p Profile) Refuse(r Refusal) []byte {
 
 // cloneProfileFields returns p with every reference-typed field replaced by
 // an independent copy: Handlers and Validators (maps.Clone), and Routes,
-// Hosts, DerivedIDs, StreamDerivedIDs and CredentialNames (slices.Clone).
+// Cancellable, Hosts, DerivedIDs, StreamDerivedIDs and CredentialNames
+// (slices.Clone).
 // Contracts (an fs.FS), ErrorBody, Announce and each Route's own Fault func
 // are left shared — a func value and an fs.FS expose no mutable state a
 // caller could reach through the clone, unlike a map or a slice's backing
@@ -475,6 +502,7 @@ func cloneProfileFields(p Profile) Profile {
 	p.Handlers = maps.Clone(p.Handlers)
 	p.Validators = maps.Clone(p.Validators)
 	p.Routes = slices.Clone(p.Routes)
+	p.Cancellable = slices.Clone(p.Cancellable)
 	p.Hosts = slices.Clone(p.Hosts)
 	p.DerivedIDs = slices.Clone(p.DerivedIDs)
 	p.StreamDerivedIDs = slices.Clone(p.StreamDerivedIDs)
@@ -699,6 +727,11 @@ func (s *Set) Routes() []Route {
 // profiles, or of every registered profile when only is empty. Two profiles
 // that share one Kind may safely contribute the same key (NewSet already
 // proved they agree); Validators does not need to re-check that here.
+//
+// The validator of an entry kind a profile names in [Profile.Cancellable] is
+// returned marked as such, which is how that opt-in reaches
+// [ValidateScenario]. A map built by hand from Profile.Validators carries no
+// mark, so ValidateScenario rejects every `cancel:` block in it.
 func (s *Set) Validators(only ...Name) map[string]Validator {
 	profiles := s.profiles
 	if len(only) > 0 {
@@ -710,11 +743,24 @@ func (s *Set) Validators(only ...Name) map[string]Validator {
 		}
 	}
 	out := make(map[string]Validator)
+	optedIn := make(map[string]bool)
 	for _, p := range profiles {
 		maps.Copy(out, p.entryValidators())
+		for _, kind := range p.Cancellable {
+			optedIn[kind] = true
+		}
+	}
+	for kind := range optedIn {
+		out[kind] = cancellable{out[kind]}
 	}
 	return out
 }
+
+// cancellable marks the validator of an entry kind its profile names in
+// [Profile.Cancellable]. ValidateScenario takes a plain validator map, so the
+// mark is how the opt-in travels from a Set to it; ValidateScenario unwraps it
+// before using the validator, so a RouteLister underneath is still found.
+type cancellable struct{ Validator }
 
 // EntryKinds returns every scenario entry kind any registered profile
 // declares a validator for, sorted. Sorted, not registration order: the

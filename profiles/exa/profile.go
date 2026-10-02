@@ -55,7 +55,11 @@ func Profile() provider.Profile {
 			string(Name):  validator{},
 			NameAgentRuns: agentRunValidator{},
 		},
-		ErrorBody: refusalBody,
+		// An agent run has a poll lifecycle a cancel acts on; the poll route
+		// selects with provider.SelectPollTurn. Every other Exa entry is
+		// synchronous, so the framework rejects a cancel: block there.
+		Cancellable: []string{NameAgentRuns},
+		ErrorBody:   refusalBody,
 		// DefaultAuth is left "" (scenario.AuthRequired): profiles/exa/request.go's
 		// authenticate defaults an entry with no auth: block to AuthRequired.
 

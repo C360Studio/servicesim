@@ -483,9 +483,7 @@ func (researchValidator) ValidateProjections(s *scenario.Scenario, e *scenario.P
 				r.TerminalPoll, r.TerminalTurn, decoded[r.TerminalTurn].EffectiveStatus()),
 		})
 	}
-	// A research task has a poll lifecycle but Tavily documents no cancel for it,
-	// and this profile serves none: accepting the block would promise one.
-	return append(findings, pollscript.RejectCancel(e, codeCancelUnsupported)...)
+	return findings
 }
 
 func knownResearchStatus(s string) bool {

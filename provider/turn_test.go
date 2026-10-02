@@ -438,7 +438,11 @@ providers:
 		{Pattern: "GET /agent/runs/{id}", FaultKey: "exa:agent_runs.poll"},
 	}}
 
-	findings := ValidateScenario(s, map[string]Validator{"exa_agent_runs": v})
+	p := acmeProfile(okHandler(`{}`))
+	p.Validators = map[string]Validator{"exa_agent_runs": v}
+	p.Cancellable = []string{"exa_agent_runs"}
+
+	findings := ValidateScenario(s, MustSet(p).Validators())
 
 	require.Len(t, findings, 1, "only the typo is reported")
 	require.Equal(t, CodeTurnRouteUnknown, findings[0].Code)
