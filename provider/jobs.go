@@ -119,6 +119,11 @@ const (
 	// the vendor's 500 and nothing is recorded; the client's retry is a fresh
 	// cancel. It is an error, because the cancel the client sent did not take
 	// effect for a reason no vendor would give.
+	//
+	// It is raised a second way, with its own message: the job store answered
+	// MarkCancel with an outcome outside jobs.Store's contract. That is a broken
+	// store rather than contention, so it is not retried, and the message names
+	// the outcome and the store as the cause.
 	CodeJobCancelContended = "job.cancel_contended"
 )
 

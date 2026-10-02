@@ -772,6 +772,57 @@ providers:
 	assert.False(t, j.CancelRequested, "nothing was recorded")
 }
 
+// unknownOutcomeJobs is a store whose MarkCancel answers an outcome outside the
+// four jobs.Store documents — a broken implementation, which an out-of-tree
+// store can be.
+type unknownOutcomeJobs struct {
+	*jobs.Registry
+	outcome jobs.MarkOutcome
+	mu      sync.Mutex
+	marks   int
+}
+
+func (u *unknownOutcomeJobs) MarkCancel(namespace, id string, _ int) (jobs.Job, jobs.MarkOutcome) {
+	u.mu.Lock()
+	u.marks++
+	u.mu.Unlock()
+	j, _ := u.Lookup(namespace, id)
+	return j, u.outcome
+}
+
+// An outcome CancelJob does not know is the store's bug, not contention: it is
+// not retried as though a poll had landed, it is reported naming the outcome,
+// and nothing is recorded. Before, any unknown outcome was treated as
+// position-moved, so a store answering "" drew eight retries and a false "another
+// poll landed" diagnosis.
+func TestACancelReportsAnOutcomeTheStoreShouldNeverAnswer(t *testing.T) {
+	t.Parallel()
+
+	for _, outcome := range []jobs.MarkOutcome{"", "maybe"} {
+		t.Run(fmt.Sprintf("%q", outcome), func(t *testing.T) {
+			t.Parallel()
+
+			store := &unknownOutcomeJobs{Registry: jobs.NewRegistry(jobs.Limits{}), outcome: outcome}
+			seedJob(t, store, "job_a")
+			x := directExchange(t, store, runningThenCompleted, acmeCancelRoute)
+			require.True(t, ResolveJob(x, "job_a"))
+
+			got, turn, _ := acmeCancel(x)
+			assert.Equal(t, CancelFailed, got)
+			assert.Nil(t, turn)
+			assert.Equal(t, 1, store.marks, "an unknown outcome is not retried")
+			require.True(t, x.Failed())
+			findings := x.Findings()
+			require.Len(t, findings, 1)
+			assert.Contains(t, findings[0].Message, fmt.Sprintf("%q", outcome), "the message names the outcome")
+			assert.NotContains(t, findings[0].Message, "another poll", "it is not diagnosed as contention")
+
+			j, _ := store.Lookup(DefaultNamespace, "job_a")
+			assert.False(t, j.CancelRequested, "nothing was recorded")
+		})
+	}
+}
+
 // A cancel racing a storm of polls on one job: the outcome is one of the
 // documented ones, Polls never decreases, and it ends equal to the number of
 // polls served.

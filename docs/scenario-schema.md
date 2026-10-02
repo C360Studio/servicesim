@@ -1509,7 +1509,7 @@ is not applied (`fault.attempt_on_rejection`):
 | Code | Severity | Condition |
 |---|---|---|
 | `job.cancel_unscripted` | error, per request | The cancel would take effect, but the scenario cannot answer the polls after it: no `cancel:` block or no `cancel.turns`, no `cancel.turns` turn matching call index 0, or no `turns` turn answering the job's next poll, so whether it is terminal cannot be judged. Also a repeated cancel whose next `cancel.turns` snapshot matches nothing. |
-| `job.cancel_contended` | error, per request | Polls of the same job kept landing while the cancel was being recorded, eight times in a row. A retried cancel starts afresh. |
+| `job.cancel_contended` | error, per request | Polls of the same job kept landing while the cancel was being recorded, eight times in a row. A retried cancel starts afresh. Also raised, with a message naming it, when a custom job store answers an outcome outside its contract — a store bug, not contention, and never retried. |
 
 Recording no marker in either case is what keeps a later poll from indexing into a `cancel.turns` that does not
 exist.

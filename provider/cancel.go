@@ -178,6 +178,9 @@ func cancelTurns(cancel *scenario.CancelPolicy) []scenario.Turn {
 //   - MarkCancel finding the position moved means a poll advanced in between:
 //     re-peek and retry, at most [maxCancelTries] times, then
 //     [CodeJobCancelContended] and [CancelFailed] with nothing recorded.
+//   - MarkCancel answering an outcome outside its contract: no retry,
+//     [CodeJobCancelContended] with a message naming the outcome and the
+//     store as the cause, and [CancelFailed] with nothing recorded.
 //     Finding a cancel already recorded answers [CancelAlreadyCancelling].
 //   - The job gone (a reset landed): [CancelNotFound].
 //
@@ -270,10 +273,19 @@ func CancelJob(
 			return cancelling(after)
 		case jobs.NotFound:
 			return CancelNotFound, nil, ""
+		case jobs.PositionMoved:
+			// A poll landed in between, so the next snapshot may differ.
+			// Re-peek from the record MarkCancel returned.
+			job = after
+			continue
 		}
-		// PositionMoved: a poll landed in between, so the next snapshot may
-		// differ. Re-peek from the record MarkCancel returned.
-		job = after
+		// Anything else is outside jobs.Store's contract — a broken store, not
+		// contention — so it is reported as itself and never retried.
+		x.Fail(CodeJobCancelContended, "",
+			"the cancel of job %q was not recorded: the job store answered MarkCancel with outcome %q, which is "+
+				"none of %q, %q, %q or %q; that is a jobs.Store implementation bug, and nothing was recorded",
+			id, outcome, jobs.Marked, jobs.AlreadyMarked, jobs.PositionMoved, jobs.NotFound)
+		return CancelFailed, nil, ""
 	}
 
 	x.Fail(CodeJobCancelContended, "",
