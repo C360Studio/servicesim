@@ -631,8 +631,12 @@ func renderAgentCost(c *agentCostProjection) costWire {
 	if c == nil {
 		return costWire{}
 	}
+	var total float64
+	if c.Total != nil {
+		total = *c.Total
+	}
 	return costWire{
-		Total:        c.Total,
+		Total:        total,
 		AgentCompute: c.AgentCompute,
 		Search:       c.Search,
 		Emails:       c.Emails,

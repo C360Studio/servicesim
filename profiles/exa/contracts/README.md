@@ -563,7 +563,7 @@ All of these are Servicesim's, not the vendor's; the schema and conditions are i
 - **At scenario load**: `exa.agent_run.error.not_in_schema` (error: a run-level `error:`),
   `exa.agent_run.value.range` (error: a negative or non-finite `usage` or `cost_dollars` value, `data_sources`
   included), `exa.agent_run.fault_tag.unknown` (warning: a `tag:` outside the ten `code` values, still rendered
-  verbatim), `exa.agent_run.cost_unscripted` (warning: a terminal snapshot that scripts no `cost_dollars`, under
+  verbatim), `exa.agent_run.cost_unscripted` (warning: a terminal snapshot that scripts no `cost_dollars.total`, under
   Cancel) and `exa.output.grounding.confidence.unknown` (warning).
 
 ### Cancel (POST /agent/runs/{id}/cancel)
@@ -642,10 +642,16 @@ Verified 2026-10-02 against the same spec, hash unchanged. Classifications as ab
   (`running` when it scripts none), so a confirmed cancellation is a `…polled.cancelled` entry that carries no fault.
   An `extra_fields` key that overrides `status` changes the wire and not the label. The label is the handler's even on
   a faulted attempt.
-- **The cost rule** (ruling 6 on issue #6): every terminal Exa snapshot — `completed`, `failed` and `cancelled` alike,
-  in `turns` and in `cancel.turns` — that scripts no `cost_dollars` raises the load warning
-  `exa.agent_run.cost_unscripted`. Rendering is unchanged: `costDollars` is required, so it renders zero placeholders,
-  and the warning is the signal that those zeros are not a billing fact.
+- **The cost rule** (ruling 6 on issue #6, tightened by the owner on 2026-10-02): every terminal Exa snapshot —
+  `completed`, `failed` and `cancelled` alike, in `turns` and in `cancel.turns` — that scripts no `cost_dollars.total`
+  raises the load warning `exa.agent_run.cost_unscripted`. That is a snapshot with no `cost_dollars`, with an empty
+  one, or with one that scripts only other meters (`{search: 0.01}`): `total` still renders an unscripted `0` in each.
+  An explicit `total: 0` is a statement and counts as scripted. Rendering is unchanged: `costDollars` is required, so
+  it renders zero placeholders, and the warning is the signal that those zeros are not a billing fact. The rule judges
+  the decoded scenario data, not the rendered response: `extra_fields` replaces whole top-level keys on the wire, so it
+  can defeat the rule in either direction (`cost_dollars: {total: 0.01}` plus
+  `extra_fields: {costDollars: {search: 0.5}}` raises no warning yet renders no `total`), an older gap tracked in
+  [#22](https://github.com/C360Studio/servicesim/issues/22).
 - **Other methods on the path** are the mux's, measured: `GET`, `HEAD`, `PUT` and `DELETE` on
   `/agent/runs/{id}/cancel` answer `405` with `Allow: POST`, in the flat refusal shape (no body for `HEAD`) and with no
   `x-request-id`, and claim or record nothing. So is an empty id: `POST /agent/runs//cancel` gets the mux's path-clean

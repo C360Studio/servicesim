@@ -140,8 +140,12 @@ type agentErrorProjection struct {
 // wire and default to zero when undeclared. Zero is a placeholder for a required
 // key: the components are not derived from, and need not sum to, the total.
 type agentCostProjection struct {
-	// Total is the aggregate (wire: costDollars.total).
-	Total float64 `yaml:"total"`
+	// Total is the aggregate (wire: costDollars.total). It is a pointer so the
+	// decoded value can tell `total: 0`, a billing statement, from a total the
+	// scenario never scripted, which renders the same 0 as a placeholder: the cost
+	// rule (codeAgentRunCostUnscripted) turns on exactly that difference. nil
+	// renders as zero.
+	Total *float64 `yaml:"total,omitempty"`
 
 	// AgentCompute, Search, Emails and PhoneNumbers are the per-meter dollar
 	// costs (wire: costDollars.agentCompute, .search, .emails, .phoneNumbers).
@@ -266,12 +270,14 @@ const codeAgentRunErrorNotInSchema = "exa.agent_run.error.not_in_schema"
 const codeAgentRunValueRange = "exa.agent_run.value.range"
 
 // codeAgentRunCostUnscripted warns that a terminal snapshot scripts no
-// cost_dollars (ruling 6 on issue #6). AgentRun requires costDollars, so the
-// snapshot still renders, with zero placeholders, and a zero the scenario did
-// not script is no billing fact: the warning is the only thing that says so. It
-// fires on every terminal status — cancelled exactly like completed and failed —
-// in turns and in cancel.turns. It is unexported: a consumer asserts on the
-// string.
+// costDollars.total (ruling 6 on issue #6, tightened by the owner on 2026-10-02):
+// it declares no cost_dollars at all, or declares one without a `total` key.
+// AgentRun requires costDollars, so the snapshot still renders, with zero
+// placeholders, and a zero the scenario did not script is no billing fact: the
+// warning is the only thing that says so. An explicit `total: 0` is a statement
+// and counts as scripted. It fires on every terminal status — cancelled exactly
+// like completed and failed — in turns and in cancel.turns. It is unexported: a
+// consumer asserts on the string.
 const codeAgentRunCostUnscripted = "exa.agent_run.cost_unscripted"
 
 // agentRunValidator decodes and checks the async projections in a scenario.
@@ -413,15 +419,17 @@ func validateAgentRunTurn(
 
 	// Ruling 6: one cost rule for every terminal snapshot, cancelled included and
 	// with no special case. The zero placeholders still render; this is what
-	// tells the author they are not a billing fact.
-	if p.IsTerminal() && p.CostDollars == nil {
+	// tells the author they are not a billing fact. It asks for `total`, not just a
+	// cost_dollars block: `{}` or `{search: 0.01}` would silence a weaker rule while
+	// costDollars.total still rendered an unscripted 0.
+	if p.IsTerminal() && (p.CostDollars == nil || p.CostDollars.Total == nil) {
 		findings = append(findings, scenario.Finding{
 			Severity: scenario.SeverityWarning,
 			Code:     codeAgentRunCostUnscripted,
 			Path:     path + ".cost_dollars",
-			Message: fmt.Sprintf("a %s run scripts no cost_dollars, so costDollars renders zero placeholders, which "+
-				"are no billing fact; script cost_dollars on every terminal snapshot — usage accrued before a run ends "+
-				"is billed, a cancelled run's included", status),
+			Message: fmt.Sprintf("a %s run scripts no cost_dollars.total, so costDollars.total renders an unscripted 0 "+
+				"placeholder, which is no billing fact; script cost_dollars, at least total, on every terminal snapshot — "+
+				"usage accrued before a run ends is billed, a cancelled run's included", status),
 		})
 	}
 
@@ -485,7 +493,9 @@ func validateAgentRunValues(path string, p *agentRunProjection) []scenario.Findi
 		}
 	}
 	if c := p.CostDollars; c != nil {
-		check("cost_dollars.total", c.Total)
+		if c.Total != nil {
+			check("cost_dollars.total", *c.Total)
+		}
 		check("cost_dollars.agent_compute", c.AgentCompute)
 		check("cost_dollars.search", c.Search)
 		check("cost_dollars.emails", c.Emails)

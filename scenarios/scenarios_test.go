@@ -167,14 +167,15 @@ func TestBuiltins_LoadValidateResolve(t *testing.T) {
 }
 
 // codeAgentRunCostUnscripted is the Exa agent-run validator's warning for a
-// terminal snapshot that scripts no cost_dollars. The validator keeps it
+// terminal snapshot that scripts no costDollars.total. The validator keeps it
 // unexported, so this asserts on the string, as a consumer would.
 const codeAgentRunCostUnscripted = "exa.agent_run.cost_unscripted"
 
 // TestBuiltins_ScriptTheCostOfEveryTerminalAgentRun keeps the reference corpus
-// modelling the rule it ships: every terminal Exa agent-run snapshot scripts its
-// cost_dollars, so no built-in raises the cost warning. The first subtest proves
-// the filter matches what the validator actually raises; a filter that matched
+// modelling the rule it ships: every terminal Exa agent-run snapshot, a cancelled
+// one included, scripts costDollars.total, so no built-in raises the cost
+// warning. The first subtests prove the filter matches what the validator
+// actually raises, a cost block without a total among it; a filter that matched
 // nothing would pass forever.
 func TestBuiltins_ScriptTheCostOfEveryTerminalAgentRun(t *testing.T) {
 	t.Parallel()
@@ -190,19 +191,24 @@ func TestBuiltins_ScriptTheCostOfEveryTerminalAgentRun(t *testing.T) {
 		return paths
 	}
 
-	t.Run("an uncosted terminal snapshot is warned about", func(t *testing.T) {
-		t.Parallel()
-		s, report, err := scenario.Parse([]byte(`
+	for _, tc := range []struct{ name, respond string }{
+		{"an uncosted terminal snapshot is warned about", "{status: failed}"},
+		{"a cost block without a total is warned about", "{status: cancelled, cost_dollars: {search: 0.01}}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, report, err := scenario.Parse([]byte(`
 version: 1
 name: uncosted
 providers:
   exa_agent_runs:
     turns:
-      - respond: {status: failed}
+      - respond: ` + tc.respond + `
 `))
-		require.NoErrorf(t, err, "%v", report.Findings)
-		assert.Equal(t, []string{"providers.exa_agent_runs.turns[0].respond.cost_dollars"}, raised(s))
-	})
+			require.NoErrorf(t, err, "%v", report.Findings)
+			assert.Equal(t, []string{"providers.exa_agent_runs.turns[0].respond.cost_dollars"}, raised(s))
+		})
+	}
 	for _, name := range builtins {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

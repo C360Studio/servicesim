@@ -8,7 +8,8 @@ version: 1
 name: rate-limited
 description: >-
   Every surface answers 429 with Retry-After once, then serves its ordinary
-  response, so backoff, retry and attempt counting are all exercised.
+  response (an Exa agent-run cancel, on its own budget, is not faulted here),
+  so backoff, retry and attempt counting are all exercised.
 
 time:
   base: 2026-01-01T00:00:00Z
