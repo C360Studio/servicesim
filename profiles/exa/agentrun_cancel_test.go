@@ -1200,10 +1200,13 @@ providers:
 	}
 }
 
-// TestTheCostRuleCoversEveryTerminalSnapshot is ruling 6: every terminal turn,
-// in turns and in cancel.turns, that scripts no cost_dollars is warned about,
-// cancelled like any other; a scripted cost, or a snapshot that is not terminal,
-// is not.
+// TestTheCostRuleCoversEveryTerminalSnapshot is ruling 6, as the owner tightened
+// it on 2026-10-02: every terminal turn, in turns and in cancel.turns, that does
+// not script costDollars.total is warned about, cancelled like any other. A
+// snapshot that scripts no cost_dollars, an empty one, or one that scripts only
+// other meters still renders an unscripted 0 for total, so none of them counts as
+// scripted; an explicit `total: 0` is a statement and does. A snapshot that is not
+// terminal is never warned about.
 func TestTheCostRuleCoversEveryTerminalSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -1217,6 +1220,12 @@ providers:
         respond: {status: running}
       - when: {call_index: 1}
         respond: {status: failed}
+      - when: {call_index: 2}
+        respond: {status: failed, cost_dollars: {}}
+      - when: {call_index: 3}
+        respond: {status: failed, cost_dollars: {search: 0.01}}
+      - when: {call_index: 4}
+        respond: {status: failed, cost_dollars: {total: 0}}
       - respond: {status: completed, output: {text: x}, cost_dollars: {total: 0.01}}
     cancel:
       turns:
@@ -1224,19 +1233,24 @@ providers:
           respond: {status: running}
         - when: {call_index: 1}
           respond: {status: cancelled, cost_dollars: {total: 0}}
+        - when: {call_index: 2}
+          respond: {status: cancelled, cost_dollars: {agent_compute: 0.01}}
         - respond: {status: cancelled}
 `
 	var got []string
 	for _, f := range provider.ValidateScenario(mustScenario(t, src), provider.MustSet(Profile()).Validators()) {
 		if f.Code == codeAgentRunCostUnscripted {
 			assert.Equal(t, scenario.SeverityWarning, f.Severity)
-			assert.Contains(t, f.Message, "script cost_dollars on every terminal snapshot",
+			assert.Contains(t, f.Message, "script cost_dollars, at least total, on every terminal snapshot",
 				"the message tells the author what to script")
 			got = append(got, f.Path)
 		}
 	}
 	assert.ElementsMatch(t, []string{
 		"providers.exa_agent_runs.turns[1].respond.cost_dollars",
+		"providers.exa_agent_runs.turns[2].respond.cost_dollars",
+		"providers.exa_agent_runs.turns[3].respond.cost_dollars",
 		"providers.exa_agent_runs.cancel.turns[2].respond.cost_dollars",
+		"providers.exa_agent_runs.cancel.turns[3].respond.cost_dollars",
 	}, got)
 }

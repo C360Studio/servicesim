@@ -7,7 +7,8 @@
 version: 1
 name: server-error
 description: >-
-  Every surface answers 500 in its own error envelope, permanently.
+  Every surface answers 500 in its own error envelope, permanently (an Exa
+  agent-run cancel answers 404 RUN_NOT_FOUND, since no run is ever minted).
 
 time:
   base: 2026-01-01T00:00:00Z

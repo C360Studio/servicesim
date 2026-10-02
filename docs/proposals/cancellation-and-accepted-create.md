@@ -56,6 +56,11 @@ smallest sound mechanism, and whether its exported names are the ones to lock in
    that strict does not promote, the documentation says so, and the framework gap is tracked in
    [#18](https://github.com/C360Studio/servicesim/issues/18), outside U4.
 
+   **Tightened (2026-10-02).** The owner then tightened the rule to require `total`: a terminal snapshot that scripts
+   no `cost_dollars.total` warns, whether it declares no `cost_dollars`, an empty one, or one that scripts only other
+   meters, because each of those still renders an unscripted `0` for `total`. An explicit `total: 0` is a statement and
+   counts as scripted. The ruling text above is unchanged.
+
 7. **Only `background: true` Perplexity responses are retrievable.** A synchronous response with `store` unset is
    retrievable on the real API; this simulator answers `404` for it. That is a deliberate, named divergence, recorded in
    the contract notes with its reasons (see [Q2](#q2--the-perplexity-lifecycle)).
@@ -172,8 +177,9 @@ Perplexity returns `400`.
 and projection validators on `cancel.turns`, and D3's absorbing-terminal check on every script. `completed` is allowed
 in `cancel.turns`, to script "acknowledged, then completed anyway". An entry-level `cancel:` on an entry with no poll
 lifecycle (`perplexity_agent`, `exa`) is a **load error**; otherwise it decodes and does nothing. Per ruling 6, a
-terminal Exa turn — `cancelled` like any other — that scripts no `cost_dollars` raises the warning
-`exa.agent_run.cost_unscripted` and renders zero placeholders; the warning tells the author to script the cost.
+terminal Exa turn — `cancelled` like any other — that scripts no `cost_dollars` (tightened to `cost_dollars.total` on
+2026-10-02, see the correction under ruling 6) raises the warning `exa.agent_run.cost_unscripted` and renders zero
+placeholders; the warning tells the author to script the cost.
 
 **Documented numbering.** In `cancel.turns`, `when.call_index` counts from the cancel, while `Match.CallIndex` is
 documented as the count of prior requests in the lane and the journal's `attempt_index` stays absolute. That is the

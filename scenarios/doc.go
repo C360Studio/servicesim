@@ -11,13 +11,15 @@
 // that must be rotated to a specific value before any call succeeds,
 // deliberate cross-provider source overlap, a scripted multi-turn
 // conversation, an async run that reaches a terminal failed status, an async
-// run that never reaches a terminal status, two concurrent callers on one
+// run that never reaches a terminal status on its own (an Exa run the consumer
+// cancels reports cancelled), two concurrent callers on one
 // route kept in separate turn lanes, Server-Sent Events on the
 // streaming-capable surfaces (a clean stream, a mid-stream disconnect, a
 // truncated frame, and a transient blip a same-lane retry recovers from), a
 // generic hostile-content pack (prompt injection, credential-shaped bait,
 // active markup, exfiltration instructions and long content) exercising a
-// consumer's guardrail on every dispatch path, and a provider this build has
+// consumer's guardrail on every dispatch path (an Exa run the consumer cancels
+// renders no output, so no marker), and a provider this build has
 // no handler for.
 // A product-specific corpus — including a specific adopter's own
 // guardrail-classifier vectors — belongs in the consuming repository and is

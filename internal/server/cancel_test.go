@@ -16,6 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/c360studio/servicesim/profiles/exa"
+	"github.com/c360studio/servicesim/provider"
+	"github.com/c360studio/servicesim/scenarios"
 )
 
 // cancelScenario scripts an Exa run that is still running at its second poll,
@@ -87,6 +89,76 @@ func TestACancelIsVisibleOnTheAdminJobListing(t *testing.T) {
 		"POST exa.agent_runs.cancel.accepted",
 		"GET exa.agent_runs.polled.cancelled",
 	}, got)
+}
+
+// builtinsRunningAtFirstPoll is every built-in whose Exa agent-run script serves a
+// non-terminal snapshot on its first poll: the runs a cancel can land on while
+// they are running. It is the rule scenarios/cancel_test.go's static guard
+// applies, derived here rather than named so the two cannot drift when a script
+// gains or loses its running turns. The poll route's fault key is unexported by
+// the profile, so this asserts on the string, as a consumer would.
+func builtinsRunningAtFirstPoll(t *testing.T) []string {
+	t.Helper()
+
+	var names []string
+	for _, name := range scenarios.Names() {
+		s, report, err := scenarios.Load(name)
+		require.NoErrorf(t, err, "%s: %v", name, report.Findings)
+		entry := s.Provider(exa.NameAgentRuns)
+		if entry == nil {
+			continue
+		}
+		first, _, err := provider.SelectTurn(entry, 0, "exa:agent_runs.poll", nil)
+		require.NoErrorf(t, err, "%s: the poll script must answer its first poll", name)
+		var body struct {
+			Status string `yaml:"status"`
+		}
+		require.NoError(t, first.Respond.Decode(&body), name)
+		switch body.Status {
+		case "completed", "failed", "cancelled":
+		default:
+			names = append(names, name)
+		}
+	}
+	require.NotEmpty(t, names, "no built-in scripts a running Exa run, so this test would check nothing")
+	return names
+}
+
+// TestACancelOfAShippedRunIsVisibleOnTheAdminJobListing is the same evidence for
+// the reference corpus itself, through the composed binary: a consumer that
+// cancels a run of any built-in scenario whose run is still running gets a
+// recorded cancel, not the framework's fail-closed 500, and GET /__admin/jobs says
+// so. The cancel lands before any poll, so it is recorded at position 0, which is
+// the real position the listing must carry rather than omit.
+func TestACancelOfAShippedRunIsVisibleOnTheAdminJobListing(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range builtinsRunningAtFirstPoll(t) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := start(t, testConfig(t, "--scenario", "builtin:"+name), discard())
+			addr := h.Addr(string(exa.Name))
+
+			resp := post(t, addr, "/agent/runs", `{"query":"find the finding"}`)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			var run struct {
+				ID string `json:"id"`
+			}
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&run))
+
+			cancel := post(t, addr, "/agent/runs/"+run.ID+"/cancel", "")
+			body, err := io.ReadAll(cancel.Body)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, cancel.StatusCode, "a cancel of a running built-in run: %s", body)
+
+			listed := adminJobs(t, h)
+			require.Len(t, listed, 1)
+			require.NotNil(t, listed[0].CancelAtPoll, "a recorded cancel is on the listing")
+			assert.Equal(t, 0, *listed[0].CancelAtPoll)
+			assert.Equal(t, 0, listed[0].Polls)
+		})
+	}
 }
 
 // rawExchange sends one request as raw bytes and returns the status and the

@@ -1266,7 +1266,7 @@ to the generic ones every provider raises for a malformed `respond:` node or an 
 | `exa.agent_run.script_exhausted` | warning | no unconditional final turn, in `turns` or in `cancel.turns`: the poll after the script's last snapshot gets `scenario.no_matching_turn` and a 404 the author did not intend |
 | `exa.agent_run.body_predicate_on_poll` | warning | a turn's `when` uses `body_contains` or `body_json` — a `GET` poll carries no body, so it can never match |
 | `exa.agent_run.completed_without_output` | warning | `status: completed` with no `output` — the vendor allows it, but it is almost always an unfinished fixture |
-| `exa.agent_run.cost_unscripted` | warning | a terminal snapshot — `completed`, `failed` or `cancelled`, with no special case — that scripts no `cost_dollars`. `costDollars` is required, so it still renders zero placeholders; the warning says those zeros are no billing fact. Script `cost_dollars` on every terminal snapshot. It is raised when the scenario loads, so `validation.strict` does not promote it today ([#18](https://github.com/C360Studio/servicesim/issues/18)) |
+| `exa.agent_run.cost_unscripted` | warning | a terminal snapshot — `completed`, `failed` or `cancelled`, with no special case — that scripts no `cost_dollars.total`: it declares no `cost_dollars`, an empty one, or one with only other meters such as `{search: 0.01}`. `costDollars` is required, so it still renders zero placeholders, `total` included; the warning says those zeros are no billing fact. Script `cost_dollars`, at least `total`, on every terminal snapshot; an explicit `total: 0` is a statement and counts as scripted. It is raised when the scenario loads, so `validation.strict` does not promote it today ([#18](https://github.com/C360Studio/servicesim/issues/18)) |
 
 Every row that judges a turn applies to `cancel.turns` too, addressed `providers.exa_agent_runs.cancel.turns[i]`, and
 the two scripts are judged independently: `cancel.turns` needs its own unconditional final turn, and a terminal
@@ -1542,6 +1542,17 @@ a `when.route` in `cancel.turns` must name a route the provider serves, as in `t
 selects no turn of its own, so naming its route is `scenario.turn.route_unknown` in either script. Poll selection
 reads the poll's position alone, never a request body — a `GET` poll carries none — which is what lets a cancel know
 the exact snapshot the next poll will serve.
+
+**The built-in scenarios** script a `cancel:` block on every Exa run that is still running at its first poll, so a
+cancel of a shipped run is answered rather than failed closed with `job.cancel_unscripted`; a test enforces this for
+every built-in. Call 0 of the block acknowledges `running`, and an unconditional `cancelled` snapshot follows, with a
+scripted `usage` and `cost_dollars.total`. That acknowledgement is the corpus's reading of the vendor's "cancel
+immediately" — simulator policy, not vendor fact; the [contract](../profiles/exa/contracts/README.md) marks what the
+live API reports between a cancel and `cancelled` unverified — and it applies only inside a window. As the table under
+"The cancel judges the job by its next poll" says, a cancel is acknowledged as `running` only while the job's next poll
+would still be `running`. Once that poll would serve a terminal snapshot, completion wins and the cancel answers that
+snapshot: `happy` cancelled after two polls answers `completed`, and `async-failed` cancelled after one answers
+`failed`. A run that starts terminal needs no block, since completion wins from the start.
 
 ##### Entries that serve no cancel
 

@@ -4,7 +4,8 @@
 # (exa, tavily, perplexity, perplexity_agent, exa_agent_runs, tavily_research,
 # mcp), following the fusion-overlap pattern: one corpus, every provider, so a
 # consumer's guardrail / fail-closed ingress gate is exercised on every dispatch
-# path by ONE scenario.
+# path by ONE scenario. The one exception: an Exa agent run the consumer cancels
+# renders the empty output placeholder, so it carries no marker.
 #
 # Charter (scenarios/doc.go): this is PROTOCOL behaviour, identical for every
 # consumer — the same generic bait, on the same wire shapes, regardless of what
@@ -66,7 +67,8 @@
 # and, per cited source, a title and URL — inj-override's title is the one
 # place a marker other than the synthesised-answer's own reaches those two
 # surfaces, so a guardrail test against exa_agent_runs/tavily_research alone
-# will see the injection marker but not the rest of the vocabulary. MCP's
+# will see the injection marker but not the rest of the vocabulary (and an Exa run
+# the consumer cancels renders the empty output placeholder, with no marker). MCP's
 # tools/call renders the whole pack unconditionally too: every source as a
 # text content block AND a resource_link naming its URL, structured_content
 # carrying its own injection string, and instructions carrying the marker
@@ -149,7 +151,8 @@ description: >-
   A generic hostile-content pack — prompt injection, credential-shaped bait,
   active markup, exfiltration instructions and long content — projected
   through every provider block, so a consumer's guardrail is exercised on
-  every dispatch path by one scenario.
+  every dispatch path by one scenario (an Exa agent run the consumer cancels
+  renders the empty output placeholder, so it carries no marker).
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -529,6 +532,21 @@ providers:
                 confidence: high
           cost_dollars:
             total: 0.045
+    # A cancel is acknowledged as still running, since an acknowledgement is not
+    # proof billing stopped, and the polls after it confirm `cancelled`, billing the
+    # usage the run accrued before it.
+    cancel:
+      turns:
+        - when: {call_index: 0}
+          respond:
+            status: running
+        - respond:
+            status: cancelled
+            usage:
+              agent_compute_units: 3
+              searches: 2
+            cost_dollars:
+              total: 0.012
 
   # Tavily's async research surface.
   tavily_research:

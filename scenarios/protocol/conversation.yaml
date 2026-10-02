@@ -128,6 +128,21 @@ providers:
                 confidence: high
           cost_dollars:
             total: 0.045
+    # A cancel is acknowledged as still running, since an acknowledgement is not
+    # proof billing stopped, and the polls after it confirm `cancelled`, billing the
+    # usage the run accrued before it.
+    cancel:
+      turns:
+        - when: {call_index: 0}
+          respond:
+            status: running
+        - respond:
+            status: cancelled
+            usage:
+              agent_compute_units: 3
+              searches: 2
+            cost_dollars:
+              total: 0.012
 
   tavily_research:
     turns:
