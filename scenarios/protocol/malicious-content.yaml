@@ -527,6 +527,8 @@ providers:
               - field: answer
                 citations: *all-source-refs
                 confidence: high
+          cost_dollars:
+            total: 0.045
 
   # Tavily's async research surface.
   tavily_research:

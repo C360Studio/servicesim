@@ -1,0 +1,7 @@
+{
+  "error": {
+    "type": "AUTHENTICATION_ERROR",
+    "code": "TEAM_NOT_FOUND",
+    "message": "Team context or authentication was not found"
+  }
+}

@@ -207,6 +207,14 @@ func classifyCode(code, message string) (int, string, string) {
 	case provider.CodeJobIDInvalid, provider.CodeNoHandler, codeProjectionInvalid, codeRenderFailed:
 		return http.StatusInternalServerError, tagInternalError, messageInternalError
 
+	case provider.CodeJobCancelUnscripted, provider.CodeJobCancelContended:
+		// A cancel that could not be decided: the vendor's own 500 ("Server
+		// error or run timeout", cancelAgentRun), and nothing was recorded. The
+		// finding names the scenario path that could not answer, so it stays in
+		// the journal and the wire carries the same fixed message as the
+		// simulator's other internal 500s.
+		return http.StatusInternalServerError, tagInternalError, messageInternalError
+
 	case provider.CodeNamespaceLimit, provider.CodeJobLimitReached:
 		// 503 rather than 500: the simulator is refusing to take on more state,
 		// not reporting a broken scenario, and the operator's fix is to raise

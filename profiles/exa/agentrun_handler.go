@@ -17,16 +17,19 @@ const (
 	patternRunCreate = "POST /agent/runs"
 	patternRunPoll   = "GET /agent/runs/{id}"
 	patternRunHead   = "HEAD /agent/runs/{id}"
+	patternRunCancel = "POST /agent/runs/{id}/cancel"
 
-	// Create and poll draw on SEPARATE budgets, for the same reason exa:search
-	// and exa:answer do: a poll retry must not consume the create's retries.
+	// Create, poll and cancel draw on SEPARATE budgets, for the same reason
+	// exa:search and exa:answer do: a poll retry must not consume the create's
+	// retries, and a cancel retry must consume neither.
 	//
 	// Separate keys give separate counters. Separate PLANS take separate
 	// Route.Fault selectors reading different scenario locations, which is what
-	// createFault and TurnFault do below — two independent counters walking one
-	// script would be the same bug in a different place.
+	// createFault, TurnFault and cancelFault do below — two independent counters
+	// walking one script would be the same bug in a different place.
 	faultKeyRunCreate = "exa:agent_runs.create"
 	faultKeyRunPoll   = "exa:agent_runs.poll"
+	faultKeyRunCancel = "exa:agent_runs.cancel"
 
 	// HEAD gets its own key so an existence check cannot draw on the poll
 	// budget, for the same reason it must not advance the poll cursor.
@@ -39,9 +42,9 @@ const (
 	runIDPrefix = "agent_run_"
 )
 
-// agentRunRoutes returns the three async routes, in registration order.
+// agentRunRoutes returns the four async routes, in registration order.
 //
-// All three name the exa_agent_runs ENTRY rather than the listener, so the
+// All four name the exa_agent_runs ENTRY rather than the listener, so the
 // entry's own turn_key and validation block are honoured. Without Route.Entry
 // they would silently read the primary `exa` block's.
 func agentRunRoutes() []provider.Route {
@@ -72,6 +75,16 @@ func agentRunRoutes() []provider.Route {
 			LaneFrom:    laneFromID,
 			Credentials: authHeaders,
 		},
+		{
+			Pattern:  patternRunCancel,
+			FaultKey: faultKeyRunCancel,
+			Entry:    NameAgentRuns,
+			// Per job, like the poll: every run has its own cancel attempt budget,
+			// so one run's failed cancel never spends another's retry.
+			LaneFrom:    laneFromID,
+			Credentials: authHeaders,
+			Fault:       cancelFault,
+		},
 	}
 }
 
@@ -94,6 +107,17 @@ func createFault(s *scenario.Scenario) *scenario.Fault {
 		return nil
 	}
 	return e.Create.Fault
+}
+
+// cancelFault returns the cancel route's attempt budget: the `cancel.fault`
+// block on the async entry, a third location beside createFault's and the poll's
+// turn-level plan, so the three budgets are independent in substance.
+func cancelFault(s *scenario.Scenario) *scenario.Fault {
+	e := s.Provider(NameAgentRuns)
+	if e == nil || e.Cancel == nil || !e.Cancel.Fault.HasAttempts() {
+		return nil
+	}
+	return e.Cancel.Fault
 }
 
 // handleAgentRunCreate serves POST /agent/runs.
@@ -161,6 +185,15 @@ func handleAgentRunPoll(x *provider.Exchange) provider.Response {
 		return rejection(x)
 	}
 
+	// The label carries the status the snapshot scripts (running when it
+	// scripts none), because the journal keeps no bodies: it is how a consumer
+	// sees a poll that confirmed `cancelled`.
+	return runSnapshotResponse(x, p, id, "exa.agent_runs.polled."+p.EffectiveStatus())
+}
+
+// runSnapshotResponse renders p as the 200 AgentRun of a served poll or cancel:
+// fault-eligible, so the attempt the request claimed applies to it.
+func runSnapshotResponse(x *provider.Exchange, p *agentRunProjection, id, label string) provider.Response {
 	body, err := renderRunSnapshot(x, p, id)
 	if err != nil {
 		x.Fail(codeRenderFailed, "", "rendering the Exa agent run failed: %v", err)
@@ -168,23 +201,109 @@ func handleAgentRunPoll(x *provider.Exchange) provider.Response {
 	}
 	return provider.Response{
 		Status: http.StatusOK,
-		// selectAgentRunProjection has claimed the poll, so this id is the
-		// per-call one.
-		Header:        requestIDHeader(pollRequestID(x, id)),
+		// The poll or cancel has claimed its attempt, so this id is the per-call
+		// one.
+		Header:        requestIDHeader(runRequestID(x, id)),
 		Body:          body,
-		Label:         "exa.agent_runs.polled",
+		Label:         label,
 		FaultEligible: true,
 		FaultBody:     agentFaultBody,
 	}
 }
 
-// pollRequestID is the x-request-id of a served poll. The call index alone is not
-// enough here: a poll lane is per job, so the first poll of every job is call 0 of
-// its own lane and would carry the same id as the first poll of any other job. The
-// job id joins the tuple, which makes the id distinct per job as well as per call
-// and still a pure function of the scenario, the job and the call position.
-func pollRequestID(x *provider.Exchange, id string) string {
+// runRequestID is the x-request-id of a served poll or cancel. The call index
+// alone is not enough here: both lanes are per job, so the first poll of every
+// job is call 0 of its own lane and would carry the same id as the first poll of
+// any other job. The job id joins the tuple, which makes the id distinct per job
+// as well as per call and still a pure function of the scenario, the job and the
+// call position. The route's fault key is already in the tuple, so a poll and a
+// cancel of one job at the same index differ too.
+func runRequestID(x *provider.Exchange, id string) string {
 	return provider.Hex32(append(callParts(x), id)...)
+}
+
+// handleAgentRunCancel serves POST /agent/runs/{id}/cancel (cancelAgentRun).
+//
+// The spec declares no request body, so none is read: a JSON object is accepted
+// and ignored, and only what the shared request lifecycle refuses on every route
+// — a body that is not a JSON object — is refused here, before anything is
+// claimed.
+//
+// Authentication and resolution run before provider.CancelJob, which claims the
+// cancel lane's attempt: a refused or unknown cancel spends nothing and records
+// nothing. From there CancelJob decides and records, and this renders. Every
+// outcome that has a snapshot is a 200 AgentRun rendered exactly as a poll of
+// the same snapshot would be — the invariant that a cancel response is the
+// snapshot the job's next poll returns — and is served, fault-eligible, never a
+// rejection, which would strip the attempt the cancel claimed. So is the 404 of
+// a run a reset removed after it resolved: that cancel claimed its attempt too.
+func handleAgentRunCancel(x *provider.Exchange) provider.Response {
+	entry := x.Entry()
+	authenticate(x)
+	if x.Failed() {
+		return rejection(x)
+	}
+
+	id := x.Request.PathValue("id")
+	if !provider.ResolveJob(x, id) {
+		return runNotFound(x, id)
+	}
+
+	var turns []scenario.Turn
+	var cancel *scenario.CancelPolicy
+	if entry != nil {
+		turns, cancel = entry.Turns, entry.Cancel
+	}
+	outcome, turn, turnPath := provider.CancelJob(x, "providers."+NameAgentRuns, turns, cancel,
+		faultKeyRunPoll, terminalTurn)
+
+	var label string
+	switch outcome {
+	case provider.CancelRecorded:
+		label = "exa.agent_runs.cancel.accepted"
+	case provider.CancelAlreadyCancelling:
+		label = "exa.agent_runs.cancel.repeated"
+	case provider.CancelTerminal:
+		label = "exa.agent_runs.cancel.terminal"
+	case provider.CancelUncommitted:
+		// The scripted fault replaces this response, and nothing was recorded:
+		// the label must not claim the cancel took effect.
+		label = "exa.agent_runs.cancel.unrecorded"
+	case provider.CancelNotFound:
+		if x.HasFinding(provider.CodeJobIDInvalid) {
+			// CancelJob refused a request that resolved no job and claimed
+			// nothing: the unclaimed 404 of an id that never resolved.
+			return runNotFound(x, id)
+		}
+		// A reset landed after ResolveJob, so the job is gone — but this cancel
+		// claimed its attempt, and the 404 is the served response to it, as every
+		// CancelJob outcome is.
+		resp := runNotFound(x, id)
+		resp.Header = requestIDHeader(runRequestID(x, id))
+		resp.FaultEligible, resp.FaultBody = true, agentFaultBody
+		return resp
+	case provider.CancelFailed:
+		// CancelJob recorded the error finding that says why, and classify maps
+		// it onto the vendor's 500.
+		return rejection(x)
+	default:
+		x.Fail(codeRenderFailed, "", "provider.CancelJob answered outcome %q, which this profile does not render", outcome)
+		return rejection(x)
+	}
+
+	p, ok := decodeAgentRunProjection(x, turn, turnPath)
+	if !ok {
+		return rejection(x)
+	}
+	return runSnapshotResponse(x, p, id, label)
+}
+
+// terminalTurn reports whether a poll snapshot ends the run: the projection's
+// IsTerminal, the predicate the serve-order check judges every script by. A
+// snapshot that does not decode is not terminal, which load has already refused.
+func terminalTurn(t *scenario.Turn) bool {
+	var p agentRunProjection
+	return scenario.DecodeStrict(&t.Respond, &p) == nil && p.IsTerminal()
 }
 
 // handleAgentRunHead serves HEAD /agent/runs/{id}.
@@ -276,7 +395,16 @@ func selectAgentRunProjection(x *provider.Exchange, e *scenario.ProviderEntry) (
 	if turn == nil {
 		return nil, false
 	}
+	return decodeAgentRunProjection(x, turn, turnPath)
+}
 
+// decodeAgentRunProjection decodes the snapshot turn — at turnPath, its YAML
+// path — into the projection a poll or a cancel renders. It is the one decode
+// both share, which is half of what makes a cancel response byte-identical to
+// the next poll of the same snapshot.
+func decodeAgentRunProjection(
+	x *provider.Exchange, turn *scenario.Turn, turnPath string,
+) (*agentRunProjection, bool) {
 	p := &agentRunProjection{}
 	if err := scenario.DecodeStrict(&turn.Respond, p); err != nil {
 		x.Fail(codeProjectionInvalid, "", "the scenario's Exa agent-run projection could not be decoded: %s.respond: %v",

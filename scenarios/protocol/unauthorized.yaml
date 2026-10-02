@@ -76,6 +76,8 @@ providers:
     status: completed
     output:
       text: Report A states the finding.
+    cost_dollars:
+      total: 0.045
 
   tavily_research:
     auth:

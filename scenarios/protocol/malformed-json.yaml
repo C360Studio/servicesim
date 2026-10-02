@@ -7,7 +7,8 @@
 version: 1
 name: malformed-json
 description: >-
-  Every surface answers 200 with a body that is not valid JSON, so a consumer
+  Every surface answers 200 with a body that is not valid JSON (an Exa
+  agent-run cancel, on its own budget, is not faulted here), so a consumer
   fails cleanly instead of panicking or silently returning zero values.
 
 time:
@@ -115,6 +116,8 @@ providers:
     status: completed
     output:
       text: Report A states the finding.
+    cost_dollars:
+      total: 0.045
 
   tavily_research:
     fault:

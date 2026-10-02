@@ -66,6 +66,79 @@ version: 1
 name: exa-agent-runs-404-golden
 `
 
+// agentRunGoldenCancelScenario backs the cancel goldens. Its cancel script is one
+// unconditional cancelled snapshot, so a cancel of the running run answers the
+// cancelled run itself, with the usage and cost the scenario scripted for it.
+const agentRunGoldenCancelScenario = `
+version: 1
+name: exa-agent-runs-cancel-golden
+time:
+  base: 2026-01-01T00:00:00Z
+providers:
+  exa_agent_runs:
+    turns:
+      - when: {call_index: 0}
+        respond: {status: running}
+      - respond:
+          status: completed
+          output:
+            text: Report A finds that deterministic simulators remove flakiness from adapter test suites.
+          cost_dollars: {total: 0.045}
+    cancel:
+      turns:
+        - respond:
+            status: cancelled
+            usage: {agent_compute_units: 2.5, searches: 3}
+            cost_dollars: {total: 0.031, agent_compute: 0.025, search: 0.006}
+`
+
+// TestGolden_AgentRunCancelled pins POST /agent/runs/{id}/cancel's 200 body for a
+// cancel that was recorded: the AgentRun its next poll returns, here cancelled,
+// with stopReason cancelled and the scripted usage and cost.
+func TestGolden_AgentRunCancelled(t *testing.T) {
+	t.Parallel()
+
+	s := newSim(t, agentRunGoldenCancelScenario)
+	id := createRun(t, s, `{"query":"find the finding"}`)
+
+	rec := s.do(request{method: http.MethodPost, path: "/agent/runs/" + id + "/cancel"})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assertGoldenWire(t, "exa-agent-runs-cancelled.json", rec.Body.Bytes())
+}
+
+// TestGolden_AgentRunCancelErrors pins the three error bodies the cancel route
+// produces on its own: 401 for a missing credential, 404 for a run this process
+// does not hold, and the 500 for a cancel the scenario cannot answer. Each is
+// AgentErrorResponse. A scripted fault's body is the fault's own, and the fault
+// tests pin it rather than a golden.
+func TestGolden_AgentRunCancelErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name, src, fixture string
+		status             int
+		noAuth, unknown    bool
+	}{
+		{"401", agentRunGoldenCancelScenario, "exa-agent-runs-cancel-401.json", http.StatusUnauthorized, true, false},
+		{"404", agentRunGoldenCancelScenario, "exa-agent-runs-cancel-404.json", http.StatusNotFound, false, true},
+		{"500", agentRunGoldenScenario, "exa-agent-runs-cancel-500.json", http.StatusInternalServerError, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newSim(t, tc.src)
+			id := createRun(t, s, `{"query":"find the finding"}`)
+			if tc.unknown {
+				id = "agent_run_neverminted"
+			}
+			rec := s.do(request{method: http.MethodPost, path: "/agent/runs/" + id + "/cancel", noAuth: tc.noAuth})
+			require.Equal(t, tc.status, rec.Code, rec.Body.String())
+			assertGoldenWire(t, tc.fixture, rec.Body.Bytes())
+		})
+	}
+}
+
 // TestGolden_AgentRunCreated pins POST /agent/runs's 200 body: the run in its
 // initial queued status, per contracts/exa/README.md's async section.
 func TestGolden_AgentRunCreated(t *testing.T) {

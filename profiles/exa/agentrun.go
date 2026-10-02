@@ -265,12 +265,30 @@ const codeAgentRunErrorNotInSchema = "exa.agent_run.error.not_in_schema"
 // unexported: a consumer asserts on the string.
 const codeAgentRunValueRange = "exa.agent_run.value.range"
 
+// codeAgentRunCostUnscripted warns that a terminal snapshot scripts no
+// cost_dollars (ruling 6 on issue #6). AgentRun requires costDollars, so the
+// snapshot still renders, with zero placeholders, and a zero the scenario did
+// not script is no billing fact: the warning is the only thing that says so. It
+// fires on every terminal status — cancelled exactly like completed and failed —
+// in turns and in cancel.turns. It is unexported: a consumer asserts on the
+// string.
+const codeAgentRunCostUnscripted = "exa.agent_run.cost_unscripted"
+
 // agentRunValidator decodes and checks the async projections in a scenario.
 type agentRunValidator struct{}
 
 // Routes implements provider.RouteLister, so a `when.route:` in an
 // exa_agent_runs entry is checked against the async routes alone.
-func (agentRunValidator) Routes() []provider.Route { return agentRunRoutes() }
+//
+// The cancel route is left out because no turn is ever selected on it: a cancel
+// answers the snapshot the run's next POLL serves, peeked on the poll's route, in
+// turns and in cancel.turns alike. A turn naming it could never fire, so it must
+// be refused at load like any other route the entry does not select on.
+func (agentRunValidator) Routes() []provider.Route {
+	return slices.DeleteFunc(agentRunRoutes(), func(r provider.Route) bool {
+		return r.FaultKey == faultKeyRunCancel
+	})
+}
 
 // ProjectionKeys returns the async projection's own top-level keys — the
 // vocabulary a turn's `respond:` body under the "exa_agent_runs" entry kind
@@ -390,6 +408,20 @@ func validateAgentRunTurn(
 			Path:     path + ".error",
 			Message: "the live AgentRun schema has no run-level error object (it is additionalProperties: false); " +
 				"a failed run is expressed through `status: failed` plus `stop_reason: error`, so remove `error:`",
+		})
+	}
+
+	// Ruling 6: one cost rule for every terminal snapshot, cancelled included and
+	// with no special case. The zero placeholders still render; this is what
+	// tells the author they are not a billing fact.
+	if p.IsTerminal() && p.CostDollars == nil {
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityWarning,
+			Code:     codeAgentRunCostUnscripted,
+			Path:     path + ".cost_dollars",
+			Message: fmt.Sprintf("a %s run scripts no cost_dollars, so costDollars renders zero placeholders, which "+
+				"are no billing fact; script cost_dollars on every terminal snapshot — usage accrued before a run ends "+
+				"is billed, a cancelled run's included", status),
 		})
 	}
 

@@ -166,6 +166,51 @@ func TestBuiltins_LoadValidateResolve(t *testing.T) {
 	}
 }
 
+// codeAgentRunCostUnscripted is the Exa agent-run validator's warning for a
+// terminal snapshot that scripts no cost_dollars. The validator keeps it
+// unexported, so this asserts on the string, as a consumer would.
+const codeAgentRunCostUnscripted = "exa.agent_run.cost_unscripted"
+
+// TestBuiltins_ScriptTheCostOfEveryTerminalAgentRun keeps the reference corpus
+// modelling the rule it ships: every terminal Exa agent-run snapshot scripts its
+// cost_dollars, so no built-in raises the cost warning. The first subtest proves
+// the filter matches what the validator actually raises; a filter that matched
+// nothing would pass forever.
+func TestBuiltins_ScriptTheCostOfEveryTerminalAgentRun(t *testing.T) {
+	t.Parallel()
+
+	validators := provider.MustSet(referenceProfiles()...).Validators()
+	raised := func(s *scenario.Scenario) []string {
+		var paths []string
+		for _, f := range provider.ValidateScenario(s, validators) {
+			if f.Code == codeAgentRunCostUnscripted {
+				paths = append(paths, f.Path)
+			}
+		}
+		return paths
+	}
+
+	t.Run("an uncosted terminal snapshot is warned about", func(t *testing.T) {
+		t.Parallel()
+		s, report, err := scenario.Parse([]byte(`
+version: 1
+name: uncosted
+providers:
+  exa_agent_runs:
+    turns:
+      - respond: {status: failed}
+`))
+		require.NoErrorf(t, err, "%v", report.Findings)
+		assert.Equal(t, []string{"providers.exa_agent_runs.turns[0].respond.cost_dollars"}, raised(s))
+	})
+	for _, name := range builtins {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assert.Empty(t, raised(loadBuiltin(t, name)))
+		})
+	}
+}
+
 // TestBuiltins_CoverEveryImplementedProvider keeps a single --scenario flag
 // coherent across all four listeners.
 func TestBuiltins_CoverEveryImplementedProvider(t *testing.T) {

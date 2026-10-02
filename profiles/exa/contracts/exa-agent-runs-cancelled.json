@@ -1,0 +1,27 @@
+{
+  "id": "agent_run_7d6917c0bd59a8a3e61b51b08632f8b1",
+  "object": "agent_run",
+  "status": "cancelled",
+  "stopReason": "cancelled",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "completedAt": "2026-01-01T00:00:00.000Z",
+  "request": null,
+  "output": {
+    "text": "",
+    "structured": null,
+    "grounding": []
+  },
+  "usage": {
+    "agentComputeUnits": 2.5,
+    "searches": 3,
+    "emails": 0,
+    "phoneNumbers": 0
+  },
+  "costDollars": {
+    "total": 0.031,
+    "agentCompute": 0.025,
+    "search": 0.006,
+    "emails": 0,
+    "phoneNumbers": 0
+  }
+}

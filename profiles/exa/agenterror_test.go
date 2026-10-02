@@ -463,13 +463,15 @@ func TestNonAgentRoutesKeepTheFlatErrorEnvelope(t *testing.T) {
 	assert.Empty(t, rec.Header().Get("x-request-id"), "the header is documented for the agent routes only")
 }
 
-// A route that is not one of the three agent routes — an agent operation the
+// A route that is not one of the four agent routes — an agent operation the
 // profile does not simulate — is refused by the mux in the flat shape, with no
 // x-request-id: only the routed agent operations speak AgentErrorResponse. Which
 // refusal it is depends on whether the path is routed for another method: the list
-// (GET /agent/runs) and DELETE /agent/runs/{id} share a path with a routed
-// operation, so the mux answers 405 and names the methods it does serve; the
-// cancel, stop and events sub-resources are not routed at all and answer 404.
+// (GET /agent/runs), DELETE /agent/runs/{id} and a GET of the cancel path share a
+// path with a routed operation, so the mux answers 405 and names the methods it
+// does serve; the stop and events sub-resources are not routed at all and answer
+// 404. stop is a separate, ultra-only operation and is deliberately not aliased to
+// cancel.
 func TestUnroutedAgentOperationsKeepTheFlatRefusal(t *testing.T) {
 	t.Parallel()
 
@@ -483,7 +485,7 @@ func TestUnroutedAgentOperationsKeepTheFlatRefusal(t *testing.T) {
 	}{
 		{"list", http.MethodGet, "/agent/runs", http.StatusMethodNotAllowed, tagMethodNotAllowed, "POST"},
 		{"delete", http.MethodDelete, "/agent/runs/%s", http.StatusMethodNotAllowed, tagMethodNotAllowed, "GET, HEAD"},
-		{"cancel", http.MethodPost, "/agent/runs/%s/cancel", http.StatusNotFound, tagNotFound, ""},
+		{"get on the cancel path", http.MethodGet, "/agent/runs/%s/cancel", http.StatusMethodNotAllowed, tagMethodNotAllowed, "POST"},
 		{"stop", http.MethodPost, "/agent/runs/%s/stop", http.StatusNotFound, tagNotFound, ""},
 		{"events", http.MethodGet, "/agent/runs/%s/events", http.StatusNotFound, tagNotFound, ""},
 	}

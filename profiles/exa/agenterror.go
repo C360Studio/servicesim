@@ -64,8 +64,9 @@ var agentErrorCodeEnum = []string{
 const codeAgentRunFaultTagUnknown = "exa.agent_run.fault_tag.unknown"
 
 // validateAgentRunFaultTags reports every fault attempt of the entry — the create
-// plan and each turn's poll plan — whose tag is not an AgentError code. An
-// attempt that declares its own `body:` renders no tag, so it is not checked.
+// plan, the cancel plan and each turn's poll plan — whose tag is not an AgentError
+// code. An attempt that declares its own `body:` renders no tag, so it is not
+// checked.
 func validateAgentRunFaultTags(e *scenario.ProviderEntry) []scenario.Finding {
 	var findings []scenario.Finding
 	check := func(path string, f *scenario.Fault) {
@@ -165,10 +166,11 @@ func agentFaultBody(a scenario.FaultAttempt) []byte {
 	return agentErrorBody(e)
 }
 
-// isAgentRoute reports whether x is being served by one of the three agent-run
+// isAgentRoute reports whether x is being served by one of the four agent-run
 // routes, the only ones that speak AgentErrorResponse.
 func isAgentRoute(x *provider.Exchange) bool {
-	return slices.Contains([]string{faultKeyRunCreate, faultKeyRunPoll, faultKeyRunHead}, x.Route.FaultKey)
+	return slices.Contains([]string{faultKeyRunCreate, faultKeyRunPoll, faultKeyRunHead, faultKeyRunCancel},
+		x.Route.FaultKey)
 }
 
 // requestIDHeader is the x-request-id response header the spec documents on every

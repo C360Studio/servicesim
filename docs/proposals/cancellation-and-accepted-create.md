@@ -49,6 +49,13 @@ smallest sound mechanism, and whether its exported names are the ones to lock in
    zero placeholders and the loader raises a warning on every terminal turn that scripts none — `cancelled` included,
    with no special case. A zero the scenario did not script is a placeholder, never a billing fact; strict validation
    promotes the warning to an error.
+
+   **Correction (2026-10-02).** The last clause's premise was false. `validation.strict`, `promote` and `demote`
+   apply only to findings raised while serving a request; a finding raised when a scenario loads, as this warning
+   is, never sees the policy. The owner's decision: U4 lands `exa.agent_run.cost_unscripted` as a load-time warning
+   that strict does not promote, the documentation says so, and the framework gap is tracked in
+   [#18](https://github.com/C360Studio/servicesim/issues/18), outside U4.
+
 7. **Only `background: true` Perplexity responses are retrievable.** A synchronous response with `store` unset is
    retrievable on the real API; this simulator answers `404` for it. That is a deliberate, named divergence, recorded in
    the contract notes with its reasons (see [Q2](#q2--the-perplexity-lifecycle)).
