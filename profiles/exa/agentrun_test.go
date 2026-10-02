@@ -160,6 +160,70 @@ func TestAgentRunPollsAdvanceTheRun(t *testing.T) {
 	assert.False(t, job.CancelRequested)
 }
 
+// noAgentRunsEntry is a scenario that scripts Exa's synchronous surface and
+// declares no exa_agent_runs entry at all.
+const noAgentRunsEntry = `
+version: 1
+name: no-agent-runs-entry
+providers:
+  exa: {}
+`
+
+// codesIn lists the finding codes of one journal entry.
+func codesIn(e journal.Entry) []string {
+	var out []string
+	for _, f := range e.Findings {
+		out = append(out, f.Code)
+	}
+	return out
+}
+
+// A scenario with no exa_agent_runs entry has no poll script, so a run created
+// against it could never be polled honestly. The create fails closed — the
+// agent envelope's 404, with scenario.no_matching_turn — before it claims
+// anything, and no job is recorded. Before this, the create succeeded and every
+// poll served a pending snapshot forever while the run's position never moved.
+func TestAgentRunCreateWithNoEntryFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	store := jobs.NewRegistry(jobs.Limits{})
+	s := newSimWithJobs(t, noAgentRunsEntry, store)
+
+	rec := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"q"}`})
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), agentCodeRunNotFound)
+
+	entries := s.journal.Snapshot()
+	require.Len(t, entries, 1)
+	assert.Contains(t, codesIn(entries[0]), provider.CodeNoMatchingTurn)
+	assert.NotContains(t, codesIn(entries[0]), provider.CodeAttemptOnRejection, "the refusal claims nothing")
+	assert.Empty(t, store.List(), "no run is recorded")
+}
+
+// A poll that reaches a scenario with no exa_agent_runs entry — one process
+// serving two scenarios, the run created under the one that declares it — fails
+// loudly rather than serving a default: scenario.no_matching_turn and a 404. It
+// still claims its poll and records it on the run, so the run's position keeps
+// matching its poll lane.
+func TestAgentRunPollWithNoEntryFailsLoudly(t *testing.T) {
+	t.Parallel()
+
+	store := jobs.NewRegistry(jobs.Limits{})
+	id := createRun(t, newSimWithJobs(t, asyncScenario, store), `{"query":"q"}`)
+
+	other := newSimWithJobs(t, noAgentRunsEntry, store)
+	rec := other.do(request{method: http.MethodGet, path: "/agent/runs/" + id})
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+
+	entries := other.journal.Snapshot()
+	require.Len(t, entries, 1)
+	assert.Contains(t, codesIn(entries[0]), provider.CodeNoMatchingTurn)
+
+	job, ok := store.Lookup(provider.DefaultNamespace, id)
+	require.True(t, ok)
+	assert.Equal(t, 1, job.Polls, "the claimed poll is recorded on the run")
+}
+
 // TestAgentRunCreateCredentialTurnKeyNeverLeaksTheToken is the async half of the
 // turn_key credential fix (provider/lane.go turnLaneKey, internal/journal Redact):
 // a scenario may legitimately key the create route's lane on which credential

@@ -1093,7 +1093,9 @@ Exa's Agent API and Tavily's Research API are **create-then-poll**: a `POST` min
 immediately, and everything interesting — progress, the terminal payload, failure — lives on the `GET` that polls
 it. Each is its own provider entry, following the `perplexity` / `perplexity_agent` precedent exactly: independent
 `auth`, `validation`, `fault` and `turns`. A scenario that uses only the sync surfaces omits the entry and is
-unaffected.
+unaffected — except that an Exa agent-run create against it is refused, with the agent envelope's 404 and
+`scenario.no_matching_turn`, because a run with no poll script could never be polled honestly. Builds before this
+one accepted that create and served a pending snapshot to every poll.
 
 **A turn of an async entry is one poll snapshot.** That is the whole schema addition — no new envelope key
 describes a job — and every existing turn mechanism applies unchanged: `when`, `call_index`, the single-shot/

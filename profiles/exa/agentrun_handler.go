@@ -100,10 +100,21 @@ func createFault(s *scenario.Scenario) *scenario.Fault {
 //
 // The order is the fail-closed order §4.4 requires: everything that can reject
 // runs before MintJob, because MintJob claims the call index.
+//
+// A scenario that declares no exa_agent_runs entry has no poll script, so a run
+// created against it could never be polled honestly: the create is refused,
+// before it claims anything, the way any request the scenario has nothing to
+// say about is (CLAUDE.md house rule 3).
 func handleAgentRunCreate(x *provider.Exchange) provider.Response {
 	authenticate(x)
 	validateAgentRunCreate(x)
 	if x.Failed() {
+		return rejection(x)
+	}
+	if x.Entry() == nil {
+		x.Fail(provider.CodeNoMatchingTurn, "",
+			"the scenario declares no %s entry, so a run created here could never be polled; "+
+				"add a providers.%s block whose turns script its polls", NameAgentRuns, NameAgentRuns)
 		return rejection(x)
 	}
 
@@ -248,15 +259,20 @@ const (
 // (provider.SelectPollTurn), so it runs only after resolution has confirmed the
 // run is real — and every served poll advances the run's position, which is
 // what a cancel judges "terminal at cancel time" by.
+//
+// A scenario with no exa_agent_runs entry has no script to serve, and is not
+// special-cased: the create refuses to mint a run against one, but a process
+// serving several scenarios can still route a poll of a run created under one
+// to another that lacks the entry. SelectPollTurn then claims the poll, records
+// it on the run, and fails loudly with scenario.no_matching_turn — never a
+// default snapshot.
 func selectAgentRunProjection(x *provider.Exchange, e *scenario.ProviderEntry) (*agentRunProjection, bool) {
-	if e == nil {
-		// The scenario declares no async entry. A run cannot have been minted
-		// without one, so this is unreachable through a resolved poll; the
-		// well-shaped pending snapshot is the safe answer either way.
-		return &agentRunProjection{}, true
+	var turns []scenario.Turn
+	var cancel *scenario.CancelPolicy
+	if e != nil {
+		turns, cancel = e.Turns, e.Cancel
 	}
-
-	turn, turnPath := provider.SelectPollTurn(x, "providers."+e.Name, e.Turns, e.Cancel)
+	turn, turnPath := provider.SelectPollTurn(x, "providers."+NameAgentRuns, turns, cancel)
 	if turn == nil {
 		return nil, false
 	}
