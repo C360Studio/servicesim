@@ -6,7 +6,7 @@ carries the documentation URLs it was derived from and the date the shape was ve
 
 | Provider | Contract | Verified | Base URL simulated |
 |---|---|---|---|
-| Exa | [`../profiles/exa/contracts/README.md`](../profiles/exa/contracts/README.md) | 2026-10-01 | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
+| Exa | [`../profiles/exa/contracts/README.md`](../profiles/exa/contracts/README.md) | 2026-10-02 | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}`, `POST /agent/runs/{id}/cancel` |
 | Tavily | [`../profiles/tavily/contracts/README.md`](../profiles/tavily/contracts/README.md) | 2026-08-15 | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
 | Perplexity | [`../profiles/perplexity/contracts/README.md`](../profiles/perplexity/contracts/README.md) | 2026-10-01 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
 | MCP | [`../profiles/mcp/contracts/README.md`](../profiles/mcp/contracts/README.md) | 2026-08-16 | `POST /mcp` |
@@ -36,7 +36,7 @@ cannot tell whether it was considered and declined or never looked at — which 
 
 | Provider | Endpoint | Status | Why |
 |---|---|---|---|
-| Exa | `/agent/runs` lifecycle beyond create and poll | NOT SIMULATED | Create and poll ARE simulated — see the table above. The rest of the lifecycle (listing all runs, `/agent/runs/{id}/events`, `/agent/runs/{id}/cancel`, and deleting a run) has no verified contract and is not simulated. Paths here are written without a method on purpose: the index guard reads a backticked method-plus-path as a claim that the route IS simulated. |
+| Exa | `/agent/runs` lifecycle beyond create, poll and cancel | NOT SIMULATED | Create, poll and cancel ARE simulated — see the table above. The rest of the lifecycle (listing all runs, `/agent/runs/{id}/events`, `/agent/runs/{id}/stop`, and deleting a run) is not simulated. `/stop` is a separate, `ultra`-only operation that completes a run early with its results, and is deliberately not aliased to cancel. Paths here are written without a method on purpose: the index guard reads a backticked method-plus-path as a claim that the route IS simulated. |
 
 A `NOT SIMULATED` row never asserts a method, a request shape or a response shape for the paths it names — that
 would be writing a wire field from memory, which [the one rule](../CONTRIBUTING.md#the-one-rule-that-matters-most)
@@ -71,7 +71,7 @@ consumed fields are still verified mostly against the vendor's rendered prose pa
 Exa Websets endpoint, an unrelated Tavily `/crawl` field, and so on. A changed hash is therefore the SIGNAL that
 something may have moved, not a diff of what moved: the next step is always a person re-reading the consumed fields
 against both the cited `documentation_url` pages and the spec itself. Only the entries whose own `documentation_url`
-IS the spec's URL (all of Perplexity's, and Exa's three `/findSimilar` and six agent-run entries) were read from the
+IS the spec's URL (all of Perplexity's, and Exa's three `/findSimilar` and ten agent-run entries) were read from the
 spec directly; every other entry was read from an undated prose page, and re-checking it means re-reading that page,
 not re-hashing anything.
 
@@ -80,10 +80,11 @@ file, matching the **Verified** column above, and one per golden entry. Both mov
 same reason: an entry's date moves because that golden's shape was re-checked; the provider-level date and the
 **Verified** column above move together whenever any entry is checked later than they currently claim, because a
 whole-contract verification cannot be older than a fixture that was individually re-checked since. See the header of
-any `provenance.yaml` for how the two relate. Read Exa's 2026-10-01 in the table above with that rule in mind: it is
-the date `contracts.Conform` forces, not a re-read of all seven simulated routes. Only the three agent routes were
-re-read against that spec; `/search`, `/answer`, `/contents` and `/findSimilar` keep their earlier per-entry dates, and
-re-reading them is tracked in issue #11. Every provider's `provenance.yaml` also carries a `spec:` block —
+any `provenance.yaml` for how the two relate. Read Exa's 2026-10-02 in the table above with that rule in mind: it is
+the date `contracts.Conform` forces, not a re-read of all eight simulated routes. Only the agent routes were read
+against that spec — create, poll and `HEAD` on 2026-10-01, cancel on 2026-10-02 against an identical hash; `/search`,
+`/answer`, `/contents` and `/findSimilar` keep their earlier per-entry dates, and re-reading them is tracked in
+issue #11. Every provider's `provenance.yaml` also carries a `spec:` block —
 `url`, `version`, `sha256`, `retrieved` — recording the bytes its consumed contract's machine-readable source was
 generated from, readable from Go via `contracts.ProviderSpec(bundleFS)`; each reference profile's own
 `TestHasASpecBlock` (`profiles/<provider>/contract_test.go`) fails the build if it drops one — `contracts.Conform`

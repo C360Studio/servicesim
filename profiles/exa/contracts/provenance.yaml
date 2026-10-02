@@ -29,7 +29,9 @@
 # spec: records the machine-readable specification Exa publishes,
 # https://exa.ai/docs/exa-spec.yaml, covering every route this provider
 # simulates (/search, /contents, /answer, /findSimilar, /agent/runs,
-# /agent/runs/{id}) — last fetched and hashed 2026-10-01. Its sha256 is the DRIFT
+# /agent/runs/{id}, /agent/runs/{id}/cancel) — last fetched and hashed
+# 2026-10-02, with the same hash as the 2026-10-01 fetch (see the dated notes
+# below for what each fetch was read for). Its sha256 is the DRIFT
 # SIGNAL for this provider: an unchanged hash on a fresh fetch means nothing
 # below needs re-reading; a changed one means re-read the consumed fields
 # against both the per-entry documentation_url pages below and the spec
@@ -43,8 +45,8 @@
 # additions). The hash says "go re-read the pages", not "here is what
 # changed" — the per-entry documentation_url and verified date remain the
 # record of what was actually verified and against what. Only entries whose
-# documentation_url IS the spec (the three /findSimilar entries and the six
-# exa-agent-runs-* entries below: nine in all) carry api_version, because only
+# documentation_url IS the spec (the three /findSimilar entries and the ten
+# exa-agent-runs-* entries below: thirteen in all) carry api_version, because only
 # those were read from this versioned document; every other entry was read from
 # an undated prose page and carries none.
 #
@@ -58,15 +60,22 @@
 # routes this provider simulates, and neither does the Verified cell it must
 # match in contracts/README.md. A re-read of those routes against this hash is
 # still owed, tracked in GitHub issue #11, and nothing here claims it was done.
+#
+# 2026-10-02: the spec was re-fetched and its hash is IDENTICAL to the one
+# adopted on 2026-10-01, so retrieved moved and sha256 did not. Only
+# cancelAgentRun and stopAgentRun were read against it, for the four
+# exa-agent-runs-cancel* entries (docs/audits/2026-10-01-exa-agent.md, "Cancel,
+# 2026-10-02"); the provider-level date moved because contracts.Conform requires
+# it to be no older than those entries, on the same terms as above.
 
 provider: exa
-verified: 2026-10-01
+verified: 2026-10-02
 
 spec:
   url: https://exa.ai/docs/exa-spec.yaml
   version: "2.0.0"
   sha256: cbb9a1429456270527cec49cb495ec00671dd2b7702c411a168988e22222416d
-  retrieved: 2026-10-01
+  retrieved: 2026-10-02
 
 goldens:
   - golden: exa-search-happy.json
@@ -357,6 +366,72 @@ goldens:
       fresh namespace, or raising the bound), which is the part a consumer's
       test failure output actually needs to be actionable — the wire text
       itself does not name the --max-jobs flag.
+
+  - golden: exa-agent-runs-cancelled.json
+    endpoint: POST /agent/runs/{id}/cancel, a cancel recorded on a running run
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-02
+    note: >-
+      cancelAgentRun (spec line 1153) answers 200 with an AgentRun, and has no
+      request body. The shape is the poll's (AgentRun, line 5793), because the
+      response IS the snapshot the run's next poll returns: here the scenario's
+      cancel script is one cancelled snapshot. status: cancelled and stopReason:
+      cancelled are documented enum members (pairing them is SIMULATOR-POLICY).
+      The spec says usage accrued before cancellation is billed, so usage and
+      costDollars are the scenario's scripted values (agentComputeUnits 2.5,
+      searches 3; total 0.031, agentCompute 0.025, search 0.006), and the
+      components left at zero are placeholders, not billing facts. Whether the
+      live cancel answers the cancelled run at once or an intermediate status
+      first is not documented; the scenario scripts which.
+
+  - golden: exa-agent-runs-cancel-401.json
+    endpoint: POST /agent/runs/{id}/cancel, no credential presented
+    status: 401
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-02
+    note: >-
+      cancelAgentRun documents a 401 "Team context or authentication was not
+      found" in AgentErrorResponse's shape. AUTHENTICATION_ERROR /
+      TEAM_NOT_FOUND is INFERENCE from the enum names (the spec pairs no type
+      and code with a status), and the message is the response description.
+      Nothing is claimed or recorded on the run.
+
+  - golden: exa-agent-runs-cancel-404.json
+    endpoint: POST /agent/runs/{id}/cancel, a run this namespace does not hold
+    status: 404
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-02
+    note: >-
+      cancelAgentRun documents a 404 "Run not found". The body is the same
+      RUN_NOT_FOUND envelope a poll of an unknown id gets (NOT_FOUND /
+      RUN_NOT_FOUND is INFERENCE from the enum names), for an id never minted,
+      one minted in another namespace, or a malformed one. Nothing is claimed.
+
+  - golden: exa-agent-runs-cancel-500.json
+    endpoint: POST /agent/runs/{id}/cancel, a cancel the scenario cannot answer
+    status: 500
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-02
+    note: >-
+      cancelAgentRun documents a 500 "Server error or run timeout". This is the
+      body Servicesim answers when the cancel would take effect but the
+      scenario scripts no cancel.turns to answer the polls after it
+      (job.cancel_unscripted), or when the run's position kept moving
+      (job.cancel_contended): SERVER_ERROR for both type and code, and the
+      same fixed message as the simulator's other internal 500s. That
+      condition is SIMULATOR-POLICY, not a vendor behaviour; nothing is
+      recorded on the run. A scripted {status: 500} fault answers the
+      fault's own body instead ("Server error"), which this golden does not
+      cover.
 
   - golden: exa-contents-happy.json
     endpoint: POST /contents

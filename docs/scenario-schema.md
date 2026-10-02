@@ -441,8 +441,8 @@ providers:
 
 | Key | Type | Effect |
 |---|---|---|
-| `strict` | boolean | Promotes every warning to an error. |
-| `promote` | list of string | Finding codes to raise from warning to error, for example `[request.unknown_field]`. |
+| `strict` | boolean | Promotes every warning raised while serving a request to an error. A finding raised when the scenario loads is not promoted today ([#18](https://github.com/C360Studio/servicesim/issues/18)). |
+| `promote` | list of string | Finding codes to raise from warning to error when raised while serving a request, for example `[request.unknown_field]`. A code raised when the scenario loads is not promoted today ([#18](https://github.com/C360Studio/servicesim/issues/18)). |
 | `demote` | list of string | Finding codes to lower from error to warning. |
 
 ### `extra_fields`
@@ -1110,7 +1110,7 @@ file: `respond: &pending {status: running}` on one turn, `respond: *pending` on 
 
 | Provider entry | Routes served |
 |---|---|
-| `exa_agent_runs` | `POST /agent/runs` (create), `GET /agent/runs/{id}` (poll), `HEAD /agent/runs/{id}` (existence only) |
+| `exa_agent_runs` | `POST /agent/runs` (create), `GET /agent/runs/{id}` (poll), `HEAD /agent/runs/{id}` (existence only), `POST /agent/runs/{id}/cancel` (cancel — see [Cancelling a job](#cancelling-a-job)) |
 | `tavily_research` | `POST /research` (create), `GET /research/{request_id}` (poll), `HEAD /research/{request_id}` (existence only) |
 
 The create response is derived in full and cannot be scripted: a projection body alongside `turns:` is already a
@@ -1266,6 +1266,7 @@ to the generic ones every provider raises for a malformed `respond:` node or an 
 | `exa.agent_run.script_exhausted` | warning | no unconditional final turn, in `turns` or in `cancel.turns`: the poll after the script's last snapshot gets `scenario.no_matching_turn` and a 404 the author did not intend |
 | `exa.agent_run.body_predicate_on_poll` | warning | a turn's `when` uses `body_contains` or `body_json` — a `GET` poll carries no body, so it can never match |
 | `exa.agent_run.completed_without_output` | warning | `status: completed` with no `output` — the vendor allows it, but it is almost always an unfinished fixture |
+| `exa.agent_run.cost_unscripted` | warning | a terminal snapshot — `completed`, `failed` or `cancelled`, with no special case — that scripts no `cost_dollars`. `costDollars` is required, so it still renders zero placeholders; the warning says those zeros are no billing fact. Script `cost_dollars` on every terminal snapshot. It is raised when the scenario loads, so `validation.strict` does not promote it today ([#18](https://github.com/C360Studio/servicesim/issues/18)) |
 
 Every row that judges a turn applies to `cancel.turns` too, addressed `providers.exa_agent_runs.cancel.turns[i]`, and
 the two scripts are judged independently: `cancel.turns` needs its own unconditional final turn, and a terminal
@@ -1385,8 +1386,8 @@ What `accepted` does **not** do:
 **Where it can appear.** Load accepts `accepted` on any fault attempt — `create.fault`, a turn's plan, a block-level
 plan — because load sees one attempt in isolation, and whether the request that claims it creates a job is a fact only
 the routes know. It means something only on a route whose request can take effect: an async create, which keeps its
-job, and a cancel, which records its cancel ([Cancelling a job](#cancelling-a-job); no in-tree listener serves a
-cancel route yet). Exa's Agent create is the one this is built and tested against; `tavily_research`'s create mints
+job, and a cancel, which records its cancel ([Cancelling a job](#cancelling-a-job); Exa's agent-run cancel is the
+in-tree one). Exa's Agent create is the one this is built and tested against; `tavily_research`'s create mints
 through the same seam. An accepted attempt claimed by a request that neither creates a job nor runs a cancel — an
 `accepted` in a poll plan, say — raises `fault.accepted_unreachable`, an error on that request's journal entry, and
 the attempt still applies as an ordinary fault.
@@ -1450,10 +1451,8 @@ route's own attempt budget, independent of the create's and the poll's, and `can
 snapshots** — what the job's polls serve once a cancel is recorded. It scripts no cancel *response*: a cancel answers
 with the snapshot the job's next poll will be served, so the cancel and the polls after it cannot disagree.
 
-> **This build records and selects; it serves no cancel route.** The block loads and is validated on
-> `exa_agent_runs`, and every Exa poll records its position on the job, but no in-tree listener serves a cancel
-> route yet, so a scenario's `cancel:` block has no effect on the wire. What follows is the contract those routes are
-> built on. Every other entry rejects the block at load ([below](#entries-that-serve-no-cancel)).
+In tree, `exa_agent_runs` serves it: `POST /agent/runs/{id}/cancel`, on its own fault key `exa:agent_runs.cancel`
+and a per-job lane. Every other entry rejects the block at load ([below](#entries-that-serve-no-cancel)).
 
 ```yaml
 providers:
@@ -1463,17 +1462,29 @@ providers:
         respond: {status: running}
       - when: {call_index: 1}
         respond: {status: running}
-      - respond: {status: completed, output: {text: done}}
+      - respond: {status: completed, output: {text: done}, cost_dollars: {total: 0.045}}
     cancel:
       fault:                          # the cancel route's plan
         attempts:
-          - {status: 503}             # each job's first cancel fails and records nothing
+          - {status: 500}             # each job's first cancel fails and records nothing
           - {}
       turns:                          # the polls after a recorded cancel
         - when: {call_index: 0}       # the first poll after the cancel
           respond: {status: running}  # acknowledged, still winding down
-        - respond: {status: cancelled}
+        - respond:                    # usage accrued before the cancellation is billed
+            status: cancelled
+            usage: {agent_compute_units: 3}
+            cost_dollars: {total: 0.012}
 ```
+
+On Exa a cancel answers `200` with an `AgentRun` — the snapshot the table below names — or a vendor-shaped error,
+and its journal entry says what happened, because the journal keeps no bodies: `exa.agent_runs.cancel.accepted` only
+for a cancel that was **recorded**, `exa.agent_runs.cancel.repeated` for one sent while a cancel is already recorded,
+`exa.agent_runs.cancel.terminal` when completion won, and `exa.agent_runs.cancel.unrecorded` when the attempt did not
+commit. A poll is labelled `exa.agent_runs.polled.<status>` with the status its snapshot scripts (`running` when it
+scripts none), so a confirmed cancellation is an `exa.agent_runs.polled.cancelled` entry with no fault. A label is the
+handler's even when a scripted fault replaced the response, so read it beside the entry's `fault_kind`. The wire
+contract is the "Cancel" section of `profiles/exa/contracts/README.md`.
 
 **Positions.** A job's *poll position* is how many poll positions its lane has claimed — every poll counts, a poll
 answered with a scripted fault included — so 0 before its first. A cancel is
@@ -1492,14 +1503,14 @@ but by `turns` at the job's current position — the snapshot its next poll woul
 | a non-terminal snapshot | does not commit | that snapshot, which the fault then replaces | nothing |
 | (a cancel is already recorded) | any | `cancel.turns` at the job's next position since the cancel | nothing new |
 
-With the script above each job's first cancel answers 503 and records nothing, so read every "cancel" below as that
+With the script above each job's first cancel answers 500 and records nothing, so read every "cancel" below as that
 failure and its retry. Create, cancel: recorded at position 0, and the polls serve `running`, then `cancelled` from
 then on. Create, poll, cancel: recorded at position 1. Create, poll, poll, cancel: the next poll would serve
 `completed`, so completion wins, nothing is recorded, and the polls keep serving `completed`.
 
 **A cancel is recorded only when its attempt commits** — the same predicate a create keeps its job on: the client
 receives the response body (`scenario.FaultAttempt.DeliversBody`), or the attempt says `accepted: true`. A
-`{status: 503}` records nothing, exactly as a vendor that never received the cancel records nothing, and the client's
+`{status: 500}` records nothing, exactly as a vendor that never received the cancel records nothing, and the client's
 retry draws the next attempt. `{kind: close_before_headers, accepted: true}` records the cancel and loses its reply:
 the client holds a connection error, and its next poll shows the cancel took effect. `accepted` on an attempt that
 delivers its body is `scenario.fault.accepted.redundant`, as on a create.
@@ -1527,9 +1538,10 @@ needs its own unconditional final turn (`exa.agent_run.script_exhausted` warns o
 there, `completed` included, to script "the cancel was acknowledged and the run completed anyway". A `cancel.turns`
 turn carries no `fault:` — that is a load error, because the poll route's plan stays on `turns` and the cancel
 route's is `cancel.fault`. `cancel.fault` is validated like `create.fault`, at `providers.<entry>.cancel.fault…`, and
-a `when.route` in `cancel.turns` must name a route the provider serves, as in `turns`. Poll selection reads the poll's
-position alone, never a request body — a `GET` poll carries none — which is what lets a cancel know the exact
-snapshot the next poll will serve.
+a `when.route` in `cancel.turns` must name a route the provider serves, as in `turns` — on Exa, the poll's: a cancel
+selects no turn of its own, so naming its route is `scenario.turn.route_unknown` in either script. Poll selection
+reads the poll's position alone, never a request body — a `GET` poll carries none — which is what lets a cancel know
+the exact snapshot the next poll will serve.
 
 ##### Entries that serve no cancel
 

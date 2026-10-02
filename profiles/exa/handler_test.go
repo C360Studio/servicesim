@@ -245,7 +245,7 @@ func TestRoutes_DeclareSeparateFaultBudgets(t *testing.T) {
 	t.Parallel()
 
 	routes := Routes()
-	require.Len(t, routes, 7)
+	require.Len(t, routes, 8)
 	assert.Equal(t, patternSearch, routes[0].Pattern)
 	assert.Equal(t, patternAnswer, routes[1].Pattern)
 	assert.Equal(t, patternContents, routes[2].Pattern)
@@ -254,9 +254,9 @@ func TestRoutes_DeclareSeparateFaultBudgets(t *testing.T) {
 		"an /answer call must not consume /search's retry budget")
 
 	// Every route on this listener carries a distinct fault key. The async
-	// surface adds three, and the reasoning is the same each time: a poll retry
-	// must not consume the create's retries, and an existence check must not
-	// consume either.
+	// surface adds four, and the reasoning is the same each time: a poll retry
+	// must not consume the create's retries, an existence check must not consume
+	// either, and a cancel retry must consume none of them.
 	keys := map[string]string{}
 	for _, r := range routes {
 		if prior, seen := keys[r.FaultKey]; seen {

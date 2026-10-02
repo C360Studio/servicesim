@@ -99,6 +99,7 @@ func handlers() map[string]provider.Handler {
 		patternRunCreate:   handleAgentRunCreate,
 		patternRunPoll:     handleAgentRunPoll,
 		patternRunHead:     handleAgentRunHead,
+		patternRunCancel:   handleAgentRunCancel,
 	}
 }
 
@@ -171,7 +172,7 @@ func handleAnswer(x *provider.Exchange) provider.Response {
 // selection into Exa's error envelope. It never claims a fault attempt: a
 // rejected request must not consume a retry budget.
 //
-// The three agent-run routes answer in AgentErrorResponse's nested shape and the
+// The four agent-run routes answer in AgentErrorResponse's nested shape and the
 // others in the flat one; the finding that classify picked decides the status
 // either way.
 func rejection(x *provider.Exchange) provider.Response {

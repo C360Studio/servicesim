@@ -746,10 +746,14 @@ type AuthPolicy struct {
 
 // ValidationPolicy tunes how validation findings map onto HTTP outcomes.
 type ValidationPolicy struct {
-	// Strict promotes every warning to an error.
+	// Strict promotes every warning raised while serving a request to an
+	// error. A finding raised when the scenario loads is not promoted today
+	// (issue #18).
 	Strict bool `yaml:"strict,omitempty"`
 
-	// Promote lists finding codes to raise from warning to error.
+	// Promote lists finding codes to raise from warning to error when they are
+	// raised while serving a request. A code raised when the scenario loads is
+	// not promoted today (issue #18).
 	Promote []string `yaml:"promote,omitempty"`
 
 	// Demote lists finding codes to lower from error to warning.
@@ -3293,7 +3297,7 @@ Scenarios reshape the mapping without changing any code:
 providers:
   exa:
     validation:
-      strict: true                       # every warning becomes an error
+      strict: true                       # every request-time warning becomes an error (load-time ones: issue #18)
       promote: [request.content_type]    # or promote individual codes
       demote:  [exa.numResults.range]
 ```

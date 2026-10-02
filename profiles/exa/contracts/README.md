@@ -28,7 +28,8 @@ is no live contract canary).
 | `POST` | `/agent/runs` | canonical per the live OpenAPI spec, verified 2026-10-01, simulated | Create-then-poll create route; answers `200`, the only documented success status. See the "POST /agent/runs" section below. |
 | `GET` | `/agent/runs/{id}` | canonical per the live OpenAPI spec, verified 2026-10-01, simulated | Poll route. |
 | `HEAD` | `/agent/runs/{id}` | simulator affordance, simulated | The spec documents no `head` operation on this path. Existence check; claims no turn or attempt. |
-| — | `/agent/runs` (list), `/agent/runs/{id}/events`, `/agent/runs/{id}/cancel`, `/agent/runs/{id}/stop`, `/agent/runs/{id}` (`DELETE`) | NOT SIMULATED | Documented by the spec; on the backlog. See the "POST /agent/runs" section below. |
+| `POST` | `/agent/runs/{id}/cancel` | canonical per the live OpenAPI spec, verified 2026-10-02, simulated | Cancel route. See "Cancel" in the "POST /agent/runs" section below. |
+| — | `/agent/runs` (list), `/agent/runs/{id}/events`, `/agent/runs/{id}/stop`, `/agent/runs/{id}` (`DELETE`) | NOT SIMULATED | Documented by the spec; on the backlog. `/stop` is deliberately not aliased to cancel. See the "POST /agent/runs" section below. |
 
 ## Authentication
 
@@ -348,7 +349,8 @@ Line numbers are of the fetch below.
 - <https://exa.ai/docs/exa-spec.yaml> — `info.version` 2.0.0, retrieved 2026-10-01, sha256
   `cbb9a1429456270527cec49cb495ec00671dd2b7702c411a168988e22222416d`. Operations `createAgentRun` (line 814) and
   `getAgentRun` (line 976); schemas `CreateAgentRunRequest` (4754), `AgentRun` (5793) and `AgentErrorResponse` (6044),
-  with everything they reference.
+  with everything they reference. Re-fetched 2026-10-02 with an **identical** hash, and `cancelAgentRun` (line 1153)
+  and `stopAgentRun` (line 1242) read against it for the cancel route.
 - The full field-by-field record — each consumed field's classification after the fixes, how to re-fetch, and what
   changed against the profile — is [`docs/audits/2026-10-01-exa-agent.md`](../../../docs/audits/2026-10-01-exa-agent.md).
 
@@ -372,8 +374,9 @@ run too.
 queued -> running -> completed | failed | cancelled
 ```
 
-`completed`, `failed` and `cancelled` are terminal (`AgentRunStatus`, line 5840). The spec also documents list,
-`/events`, `/cancel`, `/stop` and `DELETE` operations; none of those are simulated and none are described here.
+`completed`, `failed` and `cancelled` are terminal (`AgentRunStatus`, line 5840). A queued or running run can be
+cancelled — see [Cancel](#cancel-post-agentrunsidcancel). The spec also documents list, `/events`, `/stop` and `DELETE`
+operations; none of those are simulated and none are described here beyond the `/stop` note under Cancel.
 
 ### Request fields (POST /agent/runs)
 
@@ -516,8 +519,8 @@ one of `INVALID_REQUEST`, `TEAM_NOT_FOUND`, `RUN_NOT_FOUND`, `PREVIOUS_RUN_NOT_F
 are required and extra keys are allowed (lines 6052-6083). This is **not** the flat `{requestId, error, tag}` body
 the other Exa routes use, which is unchanged.
 
-`createAgentRun` documents 200, 400, 401, 429 and 500; `getAgentRun` documents 200, 400, 401, 404, 429 and 500. The
-spec **does not pair a `type` and `code` with a status**. The pairing below is **INFERENCE** from the enum names and
+`createAgentRun` documents 200, 400, 401, 429 and 500; `getAgentRun` and `cancelAgentRun` document 200, 400, 401, 404,
+429 and 500. The spec **does not pair a `type` and `code` with a status**. The pairing below is **INFERENCE** from the enum names and
 the response descriptions, and the messages are the response descriptions reused:
 
 | Status | `type` | `code` | `message` |
@@ -555,10 +558,107 @@ All of these are Servicesim's, not the vendor's; the schema and conditions are i
 - **At request time** (`POST /agent/runs`): `exa.effort.invalid` (error), `exa.budget.maxDurationSeconds.range` and
   `exa.budget.maxCostDollars.range` (an error when the limit applies to the effort, otherwise a warning — see
   "Request fields").
+- **At request time** (`POST /agent/runs/{id}/cancel`): `job.cancel_unscripted` and `job.cancel_contended` (errors,
+  answered with the 500 under Cancel).
 - **At scenario load**: `exa.agent_run.error.not_in_schema` (error: a run-level `error:`),
   `exa.agent_run.value.range` (error: a negative or non-finite `usage` or `cost_dollars` value, `data_sources`
   included), `exa.agent_run.fault_tag.unknown` (warning: a `tag:` outside the ten `code` values, still rendered
-  verbatim) and `exa.output.grounding.confidence.unknown` (warning).
+  verbatim), `exa.agent_run.cost_unscripted` (warning: a terminal snapshot that scripts no `cost_dollars`, under
+  Cancel) and `exa.output.grounding.confidence.unknown` (warning).
+
+### Cancel (POST /agent/runs/{id}/cancel)
+
+Verified 2026-10-02 against the same spec, hash unchanged. Classifications as above.
+
+**What the spec says** (`cancelAgentRun`, lines 1153-1241) — VERIFIED:
+
+- The path is `/agent/runs/{id}/cancel`, `POST`, with the run id as its only parameter (`AgentRunId`). There is **no
+  request body**: the operation declares no `requestBody`.
+- "Cancel a queued or running Agent run immediately without returning any results. You are billed for usage accrued
+  before cancellation. If the run has already reached a terminal status, the API returns the existing run." (line 1157)
+- `200` is an `AgentRun`. The errors are `400` ("Invalid request."), `401`, `404` ("Run not found."), `429` and `500`
+  ("Server error or run timeout."), every one an `AgentErrorResponse` with the `x-request-id` header.
+
+**What the profile does:**
+
+- **The response is the run's next poll.** A `200` cancel answers exactly the snapshot the run's next `GET` will
+  return, rendered by the same projection and renderer, so the cancel and the polls after it cannot disagree. Which
+  snapshot that is depends on where the run is (SIMULATOR-POLICY; the mechanism is
+  [`docs/scenario-schema.md`](../../../docs/scenario-schema.md#cancelling-a-job)'s "Cancelling a job"):
+  - The next poll would be **terminal**: the cancel answers that terminal run and records nothing — the spec's "returns
+    the existing run", judged by the run's next poll rather than the last one a client happened to see.
+  - Otherwise the cancel is **recorded** at the run's position and answers the first snapshot of the scenario's
+    `cancel.turns`; every later poll is served from `cancel.turns`.
+  - A cancel of a run already cancelling records nothing new and answers the `cancel.turns` snapshot for its next poll.
+- **No body is read.** A JSON object sent anyway is accepted and ignored — the spec declares none, so no rule is
+  invented for one — and the request answers exactly as a bare one does. A body that is not a JSON object is refused
+  by the shared request lifecycle before the handler runs, as on every route: a `400` `INVALID_REQUEST` that claims
+  nothing (SIMULATOR-POLICY: with no body declared, the spec says nothing about a malformed one). No `Content-Type`
+  is required; the spec's own sample sends none.
+- **Billing.** "Usage accrued before cancellation" is billed, so the cancelled snapshot's `usage` and `costDollars` are
+  what the scenario scripts in `cancel.turns`; unscripted they are the zero placeholders, which are no billing fact.
+  The load warning below says so. What the live API reports between a cancel and the terminal `cancelled` status, and
+  whether a cancelled run's `output` is always empty ("without returning any results"), are UNVERIFIED: the scenario
+  scripts both, and nothing checks them.
+- **Statuses this profile can produce:**
+
+  | Status | When | Body |
+  |---|---|---|
+  | `200` | the cancel was recorded, repeated, or found the run's next poll terminal | `AgentRun` |
+  | `400` | a body that is not a JSON object (SIMULATOR-POLICY) | `INVALID_REQUEST` / `INVALID_REQUEST`, the finding's text |
+  | `401` | no credential in an accepted header; a credential that does not match `auth.expect_key`, only when the scenario sets one; or any request under `auth.mode: reject` | `AUTHENTICATION_ERROR` / `TEAM_NOT_FOUND` |
+  | `404` | a run this namespace does not hold: never minted, minted in another namespace, or a malformed id; or a run a reset removed after the cancel resolved it | `NOT_FOUND` / `RUN_NOT_FOUND` |
+  | `429` | only a scripted `cancel.fault` attempt | the fault's |
+  | `500` | the cancel would take effect but the scenario cannot answer the polls after it (`job.cancel_unscripted`), or the run's position kept moving (`job.cancel_contended`); or a scripted `cancel.fault` attempt | `SERVER_ERROR` / `SERVER_ERROR`, "Internal server error" (SIMULATOR-POLICY, below; a scripted fault: its own body, "Server error" by default) |
+  | `413` | a body over `--max-request-bytes`, refused by the shared request lifecycle as on every route (SIMULATOR-POLICY) | `INVALID_REQUEST` / `INVALID_REQUEST`, the finding's text |
+  | `503` | a request in a new namespace while the process is at its `--max-namespaces` bound (SIMULATOR-POLICY) | `SERVER_ERROR` / `SERVER_ERROR`, the remedy as the message |
+  | any other | only a scripted `cancel.fault` attempt, whose status the spec does not document for this operation | the fault's, mapped as SIMULATOR-POLICY (see "Error bodies": any other 4xx `INVALID_REQUEST`, any other 5xx `SERVER_ERROR`) |
+
+  The 401, the refused-body 400 and 413, the 503 and the 404 of a run that never resolved claim no cancel attempt and
+  record nothing.
+  Every cancel that resolves a run claims exactly one attempt of the run's own cancel budget. The 404 of a run a reset
+  removed after the cancel resolved it is the served response to that attempt, so a scripted `cancel.fault` on it
+  applies. The 500 spends its attempt too: its index stays spent, its scripted fault is not applied
+  (`fault.attempt_on_rejection`, a warning beside the error finding), and nothing is recorded on the run.
+
+  The 500 of a cancel the simulator could not decide carries the message "Internal server error", the fixed message
+  of the profile's other simulator-internal 500s (SIMULATOR-POLICY). It is deliberately neither the "Server error" a
+  scripted `{status: 500}` renders by default (the "Error bodies" table) nor the spec's "Server error or run timeout.":
+  it reports the simulator's own failure to answer, which a consumer can tell apart from a scripted vendor error.
+- **Faults.** `cancel.fault` is the route's own attempt budget (`exa:agent_runs.cancel`), per run, independent of the
+  create's and the poll's. A cancel is recorded only when its attempt commits — the client receives the body, or the
+  attempt says `accepted: true` (the cancel took effect and its reply was lost). A scripted `{status: 500}` records
+  nothing.
+- **`x-request-id`** on a served response — a `200`, a scripted fault, or the `404` of a run a reset removed after
+  the cancel resolved it — is per call and folds in the run id, like the poll's; the route is part of the derivation,
+  so a cancel and a poll of one run at the same call index carry different ids. The `400`, `401`, `413`, `503` and
+  never-resolved `404` refusals and the `500` of a cancel that could not be decided carry the route's unclaimed id
+  instead, which is the same for every run and every call.
+- **Journal labels** (the journal keeps no bodies, so these are how a consumer reads what happened):
+  `exa.agent_runs.cancel.accepted` for a recorded cancel and nothing else; `exa.agent_runs.cancel.repeated` for a
+  cancel of a run already cancelling; `exa.agent_runs.cancel.terminal` when completion won;
+  `exa.agent_runs.cancel.unrecorded` when the attempt did not commit (its scripted fault replaced the body). Refusals
+  keep `exa.error.<tag>`. A poll is labelled `exa.agent_runs.polled.<status>` with the status its snapshot scripts
+  (`running` when it scripts none), so a confirmed cancellation is a `…polled.cancelled` entry that carries no fault.
+  An `extra_fields` key that overrides `status` changes the wire and not the label. The label is the handler's even on
+  a faulted attempt.
+- **The cost rule** (ruling 6 on issue #6): every terminal Exa snapshot — `completed`, `failed` and `cancelled` alike,
+  in `turns` and in `cancel.turns` — that scripts no `cost_dollars` raises the load warning
+  `exa.agent_run.cost_unscripted`. Rendering is unchanged: `costDollars` is required, so it renders zero placeholders,
+  and the warning is the signal that those zeros are not a billing fact.
+- **Other methods on the path** are the mux's, measured: `GET`, `HEAD`, `PUT` and `DELETE` on
+  `/agent/runs/{id}/cancel` answer `405` with `Allow: POST`, in the flat refusal shape (no body for `HEAD`) and with no
+  `x-request-id`, and claim or record nothing. So is an empty id: `POST /agent/runs//cancel` gets the mux's path-clean
+  `307` to `/agent/runs/cancel`, with no provider-shaped body, no `x-request-id` and no journal entry.
+- **Known limit, measured, no promise: jobs are scoped by namespace and entry, not by scenario.** In a process serving
+  several scenarios, a run created under one and cancelled through another is answered from the cancelling
+  scenario's `cancel.turns`, while its next poll through the creating scenario serves that scenario's `cancel.turns`,
+  so "a cancel answers the next poll's snapshot" does not hold across scenarios.
+
+**`/stop` is not cancel.** `stopAgentRun` (line 1242) is a separate operation: it "complete[s] a running Agent run early,
+returning the results gathered so far", is "currently supported only for `ultra` effort runs", and is billed the same
+way. It is NOT simulated and deliberately NOT aliased to cancel — a stopped run ends with its results and a different
+outcome, and answering it with a cancel would hand a consumer the wrong lifecycle. It answers `404` until it is built.
 
 ### What is NOT verified, and must not be invented
 
@@ -570,27 +670,26 @@ All of these are Servicesim's, not the vendor's; the schema and conditions are i
 3. **Request-side semantics beyond the enum and the budget ranges:** `previousRunId` continuation, `dataSources`
    validation, `outputSchema` validation, the `Exa-Beta` header, unknown request keys, and what a budget limit sent
    with the wrong effort does.
-4. **The other lifecycle operations.** List, `/events`, `/cancel`, `/stop` and `DELETE` are documented by the spec and
-   are NOT simulated; the mux refuses them in the flat shape and with no `x-request-id`. `GET /agent/runs` and
+4. **The other lifecycle operations.** List, `/events`, `/stop` and `DELETE` are documented by the spec and are NOT
+   simulated; the mux refuses them in the flat shape and with no `x-request-id`. `GET /agent/runs` and
    `DELETE /agent/runs/{id}` share a path with a simulated operation, so they answer `405` with `Allow: POST` and
-   `Allow: GET, HEAD`; `/cancel`, `/stop` and `/events` are not routed and answer `404`. Nothing about their bodies is
-   recorded here.
+   `Allow: GET, HEAD`; `/stop` and `/events` are not routed and answer `404`. Nothing about their bodies is recorded
+   here.
 5. **What a malformed run id returns,** and whether the live `x-request-id` is per call.
 
-### Exa Agent API — create, poll and HEAD are simulated; the rest of the lifecycle is not
+### Exa Agent API — create, poll, HEAD and cancel are simulated; the rest of the lifecycle is not
 
 Exa also exposes an asynchronous agentic surface: `POST /agent/runs` mints a run, and everything interesting —
 progress, the terminal output, failure — lives on `GET /agent/runs/{id}`, which a consumer polls. Servicesim
-simulates the create, poll and `HEAD /agent/runs/{id}` (existence-only) routes, driven by the scenario provider
-entry `exa_agent_runs` — see `docs/scenario-schema.md`'s async section for the projection shape, and
-`docs/design/async-jobs.md` for why this needed a different scenario shape than a single request/response
+simulates the create, poll, `HEAD /agent/runs/{id}` (existence-only) and `POST /agent/runs/{id}/cancel` routes, driven
+by the scenario provider entry `exa_agent_runs` — see `docs/scenario-schema.md`'s async section for the projection
+shape, and `docs/design/async-jobs.md` for why this needed a different scenario shape than a single request/response
 projection (a create returns immediately and the run is polled through successive snapshots).
 
 Exa's remaining lifecycle routes — `GET /agent/runs` (list), `GET /agent/runs/{id}/events`,
-`POST /agent/runs/{id}/cancel`, `POST /agent/runs/{id}/stop` and `DELETE /agent/runs/{id}` — are NOT simulated. They
-are on the backlog and are refused in the flat shape until built — a `405` for the list and `DELETE` (which share a
-path with a simulated operation), a `404` for the other three. Exa's own guidance is "for simpler low-latency
-retrieval, prefer /search".
+`POST /agent/runs/{id}/stop` and `DELETE /agent/runs/{id}` — are NOT simulated. They are on the backlog and are
+refused in the flat shape until built — a `405` for the list and `DELETE` (which share a path with a simulated
+operation), a `404` for the other two. Exa's own guidance is "for simpler low-latency retrieval, prefer /search".
 
 A `POST /research` endpoint appears in third-party integration documentation but not in Exa's own docs index.
 Treat it as retired; do not simulate it.

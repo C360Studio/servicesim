@@ -450,10 +450,14 @@ type CancelPolicy struct {
 
 // ValidationPolicy tunes how validation findings map onto HTTP outcomes.
 type ValidationPolicy struct {
-	// Strict promotes every warning to an error.
+	// Strict promotes every warning raised while serving a request to an
+	// error. A finding raised when the scenario loads is not promoted today
+	// (issue #18).
 	Strict bool `yaml:"strict,omitempty"`
 
-	// Promote lists finding codes to raise from warning to error.
+	// Promote lists finding codes to raise from warning to error when they are
+	// raised while serving a request. A code raised when the scenario loads is
+	// not promoted today (issue #18).
 	Promote []string `yaml:"promote,omitempty"`
 
 	// Demote lists finding codes to lower from error to warning.
