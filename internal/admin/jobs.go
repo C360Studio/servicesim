@@ -14,14 +14,14 @@ import (
 // reasoning that keeps journal.Entry and the admin surface's own response
 // types separate from their storage layer.
 //
-// Two fields a reader might expect are deliberately absent:
+// The job's lifecycle is served as the record holds it: Polls, the poll
+// positions its poll lane has claimed (each poll records its own through
+// jobs.Store.Advance), and CancelAtPoll, the position a cancel was recorded at.
+// They are a read of the record, never a derivation from the fault engine's
+// cursor, which offers no non-claiming read (docs/design/async-jobs.md §8).
 //
-//   - A turn index (the design's §7.4 once listed one) is not served because
-//     the record does not hold it and nothing can read it: the poll cursor
-//     lives in the fault engine's attempt counter, and that seam offers no
-//     non-claiming read (docs/design/async-jobs.md §8, "localCursor is not
-//     readable"). Exposing a stale copy here would invite exactly the
-//     derivation this listing must not attempt.
+// One field a reader might expect is deliberately absent:
+//
 //   - LaneKey, which the record does hold, is not served, and this remains a
 //     house-rule-4 decision rather than an oversight even now that
 //     provider/lane.go fingerprints a credential-named or credential-shaped
@@ -51,6 +51,17 @@ type JobSummary struct {
 	// is NEVER rendered into a provider response body: a response that carried
 	// it would stop being byte-identical between runs.
 	CreatedAt time.Time `json:"created_at"`
+
+	// Polls is how many poll positions the job's poll lane has claimed — the
+	// position its next poll will be served.
+	Polls int `json:"polls"`
+
+	// CancelAtPoll is the poll position a cancel was recorded at, and ABSENT
+	// when no cancel is recorded. It is a pointer rather than an int because 0
+	// is a real position — a cancel before the first poll — and a test
+	// controller must tell "the cancel took effect, its reply was lost" from
+	// "no cancel was recorded".
+	CancelAtPoll *int `json:"cancel_at_poll,omitempty"`
 }
 
 // JobsResponse is the GET /__admin/jobs body.
@@ -116,13 +127,19 @@ func (d Deps) handleJobs(w http.ResponseWriter, r *http.Request) {
 		if namespace != "" && j.Namespace != namespace {
 			continue
 		}
-		summaries = append(summaries, JobSummary{
+		summary := JobSummary{
 			ID:          j.ID,
 			Namespace:   j.Namespace,
 			Entry:       j.Entry,
 			CreateIndex: j.CreateIndex,
 			CreatedAt:   j.CreatedAt,
-		})
+			Polls:       j.Polls,
+		}
+		if j.CancelRequested {
+			at := j.CancelAtPoll
+			summary.CancelAtPoll = &at
+		}
+		summaries = append(summaries, summary)
 	}
 
 	// The bound is the same for every namespace (see JobsResponse.Bound), so
