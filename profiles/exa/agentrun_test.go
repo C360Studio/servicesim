@@ -11,6 +11,7 @@ import (
 	"github.com/c360studio/servicesim/internal/jobs"
 	"github.com/c360studio/servicesim/internal/journal"
 	"github.com/c360studio/servicesim/provider"
+	"github.com/c360studio/servicesim/scenario"
 )
 
 // asyncScenario is the shape §2.1 of the design specifies: two pending polls,
@@ -595,6 +596,96 @@ providers:
 		}
 	}
 	assert.True(t, found, "a run that un-completes must be an error: %+v", findings)
+}
+
+// cancel.turns are poll snapshots of the same run, so every check a poll
+// snapshot gets applies to them, addressed by their own paths. `completed` is
+// allowed there: "acknowledged, then completed anyway" is a real outcome.
+func TestAgentRunValidatorChecksCancelTurns(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		turns    string
+		fault    string
+		wantCode string
+		wantPath string
+		wantErr  bool
+	}{
+		{
+			name:     "an undecodable snapshot",
+			turns:    "        - respond: {status: cancelled, bogus: 1}\n",
+			wantCode: codeProjectionInvalid,
+			wantPath: "providers.exa_agent_runs.cancel.turns[0].respond",
+			wantErr:  true,
+		},
+		{
+			name:     "an unknown status",
+			turns:    "        - respond: {status: stopping}\n",
+			wantCode: CodeAgentRunStatusUnknown,
+			wantPath: "providers.exa_agent_runs.cancel.turns[0].respond.status",
+			wantErr:  true,
+		},
+		{
+			name:     "a negative usage value",
+			turns:    "        - respond: {status: cancelled, usage: {agent_compute_units: -1}}\n",
+			wantCode: codeAgentRunValueRange,
+			wantPath: "providers.exa_agent_runs.cancel.turns[0].respond.usage.agent_compute_units",
+			wantErr:  true,
+		},
+		{
+			name:     "a body predicate",
+			turns:    "        - when: {body_contains: x}\n          respond: {status: running}\n        - respond: {status: cancelled}\n",
+			wantCode: CodeAgentRunBodyPredicateOnPoll,
+			wantPath: "providers.exa_agent_runs.cancel.turns[0].when",
+		},
+		{
+			name:     "a script that runs out",
+			turns:    "        - when: {call_index: 0}\n          respond: {status: cancelled}\n",
+			wantCode: CodeAgentRunScriptExhausted,
+			wantPath: "providers.exa_agent_runs.cancel.turns[0].when",
+		},
+		{
+			name:     "an off-vocabulary tag on the cancel plan",
+			turns:    "        - respond: {status: cancelled}\n",
+			fault:    "      fault: {attempts: [{status: 500, tag: RATE_LIMITED_FLAT}]}\n",
+			wantCode: codeAgentRunFaultTagUnknown,
+			wantPath: "providers.exa_agent_runs.cancel.fault.attempts[0].tag",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    cancel:\n"+tc.fault+
+				"      turns:\n"+tc.turns+"    turns:\n      - respond: {status: completed, output: {text: x}}\n")
+			findings := provider.ValidateScenario(sc, map[string]provider.Validator{NameAgentRuns: agentRunValidator{}})
+
+			var found []scenario.Finding
+			for _, f := range findings {
+				if f.Code == tc.wantCode {
+					found = append(found, f)
+				}
+			}
+			require.Len(t, found, 1, "want one %s, got %+v", tc.wantCode, findings)
+			assert.Equal(t, tc.wantPath, found[0].Path)
+			if tc.wantErr {
+				assert.Equal(t, scenario.SeverityError, found[0].Severity)
+			}
+		})
+	}
+
+	t.Run("completed is allowed", func(t *testing.T) {
+		t.Parallel()
+
+		sc := mustScenario(t, "version: 1\nname: v\nproviders:\n  exa_agent_runs:\n    cancel:\n      turns:\n"+
+			"        - when: {call_index: 0}\n          respond: {status: running}\n"+
+			"        - respond: {status: completed, output: {text: x}}\n"+
+			"    turns:\n      - respond: {status: running}\n")
+		for _, f := range provider.ValidateScenario(sc, map[string]provider.Validator{NameAgentRuns: agentRunValidator{}}) {
+			assert.NotEqual(t, scenario.SeverityError, f.Severity, "unexpected error: %+v", f)
+		}
+	})
 }
 
 // --- create.fault ---------------------------------------------------------

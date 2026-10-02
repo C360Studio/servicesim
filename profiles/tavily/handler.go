@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/c360studio/servicesim/internal/pollscript"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -112,8 +113,16 @@ func (validator) ValidateProjections(s *scenario.Scenario, e *scenario.ProviderE
 		findings = append(findings, s.ResolveRefs(path, projection)...)
 		findings = append(findings, checkProjection(path, projection)...)
 	}
-	return findings
+	// Every route on this entry is synchronous, so a cancel: block is never read.
+	return append(findings, pollscript.RejectCancel(e, codeCancelUnsupported)...)
 }
+
+// codeCancelUnsupported is the load error for a `cancel:` block on a Tavily
+// entry. Tavily documents no cancel operation — not for /search, and not for
+// /research either, whose task has a poll lifecycle but no cancel — so every
+// Tavily entry rejects the block. It is unexported: a consumer asserts on the
+// string.
+const codeCancelUnsupported = "tavily.cancel.unsupported"
 
 // checkProjection reports the projection values that would render an
 // implausible or unparseable response. Findings come back in declaration order,

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/c360studio/servicesim/internal/pollscript"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -498,8 +499,15 @@ func (sonarValidator) ValidateProjections(s *scenario.Scenario, e *scenario.Prov
 		entryPolicy = streamTurns[0].Script.EffectivePolicy() // nil-safe: StreamWarn when turn 0 has none
 	}
 	findings = append(findings, scenario.ValidateStreamFaultMismatch(e, entryPolicy, streamTurns)...)
-	return findings
+	return append(findings, pollscript.RejectCancel(e, codeCancelUnsupported)...)
 }
+
+// codeCancelUnsupported is the load error for a `cancel:` block on a Perplexity
+// entry. Neither entry serves a cancel today: Sonar is synchronous, and the
+// Agent API's cancel acts on a background response, whose lifecycle — and the
+// place a cancel script belongs — is not an entry-level block. It is
+// unexported: a consumer asserts on the string.
+const codeCancelUnsupported = "perplexity.cancel.unsupported"
 
 // agentValidator decodes and checks the Agent API projections in a scenario.
 type agentValidator struct{}
@@ -567,7 +575,7 @@ func (agentValidator) ValidateProjections(s *scenario.Scenario, e *scenario.Prov
 		entryPolicy = streamTurns[0].Script.EffectivePolicy() // nil-safe: StreamWarn when turn 0 has none
 	}
 	findings = append(findings, scenario.ValidateStreamFaultMismatch(e, entryPolicy, streamTurns)...)
-	return findings
+	return append(findings, pollscript.RejectCancel(e, codeCancelUnsupported)...)
 }
 
 // agentChunkCount computes the scenario.StreamTurn.ChunkCount override

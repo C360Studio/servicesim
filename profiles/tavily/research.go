@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/c360studio/servicesim/internal/pollscript"
 	"github.com/c360studio/servicesim/provider"
 	"github.com/c360studio/servicesim/scenario"
 )
@@ -473,7 +474,9 @@ func (researchValidator) ValidateProjections(s *scenario.Scenario, e *scenario.P
 
 		findings = append(findings, s.ResolveRefs(path, &p)...)
 	}
-	return findings
+	// A research task has a poll lifecycle but Tavily documents no cancel for it,
+	// and this profile serves none: accepting the block would promise one.
+	return append(findings, pollscript.RejectCancel(e, codeCancelUnsupported)...)
 }
 
 func knownResearchStatus(s string) bool {

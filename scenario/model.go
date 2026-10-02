@@ -109,6 +109,7 @@ const (
 	keyTurns      = "turns"
 	keyTurnKey    = "turn_key"
 	keyCreate     = "create"
+	keyCancel     = "cancel"
 )
 
 // reservedEnvelopeKeys are the provider-block keys stripped before what remains
@@ -120,7 +121,7 @@ const (
 // without adding a case arm changes nothing at all, which is a trap worth naming
 // because the slice reads as if it were the definition.
 var reservedEnvelopeKeys = []string{
-	keyKind, keyAuth, keyValidation, keyFault, keyTurns, keyTurnKey, keyCreate,
+	keyKind, keyAuth, keyValidation, keyFault, keyTurns, keyTurnKey, keyCreate, keyCancel,
 }
 
 // Providers is an open registry keyed by provider name. It is deliberately not
@@ -188,6 +189,15 @@ type ProviderEntry struct {
 	//
 	// Nesting makes the route explicit in the key itself.
 	Create *CreatePolicy
+
+	// Cancel is the cancel-side envelope of an async provider entry: the cancel
+	// route's fault plan, and the poll snapshots served once a cancel is
+	// recorded. Nil means the scenario declares no `cancel:` block.
+	//
+	// scenario decodes it on ANY entry, because which entries have a poll
+	// lifecycle is a profile's knowledge, not this package's; a profile whose
+	// entry has no cancel rejects the block at load.
+	Cancel *CancelPolicy
 
 	// TurnKey declares what the turn cursor is keyed on. Empty means ["route"].
 	TurnKey TurnKey
@@ -298,6 +308,14 @@ type Match struct {
 	// Note the interaction with Route: the default TurnKey is ["route"], so the
 	// cursor is ALREADY per route. `{route: poll, call_index: 2}` means the third
 	// call to the poll route, not the third call to the provider.
+	//
+	// ONE place counts differently: inside a `cancel.turns` script
+	// ([CancelPolicy]), call_index counts the job's polls SINCE the cancel was
+	// recorded — call_index 0 is the first poll served after it, whatever its
+	// position in the lane. The journal's attempt_index for that same poll stays
+	// absolute (the count of prior requests in the lane), so a poll that is
+	// call_index 0 of the cancel script can carry attempt_index 2. That is the
+	// only place the two numbers differ for one request.
 	CallIndex *int `yaml:"call_index,omitempty"`
 
 	// BodyContains matches when the raw request body contains this substring.
@@ -389,6 +407,45 @@ type CreatePolicy struct {
 	// route's. A poll retry must not consume the create's retries, and a retry of
 	// one must not be answered from the other's plan.
 	Fault *Fault `yaml:"fault,omitempty"`
+}
+
+// CancelPolicy is the cancel-side envelope of an async provider entry: what a
+// scenario declares about cancelling a job, as opposed to creating or polling
+// it.
+//
+// It is a script of poll SNAPSHOTS, not of cancel responses. Once a cancel is
+// recorded at poll position p, the job's poll at position i >= p is answered
+// from Turns at index i-p, and a cancel response is the snapshot the job's next
+// poll would return — so a cancel cannot declare an outcome that contradicts the
+// polls that follow it. `when.call_index` inside Turns therefore counts polls
+// SINCE the cancel; see [Match.CallIndex].
+//
+//	exa_agent_runs:
+//	  cancel:
+//	    fault: {attempts: [{status: 500}, {}]}  # each job's first cancel fails; nothing is recorded
+//	    turns:
+//	      - when: {call_index: 0}
+//	        respond: {status: running}          # an acknowledgement is not proof billing stopped
+//	      - respond: {status: cancelled}
+//	  turns:
+//	    - when: {call_index: 0}
+//	      respond: {status: running}
+//	    - respond: {status: completed}
+//
+// A terminal snapshot is allowed in Turns, `completed` included, to script "the
+// cancel was acknowledged and the run completed anyway". A turn here carries no
+// `fault:` — the cancel route's plan is Fault and the poll route's is on the
+// entry's own turns — so one is a load error rather than a plan nothing reads.
+type CancelPolicy struct {
+	// Fault is the cancel route's attempt budget, independent of the create's
+	// and the poll's. Each job has its own cancel lane, so the plan restarts per
+	// job.
+	Fault *Fault `yaml:"fault,omitempty"`
+
+	// Turns are the poll snapshots served after a cancel is recorded, selected
+	// exactly as the entry's own turns are, with the call index counted from the
+	// cancel.
+	Turns []Turn `yaml:"turns,omitempty"`
 }
 
 // ValidationPolicy tunes how validation findings map onto HTTP outcomes.
@@ -512,6 +569,9 @@ func (s *Scenario) HasFaults() bool {
 		if e.Create != nil && e.Create.Fault.HasAttempts() {
 			return true
 		}
+		if e.Cancel != nil && e.Cancel.Fault.HasAttempts() {
+			return true
+		}
 		for i := range e.Turns {
 			if e.Turns[i].Fault.HasAttempts() {
 				return true
@@ -633,6 +693,12 @@ func decodeProviderEntry(name string, node *yaml.Node) (*ProviderEntry, error) {
 			if err := DecodeStrict(val, entry.Create); err != nil {
 				return nil, fmt.Errorf("%s.create: %w", base, err)
 			}
+		case keyCancel:
+			cancel, err := decodeCancel(base+".cancel", val)
+			if err != nil {
+				return nil, err
+			}
+			entry.Cancel = cancel
 		case keyFault:
 			faultNode = val
 		case keyTurns:
@@ -665,6 +731,48 @@ func decodeProviderEntry(name string, node *yaml.Node) (*ProviderEntry, error) {
 	}
 	entry.Turns = turns
 	return entry, nil
+}
+
+// decodeCancel decodes a `cancel:` block. It is not a plain DecodeStrict into
+// CancelPolicy because its turns need what decodeTurns gives the entry's own —
+// an absent respond normalised to an empty mapping — and because a `fault:` on a
+// cancel turn is refused here: no route reads it, so accepting it would be a
+// plan that silently never fires.
+func decodeCancel(path string, node *yaml.Node) (*CancelPolicy, error) {
+	cancel := &CancelPolicy{}
+	if node == nil || node.Kind == 0 || (node.Kind == yaml.ScalarNode && node.Tag == "!!null") {
+		return cancel, nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%s: line %d: expected a mapping, got a %s", path, node.Line, nodeKindName(node.Kind))
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, val := node.Content[i], node.Content[i+1]
+		switch key.Value {
+		case keyFault:
+			cancel.Fault = &Fault{}
+			if err := DecodeStrict(val, cancel.Fault); err != nil {
+				return nil, fmt.Errorf("%s.fault: %w", path, err)
+			}
+		case keyTurns:
+			turns, err := decodeTurns(path, val)
+			if err != nil {
+				return nil, err
+			}
+			for j := range turns {
+				if turns[j].Fault != nil {
+					return nil, fmt.Errorf("%s.turns[%d].fault: a cancel turn is a poll snapshot and carries no fault "+
+						"plan; the cancel route's plan is %s.fault and the poll route's is on the entry's own turns",
+						path, j, path)
+				}
+			}
+			cancel.Turns = turns
+		default:
+			return nil, fmt.Errorf("%s: line %d: field %s not found in type scenario.CancelPolicy",
+				path, key.Line, key.Value)
+		}
+	}
+	return cancel, nil
 }
 
 func decodeTurns(base string, node *yaml.Node) ([]Turn, error) {
