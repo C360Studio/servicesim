@@ -135,6 +135,31 @@ func TestAgentRunCreateThenPollToCompletion(t *testing.T) {
 	assert.Equal(t, statusCompleted, again["status"])
 }
 
+// Every served poll records its position on the run, from the first poll on: a
+// cancel judges "terminal at cancel time" by the run's next poll, so a poll that
+// did not advance would leave every later cancel judging the wrong snapshot. HEAD
+// claims nothing and so advances nothing.
+func TestAgentRunPollsAdvanceTheRun(t *testing.T) {
+	t.Parallel()
+
+	store := jobs.NewRegistry(jobs.Limits{})
+	s := newSimWithJobs(t, asyncScenario, store)
+	id := createRun(t, s, `{"query":"q"}`)
+
+	for want := 1; want <= 4; want++ {
+		pollRun(t, s, id)
+		job, ok := store.Lookup(provider.DefaultNamespace, id)
+		require.True(t, ok)
+		assert.Equal(t, want, job.Polls, "after poll %d", want)
+	}
+
+	rec := s.do(request{method: http.MethodHead, path: "/agent/runs/" + id})
+	require.Equal(t, http.StatusOK, rec.Code)
+	job, _ := store.Lookup(provider.DefaultNamespace, id)
+	assert.Equal(t, 4, job.Polls, "HEAD is not a poll")
+	assert.False(t, job.CancelRequested)
+}
+
 // TestAgentRunCreateCredentialTurnKeyNeverLeaksTheToken is the async half of the
 // turn_key credential fix (provider/lane.go turnLaneKey, internal/journal Redact):
 // a scenario may legitimately key the create route's lane on which credential

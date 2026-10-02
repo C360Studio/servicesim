@@ -79,13 +79,14 @@ const (
 
 	// CodeAcceptedUnreachable is raised, per request, when a claimed fault
 	// attempt carries `accepted: true` ([scenario.FaultAttempt.Accepted]) and the
-	// request that claimed it minted no job — a poll, a route whose handler never
-	// calls [MintJob], or an `accepted` attempt in a plan shared with such a
-	// route. `accepted` says the request took effect and its job is kept; a
-	// request that creates nothing has no job for it to keep.
+	// request that claimed it neither minted a job nor ran a cancel — a poll, a
+	// route whose handler never calls [MintJob] or [CancelJob], or an `accepted`
+	// attempt in a plan shared with such a route. `accepted` says the request
+	// took effect — its job is kept, or its cancel recorded — and a request that
+	// writes nothing has nothing for it to keep.
 	//
 	// Load cannot raise this: it checks an attempt in isolation, and only a
-	// profile's routes know which of them mint. It is the runtime half of
+	// profile's routes know which of them mint or cancel. It is the runtime half of
 	// [scenario.CodeAcceptedRedundant], and it mirrors
 	// [scenario.CodeStreamAbortUnreachable] in kind — a scripted attempt that
 	// cannot do what it declares — which is why it is an ERROR and not a
@@ -372,18 +373,20 @@ func Handle(d Deps, p Name, route Route, h Handler) http.HandlerFunc {
 		}
 		dec := x.decision
 
-		// An `accepted` attempt keeps the job its request created, so it means
-		// something only on a request that minted one. Load cannot tell which
-		// routes do — the attempt is validated in isolation — so the claim is
-		// judged here, where the handler has already run. Only the modifier is
-		// unreachable: the attempt itself is left in place and applies below as
-		// an ordinary fault. A rejected request has had its attempt cleared above
-		// and is reported as CodeAttemptOnRejection instead.
-		if a := dec.Attempt; a != nil && a.Accepted && !x.minted {
+		// An `accepted` attempt keeps the job its request created, or the cancel
+		// its request recorded, so it means something only on a request that
+		// mints or cancels. Load cannot tell which routes do — the attempt is
+		// validated in isolation — so the claim is judged here, where the handler
+		// has already run. Only the modifier is unreachable: the attempt itself is
+		// left in place and applies below as an ordinary fault. A rejected
+		// request has had its attempt cleared above and is reported as
+		// CodeAttemptOnRejection instead.
+		if a := dec.Attempt; a != nil && a.Accepted && !x.recordable {
 			x.Fail(CodeAcceptedUnreachable, "",
-				"fault attempt %d on key %q is marked accepted, but this request created no job; accepted keeps the job "+
-					"a create made, so it has nothing to keep here and the attempt applies as an ordinary fault; "+
-					"put it on the plan of a route that mints a job (an async create) or remove accepted",
+				"fault attempt %d on key %q is marked accepted, but this request neither created a job nor recorded a "+
+					"cancel; accepted keeps what a create or a cancel wrote, so it has nothing to keep here and the "+
+					"attempt applies as an ordinary fault; put it on the plan of a route that mints a job (an async "+
+					"create) or cancels one, or remove accepted",
 				dec.Index, dec.Key)
 		}
 

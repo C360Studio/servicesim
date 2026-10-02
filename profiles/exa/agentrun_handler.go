@@ -244,8 +244,10 @@ const (
 )
 
 // selectAgentRunProjection chooses the snapshot serving this poll and decodes
-// it. It claims the attempt index, so it runs only after resolution has
-// confirmed the run is real.
+// it. It claims the attempt index and records it on the run
+// (provider.SelectPollTurn), so it runs only after resolution has confirmed the
+// run is real — and every served poll advances the run's position, which is
+// what a cancel judges "terminal at cancel time" by.
 func selectAgentRunProjection(x *provider.Exchange, e *scenario.ProviderEntry) (*agentRunProjection, bool) {
 	if e == nil {
 		// The scenario declares no async entry. A run cannot have been minted
@@ -254,14 +256,15 @@ func selectAgentRunProjection(x *provider.Exchange, e *scenario.ProviderEntry) (
 		return &agentRunProjection{}, true
 	}
 
-	turn, index := provider.SelectTurnFor(x, e)
+	turn, turnPath := provider.SelectPollTurn(x, e)
 	if turn == nil {
 		return nil, false
 	}
 
 	p := &agentRunProjection{}
-	if err := turn.DecodeProjection(NameAgentRuns, index, p); err != nil {
-		x.Fail(codeProjectionInvalid, "", "the scenario's Exa agent-run projection could not be decoded: %v", err)
+	if err := scenario.DecodeStrict(&turn.Respond, p); err != nil {
+		x.Fail(codeProjectionInvalid, "", "the scenario's Exa agent-run projection could not be decoded: %s.respond: %v",
+			turnPath, err)
 		return nil, false
 	}
 
@@ -270,7 +273,7 @@ func selectAgentRunProjection(x *provider.Exchange, e *scenario.ProviderEntry) (
 	// URL. The projection is a fresh value per request, so resolving into it
 	// never mutates the scenario and two concurrent polls cannot race here.
 	if p.Output != nil {
-		path := fmt.Sprintf("providers.%s.turns[%d].respond.output", NameAgentRuns, index)
+		path := turnPath + ".respond.output"
 		for gi := range p.Output.Grounding {
 			for _, f := range x.Deps.Scenario.ResolveRefs(
 				fmt.Sprintf("%s.grounding[%d]", path, gi), &p.Output.Grounding[gi],

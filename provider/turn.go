@@ -31,17 +31,23 @@ var ErrNoMatchingTurn = errors.New("provider: no turn matches this request")
 // alternative to "unreachable and obvious" is "reachable and silent" the first
 // time Match grows an axis whose zero value stops matching.
 func SelectTurn(e *scenario.ProviderEntry, callIndex int, route string, body []byte) (*scenario.Turn, int, error) {
-	if e == nil || len(e.Turns) == 0 {
+	if e == nil {
 		return nil, -1, ErrNoMatchingTurn
 	}
-	for i := range e.Turns {
-		if e.Turns[i].When.Matches(callIndex, route, body) {
-			return &e.Turns[i], i, nil
+	return selectTurn(e.Turns, callIndex, route, body)
+}
+
+// selectTurn is SelectTurn over one script, so an entry's turns and its
+// cancel.turns are selected by the one rule rather than two copies of it.
+func selectTurn(turns []scenario.Turn, callIndex int, route string, body []byte) (*scenario.Turn, int, error) {
+	for i := range turns {
+		if turns[i].When.Matches(callIndex, route, body) {
+			return &turns[i], i, nil
 		}
 	}
-	for i := len(e.Turns) - 1; i >= 0; i-- {
-		if e.Turns[i].When == nil {
-			return &e.Turns[i], i, nil
+	for i := len(turns) - 1; i >= 0; i-- {
+		if turns[i].When == nil {
+			return &turns[i], i, nil
 		}
 	}
 	return nil, -1, ErrNoMatchingTurn
