@@ -454,7 +454,7 @@ Each async entry has its own validator — `AgentRunValidator` for `exa_agent_ru
 | Finding | Severity | Condition |
 |---|---|---|
 | `exa.agent_run.error.not_in_schema` | error | an `error:` block on a turn — the live `AgentRun` schema has no run-level error |
-| `exa.agent_run.terminal_then_pending` | error | a non-terminal turn declared after a terminal one — a job that un-completes |
+| `exa.agent_run.terminal_then_pending` | error | a non-terminal turn served after a terminal one — a job that un-completes. Shipped as a declaration-order walk; judged in serve order since issue #6 (§4.6) |
 | `exa.agent_run.script_exhausted` | warning | no unconditional final turn: poll N+1 gets `scenario.no_matching_turn` and a 404 the author did not intend |
 | `exa.agent_run.body_predicate_on_poll` | warning | `body_contains` or `body_json` on a turn of an async entry; a GET carries no body, so the predicate can never match |
 | `exa.agent_run.completed_without_output` | warning | `status: completed` with no `output` |
@@ -471,7 +471,7 @@ load-time check.
 |---|---|---|
 | `tavily.research.status.unknown` | error | a poll status outside `pending`/`in_progress`/`completed`/`failed` |
 | `tavily.research.completed_without_content` | warning | `status: completed` with no `content` |
-| `tavily.research.terminal_then_pending` | error | a non-terminal turn declared after a terminal one |
+| `tavily.research.terminal_then_pending` | error | a non-terminal turn served after a terminal one (serve order since issue #6, §4.6) |
 
 `docs/scenario-schema.md`'s async section is the authoritative, kept-current list for both validators, sourced
 directly from `profiles/exa/agentrun.go` and `profiles/tavily/research.go`; this table exists so a reader does not
@@ -1278,6 +1278,85 @@ The alias set is closed under "types a consumer has to name", and the compile-ti
 directory): it builds a `provider.Deps{Jobs: testkit.NewJobs()}` reading `job.ID` through the aliases, so the gap
 does not stay invisible until an adopter hits it.
 
+### 4.6 Job state and the cancel mechanism
+
+> **Added for issue #6** (`docs/proposals/cancellation-and-accepted-create.md`, §Q1). This build lands the mechanism —
+> the job's state, two store operations, `provider.SelectPollTurn` and `provider.CancelJob` — and adopts it on the Exa
+> poll route only. No cancel route is registered yet; the route units add them.
+
+Until issue #6 a job record was immutable after `Create`: its coordinates, and nothing about what happened to it
+since. A cancel cannot be modelled that way, because what a cancel answers depends on where the job is, and every
+poll after a recorded cancel has to agree with it. So the record carries three more fields:
+
+| Field | Meaning |
+|---|---|
+| `Polls` | How many poll positions the job's poll lane has claimed: the position its next poll is served at. |
+| `CancelRequested` | Whether a cancel has been recorded. |
+| `CancelAtPoll` | The position the cancel was recorded at; meaningful only when `CancelRequested`. |
+
+`Create` zeroes all three whatever the caller passed: a new job has been polled zero times and never cancelled.
+
+**Two atomic store operations**, added to `jobs.Store` itself (owner ruling on issue #6 — a breaking change for any
+consumer implementation of `testkit.Jobs`, taken deliberately while the seam is pre-1.0, with no compatibility shim):
+
+- `Advance(namespace, id, i) (Job, bool)` records that poll position `i` was claimed: `Polls = max(Polls, i+1)`, in
+  one critical section. `max`, not `+1`, because two polls of one job can finish their claims in either order;
+  claimed indices are distinct, so the count is right whichever lands first. It returns the record after the write,
+  and false when the job is gone.
+- `MarkCancel(namespace, id, atPoll) (Job, MarkOutcome)` is a compare-and-set: it records a cancel at `atPoll` only
+  if no cancel is recorded and `Polls` still equals `atPoll`. Its outcomes are `marked`, `already_marked`,
+  `position_moved` (a poll advanced the job since the caller read it) and `not_found`, each returning the record as it
+  stands. `testkit` re-exports the outcome type and constants (`JobMarkOutcome`, `JobMarked`, …), because an
+  out-of-tree store cannot implement the interface without naming them.
+
+Each is one critical section on the existing record — no second map, nothing a reset has to clear separately — so
+reset stays the three-store operation of §7.3. **A request in flight across a reset is undefined**: a poll or cancel
+that resolved its job before the reset and reaches the store after it may find the job gone (`Advance` reports
+false, `MarkCancel` reports `not_found`) or, if the same create re-minted the identifier, may land on the new job.
+Reset is not a concurrency mechanism (house rule 6); a test resets between requests.
+
+**`SelectPollTurn` owns the claim and the record together.** It claims the poll lane's index `i`, then calls
+`Advance(ns, id, i)` immediately and unconditionally — before turn selection, and even when selection then fails —
+because the index is spent either way and `Polls` must equal the lane's claimed count, or the "next snapshot" a cancel
+judges is computed from the wrong position. If a cancel is recorded and `i >= CancelAtPoll` the snapshot is
+`cancel.turns` at `i - CancelAtPoll`, otherwise `turns` at `i`, both under `SelectTurn`'s rules. Selection reads the
+position alone, never the request body, which is what lets a cancel peek the same snapshot without claiming. A poll
+on an exchange that did not resolve a job (`ResolveJob` retains what it resolved on the `Exchange`) records
+`job.id_invalid` and claims nothing.
+
+**`CancelJob` decides and records.** A cancel is judged by the snapshot the job's **next** poll would be served —
+`turns` at `Polls`, peeked without claiming — so that "cancel, then poll" and "poll, then cancel" are the only two
+ways a race resolves, and the snapshot the cancel answers with is exactly what that next poll serves:
+
+1. A cancel already recorded: answer `cancel.turns` at `Polls - CancelAtPoll`.
+2. The next snapshot terminal: completion wins, nothing is recorded, answer that snapshot.
+3. The attempt does not commit: nothing is recorded, answer that snapshot (the fault replaces it).
+4. Otherwise peek `cancel.turns` at 0 and `MarkCancel(ns, id, Polls)`. `marked` answers the peeked snapshot;
+   `already_marked` answers as step 1; `position_moved` re-reads and retries; `not_found` is the job gone.
+
+A peek that matches nothing raises `job.cancel_unscripted` and records nothing, so no later poll ever indexes into a
+`cancel.turns` that does not exist. The retry is bounded at eight: each retry means another poll of the same job
+landed between the read and the compare-and-set, so exhausting it takes a poll storm on one job, and it then raises
+`job.cancel_contended` and records nothing rather than spinning inside a request.
+
+**The claim rule.** Every cancel that resolved a job claims exactly one cancel-lane attempt, first, whatever it then
+decides, so a client's retry draws an index that depends on how many cancels it sent, never on the job's state. The
+response is served and fault-eligible in every outcome; a profile never builds it as a rejection, which would strip
+the attempt. The two error outcomes do strip it — any request that records an error does — but its index stays
+spent. "Commits" is the predicate create-side retention already uses (§4.3, "A faulted create must not leave a
+phantom job"): the attempt delivers its body, or it says `accepted`. The fault decision is cached on the `Exchange`,
+so `CancelJob` and `Handle` read the same attempt.
+
+**Terminal is absorbing in serve order** (defect D3). The load-time `terminal_then_pending` check used to walk turns in
+declaration order, which is not the order they are served: a `running` turn conditioned on `call_index: 1`
+followed by an unconditional `failed` one serves `failed`, `running`, `failed`, and loaded clean. Both async
+validators now evaluate the turn `SelectTurn` would serve at poll 0, at every named `call_index` and at each plus one,
+per script — Exa's `turns` and `cancel.turns` independently, Tavily's `turns` — through one helper in
+`internal/pollscript`. The finding codes and severities are unchanged. That helper, and the rejection of a `cancel:`
+block on an entry that serves no cancel, are the reference profiles' first non-test import of an `internal/`
+package: both are pure functions over exported types (`provider.SelectTurn`, `scenario.Turn`), so they save the
+reference profiles code without granting them anything an out-of-tree profile cannot write for itself.
+
 ---
 
 ## 5. Determinism
@@ -1740,7 +1819,17 @@ it is a process-wide value and not a per-record one. Three more things the array
 
 `turn_index` stays absent for the reason already given: the poll cursor lives in the fault engine's attempt
 counter, and that seam offers no non-claiming read (§8, "localCursor is not readable"), so there is no value to put
-behind the key without the listing itself claiming an attempt. `lane_key` is also absent, on house-rule-4 grounds:
+behind the key without the listing itself claiming an attempt.
+
+**Since issue #6 each entry also carries `polls` and `cancel_at_poll`** (§4.6). They answer the question `turn_index`
+was sketched for without reading the cursor: they are fields of the job record, written by the poll and the cancel
+themselves (`Advance`, `MarkCancel`), so the listing reads them like any other field and claims nothing.
+`cancel_at_poll` is absent, not 0, when no cancel is recorded, because 0 is a real position. `tavily_research`'s poll
+does not call `SelectPollTurn` yet, so its jobs list `polls: 0`. The paragraph above about `jobs.Store` no longer
+holds for the store's own lifecycle: `Advance` and `MarkCancel` were added to the interface itself, an accepted
+breaking change for consumer implementations (owner ruling, issue #6). `List` stays an optional capability.
+
+`lane_key` is also absent, on house-rule-4 grounds:
 a lane key embeds a route's `turn_key` or `Route.LaneFrom` extractor values verbatim, which can include a
 credential a scenario author wrote into a `header:` or `body_json:` extractor — the `779d23c` fingerprinting fix
 ([§3.2](#32-routelanefrom)) closes the leak in the retained lane key itself, but that does not make the field one

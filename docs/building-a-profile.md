@@ -901,6 +901,59 @@ create with no `FaultBody` serves its own rendered body, identifier included, un
 above, so the client learns the id of a job the scenario said it lost. Exa and Tavily register one; so should you,
 and the `x-request-id` or equivalent you put on a faulted create must not derive from the job id either.
 
+#### Polls and cancels
+
+**A profile whose polls can be cancelled must select each poll's snapshot with `provider.SelectPollTurn`, never
+`provider.SelectTurnFor`.** `SelectPollTurn` claims the poll's call index and records it on the job in one step —
+unconditionally, even when no turn then matches, because the index is spent either way — and once a cancel is
+recorded it serves the entry's `cancel.turns` from the recorded position on. `SelectTurnFor` does neither, so a poll it
+serves leaves the job's position behind (a later cancel then judges the wrong snapshot) and never sees a cancel. Call
+`SelectPollTurn` only after `provider.ResolveJob` returned true: on an exchange that resolved no job it records a
+`job.id_invalid` error, claims nothing and returns a nil turn. It selects by position alone and never reads the
+request body. `profiles/exa`'s `agentrun_handler.go` is the worked example; the Tavily research poll still uses
+`SelectTurnFor`, because Tavily has no cancel.
+
+A cancel route's handler resolves the job with `ResolveJob`, exactly as a poll does, then calls
+`provider.CancelJob(x, entry, pollRoute, terminal)`. `pollRoute` is the poll route's `FaultKey` as you declared it, so
+a `when.route` in the scripts selects as it does on the poll; `terminal` reports whether a snapshot ends the job, in
+your vendor's status vocabulary. `CancelJob` claims the cancel route's attempt — **exactly one per cancel that
+resolved a job, whatever it decides** — records the cancel on the job only when that attempt commits (the predicate
+`MintJob` keeps a job on), and returns a `provider.CancelOutcome`, the snapshot to render and that snapshot's YAML
+path. It decides and records; it knows nothing of your wire shape, so the rest is yours:
+
+| Outcome | The snapshot | What the profile renders |
+|---|---|---|
+| `provider.CancelRecorded` | `cancel.turns` at call index 0 | the vendor's cancel response, built from that snapshot |
+| `provider.CancelAlreadyCancelling` | the cancel script's snapshot for the job's next poll | the vendor's answer to a repeated cancel |
+| `provider.CancelTerminal` | the terminal snapshot the job's next poll serves | the vendor's answer to cancelling a finished job — a success or an error, whichever the contract documents |
+| `provider.CancelUncommitted` | the job's next poll snapshot | the vendor's cancel response, built from that snapshot; the claimed fault replaces, truncates or drops it on the wire |
+| `provider.CancelUnscripted`, `provider.CancelContended` | none | the vendor's 500; `CancelJob` has already recorded the error finding |
+| `provider.CancelNotFound` | none | the vendor's not-found, as for an unknown identifier |
+
+For every outcome that returns a snapshot, that snapshot is exactly what the job's next poll will be served, which is
+what keeps the cancel's answer and the polls after it consistent however a cancel and a poll race. Render each of them
+as a **served, fault-eligible** response — never as a rejection, even when the contract says cancelling a finished
+job is an error status: a rejection strips the claimed attempt and raises `fault.attempt_on_rejection`, and the
+scenario's cancel plan would silently stop applying.
+
+What else the cancel route owes:
+
+- Its own fault key, distinct from the create's and the poll's, so `cancel.fault` is its plan and nobody else's.
+- `LaneFrom: []string{"path:id"}` (or your path wildcard's name), so each job's cancels draw from their own attempt
+  budget, as its polls do.
+- The same `Entry` as the create and the poll, by the rule above.
+- A `FaultBody` on its responses, built from the attempt alone, for the reason a create needs one: under an
+  `accepted` attempt with an error status, a response without one serves its own rendered body, so the client is
+  told the cancel succeeded by a reply the scenario said was lost.
+
+An entry whose routes serve no cancel should reject a `cancel:` block in its `Validator`, with an error at
+`providers.<entry>.cancel`; every in-tree profile does, under a `<profile>.cancel.unsupported` code. An async
+validator should also reject a script that un-terminates in the order polls are **served**, which is not the order
+turns are declared: evaluate the turn `provider.SelectTurn` serves at poll 0, at every `call_index` a turn names and
+at each of those plus one, and run it on `turns` and `cancel.turns` separately
+([the schema](scenario-schema.md#terminal-is-judged-in-serve-order)). The in-tree profiles share an internal helper
+for both checks; neither needs anything an out-of-tree profile lacks.
+
 ## Step 3 — scenarios
 
 Your scenarios are your own YAML files, in your own repository. The schema is `docs/scenario-schema.md`; the

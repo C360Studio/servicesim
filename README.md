@@ -524,7 +524,7 @@ state between concurrent tests.
 | `GET /__admin/requests` | The redacted journal. `?provider=`, `?namespace=`, `?limit=`, `?pretty=1`. |
 | `GET /__admin/namespaces` | Every live state lane and how many entries it holds. |
 | `GET /__admin/scenario` | What was loaded: name, version, seed, source count, and any validation warnings. |
-| `GET /__admin/jobs` | Every live async job: `?namespace=`, `?pretty=1`. Read-only; no cursor or lane key is served. |
+| `GET /__admin/jobs` | Every live async job, with how many polls it has been served (`polls`) and the poll position a cancel was recorded at (`cancel_at_poll`, absent when none was): `?namespace=`, `?pretty=1`. Read-only: both are read from the job record, never from a fault cursor, and no lane key is served. |
 | `POST /__admin/reset` | Drops journal entries, zeroes fault attempt counters (which are the turn cursors), and drops async job records. |
 
 `GET /__admin/namespaces` shows lanes that hold no entries too, because they still count against
