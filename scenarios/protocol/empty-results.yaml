@@ -80,6 +80,8 @@ providers:
     status: completed
     output:
       text: ""
+    cost_dollars:
+      total: 0.045
 
   # A completed task that produced no report. `content` is an explicit empty
   # string, not an absent key, for the same reason as above: absent content on

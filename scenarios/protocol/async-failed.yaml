@@ -72,6 +72,8 @@ providers:
         respond: {status: running}
       - respond:
           status: failed
+          cost_dollars:
+            total: 0.01
 
   # Tavily documents no distinct error shape for a failed task, and — per the
   # vendor's research-get reference, re-verified 2026-08-15 (see
