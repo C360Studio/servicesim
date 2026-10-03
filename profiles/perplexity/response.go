@@ -241,11 +241,18 @@ type responsesResponse struct {
 	// why a scenario can produce it inside a 200.
 	Error *errorInfo `json:"error,omitempty"`
 
-	Usage responsesUsage `json:"usage"`
+	// Usage is optional in ResponsesResponse. The synchronous path always sets
+	// it, so its body always carries usage; a background snapshot sets it only
+	// when the scenario scripts usage, because a usage the scenario did not
+	// script is no billing fact (issue #6). A pointer, not a value, so the one
+	// type serves both without the synchronous bytes moving.
+	Usage *responsesUsage `json:"usage,omitempty"`
 }
 
-// Output item type discriminators. The specification declares ten; Servicesim
-// renders the two a research adapter parses.
+// Output item type discriminators. The specification declared ten at the
+// 2026-10-01 audit (the 2026-10-03 fetch declares eleven, adding
+// image_search_results; not yet re-audited, #27); Servicesim renders the two a
+// research adapter parses.
 const (
 	outputTypeSearchResults = "search_results"
 	outputTypeMessage       = "message"
@@ -345,11 +352,16 @@ type agentSearchResult struct {
 //
 // The token field names differ from Sonar's UsageInfo: input_tokens and
 // output_tokens here, prompt_tokens and completion_tokens there.
+//
+// Cost is optional in ResponsesUsage. renderAgentUsage always sets it, which is
+// what the synchronous path renders; a background snapshot clears it when the
+// scenario scripts usage without a cost, for the reason responsesResponse.Usage
+// gives.
 type responsesUsage struct {
-	InputTokens  int           `json:"input_tokens"`
-	OutputTokens int           `json:"output_tokens"`
-	TotalTokens  int           `json:"total_tokens"`
-	Cost         responsesCost `json:"cost"`
+	InputTokens  int            `json:"input_tokens"`
+	OutputTokens int            `json:"output_tokens"`
+	TotalTokens  int            `json:"total_tokens"`
+	Cost         *responsesCost `json:"cost,omitempty"`
 }
 
 // responsesCost is the Agent API's cost breakdown. Currency, InputCost,
@@ -389,8 +401,10 @@ type agentErrorResponse struct {
 // -----------------------------------------------------------------------------
 
 // The GrammarTyped event names this build emits: seven of the fourteen members
-// the specification's ResponseStreamEvent/EventType union declares
-// (contracts/perplexity/README.md "Responses / Agent"). The other seven — the
+// the specification's ResponseStreamEvent/EventType union declared at the
+// 2026-10-01 audit (contracts/perplexity/README.md "Responses / Agent"; the
+// 2026-10-03 fetch adds two image-search reasoning events, not yet re-audited,
+// #27). The other seven — the
 // reasoning.* family and response.in_progress — have no scenario vocabulary yet
 // and are never emitted; see renderAgentStream's doc comment.
 const (
@@ -461,10 +475,10 @@ type textDoneEvent struct {
 // agentResponse and shared by both transports (docs/design/streaming.md §7's
 // "one mechanism serves both" rule). Response is json.RawMessage, not
 // responsesResponse, so renderAgentStream can drop the usage key with
-// wire.Omit when the script sets terminal.omit_usage: responsesResponse.Usage
-// is a plain (non-pointer) field, always present on the non-streaming body,
-// and changing its type to accommodate one streaming-only edge case would
-// ripple into every non-streaming Agent response.
+// wire.Omit when the script sets terminal.omit_usage: agentResponse always
+// sets responsesResponse.Usage, so the terminal frame's usage is dropped by
+// omission rather than by agentResponse rendering it differently for one
+// streaming-only edge case.
 type responseCompletedEvent struct {
 	Type           string          `json:"type"`
 	SequenceNumber int64           `json:"sequence_number"`

@@ -61,10 +61,11 @@ Servicesim implements what a research adapter parses:
 | Simulated | Deferred |
 |---|---|
 | `POST /v1/agent`, `POST /v1/responses` | Streaming (`EventType`'s 14 members) |
-| `output[]` items of type `message` and `search_results` | `sandbox_results`, `mcp_call`, `mcp_list_tools`, `function_call`, `finance_results`, `people_search_results`, `fetch_url_results`, `tool_search_output` |
-| `usage` with `ResponsesCost` | `background: true` and the `GET /v1/agent/{id}` polling lifecycle |
+| `output[]` items of type `message` and `search_results` | `sandbox_results`, `mcp_call`, `mcp_list_tools`, `function_call`, `finance_results`, `people_search_results`, `fetch_url_results`, `tool_search_output` *(2026-10-03: this row, like the "ten item types" above, lists ten; `OutputItem` in the 2026-10-03 fetch declares 11, and the new one, `image_search_results`, is not modelled, tracked in #27)* |
+| `usage` with `ResponsesCost` | Streaming a background run (`background: true` with `stream: true`; it fails closed) |
 | `ErrorInfo` error envelope, `Status` enum | `GET /v1/agent/{id}/files`, file download, `POST /v1/agent/{id}/cancel` |
-| Request validation over the 18 `ResponsesRequest` properties | `POST /search`, embeddings, async Sonar, analytics endpoints |
+| Request validation over 19 of the 20 `ResponsesRequest` properties *(2026-10-03: this said 18; the 2026-10-01 audit counted 19, and `tool_choice`, new in the 2026-10-03 fetch, is not modelled, tracked in #27)* | `POST /search`, embeddings, async Sonar, analytics endpoints |
+| `background: true` and `GET /v1/agent/{id}`, since 2026-10-03 (issue #6) | |
 
 This follows the plan's first design principle. Each deferred item is a bounded addition behind the same scenario
 model — a Servicesim release, not an architecture change. Do not add one speculatively; add it when a consumer
@@ -73,12 +74,22 @@ actually parses it.
 A deferred feature must fail *loudly*, not silently: `stream: true` and `background: true` produce a named journal
 warning (`perplexity.agent.stream.unsupported`, `perplexity.agent.background.unsupported`) alongside the ordinary
 non-streaming response, matching the `StreamPolicy` treatment the base design gives Exa. Silence would let a consumer
-believe it had exercised a path it never touched.
+believe it had exercised a path it never touched. *(`perplexity.agent.background.unsupported` was removed on
+2026-10-03: see the update below.)*
 
 > Streaming is no longer unconditionally deferred: `docs/design/streaming.md` §7/§9 lands `GrammarTyped` on this
 > surface (Phase 5 unit 3), under the same `warn`/`reject`/`stream` switch Sonar has, and `perplexity.agent.stream.unsupported`
 > is renamed to `perplexity.stream.agent_unsupported` in the process. `background: true` is untouched by that unit
 > and still always warns as this paragraph describes.
+>
+> **Updated 2026-10-03 (issue #6, unit U5).** `background: true` no longer warns and returns the synchronous body.
+> It mints a job and answers a `queued` snapshot, and `GET /v1/agent/{id}` retrieves the snapshots the scenario's
+> `background:` block scripts. Where the scenario scripts none, or the request also sets `stream: true`, it now
+> **fails closed** (`perplexity.agent.background.unscripted`, `perplexity.agent.background.stream`) rather than
+> warning: serving the synchronous body instead would be an invented answer (owner ruling 4 on issue #6), which a
+> warning does not make honest. `POST /v1/agent/{id}/cancel`, the files endpoints and streaming a background run remain
+> deferred. The wire contract is in `profiles/perplexity/contracts/README.md`, "Lifecycle: background runs and
+> retrieve".
 
 ## Scenario model amendment
 

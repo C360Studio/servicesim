@@ -22,6 +22,15 @@ const CodeProviderUnimplemented = "scenario.provider.unimplemented"
 // fails closed without writing a line for it.
 const CodeCancelUnsupported = "scenario.provider.cancel_unsupported"
 
+// CodeBackgroundUnsupported is the finding raised for a `background:` block on
+// an entry whose profile has no background lifecycle for it — an entry kind its
+// profile does not name in [Profile.Backgroundable]. It is an ERROR for the
+// reason [CodeCancelUnsupported] is: the block could never take effect, and a
+// block nothing reads lets its author believe a background run was scripted.
+// Rejection is the default, so a profile that never declared a background
+// lifecycle fails closed without writing a line for it.
+const CodeBackgroundUnsupported = "scenario.provider.background_unsupported"
+
 // CodeTurnRouteUnknown is the finding raised for a `when.route:` naming a route
 // the provider kind does not serve. It is an ERROR, not a warning: a turn whose
 // route name matches nothing never fires, so the scenario quietly serves some
@@ -98,6 +107,11 @@ type Validator interface {
 // A `cancel:` block is rejected with [CodeCancelUnsupported] on every entry
 // whose validator does not carry its profile's [Profile.Cancellable] opt-in —
 // which only [Set.Validators] attaches, so a hand-built map rejects them all.
+// A `background:` block is rejected the same way, with
+// [CodeBackgroundUnsupported], unless the entry carries its profile's
+// [Profile.Backgroundable] opt-in. An opted-in entry's background.turns are not
+// route-checked here; its profile's own validator checks them (see
+// Profile.Backgroundable).
 //
 // handlers is keyed on ProviderEntry.Kind, which defaults to the block's name, so
 // a scenario declaring an "openai" and an "openai_fallback" against one
@@ -125,10 +139,7 @@ func ValidateScenario(s *scenario.Scenario, handlers map[string]Validator) []sce
 			kind = e.Name
 		}
 		v, ok := handlers[kind]
-		canCancel := false
-		if c, marked := v.(cancellable); marked {
-			v, canCancel = c.Validator, true
-		}
+		v, canCancel, canBackground := unmark(v)
 		if !ok || v == nil {
 			e.Implemented = false
 			findings = append(findings, scenario.Finding{
@@ -151,6 +162,18 @@ func ValidateScenario(s *scenario.Scenario, handlers map[string]Validator) []sce
 					"whose profile serves a cancel (provider.Profile.Cancellable)", name, kind),
 			})
 		}
+		if e.Background != nil && !canBackground {
+			findings = append(findings, scenario.Finding{
+				Severity: scenario.SeverityError,
+				Code:     CodeBackgroundUnsupported,
+				Path:     "providers." + name + ".background",
+				Message: fmt.Sprintf("entry %q declares a background: block, but provider kind %q has no background "+
+					"lifecycle for it, so the block could never take effect; remove it, or move it to an entry "+
+					"whose profile serves one (provider.Profile.Backgroundable)", name, kind),
+			})
+		}
+		// background.turns is deliberately not route-checked here: see
+		// Profile.Backgroundable for why the opted-in profile's validator owns it.
 		if lister, ok := v.(RouteLister); ok {
 			routes := lister.Routes()
 			findings = append(findings, validateTurnRoutes("providers."+name+".turns", kind, e.Turns, routes)...)
@@ -162,6 +185,23 @@ func ValidateScenario(s *scenario.Scenario, handlers map[string]Validator) []sce
 		findings = append(findings, v.ValidateProjections(s, e)...)
 	}
 	return findings
+}
+
+// unmark strips the opt-in marks [Set.Validators] wraps a validator in, in
+// whichever order they nest, and reports which were present. What it returns
+// is the profile's own validator, so an optional interface it implements — a
+// RouteLister — is visible again.
+func unmark(v Validator) (inner Validator, canCancel, canBackground bool) {
+	for {
+		switch m := v.(type) {
+		case cancellable:
+			v, canCancel = m.Validator, true
+		case backgroundable:
+			v, canBackground = m.Validator, true
+		default:
+			return v, canCancel, canBackground
+		}
+	}
 }
 
 // validateTurnRoutes checks every `when.route:` in one script of an entry — its

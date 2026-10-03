@@ -65,6 +65,42 @@ smallest sound mechanism, and whether its exported names are the ones to lock in
    retrievable on the real API; this simulator answers `404` for it. That is a deliberate, named divergence, recorded in
    the contract notes with its reasons (see [Q2](#q2--the-perplexity-lifecycle)).
 
+### U5 note (2026-10-03)
+
+U5, the Perplexity `background: true` create and `GET /v1/agent/{id}` retrieve, is built. The rulings above are
+unchanged and bind it. The contract notes record the named divergence of ruling 7 with its reasons, and the poll path
+inconsistency of ruling 1 as unresolved (`profiles/perplexity/contracts/README.md`, "Lifecycle: background runs and
+retrieve"). Where the build departs from the design below:
+
+- **The opt-in is framework-level.** The owner decided on 2026-10-03 that `background:` mirrors `cancel:`, the
+  mechanism of ruling 9 on issue #6: `provider.Profile.Backgroundable`, rejected by default with one code,
+  `provider.CodeBackgroundUnsupported`, rather than a block known to `perplexity_agent` alone. The exported surface the
+  "Exported surface" table below calls "`background:` block type and field on `perplexity_agent`" is therefore
+  `scenario.BackgroundPolicy`, `scenario.ProviderEntry.Background`, `provider.Profile.Backgroundable` and
+  `provider.CodeBackgroundUnsupported`, plus in `profiles/perplexity` the finding codes
+  `perplexity.agent.background.unscripted`, `.stream`, `.unstored` and `.field`. The code
+  `perplexity.agent.background.unsupported` is gone (ruling 2).
+- **`background:` carries `turns` only.** Q2 sketches `{turns, cancel}`; a `cancel:` key under `background:` is a load
+  error until U6 serves Perplexity's cancel, so a block that could never run does not load.
+- **A retrieve turn may carry `fault:`**, unlike a cancel turn: the retrieve route reads its plan from
+  `background.turns`. A background turn's `when.route` is checked by the Perplexity validator against the retrieve route
+  alone, never by the framework, so a create spelling in a background turn is a load error.
+- **`HEAD /v1/agent/{id}` is refused** with a `405`, claiming and resolving nothing: Go's mux would otherwise deliver it
+  to the `GET` handler and spend a snapshot, and the specification declares no `HEAD` (ruling 1).
+- **Q2's "No finding can fire on that `404`"** holds for a namespace that has minted no job. Once it has, a well-formed
+  id that resolves to none, a synchronous response's id included, also raises the warning `job.foreign_id`.
+- **The spec was re-read on 2026-10-03** and its hash has moved since the 2026-10-01 audit. The lifecycle operations
+  agree with everything the 2026-10-01 audit recorded about them; with the old bytes gone, that is all that can be
+  compared. Elsewhere the document grew what looks like one image-search feature: `ResponsesRequest` gained
+  `tool_choice`, `ResponsesCost` a `tool_calls_cost_details`, `EventType` and `ResponseStreamEvent` two
+  `response.reasoning.image_search_*` members (16 where 14 were recorded), the `OutputItem` discriminator an
+  `image_search_results` type (11 where ten were counted), and `sequence_number` occurs 32 times where 28 were counted.
+  The lifecycle renders or requires none of them. No whole-bundle re-audit has been done (tracked in #27), so
+  `provenance.yaml`'s `spec:` block, the provider-level `verified:` date and the index table's Perplexity date stay at
+  2026-10-01 (`docs/audits/2026-10-01-perplexity-agent.md`, "Notes after 2026-10-01").
+
+Not part of U5: Perplexity cancel (U6), and the documentation pass and tag note (U7).
+
 ## Facts that force the design
 
 - `internal/jobs.Job` is immutable coordinates — ID, namespace, entry, lane key, create index, creation time. A poll
@@ -79,7 +115,8 @@ smallest sound mechanism, and whether its exported names are the ones to lock in
 - A response returned after an error finding has its fault stripped and, if an index was already claimed, raises
   `fault.attempt_on_rejection`; a fault-ineligible response that claimed nothing consumes no index
   (`provider/handle.go`).
-- Perplexity today has no job lifecycle. `background: true` only raises `perplexity.agent.background.unsupported` and
+- Perplexity today has no job lifecycle (as of the design, 2026-10-01; U5 built one, see the U5 note under Status).
+  `background: true` only raises `perplexity.agent.background.unsupported` and
   the synchronous body is served; only POST aliases are routed; `perplexity_agent` turns are already *create*
   responses, so they cannot double as poll snapshots. Its create reads the **turn-level** fault plan
   (`agentFault` is `provider.TurnFault(s, NameAgent)`), not a `create.fault` block, and the three create spellings share

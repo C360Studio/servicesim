@@ -107,7 +107,7 @@ is how a consumer's migration fallback gets tested. See
 
 ### Reserved envelope keys
 
-Inside a provider block, **eight** keys are reserved. Everything else in the block is that provider's projection
+Inside a provider block, **nine** keys are reserved. Everything else in the block is that provider's projection
 body.
 
 | Key | Type | Effect |
@@ -120,6 +120,7 @@ body.
 | `turn_key` | list of string | What the turn cursor is keyed on. Defaults to `["route"]`. See [`turn_key`](#turn_key--what-the-cursor-counts-per). |
 | `create` | `{fault}` | The create route's own attempt budget, on a create-then-poll async entry (`exa_agent_runs`, `tavily_research`). See [The async surfaces](#the-async-surfaces-exa_agent_runs-and-tavily_research). |
 | `cancel` | `{fault, turns}` | What cancelling a create-then-poll job answers, and what the job's polls serve after a recorded cancel. Loads only on an entry whose profile serves a cancel for it — `exa_agent_runs` in tree; every other entry rejects it. See [Cancelling a job](#cancelling-a-job). |
+| `background` | `{turns}` | What a retrieve serves for a job that a create asked to run in the background: one snapshot per retrieve. Loads only on an entry whose profile serves a background lifecycle for it — `perplexity_agent` in tree; every other entry rejects it. See [Background runs](#background-runs-background). |
 
 `extra_fields` is **not** in that list, even though it reads like envelope machinery. Every provider projection
 declares its own `extra_fields`, so the key is left in the body and behaves identically in a single-shot block and
@@ -194,7 +195,7 @@ everything.
 | Key | Type | Matches when |
 |---|---|---|
 | `route` | string | The route serving the request is this one. See [`route`](#route--scripting-one-providers-several-routes) below. A name the provider does not serve is a load error. |
-| `call_index` | integer | The zero-based count of prior requests **in this turn lane** equals it — see [`turn_key`](#turn_key--what-the-cursor-counts-per), whose default of `["route"]` makes the lane the route. A negative value is a load error. Inside a `cancel.turns` script it counts polls **since the cancel** instead — see [Cancelling a job](#cancelling-a-job). |
+| `call_index` | integer | The zero-based count of prior requests **in this turn lane** equals it — see [`turn_key`](#turn_key--what-the-cursor-counts-per), whose default of `["route"]` makes the lane the route. A negative value is a load error. Inside a `cancel.turns` script it counts polls **since the cancel** instead — see [Cancelling a job](#cancelling-a-job). Inside a `background.turns` script it counts **this job's** retrieves — see [Background runs](#background-runs-background). |
 | `body_contains` | string | The raw request body contains this substring. Deliberately crude — it covers "which tool result came back" without becoming an expression language. |
 | `body_json` | map of string to string | Every dotted path matches, for example `{model: sonar, "messages.0.role": system}`. A numeric segment indexes an array. Values compare as strings after JSON scalar formatting. An empty key is a load error. |
 
@@ -411,7 +412,7 @@ Defaults are **per route**, because the real vendors vary placement per route:
 | Exa | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar` | `authorization`, `x-api-key` |
 | Tavily | `POST /search`, `POST /research` | `authorization`, `body:api_key` — decision D2, a v0.1.1 owner decision on client-level evidence. |
 | Tavily | `POST /extract` | `authorization` only — the vendor's `/extract` page documents Bearer only, and D2 is not extended to routes verified after it. See `contracts/tavily/README.md`'s "POST /extract" § "Auth". |
-| Perplexity | all six routes | `authorization` |
+| Perplexity | all seven routes | `authorization` |
 | MCP | `POST /mcp` | `authorization` — **optional** by default, unlike every route above; a scenario opts into `required` explicitly. |
 
 (The two Exa agent-run routes and Tavily's `GET /research/{request_id}` poll are omitted from this table as a
@@ -599,6 +600,9 @@ journaled with `"attempt_index": -1`, which is how you tell the two apart:
 | `exa_agent_runs` / `tavily_research`: a poll of an identifier this process never minted | **no** — `provider.ResolveJob` claims nothing before rendering the vendor's 404 |
 | `exa_agent_runs` / `tavily_research`: a poll of a job the **other** entry minted | **no** — a job resolves only through the entry that minted it, so this is the same miss as an unknown identifier |
 | `exa_agent_runs` / `tavily_research`: a poll whose identifier fails `provider.ValidJobID` | **no** — treated identically to an unknown identifier above; a malformed identifier is never this process's own |
+| `perplexity_agent`: a background create | yes — the create route's own lane, shared with synchronous creates; **no** when it is refused for want of a `background:` block or for `stream: true`, or when strict validation promotes the `store: false` warning |
+| `perplexity_agent`: a retrieve that resolves a background job | yes — the job's own per-job lane, one the script has no snapshot for included |
+| `perplexity_agent`: `HEAD` on the retrieve, or a retrieve of an id that is unknown, synchronous or from a `store: false` create | **no** — `attempt_index: -1` |
 | A `stream_*` fault attempt, claimed by a request that did not itself ask to stream | yes — claimed at turn selection, before the handler has looked at `stream` on the wire; see [Streaming](#streaming-stream) |
 
 This is deliberate, and it is the reason a scenario stays readable. If a rejection consumed an index, then adding
@@ -810,13 +814,14 @@ omitting the keys.
 
 ### `perplexity_agent`
 
-The Agent API, served on `POST /v1/agent` and `POST /v1/responses`. Its envelope shares no fields with Sonar's:
-Sonar returns `choices[]`, the Agent API returns an ordered `output[]` execution trace. Ordering within `output[]`
-is fixed — `search_results` first, then `message` — and a scenario cannot reorder it.
+The Agent API, served on `POST /v1/agent` and its aliases `POST /v1/responses` and `POST /responses`, with
+`GET /v1/agent/{id}` retrieving a background run ([below](#background-runs-background)). Its envelope shares no fields
+with Sonar's: Sonar returns `choices[]`, the Agent API returns an ordered `output[]` execution trace. Ordering within
+`output[]` is fixed — `search_results` first, then `message` — and a scenario cannot reorder it.
 
 | Key | Type | Renders to |
 |---|---|---|
-| `response_id` | string | `id`. Defaults to a derived `resp_<32 hex>`. |
+| `response_id` | string | `id`. Defaults to a derived `resp_<32 hex>`. A load error inside a [background snapshot](#background-runs-background), whose id is always its job's. |
 | `message_id` | string | The message output item's `id`. Defaults to a derived `msg_<32 hex>`. |
 | `model` | string | `model`. Agent model IDs are `provider/model` strings such as `openai/gpt-5`. When omitted the response echoes what the request selected: the first non-empty entry of `models`, else `model`, else `preset/<name>` for a preset-only request, else `profile/<id>` for a profile-only one. A request must name `model`, `models`, `preset` or a valid `profile`, or it is a 400. |
 | `created_at` | integer | `created_at`. Defaults to `time.base` as a Unix timestamp. |
@@ -827,8 +832,190 @@ is fixed — `search_results` first, then `message` — and a scenario cannot re
 | `annotations` | list of `{source, start_index, end_index}` | `url_citation` spans over the answer text. Indices are byte offsets into `answer`; an out-of-range span is a load error. An empty list emits `[]` rather than omitting the key. |
 | `error` | `{message, code, type}` | `error`. `message` is required by the specification. |
 | `usage` | `{input_tokens, output_tokens, total_tokens, cost}` | `usage`. Note the field names differ from Sonar's. `total_tokens` is derived when zero; `cost` is `{currency, input_cost, output_cost, total_cost, cache_creation_cost, cache_read_cost, tool_calls_cost}`, with `currency` defaulting to `USD` (the only value the specification allows; any other is a load error) and `total_cost` derived when zero. |
-| `stream` | `{when_requested, deltas, terminal, pace}` | Scripts the `responses` SSE grammar instead of the ordinary JSON body. See [Streaming](#streaming-stream). |
+| `stream` | `{when_requested, deltas, terminal, pace}` | Scripts the `responses` SSE grammar instead of the ordinary JSON body. See [Streaming](#streaming-stream). A load error inside a [background snapshot](#background-runs-background), which is never streamed. |
 | `extra_fields` | map | Merged into the top-level response object. |
+
+#### Background runs (`background:`)
+
+`perplexity_agent` is also a create-then-poll surface, when a request asks for it. `background: true` on `POST /v1/agent`
+(or either alias) mints a job and answers a `queued` snapshot; each `GET /v1/agent/{id}` of that id then serves the next
+snapshot the entry's `background:` block scripts. The block is separate from the entry's `turns` because those already
+script the synchronous create: the two scripts are selected by different routes (the create spellings and the
+retrieve) and cannot share one list. The wire contract, the vendor pointers and the places the document is silent are
+in the "Lifecycle: background runs and retrieve" section of
+[`profiles/perplexity/contracts/README.md`](../profiles/perplexity/contracts/README.md#lifecycle-background-runs-and-retrieve).
+
+```yaml
+version: 1
+name: background-run
+providers:
+  perplexity_agent:
+    answer: A synchronous answer.          # POST /v1/agent without background: true
+    background:
+      turns:                               # one per GET /v1/agent/{id}, counted per job
+        - when: {call_index: 0}
+          respond: {status: queued}
+        - when: {call_index: 1}
+          respond: {status: in_progress}
+        - respond:                         # every retrieve from the third on
+            status: completed
+            model: openai/gpt-5
+            answer: Done.
+            usage:
+              input_tokens: 42
+              output_tokens: 128
+              cost: {input_cost: 0.00021, output_cost: 0.00128, total_cost: 0.00149}
+```
+
+With that scenario loaded on the default ports, create a run and retrieve it:
+
+```bash
+ID=$(curl -s -X POST localhost:8083/v1/agent -H 'Authorization: Bearer k' -H 'Content-Type: application/json' \
+  -d '{"input":"q","model":"openai/gpt-5","background":true}' | jq -r .id)
+for i in 1 2 3 4; do
+  curl -s localhost:8083/v1/agent/$ID -H 'Authorization: Bearer k' | jq -c '[.status, .usage.total_tokens]'
+done
+```
+
+```text
+["queued",null]
+["in_progress",null]
+["completed",170]
+["completed",170]
+```
+
+**Selecting a snapshot.** `background.turns` is selected the way an async entry's poll script is, by the
+[turn selection rules](#turn-selection-rules): first match on `when`, then the unconditional fallback. `call_index`
+counts **this job's** retrieves, because the retrieve's lane is per job: two jobs polled in interleaved order each walk
+their own script. That holds while the entry's `turn_key` names nothing beyond `route`; the next paragraph says what
+another extractor does. A retrieve answered with a scripted fault counts. A retrieve that matches no turn is the Agent
+`404` with `scenario.no_matching_turn` (and the framework's `fault.attempt_on_rejection` warning: the index was
+claimed, then refused), and it is spent — the job's `polls` still advances — so end the script with an unconditional
+turn, or one conditioned only on `route: agent.retrieve`; the loader warns when you do not. A `when.route` in a
+background turn is checked against the retrieve route alone (`agent.retrieve`, or `perplexity:agent.retrieve`): naming
+the create's `agent` is `scenario.turn.route_unknown`, and so is naming the retrieve in the entry's own `turns`, so a
+turn never silently fails to fire. `body_contains` and `body_json` can never match, since a `GET` carries no body, and
+are warned about.
+
+**The entry's `turn_key` keys the retrieve too.** The retrieve is served from the `perplexity_agent` entry, so a
+`turn_key:` written on that entry for its synchronous create is also applied to every retrieve's lane, on top of the
+job's id, as it is to an async entry's polls ([per-job lanes](#the-async-surfaces-exa_agent_runs-and-tavily_research)).
+A `header:<name>` extractor therefore re-keys a job's retrieves by that header: a retrieve that sends a different value
+is served from another lane starting at `call_index` 0, so a job that has completed can read as `queued`, and the job's
+`polls` stops counting every retrieve. A retrieve that sends no such header raises `scenario.turn_key_unresolved` and
+is served from another lane the same way; under `validation: {strict: true}` that warning is promoted and the retrieve
+is a `400`. A `body_json:<path>` extractor never resolves on a `GET`, so every retrieve raises
+`scenario.turn_key_unresolved`; under `validation: {strict: true}` that warning is promoted and every retrieve is a
+`400`, so no background run can be retrieved. None of this is reported at load.
+
+**What a snapshot says.** A `respond:` takes the keys of the table above and is checked the same way, with these
+differences, each there so that no retrieve invents a fact:
+
+- `response_id` and `stream` are load errors, and so are an `id` or a `status` inside `extra_fields`, which are merged
+  last and would win over the rendered body. A snapshot's `id` is always its job's, its `status` is the one its journal
+  label reports, and a retrieve serves no stream. Aliases and merges are resolved and an explicitly empty value is
+  refused too. An `extra_fields` key is judged as the wire would carry it, so a key that is not a string, such as `1`,
+  beside an `id` does not hide the `id`.
+- `usage` renders only when the snapshot scripts it, and `usage.cost` only when that is scripted too: no zero is
+  invented. The synchronous path still renders `cost` with zeros when none is scripted.
+- `model` falls back to `servicesim/unscripted` when the snapshot scripts none, because a retrieve has no request to
+  echo and the specification requires the field. The create's `queued` stub echoes the request's selection instead.
+  The built-in scenarios script no `model:` in their background blocks, so for a built-in the two differ; a consumer
+  that asserts they are equal must script `model:` in its own scenario.
+- A `queued` or `in_progress` snapshot with no `answer` renders `output: []`. `created_at` defaults to `time.base`.
+
+**A script never un-completes.** `completed`, `failed`, `incomplete` and `cancelled` are terminal, and `queued` and
+`in_progress` are not; an absent `status` is `completed`. The vendor's `Status` enum has no such split, so it is
+simulator policy. A non-terminal snapshot **served** after a terminal one is `perplexity.agent.background.terminal_then_pending`,
+judged in serve order as [above](#terminal-is-judged-in-serve-order).
+
+**Faults.** The retrieve's budget is its own (fault key `perplexity:agent.retrieve`, one per job), and its plan is the
+first `background.turns[*].fault` that declares attempts, as [Faults and turns](#faults-and-turns) describes for every
+multi-turn entry. The create's plan is the one the entry's own turns (or its single-shot `fault:`) declare, and it
+serves synchronous and background creates alike, because the three create spellings share one fault key.
+
+```yaml
+providers:
+  perplexity_agent:
+    answer: A synchronous answer.
+    background:
+      turns:
+        - when: {call_index: 0}
+          fault:
+            attempts:
+              - {status: 503, retry_after: 1}   # every job's first retrieve fails; the retry is call_index 1
+          respond: {status: queued}
+        - respond: {status: completed, answer: Done.}
+```
+
+A `stream_*` fault kind on a background turn is a load error (`scenario.fault.stream_mismatch`): a retrieve never
+streams. `accepted: true` is not refused at load, but a retrieve takes nothing into effect, so a claimed `accepted`
+attempt raises `fault.accepted_unreachable` and applies as an ordinary fault. An `id` or a `status` in an attempt's
+`extra_fields` is a load error too (`perplexity.agent.background.field`, at
+`background.turns[i].fault.attempts[j].extra_fields.<key>`), as in a snapshot's: it is merged into the body the
+retrieve serves, and an attempt that sets nothing else is no fault in the journal, so its entry would carry no
+`fault_kind` to read the label beside.
+An attempt that sets only a `body` is no fault in the journal either, and nothing refuses it at load: it replaces
+the snapshot wholesale, so the wire can disagree with the label.
+
+A background create keeps its job under the same rule as any other create of
+[the async surfaces](#the-async-surfaces-exa_agent_runs-and-tavily_research): when the response carries its identifier
+intact, or the attempt says `accepted: true`, as that section decides, edges included. An `accepted` attempt keeps a
+job whose identifier the client may never receive, and a `truncate_after_bytes` at or past the body's length delivers
+the identifier with no job behind it unless the attempt is `accepted`. Measured on the built-ins, delay-only and
+`oversized_body` attempts keep it; a status of 400 or above, `invalid_json`, `truncate_body` and
+`close_before_headers` do not. A `truncate_body` cut at the default still carries a complete `resp_<32 hex>` id in
+the prefix the client receives, but no job backs it, so retrieving that id answers `404` (the `hang-then-abort`
+built-in's cut creates show it).
+
+**The create fails closed.** A scenario that scripts no retrieve cannot answer a background run honestly, so none of
+these invent a script. Each is refused before anything is claimed, and no job exists afterwards.
+
+| Request | Answer |
+|---|---|
+| `background: true`, and no `background:` block (or no `perplexity_agent` entry) | `404`, `perplexity.agent.background.unscripted` |
+| `background: true` with `stream: true` | `400`, `perplexity.agent.background.stream` (an entry whose `stream:` policy is `reject` answers `perplexity.stream.agent_unsupported` first) |
+| `background: true` with `store: false`, and a block | `200`, the queued snapshot, **no job**: `perplexity.agent.background.unstored` (a warning: `validation.strict` makes it a `400`), and every later retrieve of that id is `404` |
+
+**A background create shares the create lane's call index.** It claims the index a synchronous create would, so it
+shifts which of the entry's `turns[i]` the next synchronous call in the same lane receives. With turns `first`
+(`call_index: 0`) and `second`, a background create followed by a synchronous call serves `second`. Documented, not
+corrected. Job ids derive from the scenario and that index, so they are stable across runs and unique only within a
+namespace: call 0 in two namespaces mints the same id.
+
+**Only background runs are retrievable.** A synchronous response's id, an id never minted, another namespace's, and a
+`store: false` run's all answer the Agent `404` and claim nothing. The first is a named divergence from the real API,
+which retrieves a response stored by default; the contract notes give the reasons. `HEAD /v1/agent/{id}` is `405` with
+`Allow: GET` and claims nothing, because Go's mux would otherwise route it to the `GET` handler and spend a snapshot.
+
+##### Entries that accept a background block
+
+Like `cancel:`, a `background:` block loads only on an entry whose profile declares a background lifecycle for it
+(`provider.Profile.Backgroundable`); on every other entry the framework rejects it, whichever profile serves the entry.
+In tree, `perplexity_agent` is the one that accepts it. A `cancel:` key under `background:` is a load error until a
+later release serves a cancel for it, like any other unknown key.
+
+| Code | Severity | Condition |
+|---|---|---|
+| `scenario.provider.background_unsupported` | error, at load | a `background:` block on an entry whose profile has no background lifecycle for it, reported at `providers.<entry>.background` |
+| `scenario.provider.background.turns.empty` | error, at load | a `background:` block with no turns: it could answer no retrieve |
+| `perplexity.agent.background.field` | error, at load | a `response_id` or `stream` key in a snapshot, or an `id` or `status` key in its `extra_fields` or in the `extra_fields` of one of the turn's fault attempts |
+| `perplexity.agent.background.terminal_then_pending` | error, at load | a non-terminal snapshot served after a terminal one |
+| `scenario.turn.route_unknown` | error, at load | a background turn's `when.route` that is not the retrieve route |
+| `scenario.fault.stream_mismatch` | error, at load | a `stream_*` fault kind on a background turn |
+| `perplexity.agent.background.script_exhausted` | warning, at load | the last turn has a condition a retrieve can fail (any condition but a `route` naming the retrieve, in either spelling), so the retrieve after it is a `404` for a job that exists |
+| `perplexity.agent.background.body_predicate` | warning, at load | `body_contains` or `body_json` on a background turn |
+| `perplexity.agent.background.unscripted` | error, per request | `background: true` and no block |
+| `perplexity.agent.background.stream` | error, per request | `background: true` with `stream: true` |
+| `perplexity.agent.background.unstored` | warning, per request | `background: true` with `store: false` |
+
+##### What a test can see
+
+A background job is listed by `GET /__admin/jobs` and `sim.Jobs()` like any other, under entry `perplexity_agent`, with
+its `polls`. The journal keeps no bodies, so the label carries what happened: `perplexity.agent.background.created` or
+`perplexity.agent.background.unstored` on the create, `perplexity.agent.retrieved.<status>` on a retrieve (the status
+its snapshot reports, kept even when a scripted fault replaced the response — read it beside the entry's
+`fault_kind`), and `perplexity.agent.retrieve.head_refused` on a `HEAD`.
 
 ### `mcp`
 
@@ -1244,9 +1431,10 @@ because the poll cursor *is* the fault attempt counter.
 
 A `turn_key:` written on the async entry itself still applies on top of that job discriminator, and `header:<name>`
 is the extractor to reach for if you need a second axis. `body_json:<path>` is not: a `GET` poll carries no body,
-so the path can never resolve and **every poll** raises `scenario.turn_key_unresolved` — the request is still
-served, just from a lane missing that discriminator. Leave `turn_key` unset unless you need one; the per-job lane
-is automatic and needs no declaration.
+so the path can never resolve and **every poll** raises `scenario.turn_key_unresolved`. Without
+`validation: {strict: true}` the request is still served, just from a lane missing that discriminator; with it, the
+warning is promoted and every poll is a `400`. Leave `turn_key` unset unless you need one; the per-job lane is
+automatic and needs no declaration.
 
 **Validation.** Each async entry's `ValidateProjections` decodes every turn and reports these findings, in addition
 to the generic ones every provider raises for a malformed `respond:` node or an unresolved source reference (see

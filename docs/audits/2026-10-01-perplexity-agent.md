@@ -173,7 +173,7 @@ A rule the spec states plainly and the profile still does not enforce is classed
 | `max_steps` | `S/ResponsesRequest/properties/max_steps`: integer, int32, `minimum: 1`, `maximum: 100` | `NEWLY-REQUIRED` | Integer-ness and the maximum are now enforced; 101 and 1.5 used to pass. |
 | `stream` | `S/ResponsesRequest/properties/stream`: boolean | `NEWLY-REQUIRED` | A non-boolean used to be ignored silently, unlike `store` and `background`. |
 | `store` | `S/ResponsesRequest/properties/store`: boolean | `UNCHANGED` | Type-checked, not echoed. `S/ResponsesResponse` declares no `store` property, so "the echoed response reports `store: false`" is prose only. |
-| `background` | `S/ResponsesRequest/properties/background`: boolean | `UNCHANGED` | `true` still warns `perplexity.agent.background.unsupported` and returns the synchronous body. Issue #6. |
+| `background` | `S/ResponsesRequest/properties/background`: boolean | `UNCHANGED` | `true` still warns `perplexity.agent.background.unsupported` and returns the synchronous body. Issue #6. *Superseded 2026-10-03 (issue #6, unit U5): that code no longer exists. `background: true` now mints a job and answers a `queued` snapshot, or fails closed; see "Notes after 2026-10-01".* |
 | `temperature`, `top_p` | `.../temperature` 0 to 2, `.../top_p` 0 to 1 | `UNCHANGED` | |
 | `previous_response_id` | `#/paths/~1v1~1agent/post/responses/400/description` | `SIMULATOR-POLICY` | The profile is stateless by design (house rule 6), so it never resolves one. |
 | `reasoning` | `S/ReasoningConfig/properties/effort/enum` = minimal, low, medium, high, xhigh, max | `UNVERIFIED` | Accepted opaque. |
@@ -241,9 +241,12 @@ A rule the spec states plainly and the profile still does not enforce is classed
 | Termination of a successful stream | nothing documented | `UNVERIFIED` | The connection closes after `response.completed`. |
 | Usage in the terminal frame | `S/ResponsesResponse/properties/usage` optional | `UNCHANGED` | `terminal.omit_usage` is legal. |
 
-### Lifecycle (issue #6, not implemented here)
+### Lifecycle (issue #6)
 
 Recorded so issue #6 does not have to re-read the document. None of this is served.
+
+*(2026-10-03: no longer true. What has been built since, and what the 2026-10-03 re-read found, is under "Notes after
+2026-10-01" below. The table is the 2026-10-01 reading and is not edited.)*
 
 | Operation | Spec pointer | Note |
 |---|---|---|
@@ -304,7 +307,8 @@ given, and each is a small bounded addition.
   stream; the `[DONE]` sentinel; the initial `response.created` payload.
 - The shape of a framework-level failure for a body that is not JSON.
 - The unit of `annotations[].start_index` and `end_index` ("character index").
-- Terminal and non-terminal `Status` members, and what a retrieve returns mid-cancel.
+- Terminal and non-terminal `Status` members, and what a retrieve returns mid-cancel. *(2026-10-03: the terminal
+  split is implemented as `SIMULATOR-POLICY`; see "Notes after 2026-10-01".)*
 
 **Implemented on inference.** These ARE implemented, as the lenient or strict reading of text that does not settle
 them; each is labelled `INFERENCE` here and in the contract README.
@@ -340,3 +344,52 @@ them; each is labelled `INFERENCE` here and in the contract README.
   spec's `ResponseFailedEvent` is an unambiguous failure signal; ordering and termination remain policy.
 - Nothing else in the lead audit's table was found wrong. Every row was re-checked against the current document and
   the pointers, counts and enums above agree with it.
+
+## Notes after 2026-10-01
+
+Dated additions. The findings above are the 2026-10-01 record and are not rewritten; where a later note changes what a
+row says, the row carries a pointer here.
+
+### 2026-10-03: the background lifecycle is served (issue #6, unit U5)
+
+`retrieveAgent` and `background: true` are now simulated; `cancelAgentResponse` and the files operations are not. In
+the terms of the "Lifecycle" table above:
+
+| Row | Status after U5 |
+|---|---|
+| `retrieveAgent` | Served as `GET /v1/agent/{id}`, for a background run only. The `404` shape is `{error: ErrorInfo}`. A synchronous response's id is also `404`, a deliberate and named divergence (owner ruling 7 on issue #6): the real API retrieves a response stored by default. |
+| `cancelAgentResponse` | Not served. A `cancel:` key under a scenario's `background:` block is a load error. |
+| `listAgentFiles`, `downloadAgentFile` | Not served. |
+| `background: true` | Mints a job and answers `queued`, or fails closed: with no scripted `background:` block, a `404` and `perplexity.agent.background.unscripted`; with `stream: true`, a `400` and `perplexity.agent.background.stream`. With `store: false` it answers `queued` under the synchronous id, keeps no job and warns `perplexity.agent.background.unstored`. `perplexity.agent.background.unsupported`, named in the "Request" table above, was removed (a breaking change approved under ruling 2). The poll served is `GET /v1/agent/{id}`; `GET /v1/responses/{id}` is not, and the inconsistency stays unresolved. |
+| Terminal and non-terminal statuses | Still `UNVERIFIED`. The profile now takes `completed`, `failed`, `incomplete` and `cancelled` as terminal, as `SIMULATOR-POLICY`, and rejects a script that serves a non-terminal snapshot after a terminal one. |
+
+Two rows of the tables above read differently for a background snapshot, and the synchronous path is unchanged:
+`usage` is rendered only when the snapshot scripts it, and its `cost` only when that is scripted too, because the spec
+makes both optional and a zero the scenario did not script is no billing fact; and `model` falls back to the fixed
+placeholder `servicesim/unscripted` when a snapshot scripts none, since a retrieve has no request to echo. The
+contract notes, `profiles/perplexity/contracts/README.md` "Lifecycle: background runs and retrieve", have the rest.
+
+### 2026-10-03: a re-read against a document whose hash has moved
+
+The lifecycle operations were read again, against a fresh fetch (215,432 bytes, sha256
+`1a269d5596e506d3189e57c3ae84874a21c3532afe8c95de6f21e55f17001f15`, `info.version` still `1.0.0`). `retrieveAgent`,
+`cancelAgentResponse`, the `background` and `store` descriptions, `Status`, `ResponsesResponse` and `ErrorInfo` agree
+with everything the rows above recorded about them; with the old bytes gone, that is all that can be compared.
+
+The document has moved nonetheless. Its hash is not the one in "Baseline" above (`e0b92edf…`, 208,564 bytes), and the
+bytes audited on 2026-10-01 were not kept, so the full difference cannot be computed, exactly as the "Method and limits"
+section already said of the previous one. Differences are confirmed. Re-running "Reproducing it" above against the new
+bytes shows: `ResponsesRequest` has 20 properties where this record counted 19, the extra one `tool_choice` (`allOf`
+`S/ToolChoice`: a string from `none`, `auto`, `required`, or an object; its description names
+`{"type":"image_search"}`); `ResponsesCost` has a `tool_calls_cost_details` property the contract notes' table does
+not list; `S/EventType/enum` and `S/ResponseStreamEvent` have 16 members where this record counted 14, the new ones
+`response.reasoning.image_search_queries` and `response.reasoning.image_search_results`; the `OutputItem`
+discriminator has 11 types where the profile counts ten, the new one `image_search_results`; and `sequence_number`
+occurs 32 times where this record counted 28. This record does not list `tool_choice` and the profile's `agentFields`
+does not name it, so a request carrying it draws a `request.unknown_field` warning. The lifecycle renders or requires
+none of these (`tool_calls_cost_details` is optional); all are left for the re-audit, tracked in #27.
+
+A whole-bundle re-audit was **not** done. The provider-level `verified:` date, the `spec:` block in `provenance.yaml`
+and the Perplexity cell of the `contracts/README.md` index therefore stay at 2026-10-01, and the three golden entries
+added for the lifecycle carry that date as well, with a comment in `provenance.yaml` saying why. Moving them would have
+recorded bytes the bundle was not audited against and erased the drift signal that "Reproducing it" above relies on.

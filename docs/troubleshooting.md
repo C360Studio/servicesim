@@ -65,9 +65,9 @@ single port cannot disambiguate them.
 
 | Port | Provider | Routes |
 |---:|---|---|
-| 8081 | exa | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
+| 8081 | exa | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}`, `POST /agent/runs/{id}/cancel` |
 | 8082 | tavily | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
-| 8083 | perplexity | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
+| 8083 | perplexity | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses`, `GET /v1/agent/{id}` |
 | 8084 | mcp | `POST /mcp` |
 
 Sending Tavily's request to port 8081 reaches Exa's handler, which will reject it as a malformed Exa request. Check
@@ -494,6 +494,13 @@ deliver the request; if the deadline fires before the simulator has read it, no 
 abandoned server-side, and there is no entry for `AwaitRequests` to find — the route looks idle and the await
 times out. Give the deadline real margin over request-delivery latency: a second or two is safe and still tiny
 beside the `timeout` built-in's 30s hang. `100ms` has flaked in this repository's own CI for exactly this reason.
+
+When the deadline does fire after the simulator has read the request, a Perplexity `background: true` create against
+the `timeout` built-in leaves an orphan. The job is minted before the hang, and an attempt that only delays still
+delivers its body, so the job is kept; but the client that timed out holds no identifier for it, and its retry mints a
+second job. Both show in `GET /__admin/jobs` (`sim.Jobs()` in Go), so expect one more job than your client holds
+identifiers for. Read what the simulator holds as
+[the job-exists entry above](#my-create-failed-and-i-need-to-know-whether-a-job-exists) describes.
 
 ## The wrong turn answered, or two callers got each other's responses
 

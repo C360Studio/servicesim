@@ -176,6 +176,52 @@ type Profile struct {
 	// could not call at all.
 	Cancellable []string
 
+	// Backgroundable names the entry kinds — keys of Validators, or the
+	// profile's own kind when it declares none — on which this profile serves
+	// a background lifecycle: the entries on which a scenario's `background:`
+	// block is accepted. Nil means none, and [ValidateScenario] then rejects a
+	// `background:` block on every entry of this profile with
+	// [CodeBackgroundUnsupported]. That is the default on purpose, as it is
+	// for Cancellable: a profile with no background lifecycle sets nothing and
+	// fails closed.
+	//
+	// Naming an entry is a promise the profile keeps in Go: its create route
+	// mints a job with [MintJob] when a request asks for the background
+	// lifecycle, and its retrieve route selects the job's snapshot from
+	// background.turns with [SelectPollTurn]. NewSet refuses a name that is
+	// not one of the profile's own entry kinds. A kind may be named here and
+	// in Cancellable both.
+	//
+	// The profile owes three more things, and missing any of them fails
+	// silently: the scenario loads clean and the retrieve serves the wrong
+	// thing.
+	//
+	//   - The retrieve's Route.Fault returns the first background.turns[i].Fault
+	//     that HasAttempts, under a FaultKey of the retrieve's own. [TurnFault]
+	//     reads only the entry's own turns, so wired here it leaves a
+	//     background turn's `fault:` unapplied and applies the create's plan to
+	//     retrieves.
+	//   - The retrieve's LaneFrom keys its lane by job ([LaneFromPath] plus the
+	//     path wildcard's name), and its Entry is the create's. Without
+	//     LaneFrom every job in a namespace shares one cursor, and one job's
+	//     retrieve is served another job's snapshot.
+	//   - The validator decodes background.turns with [scenario.DecodeStrict]
+	//     and a path of its own: [scenario.Turn.DecodeProjection] writes
+	//     providers.<name>.turns[i] into its errors, which is the wrong address
+	//     for a background turn.
+	//
+	// The framework does NOT check a background turn's `when.route:` against
+	// the entry's [RouteLister], as it does the entry's own turns and its
+	// cancel.turns. An entry's turns and its background.turns are selected by
+	// different routes — the create and the retrieve — so the one route list
+	// the entry's validator offers would accept, in either script, a route
+	// that never selects it, and the turn would load clean and never fire. The
+	// opted-in profile's own Validator checks background.turns' routes against
+	// its retrieve route alone. A profile that registers no Validators and
+	// names its own kind here gets the framework's no-op validator, so nothing
+	// checks background.turns at all: register a Validator before opting in.
+	Backgroundable []string
+
 	// ErrorBody renders a Refusal in this vendor's own error shape. REQUIRED:
 	// NewSet refuses a Profile whose ErrorBody is nil (house rule 3 — an
 	// unmatched path, method, provider or scenario must never answer with an
@@ -312,6 +358,14 @@ func (p Profile) Validate() error {
 			return fmt.Errorf(
 				"provider: profile %q: Cancellable names %q, which is not one of its entry kinds (%s); "+
 					"only an entry this profile serves can accept a cancel: block",
+				p.Name, name, strings.Join(slices.Sorted(maps.Keys(own)), ", "))
+		}
+	}
+	for _, name := range p.Backgroundable {
+		if _, ok := own[name]; !ok {
+			return fmt.Errorf(
+				"provider: profile %q: Backgroundable names %q, which is not one of its entry kinds (%s); "+
+					"only an entry this profile serves can accept a background: block",
 				p.Name, name, strings.Join(slices.Sorted(maps.Keys(own)), ", "))
 		}
 	}
@@ -483,8 +537,8 @@ func (p Profile) Refuse(r Refusal) []byte {
 
 // cloneProfileFields returns p with every reference-typed field replaced by
 // an independent copy: Handlers and Validators (maps.Clone), and Routes,
-// Cancellable, Hosts, DerivedIDs, StreamDerivedIDs and CredentialNames
-// (slices.Clone).
+// Cancellable, Backgroundable, Hosts, DerivedIDs, StreamDerivedIDs and
+// CredentialNames (slices.Clone).
 // Contracts (an fs.FS), ErrorBody, Announce and each Route's own Fault func
 // are left shared — a func value and an fs.FS expose no mutable state a
 // caller could reach through the clone, unlike a map or a slice's backing
@@ -503,6 +557,7 @@ func cloneProfileFields(p Profile) Profile {
 	p.Validators = maps.Clone(p.Validators)
 	p.Routes = slices.Clone(p.Routes)
 	p.Cancellable = slices.Clone(p.Cancellable)
+	p.Backgroundable = slices.Clone(p.Backgroundable)
 	p.Hosts = slices.Clone(p.Hosts)
 	p.DerivedIDs = slices.Clone(p.DerivedIDs)
 	p.StreamDerivedIDs = slices.Clone(p.StreamDerivedIDs)
@@ -728,10 +783,14 @@ func (s *Set) Routes() []Route {
 // that share one Kind may safely contribute the same key (NewSet already
 // proved they agree); Validators does not need to re-check that here.
 //
-// The validator of an entry kind a profile names in [Profile.Cancellable] is
-// returned marked as such, which is how that opt-in reaches
-// [ValidateScenario]. A map built by hand from Profile.Validators carries no
-// mark, so ValidateScenario rejects every `cancel:` block in it.
+// The validator of an entry kind a profile names in [Profile.Cancellable] or
+// [Profile.Backgroundable] is returned marked as such, which is how those
+// opt-ins reach [ValidateScenario]. A map built by hand from
+// Profile.Validators carries no mark, so ValidateScenario rejects every
+// `cancel:` and `background:` block in it. The mark wraps the profile's
+// validator, so a type assertion on a marked value for an optional interface
+// such as [RouteLister] fails; only ValidateScenario sees through the mark.
+// Assert on the profile's own Validators instead.
 func (s *Set) Validators(only ...Name) map[string]Validator {
 	profiles := s.profiles
 	if len(only) > 0 {
@@ -743,15 +802,22 @@ func (s *Set) Validators(only ...Name) map[string]Validator {
 		}
 	}
 	out := make(map[string]Validator)
-	optedIn := make(map[string]bool)
+	cancelIn := make(map[string]bool)
+	backgroundIn := make(map[string]bool)
 	for _, p := range profiles {
 		maps.Copy(out, p.entryValidators())
 		for _, kind := range p.Cancellable {
-			optedIn[kind] = true
+			cancelIn[kind] = true
+		}
+		for _, kind := range p.Backgroundable {
+			backgroundIn[kind] = true
 		}
 	}
-	for kind := range optedIn {
+	for kind := range cancelIn {
 		out[kind] = cancellable{out[kind]}
+	}
+	for kind := range backgroundIn {
+		out[kind] = backgroundable{out[kind]}
 	}
 	return out
 }
@@ -761,6 +827,11 @@ func (s *Set) Validators(only ...Name) map[string]Validator {
 // mark is how the opt-in travels from a Set to it; ValidateScenario unwraps it
 // before using the validator, so a RouteLister underneath is still found.
 type cancellable struct{ Validator }
+
+// backgroundable marks the validator of an entry kind its profile names in
+// [Profile.Backgroundable], the way cancellable marks a cancel opt-in. One kind
+// may carry both marks; ValidateScenario unwraps them in either nesting order.
+type backgroundable struct{ Validator }
 
 // EntryKinds returns every scenario entry kind any registered profile
 // declares a validator for, sorted. Sorted, not registration order: the

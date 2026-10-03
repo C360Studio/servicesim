@@ -1,0 +1,49 @@
+{
+  "id": "resp_873fa53fb79ad4032ca697a74f6da0c7",
+  "object": "response",
+  "model": "openai/gpt-5",
+  "created_at": 1767225600,
+  "status": "completed",
+  "output": [
+    {
+      "type": "search_results",
+      "queries": [
+        "deterministic simulator adapter tests"
+      ],
+      "results": [
+        {
+          "id": 1,
+          "title": "Report A",
+          "url": "https://example.test/report-a",
+          "snippet": "Report A finds that deterministic simulators remove flakiness.",
+          "date": "2025-11-16",
+          "source": "web"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_c9501c974a0234fd0e096980c1086b1a",
+      "role": "assistant",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Report A finds that deterministic simulation removes flakiness.",
+          "annotations": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 42,
+    "output_tokens": 128,
+    "total_tokens": 170,
+    "cost": {
+      "currency": "USD",
+      "input_cost": 0.00021,
+      "output_cost": 0.00128,
+      "total_cost": 0.00149
+    }
+  }
+}

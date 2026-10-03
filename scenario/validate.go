@@ -223,6 +223,21 @@ func validateProvider(r *Report, e *ProviderEntry) {
 			return fmt.Sprintf("%s.cancel.turns[%d]", base, i)
 		})
 	}
+	if e.Background != nil {
+		// A background script is selected exactly as the entry's own is, so it
+		// gets the same per-turn checks — each turn's fault plan included, which
+		// the retrieve route reads — addressed by its own paths. Unlike a cancel
+		// script it may not be empty: every retrieve of a background job is
+		// answered from it, so a block with no turns stops the process here
+		// instead of failing each retrieve at runtime.
+		if len(e.Background.Turns) == 0 {
+			r.add(SeverityError, "scenario.provider.background.turns.empty", base+".background.turns",
+				"a background: block must declare at least one turn; every retrieve of a background job is answered from it")
+		}
+		validateTurns(r, e.Background.Turns, func(i int) string {
+			return fmt.Sprintf("%s.background.turns[%d]", base, i)
+		})
+	}
 
 	if len(e.Turns) == 0 {
 		r.add(SeverityError, "scenario.provider.turns.empty", base+".turns",
@@ -233,8 +248,8 @@ func validateProvider(r *Report, e *ProviderEntry) {
 }
 
 // validateTurns checks every turn of one script, each addressed by path(i), and
-// that no unconditional turn shadows the ones after it. It is the one walk both
-// an entry's turns and its cancel.turns go through.
+// that no unconditional turn shadows the ones after it. It is the one walk an
+// entry's turns, its cancel.turns and its background.turns all go through.
 func validateTurns(r *Report, turns []Turn, path func(int) string) {
 	for i := range turns {
 		validateTurn(r, &turns[i], path(i))

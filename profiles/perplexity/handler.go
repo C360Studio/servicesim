@@ -102,19 +102,21 @@ func routeResponsesBare() provider.Route {
 		Credentials: bearerOnly, Fault: agentFault}
 }
 
-// Routes returns the six Perplexity routes across two surfaces, in registration
-// order. Each carries the fault budget it draws on and the selector for the
-// scenario entry that budget is declared in, so the composition layer can build
-// the fault engine's key set by concatenating the providers' Routes().
+// Routes returns the seven Perplexity routes across two surfaces, in
+// registration order. Each carries the fault budget it draws on and the selector
+// for the scenario entry that budget is declared in, so the composition layer can
+// build the fault engine's key set by concatenating the providers' Routes().
 //
-// Six routes, not six endpoints: three spellings of Sonar followed by three
-// spellings of the Agent API. The fault engine registers one counter per distinct
-// FaultKey, so the extra spellings cost nothing and cannot fork a budget.
+// Seven routes, not seven endpoints: three spellings of Sonar, three spellings
+// of the Agent API's create, then GET /v1/agent/{id}, which retrieves a
+// background run on a budget of its own. The fault engine registers one counter
+// per distinct FaultKey, so the extra spellings cost nothing and cannot fork a
+// budget.
 //
 // It is a function, not a package-level var, so no consumer can mutate the route
 // table of a package it merely imported.
 func Routes() []provider.Route {
-	return slices.Concat(sonarRoutes(), agentRoutes())
+	return slices.Concat(sonarRoutes(), agentRoutes(), backgroundRoutes())
 }
 
 // sonarRoutes returns the three spellings of the Sonar surface, which is what the
@@ -142,6 +144,7 @@ func handlers() map[string]provider.Handler {
 		PatternAgent:             handleAgent,
 		PatternResponses:         handleAgent,
 		PatternResponsesBare:     handleAgent,
+		patternAgentRetrieve:     handleAgentRetrieve,
 	}
 }
 
@@ -272,7 +275,8 @@ func wantsStream(x *provider.Exchange) bool {
 	return ok && stream
 }
 
-// handleAgent serves POST /v1/agent and its /v1/responses alias.
+// handleAgent serves POST /v1/agent and its /v1/responses alias. A request
+// that asks for background: true, once validated, is handleAgentBackground's.
 func handleAgent(x *provider.Exchange) provider.Response {
 	entry := x.Deps.Scenario.Provider(NameAgent)
 
@@ -285,6 +289,9 @@ func handleAgent(x *provider.Exchange) provider.Response {
 	model := validateAgentRequest(x, policy)
 	if x.Failed() {
 		return validationResponse(surfaceAgent, x.Findings(), agentFields)
+	}
+	if wantsBackground(x) {
+		return handleAgentBackground(x, entry, model)
 	}
 
 	var p perplexityAgent
@@ -532,6 +539,10 @@ func (agentValidator) ProjectionKeys() []string {
 // one (renderAgentOutput emits no message item for those, so renderAgentStream
 // has nothing to attach the envelope events around) — not scenario's
 // GrammarDelta-shaped len(Deltas)+1 default — see agentChunkCount.
+//
+// The entry's background script, when it declares one, is checked last and
+// apart from its turns (validateBackground): its snapshots are selected by the
+// retrieve route, not the create spellings, and no stream is served for them.
 func (agentValidator) ValidateProjections(s *scenario.Scenario, e *scenario.ProviderEntry) []scenario.Finding {
 	if s == nil || e == nil {
 		return nil
@@ -567,7 +578,7 @@ func (agentValidator) ValidateProjections(s *scenario.Scenario, e *scenario.Prov
 		entryPolicy = streamTurns[0].Script.EffectivePolicy() // nil-safe: StreamWarn when turn 0 has none
 	}
 	findings = append(findings, scenario.ValidateStreamFaultMismatch(e, entryPolicy, streamTurns)...)
-	return findings
+	return append(findings, validateBackground(s, e)...)
 }
 
 // agentChunkCount computes the scenario.StreamTurn.ChunkCount override

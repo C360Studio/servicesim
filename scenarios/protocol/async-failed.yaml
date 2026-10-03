@@ -1,9 +1,11 @@
 # A run/task on each async surface that reaches a terminal FAILED status
-# instead of completing.
+# instead of completing: Exa's agent run, Tavily's research task, and the
+# Perplexity Agent's `background: true` run.
 #
 # The four synchronous surfaces stay in the ordinary happy shape — this file
 # is about the async lifecycle, not about anything those four surfaces do
-# differently — so only the two async entries below diverge from `happy`.
+# differently — so only the two async entries below, and the background block
+# of the perplexity_agent entry, diverge from `happy`.
 version: 1
 name: async-failed
 description: >-
@@ -11,7 +13,9 @@ description: >-
   async surface that reaches a terminal failed status — Exa's run is
   `status: failed` with `stopReason: error` and no error object (the live
   schema has none); Tavily's failed poll carries none either, which a
-  consumer's failure branch must handle too.
+  consumer's failure branch must handle too; a Perplexity `background: true`
+  run's retrieves answer queued, then in_progress, then `status: failed` with
+  an `error` object and the usage and cost the failed run billed.
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -57,6 +61,39 @@ providers:
     answer: Report A states the finding.
     search_results:
       - source-a
+    # The background lifecycle: what `background: true` on POST /v1/agent starts and
+    # GET /v1/agent/{id} retrieves. Sixteen built-ins share one block that completes;
+    # this is one of the four that script their own, because a run that completed here
+    # would break this file's promise on the route a background poll uses. A job's
+    # retrieves are queued, then in progress, then failed for good. The failed
+    # snapshot carries `error`, the specification's ErrorInfo (message required; code
+    # and type are free strings the vendor does not enumerate, so these values are
+    # Servicesim's, the same ones perplexity-agent-failed.json carries), and no
+    # message item. It also carries the usage and cost the run billed before it failed:
+    # a failed run still bills, here 24 output tokens at the completed run's rate. The
+    # create still answers the fixed queued stub; this block scripts only the
+    # retrieves. It carries no fault on purpose: this entry's own `fault:` or `turns:`
+    # shape the CREATE, and the retrieve's budget is its own.
+    background:
+      turns:
+        - when: {call_index: 0}
+          respond:
+            status: queued
+        - when: {call_index: 1}
+          respond:
+            status: in_progress
+        - respond:
+            status: failed
+            error:
+              code: model_error
+              message: The background run failed before it could answer.
+              type: server_error
+            usage:
+              input_tokens: 24
+              output_tokens: 24
+              cost:
+                input_cost: 0.0001
+                output_cost: 0.0001
 
   # One running poll, then a terminal FAILED status. The live AgentRun schema
   # has no run-level error object, so a failed run is expressed through its
