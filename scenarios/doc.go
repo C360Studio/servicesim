@@ -19,15 +19,20 @@
 // generic hostile-content pack (prompt injection, credential-shaped bait,
 // active markup, exfiltration instructions and long content) exercising a
 // consumer's guardrail on every dispatch path (an Exa run the consumer cancels
-// renders no output, and a Perplexity background run a fixed answer with no
-// sources, so neither carries a marker), and a provider this build has
+// renders no output, so it carries no marker), and a provider this build has
 // no handler for.
 //
-// Every built-in also scripts, identically, the background run a Perplexity
-// Agent request with background: true starts: GET /v1/agent/{id} answers queued,
-// then in progress, then completed for good, with a fixed answer and the usage and
-// cost the run billed. That includes async-failed and async-stuck, whose failed and
-// never-terminal runs are Exa's and Tavily's. The block carries no fault, so a
+// Every built-in also scripts the background run a Perplexity Agent request
+// with background: true starts. Sixteen share one block: GET /v1/agent/{id}
+// answers queued, then in progress, then completed for good, with a fixed answer
+// and the usage and cost the run billed. The other four script their own, because
+// each name promises a behaviour that block would drop on the route a background
+// poll uses: async-failed's run ends failed, with an error and the usage and cost
+// it billed; async-stuck's answers queued and then in progress for good;
+// malicious-content's completed snapshot carries the hostile answer and every
+// hostile source; and every extra-fields snapshot carries the synchronous
+// response's unknown fields. A block scripts only the retrieves: the create
+// answers a fixed queued stub in every built-in. No block carries a fault, so a
 // scenario that faults the Agent create (rate-limited, server-error,
 // malformed-json, brownout, timeout, oversized-body, hang-then-abort) faults a
 // background create the same way, because it shares the create's budget, while the

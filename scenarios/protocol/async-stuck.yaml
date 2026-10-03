@@ -1,10 +1,12 @@
-# A run/task on each async surface that never reaches a terminal status on its own.
-# (Perplexity's `background: true` run is not one of them: every built-in scripts
-# it identically, and it completes.)
+# A run/task on each async surface that never reaches a terminal status on its own:
+# Exa's agent run, Tavily's research task, and the Perplexity Agent's
+# `background: true` run.
 #
 # One unconditional non-terminal turn per async entry: every poll, however
-# many, answers "still running" / "still pending" — unless the consumer cancels
-# the Exa run: the cancel's response and the first poll after it still answer
+# many, answers "still running" / "still pending" / "in_progress" (a Perplexity
+# background run answers `queued` on its first retrieve, then `in_progress` on
+# every one after it) — unless the consumer cancels the Exa run: the cancel's
+# response and the first poll after it still answer
 # `running`, and the second poll after it answers `cancelled`. Servicesim never decides a
 # job is stuck — there is no timeout logic here — so what this scenario tests
 # is entirely on the consumer's side: does its own poll loop eventually give
@@ -19,8 +21,8 @@ description: >-
   A well-formed 200 from every synchronous surface, and a run/task on each
   async surface that never terminates on its own (an Exa run reports
   `cancelled` once the consumer cancels it), so a consumer's own poll timeout
-  is what is under test. A Perplexity `background: true` run is the exception:
-  it completes, as in every built-in.
+  is what is under test. A Perplexity `background: true` run is one of them:
+  its first retrieve answers queued and every retrieve after it in_progress.
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -67,27 +69,23 @@ providers:
     search_results:
       - source-a
     # The background lifecycle: what `background: true` on POST /v1/agent starts and
-    # GET /v1/agent/{id} retrieves. A job's retrieves are queued, then in progress,
-    # then completed for good, with the usage and cost the run billed. The block is
-    # identical in every built-in and carries no fault on purpose: this entry's own
-    # `fault:` or `turns:` shape the CREATE, and the retrieve's budget is its own.
+    # GET /v1/agent/{id} retrieves. Sixteen built-ins share one block that completes;
+    # this is one of the four that script their own, because a run that completed here
+    # would break this file's promise on the route a background poll uses. A job's
+    # first retrieve is queued, and every retrieve after it is in progress, for good:
+    # the last turn is unconditional and non-terminal, so no retrieve is ever served a
+    # terminal snapshot, and none bills (an unfinished run scripts no usage). Nothing
+    # serves a cancel of a background run, so a consumer's own poll timeout is the only
+    # way out. The create still answers the fixed queued stub; this block scripts only
+    # the retrieves. It carries no fault on purpose: this entry's own `fault:` or
+    # `turns:` shape the CREATE, and the retrieve's budget is its own.
     background:
       turns:
         - when: {call_index: 0}
           respond:
             status: queued
-        - when: {call_index: 1}
-          respond:
-            status: in_progress
         - respond:
-            status: completed
-            answer: The background run has completed.
-            usage:
-              input_tokens: 24
-              output_tokens: 96
-              cost:
-                input_cost: 0.0001
-                output_cost: 0.0004
+            status: in_progress
 
   # Single-shot, unconditional, and non-terminal: every poll answers running until
   # a cancel; the second poll after one answers cancelled.

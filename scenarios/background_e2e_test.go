@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -130,9 +132,15 @@ func statusWanted(a scenario.FaultAttempt) int {
 	return a.Status
 }
 
+// snapshotKeys are the keys the specification requires of a ResponsesResponse,
+// which every background body carries.
+var snapshotKeys = []string{"id", "object", "model", "created_at", "status", "output"}
+
 // assertQueuedStub checks the body of a background create that reached the client
 // and returns the job's identifier: the snapshot of a run that has not started,
-// echoing the request's model, with no output and no usage.
+// echoing the request's model, with no output and no usage. It is a fixed stub, so
+// it carries nothing a scenario's background block scripts — no extra field, even
+// in extra-fields.
 func assertQueuedStub(t *testing.T, s *scenario.Scenario, raw []byte) string {
 	t.Helper()
 
@@ -146,6 +154,8 @@ func assertQueuedStub(t *testing.T, s *scenario.Scenario, raw []byte) string {
 	assert.EqualValues(t, s.BaseTime().Unix(), got["created_at"])
 	assert.Equal(t, []any{}, got["output"], "a run that has not started has produced no output")
 	assert.NotContains(t, got, "usage", "a queued run has billed nothing, and an unscripted usage is no billing fact")
+	assert.ElementsMatch(t, snapshotKeys, slices.Collect(maps.Keys(got)),
+		"the create's stub carries only the required keys, body: %.200s", raw)
 	return id
 }
 
@@ -241,7 +251,10 @@ func retrieveSnapshots(t *testing.T, e *scenario.ProviderEntry) []backgroundSnap
 // assertSnapshot checks one retrieve's body against the snapshot the scenario
 // scripts for it. The identifier is the job's, the creation time the scenario's
 // base time, and the usage is present exactly when the snapshot scripts it, with
-// the totals the renderer derives when the snapshot leaves them out.
+// the totals the renderer derives when the snapshot leaves them out. The body
+// carries exactly the keys the snapshot scripts: an error and each extra field
+// when scripted, and nothing else beside the required ones. A scripted
+// search_results renders first, each result the source it names, byte for byte.
 func assertSnapshot(t *testing.T, s *scenario.Scenario, raw []byte, id string, want backgroundSnapshot) {
 	t.Helper()
 
@@ -257,12 +270,62 @@ func assertSnapshot(t *testing.T, s *scenario.Scenario, raw []byte, id string, w
 		assert.Equal(t, retrieveModelPlaceholder, got["model"], "a retrieve has no request to echo a model from")
 	}
 
+	wantKeys := slices.Clone(snapshotKeys)
+	if want.Usage != nil {
+		wantKeys = append(wantKeys, "usage")
+	}
+	if want.Error != nil {
+		wantKeys = append(wantKeys, "error")
+	}
+	for key, value := range want.ExtraFields {
+		wantKeys = append(wantKeys, key)
+		wantJSON, err := json.Marshal(value)
+		require.NoError(t, err)
+		gotJSON, err := json.Marshal(got[key])
+		require.NoError(t, err)
+		assert.JSONEqf(t, string(wantJSON), string(gotJSON), "extra field %q", key)
+	}
+	assert.ElementsMatch(t, wantKeys, slices.Collect(maps.Keys(got)), "body: %.300s", raw)
+
+	if want.Error != nil {
+		wantError := map[string]any{"message": want.Error.Message}
+		if want.Error.Code != "" {
+			wantError["code"] = want.Error.Code
+		}
+		if want.Error.Type != "" {
+			wantError["type"] = want.Error.Type
+		}
+		assert.Equal(t, wantError, got["error"], "the snapshot's ErrorInfo")
+	}
+
 	output, _ := got["output"].([]any)
+	next := 0
+	if len(want.SearchResults) > 0 {
+		require.NotEmpty(t, output, "the snapshot scripts search_results, body: %.300s", raw)
+		item, _ := output[0].(map[string]any)
+		assert.Equal(t, "search_results", item["type"])
+		results, _ := item["results"].([]any)
+		require.Len(t, results, len(want.SearchResults))
+		for i, ref := range want.SearchResults {
+			src, ok := s.SourceByID(ref.Ref)
+			require.Truef(t, ok, "search_results[%d] names %q, which the scenario does not declare", i, ref.Ref)
+			snippet := ""
+			if len(src.Snippets) > 0 {
+				snippet = src.Snippets[0]
+			}
+			result, _ := results[i].(map[string]any)
+			assert.EqualValuesf(t, i+1, result["id"], "search_results[%d].id is its 1-based position", i)
+			assert.Equalf(t, src.Title, result["title"], "search_results[%d] (%s)", i, ref.Ref)
+			assert.Equalf(t, src.URL, result["url"], "search_results[%d] (%s)", i, ref.Ref)
+			assert.Equalf(t, snippet, result["snippet"], "search_results[%d] (%s)", i, ref.Ref)
+		}
+		next = 1
+	}
 	if want.Answer == "" {
-		assert.Empty(t, output, "a snapshot with no answer has no message item")
+		assert.Len(t, output, next, "a snapshot with no answer has no message item")
 	} else {
-		require.Len(t, output, 1)
-		message, _ := output[0].(map[string]any)
+		require.Len(t, output, next+1)
+		message, _ := output[next].(map[string]any)
 		assert.Equal(t, "message", message["type"])
 		content, _ := message["content"].([]any)
 		require.Len(t, content, 1)
@@ -298,9 +361,81 @@ func assertSnapshot(t *testing.T, s *scenario.Scenario, raw []byte, id string, w
 	assert.Positive(t, totalCost, "the billed run's cost is not a zero")
 }
 
+// assertBackgroundEnd checks how a built-in's background run ends against what the
+// built-in's name promises. The expectation is read off the name, not off the
+// script, which assertSnapshot has already compared with the wire. Sixteen
+// built-ins share a run that completes; the four in variantBackgroundBlocks keep
+// their own promise on this route too:
+//
+//   - async-failed ends failed, with an ErrorInfo and the usage and cost the failed
+//     run billed;
+//   - async-stuck (backgroundNeverEnds) never ends, the named exemption from "every
+//     run ends": every retrieve after its first is in_progress, none is terminal and
+//     none bills;
+//   - malicious-content ends completed, and only that snapshot carries the marker
+//     vocabulary and the literal bait tokens;
+//   - extra-fields ends completed, and every snapshot carries its two extra fields.
+//
+// Every run that ends does so with the usage and cost it billed.
+func assertBackgroundEnd(t *testing.T, name string, script []backgroundSnapshot, bodies [][]byte) {
+	t.Helper()
+	require.Len(t, bodies, len(script))
+
+	wantEnd := "completed"
+	switch name {
+	case "async-failed":
+		wantEnd = "failed"
+	case backgroundNeverEnds:
+		wantEnd = "in_progress"
+	}
+	final := script[len(script)-1]
+	assert.Equalf(t, wantEnd, final.status(), "how %s's background run ends", name)
+
+	switch name {
+	case "async-failed":
+		require.NotNil(t, final.Error, "a failed run carries ErrorInfo, which assertSnapshot has just checked on the wire")
+		assert.NotEmpty(t, final.Error.Message, "ErrorInfo.message is required")
+	case backgroundNeverEnds:
+		// call_index 0 is the last position the script names, so every retrieve after
+		// it is the unconditional last turn's; the walk sends two of them.
+		require.Greater(t, len(script), 2)
+		for poll, snap := range script {
+			assert.Falsef(t, terminalBackgroundStatus(snap.status()), "retrieve %d is %s: this run never ends", poll, snap.status())
+			assert.Nilf(t, snap.Usage, "retrieve %d bills a run that has not finished", poll)
+			if poll > 0 {
+				assert.Equalf(t, "in_progress", snap.status(), "retrieve %d", poll)
+			}
+		}
+		return
+	case "malicious-content":
+		last := string(bodies[len(bodies)-1])
+		for _, needle := range slices.Concat(maliciousContentMarkers, maliciousContentBaitTokens) {
+			assert.Containsf(t, last, needle, "the completed snapshot carries %q verbatim", needle)
+		}
+		for poll, body := range bodies {
+			if terminalBackgroundStatus(script[poll].status()) {
+				continue
+			}
+			for _, marker := range maliciousContentMarkers {
+				assert.NotContainsf(t, string(body), marker, "retrieve %d is a run that has not answered yet", poll)
+			}
+		}
+	case "extra-fields":
+		for poll, body := range bodies {
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(body, &got))
+			assert.Equalf(t, "trace-0", got["experimental_trace_id"], "retrieve %d (%s)", poll, script[poll].status())
+			assert.Equalf(t, "default", got["service_tier"], "retrieve %d (%s)", poll, script[poll].status())
+		}
+	}
+	require.NotNil(t, final.Usage, "a run that ends bills, which assertSnapshot has just checked on the wire")
+}
+
 // TestBuiltins_ABackgroundRunIsCreatedAndRetrieved runs `background: true` end to
 // end on every built-in the registry ships: a create, then the retrieves the
-// scenario scripts and one past its end.
+// scenario scripts and one past its end, and then assertBackgroundEnd's check of
+// how the run ends, which differs for the four built-ins that script their own
+// background run.
 //
 // What a built-in does to the create is not "succeed" for all of them. A
 // background create draws the same fault attempt as a synchronous create — the
@@ -451,6 +586,7 @@ func TestBuiltins_ABackgroundRunIsCreatedAndRetrieved(t *testing.T) {
 
 				// The retrieves the scenario scripts, and one past its end.
 				var previous []byte
+				bodies := make([][]byte, 0, len(script))
 				for poll, want := range script {
 					res := send(http.MethodGet, "/v1/agent/"+first, "", key, agentJournalLabelRetrieved+want.status(), -1)
 					require.NoError(t, res.err)
@@ -461,10 +597,9 @@ func TestBuiltins_ABackgroundRunIsCreatedAndRetrieved(t *testing.T) {
 							"a retrieve past the end of the script answers the last snapshot again, byte for byte")
 					}
 					previous = res.body
+					bodies = append(bodies, res.body)
 				}
-				final := script[len(script)-1]
-				assert.Equal(t, "completed", final.status(), "every built-in's background run ends completed")
-				require.NotNil(t, final.Usage, "and with the usage and cost it billed, which assertSnapshot has just checked on the wire")
+				assertBackgroundEnd(t, name, script, bodies)
 
 				// A job's position is its own: a second job starts at its first snapshot
 				// although the first was polled to the end.

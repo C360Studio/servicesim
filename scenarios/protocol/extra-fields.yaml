@@ -8,8 +8,9 @@ version: 1
 name: extra-fields
 description: >-
   Well-formed 200s carrying additional unknown properties, so a consumer proves
-  its decoder tolerates a vendor adding fields (a Perplexity `background: true`
-  run's snapshots carry none).
+  its decoder tolerates a vendor adding fields. A Perplexity `background: true`
+  run's retrieves carry them on every snapshot, queued, in_progress and
+  completed; the create answers a fixed queued stub that carries none.
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -104,21 +105,40 @@ providers:
     search_results:
       - source-a
     # The background lifecycle: what `background: true` on POST /v1/agent starts and
-    # GET /v1/agent/{id} retrieves. A job's retrieves are queued, then in progress,
-    # then completed for good, with the usage and cost the run billed. The block is
-    # identical in every built-in and carries no fault on purpose: this entry's own
+    # GET /v1/agent/{id} retrieves. Sixteen built-ins share one block whose snapshots
+    # carry no unknown field; this is one of the four that script their own, because
+    # a consumer decoding each poll would otherwise never meet one on the route a
+    # background poll uses. A job's retrieves are queued, then in progress, then
+    # completed for good, with the answer, usage and cost the shared block has, and
+    # EVERY snapshot carries the two extra_fields the synchronous response above
+    # carries, so the decoder must tolerate them at every step, not only at the end.
+    # (A snapshot may not carry an `id` or a `status` extra field: both are load
+    # errors, because extra fields win over the rendered body.)
+    #
+    # The CREATE does not: a `background: true` create answers a fixed queued stub
+    # that no scenario scripts, so it carries no extra field here either. This block
+    # scripts only the retrieves. It carries no fault on purpose: this entry's own
     # `fault:` or `turns:` shape the CREATE, and the retrieve's budget is its own.
     background:
       turns:
         - when: {call_index: 0}
           respond:
             status: queued
+            extra_fields:
+              experimental_trace_id: trace-0
+              service_tier: default
         - when: {call_index: 1}
           respond:
             status: in_progress
+            extra_fields:
+              experimental_trace_id: trace-0
+              service_tier: default
         - respond:
             status: completed
             answer: The background run has completed.
+            extra_fields:
+              experimental_trace_id: trace-0
+              service_tier: default
             usage:
               input_tokens: 24
               output_tokens: 96
