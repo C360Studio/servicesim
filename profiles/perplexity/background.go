@@ -38,10 +38,12 @@ const (
 // string, which docs/scenario-schema.md lists.
 const (
 	// codeAgentBackgroundField is raised, as an error, for a `response_id` or
-	// `stream` key in a background snapshot's respond body. A snapshot's id is
-	// always its job's, so a scripted one would contradict it, and a retrieve
-	// serves no stream, so a script for one could never play. Either key is
-	// refused rather than silently ignored.
+	// `stream` key in a background snapshot's respond body, or an `id` or
+	// `status` key in its `extra_fields`. A snapshot's id is always its job's,
+	// so a scripted one would contradict it; a retrieve serves no stream, so a
+	// script for one could never play; and extra fields win over the rendered
+	// body, so those two would replace the job's id and the status the journal
+	// label reports. Each key is refused rather than silently ignored.
 	codeAgentBackgroundField = "perplexity.agent.background.field"
 
 	// codeAgentBackgroundTerminalThenPending is raised for a non-terminal
@@ -50,9 +52,11 @@ const (
 	// order.
 	codeAgentBackgroundTerminalThenPending = "perplexity.agent.background.terminal_then_pending"
 
-	// codeAgentBackgroundScriptExhausted warns that the script's last turn is
-	// conditional, so the retrieve after its final snapshot matches no turn and
-	// answers 404 for a job that exists.
+	// codeAgentBackgroundScriptExhausted warns that the script's last turn has
+	// a condition a retrieve can fail, so the retrieve after its final snapshot
+	// matches no turn and answers 404 for a job that exists. A last turn
+	// conditioned only on the retrieve route matches every retrieve and is not
+	// warned about (backgroundTurnCanMiss).
 	codeAgentBackgroundScriptExhausted = "perplexity.agent.background.script_exhausted"
 
 	// codeAgentBackgroundBodyPredicate warns that a background turn matches on
@@ -343,6 +347,17 @@ func backgroundTerminal(status agentStatus) (terminal, known bool) {
 // retrieve serves no stream for a stream script to play on.
 var backgroundFields = []string{"response_id", "stream"}
 
+// backgroundExtraFields are the extra_fields keys a background snapshot may
+// not carry, each with the reason. Extra fields are merged into the rendered
+// body last and win (provider.Render), so these two would let a snapshot
+// contradict what it is: its id is always its job's, and its status is the one
+// the journal label reports and the terminal check judged.
+var backgroundExtraFields = []struct{ key, why string }{
+	{"id", "a snapshot's id is always its job's"},
+	{"status", "a snapshot's status is its respond.status, which the journal label reports and the " +
+		"terminal check judged"},
+}
+
 // validateBackground decodes and checks the entry's background script, each
 // turn addressed providers.<name>.background.turns[i].
 //
@@ -398,16 +413,35 @@ func validateBackground(s *scenario.Scenario, e *scenario.ProviderEntry) []scena
 		})
 	}
 
-	if n := len(turns); n > 0 && !turns[n-1].When.IsEmpty() {
+	if n := len(turns); n > 0 && backgroundTurnCanMiss(turns[n-1].When) {
 		findings = append(findings, scenario.Finding{
 			Severity: scenario.SeverityWarning,
 			Code:     codeAgentBackgroundScriptExhausted,
 			Path:     fmt.Sprintf("%s[%d].when", base, n-1),
-			Message: "the last background turn is conditional, so the retrieve after it matches no turn and " +
-				"answers 404 for a job that exists",
+			Message: "the last background turn has a condition a retrieve can fail, so the retrieve after it " +
+				"matches no turn and answers 404 for a job that exists; end the script with a turn that has " +
+				"no when, or only route: agent.retrieve",
 		})
 	}
 	return findings
+}
+
+// backgroundTurnCanMiss reports whether a background turn's `when` can fail to
+// match a retrieve. Every retrieve is served by the retrieve route, so a route
+// condition naming it matches them all; with that one condition set aside,
+// whatever is left — a call_index, a body predicate, a route that is not the
+// retrieve's — can miss. Setting the route aside on a copy, rather than listing
+// the other fields, keeps a condition added to scenario.Match later on the
+// warning side.
+func backgroundTurnCanMiss(w *scenario.Match) bool {
+	if w == nil {
+		return false
+	}
+	rest := *w
+	if scenario.RouteMatches(rest.Route, faultKeyAgentRetrieve) {
+		rest.Route = ""
+	}
+	return !rest.IsEmpty()
 }
 
 // effectiveStatus is the status a decoded snapshot reports.
@@ -418,10 +452,10 @@ func effectiveStatus(p *perplexityAgent) agentStatus {
 	return p.Status
 }
 
-// backgroundFieldFindings refuses a respond key a background snapshot may not
-// carry. The keys are read from the YAML itself, aliases and merges resolved,
-// rather than from the decoded projection, so an explicitly empty value is
-// refused too: the author still wrote the key.
+// backgroundFieldFindings refuses a respond key, or an extra_fields key, a
+// background snapshot may not carry. The keys are read from the YAML itself,
+// aliases and merges resolved, rather than from the decoded projection, so an
+// explicitly empty value is refused too: the author still wrote the key.
 func backgroundFieldFindings(path string, turn *scenario.Turn) []scenario.Finding {
 	if turn.Respond.Kind == 0 {
 		return nil
@@ -441,6 +475,20 @@ func backgroundFieldFindings(path string, turn *scenario.Turn) []scenario.Findin
 			Path:     path + "." + key,
 			Message: fmt.Sprintf("%s is not allowed in a background snapshot: a snapshot's id is always its "+
 				"job's, and GET /v1/agent/{id} serves no stream; remove %s", key, key),
+		})
+	}
+	// Not a mapping, or absent: the strict decode reports the shape.
+	extra, _ := keys["extra_fields"].(map[string]any)
+	for _, f := range backgroundExtraFields {
+		if _, ok := extra[f.key]; !ok {
+			continue
+		}
+		findings = append(findings, scenario.Finding{
+			Severity: scenario.SeverityError,
+			Code:     codeAgentBackgroundField,
+			Path:     path + ".extra_fields." + f.key,
+			Message: fmt.Sprintf("extra_fields.%s is not allowed in a background snapshot: extra fields are "+
+				"merged last and win, and %s; remove extra_fields.%s", f.key, f.why, f.key),
 		})
 	}
 	return findings

@@ -795,6 +795,12 @@ func TestBackgroundValidator(t *testing.T) {
 		{"a retrieve serves no stream",
 			"        - respond: {status: completed, stream: {when_requested: stream}}\n",
 			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.stream"},
+		{"extra_fields would replace the job id",
+			"        - respond: {status: completed, extra_fields: {id: resp_forged}}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.extra_fields.id"},
+		{"extra_fields would contradict the scripted status",
+			"        - respond: {status: queued, extra_fields: {status: completed}}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.extra_fields.status"},
 		{"a create route never selects a background turn",
 			"        - when: {route: \"perplexity:agent\"}\n          respond: {status: queued}\n        - respond: {status: completed}\n",
 			provider.CodeTurnRouteUnknown, scenario.SeverityError, base + "[0].when.route"},
@@ -809,6 +815,9 @@ func TestBackgroundValidator(t *testing.T) {
 			"perplexity.agent.background.terminal_then_pending", scenario.SeverityError, base + "[1].respond.status"},
 		{"a script whose last turn is conditional runs out",
 			"        - when: {call_index: 0}\n          respond: {status: completed}\n",
+			"perplexity.agent.background.script_exhausted", scenario.SeverityWarning, base + "[0].when"},
+		{"a last turn on the retrieve route that also names a call_index runs out",
+			"        - when: {route: agent.retrieve, call_index: 0}\n          respond: {status: completed}\n",
 			"perplexity.agent.background.script_exhausted", scenario.SeverityWarning, base + "[0].when"},
 		{"a body predicate never matches a GET",
 			"        - when: {body_contains: x}\n          respond: {status: queued}\n        - respond: {status: completed}\n",
@@ -859,6 +868,25 @@ func TestBackgroundValidator(t *testing.T) {
 				"        - when: {route: \""+route+"\", call_index: 0}\n          respond: {status: queued}\n"+
 					"        - respond: {status: completed}\n")), route)
 		}
+	})
+
+	// A last turn whose only condition is the retrieve route matches every
+	// retrieve, so the script cannot run out and there is nothing to warn about.
+	t.Run("a last turn conditioned only on the retrieve route never runs out", func(t *testing.T) {
+		t.Parallel()
+		for _, route := range []string{"perplexity:agent.retrieve", "agent.retrieve"} {
+			assert.Empty(t, bgValidate(t, bgEntry(
+				"        - when: {call_index: 0}\n          respond: {status: queued}\n"+
+					"        - when: {route: \""+route+"\"}\n          respond: {status: completed}\n")), route)
+		}
+	})
+
+	// Only id and status are refused: any other key is what extra_fields
+	// exists for, an additive field the consumer must tolerate.
+	t.Run("extra_fields other than id and status load clean", func(t *testing.T) {
+		t.Parallel()
+		assert.Empty(t, bgValidate(t, bgEntry(
+			"        - respond: {status: completed, extra_fields: {vendor_hint: kept}}\n")))
 	})
 
 	t.Run("a synchronous turn may not name the retrieve route", func(t *testing.T) {
