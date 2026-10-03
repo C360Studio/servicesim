@@ -192,6 +192,24 @@ type Profile struct {
 	// not one of the profile's own entry kinds. A kind may be named here and
 	// in Cancellable both.
 	//
+	// The profile owes three more things, and missing any of them fails
+	// silently: the scenario loads clean and the retrieve serves the wrong
+	// thing.
+	//
+	//   - The retrieve's Route.Fault returns the first background.turns[i].Fault
+	//     that HasAttempts, under a FaultKey of the retrieve's own. [TurnFault]
+	//     reads only the entry's own turns, so wired here it leaves a
+	//     background turn's `fault:` unapplied and applies the create's plan to
+	//     retrieves.
+	//   - The retrieve's LaneFrom keys its lane by job ([LaneFromPath] plus the
+	//     path wildcard's name), and its Entry is the create's. Without
+	//     LaneFrom every job in a namespace shares one cursor, and one job's
+	//     retrieve is served another job's snapshot.
+	//   - The validator decodes background.turns with [scenario.DecodeStrict]
+	//     and a path of its own: [scenario.Turn.DecodeProjection] writes
+	//     providers.<name>.turns[i] into its errors, which is the wrong address
+	//     for a background turn.
+	//
 	// The framework does NOT check a background turn's `when.route:` against
 	// the entry's [RouteLister], as it does the entry's own turns and its
 	// cancel.turns. An entry's turns and its background.turns are selected by
@@ -199,7 +217,9 @@ type Profile struct {
 	// the entry's validator offers would accept, in either script, a route
 	// that never selects it, and the turn would load clean and never fire. The
 	// opted-in profile's own Validator checks background.turns' routes against
-	// its retrieve route alone.
+	// its retrieve route alone. A profile that registers no Validators and
+	// names its own kind here gets the framework's no-op validator, so nothing
+	// checks background.turns at all: register a Validator before opting in.
 	Backgroundable []string
 
 	// ErrorBody renders a Refusal in this vendor's own error shape. REQUIRED:
@@ -767,7 +787,10 @@ func (s *Set) Routes() []Route {
 // [Profile.Backgroundable] is returned marked as such, which is how those
 // opt-ins reach [ValidateScenario]. A map built by hand from
 // Profile.Validators carries no mark, so ValidateScenario rejects every
-// `cancel:` and `background:` block in it.
+// `cancel:` and `background:` block in it. The mark wraps the profile's
+// validator, so a type assertion on a marked value for an optional interface
+// such as [RouteLister] fails; only ValidateScenario sees through the mark.
+// Assert on the profile's own Validators instead.
 func (s *Set) Validators(only ...Name) map[string]Validator {
 	profiles := s.profiles
 	if len(only) > 0 {

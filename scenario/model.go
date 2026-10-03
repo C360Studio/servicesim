@@ -481,9 +481,12 @@ type CancelPolicy struct {
 //	  turns:
 //	    - respond: {answer: A synchronous answer.}
 //
-// A turn here MAY carry `fault:`, unlike a cancel turn: the retrieve route reads
-// its fault plan from these turns, as an async poll route reads its plan from
-// the entry's own, with the per-route meaning [Turn.Fault] describes. At least
+// A turn here MAY carry `fault:`, unlike a cancel turn: the profile's retrieve
+// route takes its fault plan from these turns, with the per-route meaning
+// [Turn.Fault] describes. The framework does not select it: the route's own
+// Route.Fault must read background.turns, because provider.TurnFault, which a
+// poll route uses for the entry's own turns, never reads them
+// (provider.Profile.Backgroundable lists what else the profile owes). At least
 // one turn is required, so a block that could answer no retrieve stops the
 // process at load rather than failing every retrieve at runtime.
 //

@@ -363,9 +363,10 @@ func routeStatus() provider.Route {
 Two routes that are the same operation reached two ways (an SDK alias) share a `FaultKey`, so a retry through the
 alias draws on the same scripted attempt budget; two genuinely different surfaces get different keys, so a 429
 scripted for one can never land on the other. `Route.Fault` says which scenario block scripts this route's faults;
-`provider.TurnFault` over the entry name is the ordinary answer. `Credentials` lists the placements the vendor
-documents — Acme accepts an `Authorization` header and nothing else; Tavily's body-placed `api_key` is the worked
-example of a second placement ([`profiles/tavily`](../profiles/tavily)).
+`provider.TurnFault` over the entry name is the ordinary answer for a route the entry's own `turns` script. It reads
+only those, so a background retrieve route needs its own (see [Polls and cancels](#polls-and-cancels)).
+`Credentials` lists the placements the vendor documents — Acme accepts an `Authorization` header and nothing else;
+Tavily's body-placed `api_key` is the worked example of a second placement ([`profiles/tavily`](../profiles/tavily)).
 
 ### The handler order
 
@@ -976,12 +977,25 @@ the same default and through the same `Set.Validators` plumbing as `Cancellable`
 an entry is a promise: the create route calls `provider.MintJob` only when the request asks for the lifecycle, and
 should fail closed when the scenario declares no block rather than invent a script (Perplexity's does); the retrieve
 route calls `provider.ResolveJob` and then `provider.SelectPollTurn` with `providers.<entry>.background` as `base`,
-the block's turns as `turns` and nil for `cancel`. Three things are yours:
+the block's turns as `turns` and nil for `cancel`. Six things are yours. The framework checks none of them, and most
+fail silently when missed: the scenario loads clean and a retrieve serves the wrong thing.
 
+- **Give the retrieve its own fault plan.** Its `Route.Fault` returns the first `background.turns[i].Fault` that
+  `HasAttempts()`, under a `FaultKey` of its own, so a retrieve retry never spends a create's attempt.
+  `provider.TurnFault` reads only the entry's own `turns`: wired here, it leaves a background turn's `fault:`
+  unapplied and applies the create's plan to retrieves. Perplexity's `backgroundFault` is the shape.
+- **Key the retrieve's lane by job, and serve it from the create's entry.** Set
+  `LaneFrom: []string{provider.LaneFromPath + "id"}` (your path wildcard's name) and the create's `Route.Entry`.
+  Without the `LaneFrom`, every job in a namespace shares one cursor, and one job's retrieve is served another job's
+  snapshot.
+- **Decode `background.turns` with `scenario.DecodeStrict` and your own path.** `Turn.DecodeProjection` writes
+  `providers.<entry>.turns[i]` into its errors, which is the wrong address for a background turn.
 - **Route-check `background.turns` yourself.** The framework does not check their `when.route:` against the entry's
   route list, because the entry's `turns` and its `background.turns` are selected by different routes and one list
   would let a turn load clean in the wrong script and never fire. Check them against the retrieve route alone, and
   keep the retrieve route out of the list your validator returns for the entry's own turns, for the same reason.
+  Register a validator before you opt in: a profile with no `Validators` gets the framework's no-op validator for its
+  own kind, and then nothing checks `background.turns` at all.
 - **Judge the script.** Call `provider.TerminalRegressions` on `background.turns` as on any poll script, and decide
   which of your vendor's statuses are terminal.
 - **Decide what a `HEAD` does.** Go's mux delivers `HEAD` to a `GET` pattern, so a retrieve route that does not look
