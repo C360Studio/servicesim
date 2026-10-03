@@ -782,7 +782,7 @@ credentials are accepted and the id resolves, so a refused or unknown retrieve s
 | a scripted fault attempt | the fault's status and body | the handler's label, as for every route |
 
 - **The snapshot.** `id` is always the job's: a snapshot cannot script `response_id`, nor an `id` or a `status` in
-  its `extra_fields`, which are merged last and would win (each a load error). `object` is `response`. `created_at` is the snapshot's, else the scenario's base time. `status` is the snapshot's; an absent
+  its `extra_fields` or in a fault attempt's, which are merged last and would win (each a load error). `object` is `response`. `created_at` is the snapshot's, else the scenario's base time. `status` is the snapshot's; an absent
   status is `completed`. `model` is the snapshot's, else the fixed placeholder `servicesim/unscripted`
   (`SIMULATOR-POLICY`): the specification requires `model`, a retrieve carries no request to echo one from, and the
   job record holds none. `output` is rendered as the synchronous path renders it, except that a `queued` or
@@ -798,7 +798,8 @@ credentials are accepted and the id resolves, so a refused or unknown retrieve s
   schema's [background section](../../../docs/scenario-schema.md#background-runs-background) has what that does. Its
   plan is the first `background.turns[*].fault` that declares attempts. A retrieve answered with a scripted fault still
   spends its index and advances the job's `polls`, and it keeps the label of the snapshot it would have served: read
-  the label beside the entry's `fault_kind`.
+  the label beside the entry's `fault_kind`. An attempt's `extra_fields` cannot carry `id` or `status`, because an
+  attempt that sets nothing else is no fault in the journal, and its entry would carry no `fault_kind` to read.
 - **`HEAD`.** Go's `ServeMux` delivers `HEAD` to a `GET` pattern, so without its own branch a `HEAD` would claim the
   job's next retrieve and advance its poll position for a body `net/http` then discards: one existence check would
   silently consume a snapshot. The specification declares no `HEAD` on this path (ruling 1: spec-declared routes only),
@@ -839,9 +840,9 @@ service can leave `incomplete` or `failed` is not documented. The 2026-10-01 aud
 | `perplexity.agent.background.unscripted` | error, per request | `background: true` and no `background:` block |
 | `perplexity.agent.background.stream` | error, per request | `background: true` with `stream: true` |
 | `perplexity.agent.background.unstored` | warning, per request | `background: true` with `store: false` |
-| `perplexity.agent.background.field` | error, at load | a `response_id` or `stream` key in a background snapshot, or an `id` or `status` key in its `extra_fields` |
+| `perplexity.agent.background.field` | error, at load | a `response_id` or `stream` key in a background snapshot, or an `id` or `status` key in its `extra_fields` or in the `extra_fields` of one of the turn's fault attempts |
 | `perplexity.agent.background.terminal_then_pending` | error, at load | a non-terminal snapshot served after a terminal one, judged in serve order |
-| `perplexity.agent.background.script_exhausted` | warning, at load | the last background turn has a condition a retrieve can fail (anything but `route: agent.retrieve`), so the retrieve after it is a `404` for a job that exists |
+| `perplexity.agent.background.script_exhausted` | warning, at load | the last background turn has a condition a retrieve can fail (any condition but a `route` naming the retrieve, in either spelling), so the retrieve after it is a `404` for a job that exists |
 | `perplexity.agent.background.body_predicate` | warning, at load | `body_contains` or `body_json` on a background turn: a retrieve carries no body, so it can never match |
 
 The framework's own load findings for a `background:` block are in

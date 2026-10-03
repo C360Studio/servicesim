@@ -900,19 +900,22 @@ are warned about.
 **The entry's `turn_key` keys the retrieve too.** The retrieve is served from the `perplexity_agent` entry, so a
 `turn_key:` written on that entry for its synchronous create is also applied to every retrieve's lane, on top of the
 job's id, as it is to an async entry's polls ([per-job lanes](#the-async-surfaces-exa_agent_runs-and-tavily_research)).
-A `header:<name>` extractor therefore re-keys a job's retrieves by that header: a retrieve that sends a different value,
-or none, is served from another lane starting at `call_index` 0, so a job that has completed can read as `queued`, and
-the job's `polls` stops counting every retrieve. A `body_json:<path>` extractor never resolves on a `GET`, so every
-retrieve raises `scenario.turn_key_unresolved`; under `validation: {strict: true}` that warning is promoted and every
-retrieve is a `400`, so no background run can be retrieved. Neither is reported at load.
+A `header:<name>` extractor therefore re-keys a job's retrieves by that header: a retrieve that sends a different value
+is served from another lane starting at `call_index` 0, so a job that has completed can read as `queued`, and the job's
+`polls` stops counting every retrieve. A retrieve that sends no such header raises `scenario.turn_key_unresolved` and
+is served from another lane the same way; under `validation: {strict: true}` that warning is promoted and the retrieve
+is a `400`. A `body_json:<path>` extractor never resolves on a `GET`, so every retrieve raises
+`scenario.turn_key_unresolved`; under `validation: {strict: true}` that warning is promoted and every retrieve is a
+`400`, so no background run can be retrieved. None of this is reported at load.
 
 **What a snapshot says.** A `respond:` takes the keys of the table above and is checked the same way, with these
 differences, each there so that no retrieve invents a fact:
 
 - `response_id` and `stream` are load errors, and so are an `id` or a `status` inside `extra_fields`, which are merged
   last and would win over the rendered body. A snapshot's `id` is always its job's, its `status` is the one its journal
-  label reports, and a retrieve serves no stream. The keys are read from the YAML with aliases and merges resolved, so
-  an explicitly empty value is refused too.
+  label reports, and a retrieve serves no stream. Aliases and merges are resolved and an explicitly empty value is
+  refused too. An `extra_fields` key is judged as the wire would carry it, so a key that is not a string, such as `1`,
+  beside an `id` does not hide the `id`.
 - `usage` renders only when the snapshot scripts it, and `usage.cost` only when that is scripted too: no zero is
   invented. The synchronous path still renders `cost` with zeros when none is scripted.
 - `model` falls back to `servicesim/unscripted` when the snapshot scripts none, because a retrieve has no request to
@@ -947,7 +950,11 @@ providers:
 
 A `stream_*` fault kind on a background turn is a load error (`scenario.fault.stream_mismatch`): a retrieve never
 streams. `accepted: true` is not refused at load, but a retrieve takes nothing into effect, so a claimed `accepted`
-attempt raises `fault.accepted_unreachable` and applies as an ordinary fault.
+attempt raises `fault.accepted_unreachable` and applies as an ordinary fault. An `id` or a `status` in an attempt's
+`extra_fields` is a load error too (`perplexity.agent.background.field`, at
+`background.turns[i].fault.attempts[j].extra_fields.<key>`), as in a snapshot's: it is merged into the body the
+retrieve serves, and an attempt that sets nothing else is no fault in the journal, so its entry would carry no
+`fault_kind` to read the label beside.
 
 A background create keeps its job under the same rule as any other create of
 [the async surfaces](#the-async-surfaces-exa_agent_runs-and-tavily_research): when the response carries its identifier
@@ -990,11 +997,11 @@ later release serves a cancel for it, like any other unknown key.
 |---|---|---|
 | `scenario.provider.background_unsupported` | error, at load | a `background:` block on an entry whose profile has no background lifecycle for it, reported at `providers.<entry>.background` |
 | `scenario.provider.background.turns.empty` | error, at load | a `background:` block with no turns: it could answer no retrieve |
-| `perplexity.agent.background.field` | error, at load | a `response_id` or `stream` key in a snapshot, or an `id` or `status` key in its `extra_fields` |
+| `perplexity.agent.background.field` | error, at load | a `response_id` or `stream` key in a snapshot, or an `id` or `status` key in its `extra_fields` or in the `extra_fields` of one of the turn's fault attempts |
 | `perplexity.agent.background.terminal_then_pending` | error, at load | a non-terminal snapshot served after a terminal one |
 | `scenario.turn.route_unknown` | error, at load | a background turn's `when.route` that is not the retrieve route |
 | `scenario.fault.stream_mismatch` | error, at load | a `stream_*` fault kind on a background turn |
-| `perplexity.agent.background.script_exhausted` | warning, at load | the last turn has a condition a retrieve can fail (anything but `route: agent.retrieve`), so the retrieve after it is a `404` for a job that exists |
+| `perplexity.agent.background.script_exhausted` | warning, at load | the last turn has a condition a retrieve can fail (any condition but a `route` naming the retrieve, in either spelling), so the retrieve after it is a `404` for a job that exists |
 | `perplexity.agent.background.body_predicate` | warning, at load | `body_contains` or `body_json` on a background turn |
 | `perplexity.agent.background.unscripted` | error, per request | `background: true` and no block |
 | `perplexity.agent.background.stream` | error, per request | `background: true` with `stream: true` |
