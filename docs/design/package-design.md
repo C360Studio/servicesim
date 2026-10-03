@@ -68,7 +68,7 @@ point of use, and the four that change the design are:
 | `provider` | exported | The handler seam. Provider identity, routes, `Deps`, `Clock`, the fault-selection *interface*, fault *execution*, the mux builder, the per-request `Exchange`, and the shared request lifecycle wrapper. |
 | `profiles/exa` | exported | Exa wire contract: routing, request validation, response/error encoding for `POST /search` and `POST /answer`. |
 | `profiles/tavily` | exported | Tavily wire contract for `POST /search`. |
-| `profiles/perplexity` | exported | Perplexity Sonar wire contract for `POST /v1/sonar` and `POST /chat/completions`. |
+| `profiles/perplexity` | exported | Perplexity wire contract: Sonar (`POST /v1/sonar` and its two SDK aliases) and the Agent API (`POST /v1/agent`, its two aliases, and `GET /v1/agent/{id}` for background runs). Seven routes. |
 | `testkit` | exported | In-process consumer helpers: start `httptest` servers, read the journal, assert on it. |
 | `scenarios` | exported | `embed.FS` of the built-in protocol scenarios plus a lookup by name. |
 | `contracts` | exported (test data) | Golden wire fixtures and their provenance records, plus an `embed.FS` over them and a provenance lookup used by this repository's own contract test. Imports `embed` and nothing else; no provider logic, and nothing in the module imports it except `contracts/contracts_test.go`. |

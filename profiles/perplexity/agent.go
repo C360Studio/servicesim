@@ -70,10 +70,36 @@ const (
 	// the warning fired unconditionally.
 	CodeAgentStreamUnsupported = "perplexity.stream.agent_unsupported"
 
-	// CodeAgentBackgroundUnsupported is raised, as a warning, for
-	// background: true. The queued/poll lifecycle is deferred; the request
-	// receives the ordinary synchronous body rather than a queued stub.
-	CodeAgentBackgroundUnsupported = "perplexity.agent.background.unsupported"
+	// CodeAgentBackgroundUnscripted is raised, as an error, for
+	// background: true against a scenario whose perplexity_agent entry
+	// declares no `background:` block — or no entry at all. The request is
+	// refused with the Agent 404 before anything is claimed and no job is
+	// minted: a run the scenario scripts no retrieve for could only be
+	// answered with invented snapshots (ruling 4 on issue #6).
+	CodeAgentBackgroundUnscripted = "perplexity.agent.background.unscripted"
+
+	// CodeAgentBackgroundStream is raised, as an error, for background: true
+	// together with stream: true. The vendor documents streaming a background
+	// run; this build does not simulate it, and falling through to a
+	// synchronous stream would be invented behaviour, so the request fails
+	// validation (400) before anything is claimed (ruling 4 on issue #6). A
+	// scenario whose stream policy is reject refuses the request first, with
+	// [CodeAgentStreamUnsupported].
+	CodeAgentBackgroundStream = "perplexity.agent.background.stream"
+
+	// CodeAgentBackgroundUnstored is raised, as a warning, for background: true
+	// with store: false. The request receives the queued snapshot under the
+	// identifier a synchronous call would derive, and no job is kept: the
+	// specification hides a store: false response from retrieve, so every
+	// later GET /v1/agent/{id} of it is a 404.
+	CodeAgentBackgroundUnstored = "perplexity.agent.background.unstored"
+
+	// CodeAgentBackgroundField is raised at load, as an error, for a
+	// `response_id` or `stream` key in a background snapshot's respond body. A
+	// snapshot's id is always its job's, so a scripted one would contradict
+	// it, and a retrieve serves no stream, so a script for one could never
+	// play. Either key is refused rather than silently ignored.
+	CodeAgentBackgroundField = "perplexity.agent.background.field"
 
 	// CodeStreamDoneIgnored is raised, as a warning, when a turn declares
 	// terminal.omit_done on the Agent surface. GrammarTyped never writes a
@@ -282,8 +308,11 @@ type agentCost struct {
 
 // validateAgentRequest applies the Agent API's request checks.
 //
-// background is a deferred feature: it always produces a named warning and an
-// ordinary synchronous response. stream is no longer always deferred —
+// background must be a boolean; background: true together with stream: true
+// fails here, with [CodeAgentBackgroundStream], because a streamed background
+// run is not simulated. Everything else about a background request — whether
+// the scenario can answer it — is handleAgentBackground's, after validation.
+// stream is no longer always deferred —
 // policy is the entry's effective streaming policy (agentStreamPolicy(entry)),
 // the same call rejectAgentStream already makes before turn selection.
 // Threading it through, rather than re-deriving it here, is what lets the
@@ -337,13 +366,8 @@ func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) st
 	}
 
 	if x.Has("background") {
-		background, ok := x.Bool("background")
-		switch {
-		case !ok:
+		if _, ok := x.Bool("background"); !ok {
 			x.Fail(CodeBackgroundInvalid, "body.background", "background must be a boolean")
-		case background:
-			x.Warn(CodeAgentBackgroundUnsupported, "body.background",
-				"background execution is not simulated; this request receives the ordinary synchronous body")
 		}
 	}
 	if x.Has("stream") {
@@ -351,6 +375,12 @@ func validateAgentRequest(x *provider.Exchange, policy scenario.StreamPolicy) st
 		switch {
 		case !ok:
 			x.Fail(CodeAgentStreamInvalid, "body.stream", "stream must be a boolean")
+		case stream && wantsBackground(x):
+			// Ahead of the warning below, which promises an ordinary
+			// non-streaming body this request will not receive.
+			x.Fail(CodeAgentBackgroundStream, "body.stream",
+				"background: true with stream: true is not simulated; send stream: false, or omit it, to "+
+					"receive the queued response and retrieve it with GET /v1/agent/{id}")
 		case stream && policy != scenario.StreamServe:
 			x.Warn(CodeAgentStreamUnsupported, "body.stream",
 				"streaming is not simulated; this request receives the ordinary non-streaming body")
@@ -944,9 +974,10 @@ func renderAgentOutput(p *perplexityAgent, messageID string, status agentStatus)
 }
 
 // renderAgentUsage projects the usage object, deriving the totals and the
-// currency when the scenario leaves them at their zero values.
-func renderAgentUsage(u *agentUsage) responsesUsage {
-	out := responsesUsage{Cost: responsesCost{Currency: currencyUSD}}
+// currency when the scenario leaves them at their zero values. Its cost is
+// always set, as the synchronous path has always rendered it.
+func renderAgentUsage(u *agentUsage) *responsesUsage {
+	out := &responsesUsage{Cost: &responsesCost{Currency: currencyUSD}}
 	if u == nil {
 		return out
 	}
@@ -957,7 +988,7 @@ func renderAgentUsage(u *agentUsage) responsesUsage {
 		out.TotalTokens = u.InputTokens + u.OutputTokens
 	}
 	if c := u.Cost; c != nil {
-		out.Cost = responsesCost{
+		out.Cost = &responsesCost{
 			Currency:          c.Currency,
 			InputCost:         c.InputCost,
 			OutputCost:        c.OutputCost,

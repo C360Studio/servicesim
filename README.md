@@ -101,9 +101,9 @@ listener (MCP, one route, JSON-RPC methods dispatched on the body) follows it ra
 | Listener | Port | Routes |
 |---|---:|---|
 | admin | `8080` | `GET /healthz`, `GET /readyz`, `GET /__admin/requests`, `GET /__admin/namespaces`, `GET /__admin/scenario`, `GET /__admin/jobs`, `POST /__admin/reset` |
-| exa | `8081` | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}` |
+| exa | `8081` | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}`, `POST /agent/runs/{id}/cancel` |
 | tavily | `8082` | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
-| perplexity | `8083` | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
+| perplexity | `8083` | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses`, `GET /v1/agent/{id}` |
 | mcp | `8084` | `POST /mcp` |
 
 `/agent/runs` and `/research` are the asynchronous create-then-poll surfaces — Exa agent runs and Tavily research
@@ -114,6 +114,15 @@ spellings: its canonical vendor path, and both of the paths the OpenAI SDK produ
 already end in `/v1`. All three spellings of a surface share one handler, one wire shape and one fault budget, and
 the journal records which path was actually used. Sonar is supported by Perplexity until 2026-09-27; `/v1/agent` is
 its successor and both surfaces are simulated.
+
+`GET /v1/agent/{id}` is Perplexity's retrieve, and it is create-then-poll too: a `POST /v1/agent` with
+`"background": true` mints a job and answers a `queued` snapshot, and each retrieve of that id serves the next snapshot
+the scenario's `background:` block scripts. A scenario with no such block cannot answer a background request, so the
+request fails closed with a Perplexity-shaped `404` and a named finding rather than being served an invented script.
+Only background runs are retrievable: a synchronous response's id is a `404` here, which the real API does not do (see
+[the Perplexity contract notes](profiles/perplexity/contracts/README.md#lifecycle-background-runs-and-retrieve)), and
+Perplexity's cancel route (`/v1/agent/{id}/cancel`) is not served. The scenario block is
+[`background:`](docs/scenario-schema.md#background-runs-background).
 
 Both Perplexity surfaces can also serve `text/event-stream`: a scenario turn scripts `stream: {when_requested:
 stream, deltas: [...]}` and a request that sets `"stream": true` gets the real SSE dialect back — unnamed
@@ -330,8 +339,9 @@ directly, for a test that only needs the one. `testkit.WithScenarioYAML(yaml str
 fixture inline next to the test; `testkit.WithScenarioFile(path string)` loads one from disk, and
 `testkit.WithScenario(s *scenario.Scenario)` takes one already parsed with the `scenario` package.
 
-For the async create-then-poll surfaces (Exa agent runs, Tavily research), `sim.Jobs()` returns every live job
-record across every namespace, and `testkit.AssertPollSequence(t, sim.Requests(exa.Name), id, 200, 200, 200)`
+For the async create-then-poll surfaces (Exa agent runs, Tavily research, Perplexity background runs), `sim.Jobs()`
+returns every live job record across every namespace, and
+`testkit.AssertPollSequence(t, sim.Requests(exa.Name), id, 200, 200, 200)`
 asserts, from the journal alone, that a job's polls arrived in order from its own per-job lane — pass
 `ns.Requests(...)` when the test uses namespaces, because job identifiers repeat across namespaces by design.
 `testkit.NewJobs()` is what a consumer wiring `provider.Deps` by hand passes as `Deps.Jobs`, and without it a
@@ -498,7 +508,7 @@ replicas by whatever balances them, and each replica counts only the calls it ha
 | `attempts: [{status: 429}, {status: 200}]` | Each replica owns a full budget, so the 429 is served **twice** — once per replica — before either succeeds. |
 | `AssertRequestCount(t, sim, exa.Name, 3)` | The journal read reaches one replica and sees only its share: 1 or 2, varying run to run. |
 | `POST /__admin/reset?namespace=t1` | Resets the replica that answered. The others keep their cursors. |
-| `POST /agent/runs` then `GET /agent/runs/{id}` (or Tavily's `/research` equivalent) | The create lands on one replica; if the poll lands on another, it holds no record of the job and answers the vendor's 404 for a job that exists — "polls 404 intermittently". |
+| `POST /agent/runs` then `GET /agent/runs/{id}` (or Tavily's `/research` equivalent, or a Perplexity `background: true` create then `GET /v1/agent/{id}`) | The create lands on one replica; if the poll lands on another, it holds no record of the job and answers the vendor's 404 for a job that exists — "polls 404 intermittently". |
 
 **The symptom you would actually see** is a test suite that passes locally and fails intermittently in the
 deployment that scaled out, with failures that never mention the simulator: a retry test that reports one retry

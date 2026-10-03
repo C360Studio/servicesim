@@ -55,7 +55,12 @@ func Profile() provider.Profile {
 		Handlers:   handlers(),
 		Routes:     Routes(),
 		Validators: validators(),
-		ErrorBody:  refusalBody,
+		// The Agent entry serves a background lifecycle: a background create
+		// mints with provider.MintJob and GET /v1/agent/{id} selects with
+		// provider.SelectPollTurn (background.go). It is NOT in Cancellable: an
+		// entry-level cancel: on it stays rejected.
+		Backgroundable: []string{NameAgent},
+		ErrorBody:      refusalBody,
 		// DefaultAuth is left "" (scenario.AuthRequired): profiles/perplexity/request.go's
 		// checkAuth defaults an entry with no auth: block to AuthRequired.
 		Announce: announce,

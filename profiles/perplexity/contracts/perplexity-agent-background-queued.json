@@ -1,0 +1,8 @@
+{
+  "id": "resp_873fa53fb79ad4032ca697a74f6da0c7",
+  "object": "response",
+  "model": "openai/gpt-5",
+  "created_at": 1767225600,
+  "status": "queued",
+  "output": []
+}

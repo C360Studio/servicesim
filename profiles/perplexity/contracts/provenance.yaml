@@ -318,6 +318,76 @@ goldens:
       only through a scripted fault attempt; ErrorInfo body by extrapolation,
       code and type values are Servicesim's.
 
+  # The three entries below (the background lifecycle, issue #6) carry the date of the
+  # 2026-10-01 audit, which read retrieveAgent, the Status enum, ResponsesResponse and the
+  # background description. The lifecycle operations were read again on 2026-10-03 and had
+  # not changed, but the document's hash had (see spec: above), and dating an entry
+  # 2026-10-03 would force this file's provider-level verified: and spec: forward to a
+  # document whose other entries have not been re-read. The sanctioned refresh procedure
+  # (contracts/README.md) does that move after a whole-bundle re-read, not before it.
+  - golden: perplexity-agent-background-queued.json
+    endpoint: POST /v1/agent (aliases POST /v1/responses, POST /responses), background true
+    status: 200
+    kind: simulator-chosen
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
+    verified: 2026-10-01
+    note: >-
+      The create of a background run, answered at once. Vendor-pinned:
+      createAgent's 200 is ResponsesResponse
+      (#/paths/~1v1~1agent/post/responses/200), whose required keys id,
+      object, created_at, status, model and output are all present, and
+      ResponsesRequest.background's description says a background request
+      with stream false "returns immediately with status: queued"
+      (#/components/schemas/ResponsesRequest/properties/background).
+      Simulator-chosen: id is the job's own, "resp_" plus 32 hex characters
+      derived from the scenario and the create's call index (the
+      specification says only "resp_<...>"); output is empty because the run
+      has not answered; model echoes the request's selection; created_at is
+      the scenario's base time; and usage, optional in ResponsesResponse, is
+      omitted rather than rendered as an invented zero. The spec's prose says
+      to poll GET /v1/responses/{id}, a path the document does not declare;
+      the retrieve served is GET /v1/agent/{id}.
+
+  - golden: perplexity-agent-background-completed.json
+    endpoint: GET /v1/agent/{id}
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
+    verified: 2026-10-01
+    note: >-
+      A retrieve of a background run that has completed. retrieveAgent
+      documents 200 ResponsesResponse (#/paths/~1v1~1agent~1{id}/get), so the
+      status, the envelope and every field name are the specification's;
+      the values are the scenario's scripted snapshot, rendered the way
+      perplexity-agent-happy.json is. id is always the job's, never
+      scripted. The message item's id derives from the job id, so it is
+      stable across one job's retrieves. usage appears because this snapshot
+      scripts it, with its cost; a snapshot that scripts neither renders no
+      usage. Treating completed as terminal is Servicesim's policy: the
+      Status enum has no terminal/non-terminal split.
+
+  - golden: perplexity-agent-retrieve-404.json
+    endpoint: GET /v1/agent/{id}
+    status: 404
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
+    verified: 2026-10-01
+    note: >-
+      retrieveAgent documents 404 with {"error": ErrorInfo}
+      (#/paths/~1v1~1agent~1{id}/get/responses/404): "Unknown id, or the
+      response belongs to a different account, or the response was created
+      with store: false". The status and the envelope are the
+      specification's; the code and type values and the message text
+      (http.StatusText) are Servicesim's. Served, claiming nothing, for an id
+      this namespace never minted (another namespace stands in for another
+      account), a store: false background create's id, and a synchronous
+      response's id — the last is a deliberate divergence, since the real API
+      retrieves a response stored by default and this simulator makes only
+      background runs retrievable.
+
   - golden: perplexity-sonar-stream.sse
     endpoint: POST /v1/sonar (aliases POST /chat/completions, POST /v1/chat/completions), stream_mode full
     status: 200

@@ -8,7 +8,7 @@ carries the documentation URLs it was derived from and the date the shape was ve
 |---|---|---|---|
 | Exa | [`../profiles/exa/contracts/README.md`](../profiles/exa/contracts/README.md) | 2026-10-02 | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}`, `POST /agent/runs/{id}/cancel` |
 | Tavily | [`../profiles/tavily/contracts/README.md`](../profiles/tavily/contracts/README.md) | 2026-08-15 | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
-| Perplexity | [`../profiles/perplexity/contracts/README.md`](../profiles/perplexity/contracts/README.md) | 2026-10-01 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses` |
+| Perplexity | [`../profiles/perplexity/contracts/README.md`](../profiles/perplexity/contracts/README.md) | 2026-10-01 | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses`, `GET /v1/agent/{id}` |
 | MCP | [`../profiles/mcp/contracts/README.md`](../profiles/mcp/contracts/README.md) | 2026-08-16 | `POST /mcp` |
 
 Every route in that column has golden fixtures in that provider's own bundle (`profiles/<name>/contracts/`),
@@ -84,7 +84,12 @@ any `provenance.yaml` for how the two relate. Read Exa's 2026-10-02 in the table
 the date `contracts.Conform` forces, not a re-read of all eight simulated routes. Only the agent routes were read
 against that spec — create, poll and `HEAD` on 2026-10-01, cancel on 2026-10-02 against an identical hash; `/search`,
 `/answer`, `/contents` and `/findSimilar` keep their earlier per-entry dates, and re-reading them is tracked in
-issue #11. Every provider's `provenance.yaml` also carries a `spec:` block —
+issue #11. Read Perplexity's 2026-10-01 with a second caution: on 2026-10-03 only the lifecycle operations behind
+`GET /v1/agent/{id}` were re-read, against a fetch whose hash is no longer the one recorded, and neither this date
+nor the recorded hash was moved, because no whole-bundle re-audit has happened. The three goldens added for that
+route carry 2026-10-01 for the same reason; the
+[profile's contract notes](../profiles/perplexity/contracts/README.md#lifecycle-background-runs-and-retrieve) have
+the detail. Every provider's `provenance.yaml` also carries a `spec:` block —
 `url`, `version`, `sha256`, `retrieved` — recording the bytes its consumed contract's machine-readable source was
 generated from, readable from Go via `contracts.ProviderSpec(bundleFS)`; each reference profile's own
 `TestHasASpecBlock` (`profiles/<provider>/contract_test.go`) fails the build if it drops one — `contracts.Conform`

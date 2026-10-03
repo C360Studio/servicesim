@@ -241,7 +241,12 @@ type responsesResponse struct {
 	// why a scenario can produce it inside a 200.
 	Error *errorInfo `json:"error,omitempty"`
 
-	Usage responsesUsage `json:"usage"`
+	// Usage is optional in ResponsesResponse. The synchronous path always sets
+	// it, so its body always carries usage; a background snapshot sets it only
+	// when the scenario scripts usage, because a usage the scenario did not
+	// script is no billing fact (issue #6). A pointer, not a value, so the one
+	// type serves both without the synchronous bytes moving.
+	Usage *responsesUsage `json:"usage,omitempty"`
 }
 
 // Output item type discriminators. The specification declares ten; Servicesim
@@ -345,11 +350,16 @@ type agentSearchResult struct {
 //
 // The token field names differ from Sonar's UsageInfo: input_tokens and
 // output_tokens here, prompt_tokens and completion_tokens there.
+//
+// Cost is optional in ResponsesUsage. renderAgentUsage always sets it, which is
+// what the synchronous path renders; a background snapshot clears it when the
+// scenario scripts usage without a cost, for the reason responsesResponse.Usage
+// gives.
 type responsesUsage struct {
-	InputTokens  int           `json:"input_tokens"`
-	OutputTokens int           `json:"output_tokens"`
-	TotalTokens  int           `json:"total_tokens"`
-	Cost         responsesCost `json:"cost"`
+	InputTokens  int            `json:"input_tokens"`
+	OutputTokens int            `json:"output_tokens"`
+	TotalTokens  int            `json:"total_tokens"`
+	Cost         *responsesCost `json:"cost,omitempty"`
 }
 
 // responsesCost is the Agent API's cost breakdown. Currency, InputCost,
@@ -461,10 +471,10 @@ type textDoneEvent struct {
 // agentResponse and shared by both transports (docs/design/streaming.md §7's
 // "one mechanism serves both" rule). Response is json.RawMessage, not
 // responsesResponse, so renderAgentStream can drop the usage key with
-// wire.Omit when the script sets terminal.omit_usage: responsesResponse.Usage
-// is a plain (non-pointer) field, always present on the non-streaming body,
-// and changing its type to accommodate one streaming-only edge case would
-// ripple into every non-streaming Agent response.
+// wire.Omit when the script sets terminal.omit_usage: agentResponse always
+// sets responsesResponse.Usage, so the terminal frame's usage is dropped by
+// omission rather than by agentResponse rendering it differently for one
+// streaming-only edge case.
 type responseCompletedEvent struct {
 	Type           string          `json:"type"`
 	SequenceNumber int64           `json:"sequence_number"`

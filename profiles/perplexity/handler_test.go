@@ -157,7 +157,7 @@ const sonarRequest = `{"model":"sonar-pro","messages":[{"role":"user","content":
 // agentRequest is a minimal valid Agent request.
 const agentRequest = `{"input":"what do the reports say?","model":"openai/gpt-5"}`
 
-// TestRoutesFaultKeys pins the six routes and the fault budgets they draw on.
+// TestRoutesFaultKeys pins the seven routes and the fault budgets they draw on.
 // Every alias of a surface must share that surface's key — a retry through an
 // alias draws on the same budget — and the two surfaces must not, or a scenario
 // could not rate-limit one while leaving the other healthy.
@@ -165,13 +165,14 @@ func TestRoutesFaultKeys(t *testing.T) {
 	t.Parallel()
 
 	routes := Routes()
-	require.Len(t, routes, 6)
+	require.Len(t, routes, 7)
 
 	// Entry is empty on the Sonar routes and NameAgent on the Agent routes. Both
 	// halves matter. Sonar is the listener's own entry, so leaving it empty keeps
 	// the shipped resolution; the Agent surface is a SECOND entry on this
 	// listener, and without an explicit Entry its own turn_key and validation
-	// block are silently ignored in favour of Sonar's.
+	// block are silently ignored in favour of Sonar's. The retrieve is an Agent
+	// route on a budget of its own: a retrieve retry must not spend a create's.
 	want := []struct{ pattern, key, entry string }{
 		{"POST /v1/sonar", "perplexity:completions", ""},
 		{"POST /chat/completions", "perplexity:completions", ""},
@@ -179,6 +180,7 @@ func TestRoutesFaultKeys(t *testing.T) {
 		{"POST /v1/agent", "perplexity:agent", NameAgent},
 		{"POST /v1/responses", "perplexity:agent", NameAgent},
 		{"POST /responses", "perplexity:agent", NameAgent},
+		{"GET /v1/agent/{id}", "perplexity:agent.retrieve", NameAgent},
 	}
 	for i, w := range want {
 		require.Equal(t, w.pattern, routes[i].Pattern)

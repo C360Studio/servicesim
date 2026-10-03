@@ -306,14 +306,14 @@ func TestAgentUnauthorizedGolden(t *testing.T) {
 }
 
 // TestAgentDeferredFeaturesWarnLoudly is the addendum's rule: a deferred
-// feature must fail loudly, never silently. background is deferred
-// unconditionally; stream is deferred under agentCorpus's default (no
-// `stream:` key, hence `warn`) policy specifically — Phase 5 unit 3 gives
-// this surface a stream: key that serves a real GrammarTyped sequence, see
-// stream_test.go's TestAgentStreamPolicySwitch. Both requests here still
-// receive an ordinary non-streaming, synchronous body — and both leave a
-// named finding behind, so a consumer cannot believe it exercised a path it
-// never touched.
+// feature must fail loudly, never silently. stream is deferred under
+// agentCorpus's default (no `stream:` key, hence `warn`) policy specifically —
+// Phase 5 unit 3 gives this surface a stream: key that serves a real
+// GrammarTyped sequence, see stream_test.go's TestAgentStreamPolicySwitch. The
+// request here still receives an ordinary non-streaming, synchronous body —
+// and leaves a named finding behind, so a consumer cannot believe it exercised
+// a path it never touched. background is no longer deferred: it is served, or
+// refused with a named finding, by background_test.go's lifecycle.
 func TestAgentDeferredFeaturesWarnLoudly(t *testing.T) {
 	t.Parallel()
 
@@ -323,7 +323,6 @@ func TestAgentDeferredFeaturesWarnLoudly(t *testing.T) {
 		want    string
 	}{
 		{"stream", `{"input":"hi","model":"openai/gpt-5","stream":true}`, CodeAgentStreamUnsupported},
-		{"background", `{"input":"hi","model":"openai/gpt-5","background":true}`, CodeAgentBackgroundUnsupported},
 	}
 
 	for _, tc := range tests {

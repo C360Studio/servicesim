@@ -290,6 +290,11 @@ func Profile() provider.Profile {
 - `Cancellable` is absent from Acme on purpose. It names the entry kinds whose jobs your routes can cancel, and
   the framework rejects a scenario's `cancel:` block on every other entry, so a profile with no create-then-poll
   lifecycle leaves it out and fails closed. See [Async jobs](#async-jobs).
+- `Backgroundable` is absent from Acme for the same reason. It is `Cancellable`'s sibling for a lifecycle that sits
+  *beside* a synchronous route: it names the entry kinds whose create mints a job only when the request asks for one
+  (Perplexity's `background: true`) and whose retrieve route serves that job's snapshots from the scenario's
+  `background:` block. The framework rejects a `background:` block on every other entry. See
+  [Async jobs](#async-jobs).
 - `ErrorBody` is **required**. House rule 3: an unmatched path, method, provider or scenario answers in the
   vendor's own error shape, never with an empty body. `provider.NewSet` refuses a `Profile` without it.
 - `DefaultAuth` is the mode an entry with no `auth:` block of its own gets — a *default your handler reads*, not
@@ -963,6 +968,28 @@ cancel writes nothing and fails closed, and one with a cancel opts in exactly th
 entry kinds. The opt-in reaches validation through `Set.Validators`, which is what `servicesim.Main` and
 `testkit.Start` use; a validator map you build by hand carries none, and rejects every `cancel:` block.
 
+**A lifecycle that sits beside a synchronous route opts in with `Profile.Backgroundable`.** Perplexity's Agent entry
+answers an ordinary request synchronously and, when the request says `background: true`, mints a job instead, so its
+snapshots cannot live in the entry's `turns`. `provider.ValidateScenario` rejects a `background:` block with
+`provider.CodeBackgroundUnsupported` on every entry unless its profile names the kind in `Profile.Backgroundable`, by
+the same default and through the same `Set.Validators` plumbing as `Cancellable`; one kind may be named in both. Naming
+an entry is a promise: the create route calls `provider.MintJob` only when the request asks for the lifecycle, and
+should fail closed when the scenario declares no block rather than invent a script (Perplexity's does); the retrieve
+route calls `provider.ResolveJob` and then `provider.SelectPollTurn` with `providers.<entry>.background` as `base`,
+the block's turns as `turns` and nil for `cancel`. Three things are yours:
+
+- **Route-check `background.turns` yourself.** The framework does not check their `when.route:` against the entry's
+  route list, because the entry's `turns` and its `background.turns` are selected by different routes and one list
+  would let a turn load clean in the wrong script and never fire. Check them against the retrieve route alone, and
+  keep the retrieve route out of the list your validator returns for the entry's own turns, for the same reason.
+- **Judge the script.** Call `provider.TerminalRegressions` on `background.turns` as on any poll script, and decide
+  which of your vendor's statuses are terminal.
+- **Decide what a `HEAD` does.** Go's mux delivers `HEAD` to a `GET` pattern, so a retrieve route that does not look
+  at the method lets an existence check claim a snapshot and advance the job. `profiles/exa` registers an explicit
+  `HEAD` route; `profiles/perplexity` refuses `HEAD` with a `405` because its specification declares none.
+
+`profiles/perplexity`'s `background.go` is the worked example.
+
 **Your validator enforces what `CancelJob` relies on: a terminal snapshot is absorbing in the order polls are
 served.** A cancel judges the job by its next poll, so a script that can serve a pending snapshot after a terminal
 one lets a client watch a run finish and then have it cancelled. Call `provider.TerminalRegressions` on each script
@@ -1255,7 +1282,7 @@ difficulty; pick by what your vendor looks like.
 | [`profiles/exa`](../profiles/exa) | Multi-route with a flat error envelope and one documented exception to it (the reduced 429 body); the corrections its `doc.go` restates because they are easy to get wrong from memory. |
 | [`profiles/mcp`](../profiles/mcp) | A protocol rather than a vendor: one route, JSON-RPC dispatch on the body, a non-JSON content type, a JSON-RPC refusal envelope, an SSE response to a POST. |
 | [`profiles/tavily`](../profiles/tavily) | One listener, several routes; a body-placed credential as a second accepted placement (`request.go`'s `checkAuth`); a separate scenario entry per route (`Route.Entry`); the async create-then-poll surface (`research.go`). |
-| [`profiles/perplexity`](../profiles/perplexity) | Two scenario entries (Sonar and Agent) on one listener; two SSE grammars; SDK-alias routes sharing a fault key. |
+| [`profiles/perplexity`](../profiles/perplexity) | Two scenario entries (Sonar and Agent) on one listener; two SSE grammars; SDK-alias routes sharing a fault key; a background create and its retrieve (`background.go`), a lifecycle beside a synchronous route. |
 
 Each has a `doc.go` that is a decision log — what is simulated, what is not, and every simulator-chosen default —
 and a `contracts/README.md` in the shape step 1 asks for. `CONTRIBUTING.md`'s "Adding a reference profile here" is
