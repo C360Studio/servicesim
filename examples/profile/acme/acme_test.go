@@ -653,6 +653,31 @@ providers:
 	}
 }
 
+// TestAcmeRejectsAStrayBackgroundBlock is the same rule for `background:`. Acme
+// names no entry in provider.Profile.Backgroundable, so the framework refuses the
+// block at load and the simulator does not start — again with no code in Acme.
+func TestAcmeRejectsAStrayBackgroundBlock(t *testing.T) {
+	const src = `
+version: 1
+name: acme-stray-background-scenario
+providers:
+  acme:
+    background:
+      turns:
+        - respond:
+            answer: "done"
+    turns:
+      - respond:
+          answer: "a"
+`
+	stub := &fatalRecorder{TB: t}
+	testkit.Start(stub, testkit.WithProfiles(acme.Profile()), testkit.WithScenarioYAML(src))
+	if !stub.failed || !strings.Contains(stub.message, provider.CodeBackgroundUnsupported+" providers.acme.background:") {
+		t.Fatalf("testkit.Start must refuse the scenario, naming %s at providers.acme.background; failed=%v message=%q",
+			provider.CodeBackgroundUnsupported, stub.failed, stub.message)
+	}
+}
+
 // TestAcmeFaultCursorsAreIndependentPerRoute pins what distinct FaultKeys
 // actually buy, which is easy to state wrongly: both routes read the ONE
 // providers.acme.fault plan, and each keeps its own cursor into it. So the

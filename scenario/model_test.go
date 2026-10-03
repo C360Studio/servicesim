@@ -227,6 +227,48 @@ providers:
 	}
 }
 
+// TestReservedEnvelopeKeysEachHaveACaseArm holds reservedEnvelopeKeys to
+// decodeProviderEntry's switch: every key in the slice, written with a valid
+// value, is stripped from the projection body — which only a case arm does. A
+// key added to the slice without an arm, or to neither, fails here instead of
+// reaching a provider as a response field.
+func TestReservedEnvelopeKeysEachHaveACaseArm(t *testing.T) {
+	t.Parallel()
+
+	valid := map[string]string{
+		keyKind:       "kind: exa",
+		keyAuth:       "auth: {mode: optional}",
+		keyValidation: "validation: {strict: true}",
+		keyFault:      "fault: {attempts: [{status: 500}]}",
+		keyTurns:      "turns: [{respond: {}}]",
+		keyTurnKey:    "turn_key: [route]",
+		keyCreate:     "create: {fault: {attempts: [{status: 500}]}}",
+		keyCancel:     "cancel: {turns: [{respond: {}}]}",
+		keyBackground: "background: {turns: [{respond: {}}]}",
+	}
+	if len(valid) != len(reservedEnvelopeKeys) {
+		t.Fatalf("this table covers %d keys and reservedEnvelopeKeys lists %d; keep them in step",
+			len(valid), len(reservedEnvelopeKeys))
+	}
+	for _, key := range reservedEnvelopeKeys {
+		line, ok := valid[key]
+		if !ok {
+			t.Fatalf("reserved key %q has no valid value in this table", key)
+		}
+		s, report, err := Parse([]byte("version: 1\nname: n\nproviders:\n  exa:\n    " + line + "\n"))
+		if err != nil {
+			t.Fatalf("%s: Parse: %v (%+v)", key, err, report.Findings)
+		}
+		var body map[string]any
+		if err := s.Provider("exa").Turns[0].Respond.Decode(&body); err != nil {
+			t.Fatalf("%s: decode body: %v", key, err)
+		}
+		if _, leaked := body[key]; leaked {
+			t.Errorf("reserved key %q reached the projection body; decodeProviderEntry has no case arm for it", key)
+		}
+	}
+}
+
 func TestProviderEntry_KindDefaultsToTheMapKey(t *testing.T) {
 	t.Parallel()
 

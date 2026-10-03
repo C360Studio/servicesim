@@ -110,6 +110,7 @@ const (
 	keyTurnKey    = "turn_key"
 	keyCreate     = "create"
 	keyCancel     = "cancel"
+	keyBackground = "background"
 )
 
 // reservedEnvelopeKeys are the provider-block keys stripped before what remains
@@ -121,7 +122,7 @@ const (
 // without adding a case arm changes nothing at all, which is a trap worth naming
 // because the slice reads as if it were the definition.
 var reservedEnvelopeKeys = []string{
-	keyKind, keyAuth, keyValidation, keyFault, keyTurns, keyTurnKey, keyCreate, keyCancel,
+	keyKind, keyAuth, keyValidation, keyFault, keyTurns, keyTurnKey, keyCreate, keyCancel, keyBackground,
 }
 
 // Providers is an open registry keyed by provider name. It is deliberately not
@@ -198,6 +199,16 @@ type ProviderEntry struct {
 	// lifecycle is a profile's knowledge, not this package's; a profile whose
 	// entry has no cancel rejects the block at load.
 	Cancel *CancelPolicy
+
+	// Background is the background-lifecycle envelope of a provider entry: the
+	// snapshots a retrieve route serves for a job that a create request asked to
+	// run in the background. Nil means the scenario declares no `background:`
+	// block.
+	//
+	// scenario decodes it on ANY entry, for the reason it decodes Cancel on any;
+	// a profile whose entry has no background lifecycle rejects the block at
+	// load.
+	Background *BackgroundPolicy
 
 	// TurnKey declares what the turn cursor is keyed on. Empty means ["route"].
 	TurnKey TurnKey
@@ -448,6 +459,41 @@ type CancelPolicy struct {
 	Turns []Turn `yaml:"turns,omitempty"`
 }
 
+// BackgroundPolicy is the background-lifecycle envelope of a provider entry:
+// what a scenario declares about a job that a create request asked to run in
+// the background and that a retrieve route then reads by its identifier.
+//
+// It is a script of retrieve SNAPSHOTS, selected the way an async entry's poll
+// snapshots are (provider.SelectPollTurn), with `when.call_index` counting the
+// job's retrieves. It is a block of its own rather than the entry's `turns:`
+// because an entry that also answers synchronously already scripts its create
+// route's responses there: the two scripts are selected by different routes and
+// cannot share one list.
+//
+//	perplexity_agent:
+//	  background:
+//	    turns:
+//	      - when: {call_index: 0}
+//	        respond: {status: queued}
+//	      - when: {call_index: 1}
+//	        respond: {status: in_progress}
+//	      - respond: {status: completed, answer: Done.}
+//	  turns:
+//	    - respond: {answer: A synchronous answer.}
+//
+// A turn here MAY carry `fault:`, unlike a cancel turn: the retrieve route reads
+// its fault plan from these turns, as an async poll route reads its plan from
+// the entry's own, with the per-route meaning [Turn.Fault] describes. At least
+// one turn is required, so a block that could answer no retrieve stops the
+// process at load rather than failing every retrieve at runtime.
+//
+// A `cancel:` key, for a cancel of a background job, joins Turns in a later
+// release; until then it is a load error here, like any other unknown key.
+type BackgroundPolicy struct {
+	// Turns are the snapshots the retrieve route serves, one per retrieve.
+	Turns []Turn `yaml:"turns,omitempty"`
+}
+
 // ValidationPolicy tunes how validation findings map onto HTTP outcomes.
 type ValidationPolicy struct {
 	// Strict promotes every warning raised while serving a request to an
@@ -576,10 +622,22 @@ func (s *Scenario) HasFaults() bool {
 		if e.Cancel != nil && e.Cancel.Fault.HasAttempts() {
 			return true
 		}
-		for i := range e.Turns {
-			if e.Turns[i].Fault.HasAttempts() {
-				return true
-			}
+		if e.Background != nil && turnsHaveFaults(e.Background.Turns) {
+			return true
+		}
+		if turnsHaveFaults(e.Turns) {
+			return true
+		}
+	}
+	return false
+}
+
+// turnsHaveFaults reports whether any turn of one script declares a fault plan
+// with at least one attempt.
+func turnsHaveFaults(turns []Turn) bool {
+	for i := range turns {
+		if turns[i].Fault.HasAttempts() {
+			return true
 		}
 	}
 	return false
@@ -703,6 +761,12 @@ func decodeProviderEntry(name string, node *yaml.Node) (*ProviderEntry, error) {
 				return nil, err
 			}
 			entry.Cancel = cancel
+		case keyBackground:
+			background, err := decodeBackground(base+".background", val)
+			if err != nil {
+				return nil, err
+			}
+			entry.Background = background
 		case keyFault:
 			faultNode = val
 		case keyTurns:
@@ -777,6 +841,35 @@ func decodeCancel(path string, node *yaml.Node) (*CancelPolicy, error) {
 		}
 	}
 	return cancel, nil
+}
+
+// decodeBackground decodes a `background:` block the way decodeCancel decodes a
+// `cancel:` one — a mapping only, its turns through decodeTurns — except that a
+// background turn keeps its `fault:`, because the retrieve route reads its plan
+// from these turns. Every other key is an error, `cancel` included: nothing
+// serves a cancel of a background job yet, and a block that decoded it would be
+// a script that silently never runs.
+func decodeBackground(path string, node *yaml.Node) (*BackgroundPolicy, error) {
+	background := &BackgroundPolicy{}
+	if node == nil || node.Kind == 0 || (node.Kind == yaml.ScalarNode && node.Tag == "!!null") {
+		return background, nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%s: line %d: expected a mapping, got a %s", path, node.Line, nodeKindName(node.Kind))
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, val := node.Content[i], node.Content[i+1]
+		if key.Value != keyTurns {
+			return nil, fmt.Errorf("%s: line %d: field %s not found in type scenario.BackgroundPolicy",
+				path, key.Line, key.Value)
+		}
+		turns, err := decodeTurns(path, val)
+		if err != nil {
+			return nil, err
+		}
+		background.Turns = turns
+	}
+	return background, nil
 }
 
 func decodeTurns(base string, node *yaml.Node) ([]Turn, error) {
