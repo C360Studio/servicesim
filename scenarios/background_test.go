@@ -265,3 +265,54 @@ func TestBuiltins_ABackgroundRunCanBeRetrieved(t *testing.T) {
 		})
 	}
 }
+
+// TestBuiltins_TheBackgroundBlockIsTheOneTheDocsDescribe pins the block that
+// scenarios/doc.go and each built-in's own comment describe: identical in every
+// built-in, queued, then in progress, then completed for good with a fixed
+// answer and the usage and cost it billed, with no model, no sources and no
+// fault. backgroundGap accepts any billed script that ends terminal, so a copy
+// that drifted in one file would otherwise falsify that prose silently.
+func TestBuiltins_TheBackgroundBlockIsTheOneTheDocsDescribe(t *testing.T) {
+	t.Parallel()
+
+	documented, report, err := scenario.Parse([]byte(`version: 1
+name: probe
+providers:
+  perplexity_agent:
+    answer: x
+    background:
+      turns:
+        - when: {call_index: 0}
+          respond: {status: queued}
+        - when: {call_index: 1}
+          respond: {status: in_progress}
+        - respond:
+            status: completed
+            answer: The background run has completed.
+            usage: {input_tokens: 24, output_tokens: 96, cost: {input_cost: 0.0001, output_cost: 0.0004}}
+`))
+	require.NoErrorf(t, err, "%v", report.Findings)
+
+	// The respond body is decoded rather than compared as a YAML node, so two
+	// files that spell the same mapping differently (flow or block style) agree.
+	canonical := func(t *testing.T, b *scenario.BackgroundPolicy) []map[string]any {
+		t.Helper()
+		require.NotNil(t, b)
+		out := make([]map[string]any, 0, len(b.Turns))
+		for i := range b.Turns {
+			var respond map[string]any
+			require.NoError(t, b.Turns[i].Respond.Decode(&respond))
+			out = append(out, map[string]any{"when": b.Turns[i].When, "fault": b.Turns[i].Fault, "respond": respond})
+		}
+		return out
+	}
+	want := canonical(t, documented.Provider(perplexity.NameAgent).Background)
+
+	names := scenarios.Names()
+	require.NotEmpty(t, names, "no built-in ships, so the guard would check nothing")
+	for _, name := range names {
+		entry := loadBuiltin(t, name).Provider(perplexity.NameAgent)
+		require.NotNilf(t, entry, "%s declares no %q block", name, perplexity.NameAgent)
+		assert.Equalf(t, want, canonical(t, entry.Background), "%s: providers.%s.background", name, perplexity.NameAgent)
+	}
+}

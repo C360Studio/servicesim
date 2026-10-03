@@ -260,3 +260,13 @@ func TestSetClonesBackgroundable(t *testing.T) {
 	assert.Empty(t, ValidateScenario(mustScenario(t, strayBackground), s.Validators()),
 		"mutating what All returned must not reach the Set's opt-in")
 }
+
+// TestOptInFindingCodesAreTheDocumentedStrings pins the strings of the two
+// opt-in rejections. Every other test compares against the constant, so a
+// changed string would break none of them, while docs/scenario-schema.md lists
+// the string and a consumer filters on it.
+func TestOptInFindingCodesAreTheDocumentedStrings(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "scenario.provider.background_unsupported", CodeBackgroundUnsupported)
+	assert.Equal(t, "scenario.provider.cancel_unsupported", CodeCancelUnsupported)
+}

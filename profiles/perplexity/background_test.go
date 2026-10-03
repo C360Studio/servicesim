@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -292,6 +293,93 @@ providers:
 	assert.NotContains(t, string(r.body), "cost")
 }
 
+// TestBackgroundSnapshotRendersWhatTheScenarioScripts: a retrieve renders every
+// field its snapshot scripts — an absent status as completed, a pending run's
+// partial answer, a terminal run's message even with no answer, a scripted
+// error, extra_fields — and labels the journal entry with the status the body
+// reports. Only queued and in_progress with no answer drop the message item, so
+// both edges of that rule are pinned here.
+func TestBackgroundSnapshotRendersWhatTheScenarioScripts(t *testing.T) {
+	t.Parallel()
+
+	messages := func(got map[string]any) []map[string]any {
+		var out []map[string]any
+		items, _ := got["output"].([]any)
+		for _, it := range items {
+			if m, _ := it.(map[string]any); m["type"] == "message" {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	textOf := func(t *testing.T, m map[string]any) string {
+		t.Helper()
+		content, _ := m["content"].([]any)
+		require.Len(t, content, 1)
+		part, _ := content[0].(map[string]any)
+		s, _ := part["text"].(string)
+		return s
+	}
+
+	tests := []struct {
+		name, respond, wantStatus string
+		check                     func(t *testing.T, got map[string]any)
+	}{
+		{"an absent status is completed", "{answer: Done.}", "completed",
+			func(t *testing.T, got map[string]any) {
+				msgs := messages(got)
+				require.Len(t, msgs, 1)
+				assert.Equal(t, "Done.", textOf(t, msgs[0]))
+			}},
+		{"a pending snapshot with an answer renders it", "{status: in_progress, answer: Partial.}", "in_progress",
+			func(t *testing.T, got map[string]any) {
+				msgs := messages(got)
+				require.Len(t, msgs, 1, "a scripted partial answer is not dropped")
+				assert.Equal(t, "Partial.", textOf(t, msgs[0]))
+				assert.Equal(t, "in_progress", msgs[0]["status"])
+			}},
+		{"a completed snapshot with no answer still has its message", "{status: completed}", "completed",
+			func(t *testing.T, got map[string]any) {
+				msgs := messages(got)
+				require.Len(t, msgs, 1, "only queued and in_progress omit the message")
+				assert.Empty(t, textOf(t, msgs[0]))
+			}},
+		{"a failed snapshot carries its scripted error",
+			"{status: failed, error: {code: run_failed, message: The run failed., type: server_error}}", "failed",
+			func(t *testing.T, got map[string]any) {
+				assert.Equal(t, map[string]any{"code": "run_failed", "message": "The run failed.", "type": "server_error"},
+					got["error"])
+			}},
+		{"extra_fields reach the snapshot", "{status: completed, answer: a, extra_fields: {vendor_hint: kept}}", "completed",
+			func(t *testing.T, got map[string]any) {
+				assert.Equal(t, "kept", got["vendor_hint"])
+			}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sim := startBackground(t, `
+version: 1
+name: background-render
+providers:
+  perplexity_agent:
+    answer: A synchronous answer.
+    background:
+      turns:
+        - respond: `+tc.respond+`
+`)
+			base := sim.URL(Name)
+			id := bgCreate(t, sim, base)
+			r := bgRetrieve(t, sim, base, id)
+			assert.Equal(t, tc.wantStatus, statusIn(t, r))
+			tc.check(t, r.json(t))
+
+			e := sim.AwaitRequests(t, Name, 2)[1]
+			assert.Equal(t, "perplexity.agent.retrieved."+tc.wantStatus, e.Outcome.Label)
+		})
+	}
+}
+
 // TestBackgroundRetrieveOfAnythingElseIs404 is every id the retrieve route does
 // not answer: one never minted, one minted in another namespace, a synchronous
 // response's id (the named divergence, ruling 7), a store:false background id
@@ -330,7 +418,9 @@ func TestBackgroundRetrieveOfAnythingElseIs404(t *testing.T) {
 		{"a store:false background id", unstoredID},
 		{"a malformed id", "resp%2F" + strings.TrimPrefix(minted, "resp_")},
 	}
-	before := len(sim.Journal())
+	// The five requests above, waited for rather than counted from a journal
+	// read that could run ahead of the last entry (testkit's Sim.Requests).
+	before := len(sim.AwaitRequests(t, Name, 5))
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			r := bgRetrieve(t, sim, base, tc.id)
@@ -373,6 +463,37 @@ func TestBackgroundHeadClaimsNothing(t *testing.T) {
 	assert.Equal(t, "perplexity.agent.retrieve.head_refused", heads.Outcome.Label)
 	assert.Equal(t, -1, heads.Outcome.AttemptIndex, "a HEAD claims nothing")
 	assert.Contains(t, codesOf(heads), provider.CodeMethodNotAllowed)
+}
+
+// TestBackgroundHeadIsRefusedBeforeAuthAndResolve: the HEAD refusal is the
+// retrieve's first branch, ahead of authentication and job resolution, so a
+// HEAD with no credential, or naming no job, is still the 405 with Allow: GET
+// and records only the refusal — not a 401, and not a 404 with job.foreign_id.
+func TestBackgroundHeadIsRefusedBeforeAuthAndResolve(t *testing.T) {
+	t.Parallel()
+	sim := startBackground(t, backgroundScenario)
+	base := sim.URL(Name)
+	id := bgCreate(t, sim, base)
+
+	tests := []struct {
+		name, path string
+		noAuth     bool
+	}{
+		{"no credential", "/v1/agent/" + id, true},
+		{"an id never minted", "/v1/agent/resp_00000000000000000000000000000000", false},
+	}
+	for _, tc := range tests {
+		r := bgSend(t, sim, base, http.MethodHead, tc.path, "", nil, tc.noAuth)
+		assert.Equal(t, http.StatusMethodNotAllowed, r.status, tc.name)
+		assert.Equal(t, http.MethodGet, r.header.Get("Allow"), tc.name)
+	}
+	entries := sim.AwaitRequests(t, Name, 1+len(tests))[1:]
+	for i, e := range entries {
+		assert.Equal(t, []string{provider.CodeMethodNotAllowed}, codesOf(e),
+			"%s: a HEAD neither authenticates nor resolves", tests[i].name)
+		assert.Equal(t, -1, e.Outcome.AttemptIndex, tests[i].name)
+	}
+	assert.Zero(t, sim.Jobs()[0].Polls)
 }
 
 // TestBackgroundFailsClosed: a background request the scenario cannot answer
@@ -473,6 +594,27 @@ func TestBackgroundUnstored(t *testing.T) {
 	assert.Equal(t, "body.store", e.Findings[0].Field)
 }
 
+// TestBackgroundUnstoredUnderStrictValidationIsRefused: strict validation
+// promotes the store:false warning, and the create is refused before anything
+// is claimed. Without that refusal the client would get a 200 queued body while
+// the journal recorded an error: a success-shaped failure.
+func TestBackgroundUnstoredUnderStrictValidationIsRefused(t *testing.T) {
+	t.Parallel()
+	src := strings.Replace(backgroundScenario, "  perplexity_agent:\n",
+		"  perplexity_agent:\n    validation: {strict: true}\n", 1)
+	sim := startBackground(t, src)
+
+	r := bgSend(t, sim, sim.URL(Name), http.MethodPost, "/v1/agent",
+		`{"input":"q","model":"openai/gpt-5","background":true,"store":false}`, nil, false)
+	assert.Equal(t, http.StatusBadRequest, r.status, "body: %s", r.body)
+	assert.NotContains(t, string(r.body), `"queued"`)
+
+	e := sim.AwaitRequests(t, Name, 1)[0]
+	assert.Contains(t, codesOf(e), CodeAgentBackgroundUnstored)
+	assert.Equal(t, -1, e.Outcome.AttemptIndex, "a refused create claims nothing")
+	assert.Empty(t, sim.Jobs())
+}
+
 // TestBackgroundAbsentOrFalseIsTheSynchronousPath: background false, or absent,
 // is the ordinary synchronous create, byte for byte.
 func TestBackgroundAbsentOrFalseIsTheSynchronousPath(t *testing.T) {
@@ -517,6 +659,32 @@ func TestBackgroundRetrieveFaultIsItsOwnBudget(t *testing.T) {
 		assert.Equal(t, "in_progress", statusIn(t, bgRetrieve(t, sim, base, id)),
 			"the faulted retrieve spent call 0 of its own job's lane")
 	}
+}
+
+// TestBackgroundRetrieveFaultIsTheFirstDeclaredPlan: with two background turns
+// that each declare a plan, the retrieve draws on the first, as
+// provider.TurnFault does for an entry's own turns. The engine holds one plan
+// per route key, so the second is never read.
+func TestBackgroundRetrieveFaultIsTheFirstDeclaredPlan(t *testing.T) {
+	t.Parallel()
+	sim := startBackground(t, `
+version: 1
+name: background-two-plans
+providers:
+  perplexity_agent:
+    answer: A synchronous answer.
+    background:
+      turns:
+        - when: {call_index: 0}
+          respond: {status: queued}
+          fault: {attempts: [{status: 503}]}
+        - respond: {status: completed, answer: done}
+          fault: {attempts: [{status: 429}]}
+`)
+	base := sim.URL(Name)
+	id := bgCreate(t, sim, base)
+	r := bgRetrieve(t, sim, base, id)
+	assert.Equal(t, http.StatusServiceUnavailable, r.status, "body: %s", r.body)
 }
 
 // TestBackgroundRetrievePastAnExhaustedScriptIs404: a retrieve the script has no
@@ -588,7 +756,9 @@ func TestBackgroundCreateTheJobStoreRefuses(t *testing.T) {
 				Scenario: s, Journal: ring, Faults: provider.MustSet(Profile()).Faults(s), Jobs: tc.store,
 			}))
 			t.Cleanup(srv.Close)
+			sent := 0
 			do := func() (int, []byte) {
+				sent++
 				req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/agent", strings.NewReader(backgroundRequest))
 				require.NoError(t, err)
 				req.Header.Set("Content-Type", "application/json")
@@ -613,6 +783,11 @@ func TestBackgroundCreateTheJobStoreRefuses(t *testing.T) {
 			require.NoError(t, json.Unmarshal(body, &envelope), "body: %s", body)
 			assert.Contains(t, envelope.Error.Message, tc.wantText)
 
+			// The handler appends its entry after writing the response, so the
+			// client can hold the body first. A bare ring has no AwaitRequests;
+			// wait for the entry the same bounded way it does.
+			require.Eventually(t, func() bool { return len(ring.Snapshot()) >= sent },
+				5*time.Second, time.Millisecond, "the journal never recorded the %d creates sent", sent)
 			entries := ring.Snapshot()
 			last := entries[len(entries)-1]
 			assert.Contains(t, codesOf(last), tc.wantCode)
@@ -686,19 +861,25 @@ providers:
 	assert.Contains(t, string(r.body), `"text":"second"`, "the background create spent call 0")
 }
 
-// TestBackgroundIsDeterministic: the same scenario and the same requests give
-// byte-identical create and retrieve bodies in two fresh processes.
-func TestBackgroundIsDeterministic(t *testing.T) {
+// TestBackgroundIsDeterministicAndServed: the same scenario and the same
+// requests give byte-identical create and retrieve bodies in two fresh
+// processes, and those bodies are the lifecycle — the create is the queued
+// snapshot and each retrieve the scripted status. Comparing bytes alone would
+// pass for two runs that failed the same way.
+func TestBackgroundIsDeterministicAndServed(t *testing.T) {
 	t.Parallel()
 
 	run := func() []string {
 		sim := startBackground(t, backgroundScenario)
 		base := sim.URL(Name)
 		created := bgSend(t, sim, base, http.MethodPost, "/v1/agent", backgroundRequest, nil, false)
+		require.Equal(t, "queued", statusIn(t, created))
 		id, _ := created.json(t)["id"].(string)
 		out := []string{string(created.body)}
-		for range 3 {
-			out = append(out, string(bgRetrieve(t, sim, base, id).body))
+		for _, want := range []string{"queued", "in_progress", "completed"} {
+			r := bgRetrieve(t, sim, base, id)
+			require.Equal(t, want, statusIn(t, r))
+			out = append(out, string(r.body))
 		}
 		return out
 	}
@@ -729,6 +910,9 @@ func TestBackgroundRetrieveCredentialsNeverSurvive(t *testing.T) {
 		header           map[string]string
 	}{
 		{"no credential", base, "/v1/agent/" + id, nil},
+		// Authentication comes before resolution, so an id that names no job
+		// is still the 401, not the 404.
+		{"no credential, an id never minted", base, "/v1/agent/resp_00000000000000000000000000000000", nil},
 		{"a wrong bearer token", base, "/v1/agent/" + id, map[string]string{"Authorization": "Bearer " + sentinel}},
 		{"a key in the query string", base, "/v1/agent/" + id + "?api_key=" + sentinel, nil},
 		{"a key in URL userinfo", userinfo, "/v1/agent/" + id, nil},
@@ -813,6 +997,15 @@ func TestBackgroundValidator(t *testing.T) {
 		{"an absent status is completed, so terminal",
 			"        - when: {call_index: 0}\n          respond: {answer: done}\n        - respond: {status: queued}\n",
 			"perplexity.agent.background.terminal_then_pending", scenario.SeverityError, base + "[1].respond.status"},
+		{"a failed snapshot is terminal",
+			"        - when: {call_index: 0}\n          respond: {status: failed, error: {message: boom}}\n        - respond: {status: in_progress}\n",
+			"perplexity.agent.background.terminal_then_pending", scenario.SeverityError, base + "[1].respond.status"},
+		{"a cancelled snapshot is terminal",
+			"        - when: {call_index: 0}\n          respond: {status: cancelled}\n        - respond: {status: queued}\n",
+			"perplexity.agent.background.terminal_then_pending", scenario.SeverityError, base + "[1].respond.status"},
+		{"a regression is judged on the retrieve route",
+			"        - when: {route: agent.retrieve, call_index: 0}\n          respond: {status: completed}\n        - respond: {status: in_progress}\n",
+			"perplexity.agent.background.terminal_then_pending", scenario.SeverityError, base + "[1].respond.status"},
 		{"a script whose last turn is conditional runs out",
 			"        - when: {call_index: 0}\n          respond: {status: completed}\n",
 			"perplexity.agent.background.script_exhausted", scenario.SeverityWarning, base + "[0].when"},
@@ -821,6 +1014,9 @@ func TestBackgroundValidator(t *testing.T) {
 			"perplexity.agent.background.script_exhausted", scenario.SeverityWarning, base + "[0].when"},
 		{"a body predicate never matches a GET",
 			"        - when: {body_contains: x}\n          respond: {status: queued}\n        - respond: {status: completed}\n",
+			"perplexity.agent.background.body_predicate", scenario.SeverityWarning, base + "[0].when"},
+		{"a body_json predicate never matches a GET either",
+			"        - when: {body_json: {model: x}}\n          respond: {status: queued}\n        - respond: {status: completed}\n",
 			"perplexity.agent.background.body_predicate", scenario.SeverityWarning, base + "[0].when"},
 		{"a stream fault cannot apply to a retrieve",
 			"        - respond: {status: completed}\n          fault: {attempts: [{kind: stream_disconnect, after_chunk: 1}]}\n",
@@ -923,4 +1119,20 @@ providers:
 		require.NotEmpty(t, without)
 		assert.Equal(t, without, with)
 	})
+}
+
+// TestBackgroundFindingCodesAreTheDocumentedStrings pins the code strings
+// themselves. Every other test compares against the constant, so a changed
+// string would break none of them, while docs/scenario-schema.md and the
+// contract notes list the string and a consumer filters on it.
+func TestBackgroundFindingCodesAreTheDocumentedStrings(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ got, want string }{
+		{CodeAgentBackgroundUnscripted, "perplexity.agent.background.unscripted"},
+		{CodeAgentBackgroundStream, "perplexity.agent.background.stream"},
+		{CodeAgentBackgroundUnstored, "perplexity.agent.background.unstored"},
+		{codeAgentBackgroundField, "perplexity.agent.background.field"},
+	} {
+		assert.Equal(t, tc.want, tc.got)
+	}
 }

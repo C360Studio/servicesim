@@ -416,9 +416,17 @@ func TestBuiltins_ABackgroundRunIsCreatedAndRetrieved(t *testing.T) {
 					}
 				}
 			}
-			// A create keeps a job exactly when the client receives its body: a status, a
-			// raw body, a cut body or no response at all leaves none.
+			// On the built-ins, a create keeps a job exactly when the client receives its
+			// body: a status, a raw body, a cut body or no response at all leaves none.
 			assert.Len(t, sim.Jobs(), len(delivered))
+
+			// Every retrieve check below sits behind len(delivered) > 0, so a walk that
+			// sent too few creates would skip them all and still pass. A plan that ends
+			// in success leaves the two creates past it, and each delivers a job.
+			if plan == nil || plan.After != scenario.FaultAfterRepeatLast {
+				require.GreaterOrEqualf(t, len(delivered), 2,
+					"a create plan that ends in success leaves two jobs to retrieve; fewer means the walk sent too few creates")
+			}
 
 			// An identifier from a body that was cut short is a real-looking identifier no
 			// job backs.
@@ -525,6 +533,25 @@ func TestBuiltins_FaultTheAgentCreateEveryWayTheEndToEndTestChecks(t *testing.T)
 	assert.True(t, endsInSuccess, "no built-in faults the Agent create and then recovers")
 }
 
+// TestCreateAttempt_ExpandsRepeatThenAfter pins the end-to-end test's helpers
+// against the engine's expansion of a plan: each attempt Repeat times, then what
+// `after:` says. No built-in scripts `repeat:` on the Agent create, so nothing
+// else exercises that branch, and a helper that drifted from the engine would
+// check every create against the wrong attempt.
+func TestCreateAttempt_ExpandsRepeatThenAfter(t *testing.T) {
+	t.Parallel()
+
+	plan := &scenario.Fault{
+		Attempts: []scenario.FaultAttempt{{Status: 503, Repeat: 2}, {Status: 429}},
+		After:    scenario.FaultAfterRepeatLast,
+	}
+	var got []int
+	for n := range createsToWalk(plan) {
+		got = append(got, createAttempt(plan, n).Status)
+	}
+	assert.Equal(t, []int{503, 503, 429, 429, 429}, got)
+}
+
 // assertJournal checks the journal against the requests the test sent, in order:
 // each request's label, and the delay each create was scripted to wait. A background
 // create or retrieve that was answered carries no finding; a refused one carries
@@ -550,33 +577,45 @@ func assertJournal(t *testing.T, sim *testkit.Sim, labels []string, delaysMS []i
 
 // TestTimeout_AnAbandonedBackgroundCreateLeavesItsJob is the real-delay half of the
 // timeout built-in's background create. The end-to-end test above skips delays, so it
-// sees the 30s delay delivered; here the client's own deadline fires during it, as a
-// consumer's timeout test does.
+// sees the 30s delay delivered; here the client gives up during it, as a consumer's
+// timeout test does.
 //
 // The measured consequence: the job is minted before the delay and kept, because the
-// attempt delivers its body, so the run exists although the client that timed out
+// attempt delivers its body, so the run exists although the client that gave up
 // holds no identifier for it. A retry mints a second job. That is the orphan a
 // create-then-poll client cannot tell from a rejected create, and it is why a timeout
 // test against this built-in sees one more job than the client has identifiers.
+//
+// No client deadline races request delivery here. Because the job is minted before
+// the hang, its appearance is the signal that the simulator is inside it, and
+// cancelling then is what a deadline does, without a wall clock deciding whether the
+// simulator ever read the request.
 func TestTimeout_AnAbandonedBackgroundCreateLeavesItsJob(t *testing.T) {
 	t.Parallel()
 
 	sim := testkit.Start(t, testkit.WithProfiles(referenceProfiles()...),
 		testkit.WithBuiltin("timeout"), testkit.WithProviders(perplexity.Name))
 
-	// Well short of the scenario's 30s, and not short: the deadline starts before the
-	// client dials, so a starved runner could fire it before the simulator reads the
-	// request, which leaves nothing abandoned. See the sync timeout test for the same
-	// trap.
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, sim.URL(perplexity.Name)+"/v1/agent",
 		strings.NewReader(backgroundRequest))
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer test-perplexity-key")
 	req.Header.Set("Content-Type", "application/json")
-	_, err = sim.Client().Do(req) //nolint:bodyclose // err is non-nil, so there is no body to close
-	require.ErrorIs(t, err, context.DeadlineExceeded)
+	done := make(chan error, 1)
+	go func() {
+		resp, err := sim.Client().Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		done <- err
+	}()
+
+	require.Eventually(t, func() bool { return len(sim.Jobs()) == 1 }, 5*time.Second, time.Millisecond,
+		"the create mints its job before the hang")
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
 
 	// The abandoned call's entry lands on the server goroutine after the client returned.
 	abandoned := sim.AwaitRequests(t, perplexity.Name, 1)[0]
@@ -591,12 +630,8 @@ func TestTimeout_AnAbandonedBackgroundCreateLeavesItsJob(t *testing.T) {
 	require.Equal(t, http.StatusOK, res.status, "body: %.200s", res.body)
 	id := assertQueuedStub(t, sim.Scenario(), res.body)
 	require.Len(t, sim.Jobs(), 2)
-	for _, j := range sim.Jobs() {
-		if j.ID == id {
-			return
-		}
-	}
-	t.Errorf("the retry's job %s is not among the jobs the simulator holds", id)
+	assert.Contains(t, []string{sim.Jobs()[0].ID, sim.Jobs()[1].ID}, id,
+		"the retry's job is among the jobs the simulator holds")
 }
 
 // TestConversation_ABackgroundCreateCountsAsACall pins the sentence in the

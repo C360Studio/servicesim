@@ -31,7 +31,7 @@ func TestBackgroundBlockDecodes(t *testing.T) {
 	}
 
 	e := s.Provider("perplexity_agent")
-	if e.Background == nil {
+	if e == nil || e.Background == nil {
 		t.Fatal("background: did not decode onto the entry")
 	}
 	if got := len(e.Background.Turns); got != 2 {
@@ -41,7 +41,11 @@ func TestBackgroundBlockDecodes(t *testing.T) {
 	if w := first.When; w == nil || w.CallIndex == nil || *w.CallIndex != 0 {
 		t.Errorf("background.turns[0].when = %+v, want call_index 0", w)
 	}
-	if got := len(first.Fault.Attempts); got != 2 {
+	// A nil plan fails this test alone; reading through it would panic and take
+	// the package's other parallel tests down with it.
+	if first.Fault == nil {
+		t.Error("background.turns[0].fault did not decode")
+	} else if got := len(first.Fault.Attempts); got != 2 {
 		t.Errorf("background.turns[0].fault attempts = %d, want 2", got)
 	}
 	var body map[string]any
@@ -126,9 +130,11 @@ func TestBackgroundBlockDecodesStrictly(t *testing.T) {
 			wantErr: []string{"providers.perplexity_agent.background", "fault", "scenario.BackgroundPolicy"},
 		},
 		{
-			name:    "not a mapping",
-			body:    "      - respond: {status: queued}\n",
-			wantErr: []string{"providers.perplexity_agent.background"},
+			name: "not a mapping",
+			body: "      - respond: {status: queued}\n",
+			// The shape, not just the path: the turns.empty finding names the
+			// same path, so the path alone would pass with the shape check gone.
+			wantErr: []string{"providers.perplexity_agent.background", "expected a mapping"},
 		},
 		{
 			name:    "turns that are not a list",
