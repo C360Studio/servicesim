@@ -100,6 +100,21 @@ func (s backgroundSnapshot) scriptsBilling() string {
 	return ""
 }
 
+// lastTurnCanMiss reports whether a last background turn's `when` can fail to
+// match a retrieve: the rule the profile's script_exhausted warning applies. A
+// route condition naming the retrieve route matches every retrieve, so only what
+// is left once it is set aside can miss.
+func lastTurnCanMiss(w *scenario.Match) bool {
+	if w == nil {
+		return false
+	}
+	rest := *w
+	if scenario.RouteMatches(rest.Route, perplexityRetrieveRoute) {
+		rest.Route = ""
+	}
+	return !rest.IsEmpty()
+}
+
 // backgroundGap reports why a background request on this entry would not be
 // answered by a script the corpus can stand behind, or "" when it would be. A
 // request is answered when the entry declares a `background:` block (otherwise
@@ -125,7 +140,7 @@ func backgroundGap(t *testing.T, e *scenario.ProviderEntry) string {
 			return fmt.Sprintf("background.turns[%d] scripts a fault, which every retrieve of every job would draw on", i)
 		}
 	}
-	if last := turns[len(turns)-1]; !last.When.IsEmpty() {
+	if last := turns[len(turns)-1]; lastTurnCanMiss(last.When) {
 		return "the last background.turns snapshot is conditional, so a retrieve past it matches no turn and answers 404 for a job that exists"
 	}
 
@@ -213,8 +228,13 @@ func TestBuiltins_ABackgroundRunCanBeRetrieved(t *testing.T) {
 		{"completed straight away", background(turn("", done)), ""},
 		{"the last turn is conditional",
 			background(turn("{call_index: 0}", queued), turn("{call_index: 1}", done)), "conditional"},
-		{"a conditional last turn on the route only",
-			background(turn("{call_index: 0}", queued), turn("{route: \""+perplexityRetrieveRoute+"\"}", done)), "conditional"},
+		// A route-only last turn matches every retrieve, so the script cannot run
+		// out: the loader does not warn about it, and neither does this guard.
+		{"a last turn conditioned only on the retrieve route",
+			background(turn("{call_index: 0}", queued), turn("{route: \""+perplexityRetrieveRoute+"\"}", done)), ""},
+		{"a last turn on the retrieve route that also names a call_index",
+			background(turn("{call_index: 0}", queued),
+				turn("{route: \""+perplexityRetrieveRoute+"\", call_index: 1}", done)), "conditional"},
 		{"a script that never completes",
 			background(turn("{call_index: 0}", queued), turn("", running)), "ever served a terminal"},
 		{"a terminal snapshot that un-completes",
