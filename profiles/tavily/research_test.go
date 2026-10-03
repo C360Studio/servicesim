@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -183,6 +184,140 @@ func TestResearchPollCursorsArePerTask(t *testing.T) {
 	rec, out = researchPoll(t, h, second)
 	assert.Equal(t, http.StatusAccepted, rec.Code)
 	assert.Equal(t, statusPending, out["status"], "the second task drew from the first task's cursor")
+}
+
+// A task's poll lane is the task (issue #29). The entry's turn_key keys the
+// create and nothing after it: a poll that read it too would put the task in one
+// lane per tenant value, each walking the script from poll 0, and a poll without
+// the header in a lane of its own besides, with a turn_key_unresolved finding.
+func TestResearchPollLaneIgnoresTheEntryTurnKey(t *testing.T) {
+	t.Parallel()
+
+	ring := journal.NewRing(16, 1<<16)
+	h := newHandler(t, `
+version: 1
+name: tavily-research-tenant-key
+providers:
+  tavily_research:
+    turn_key: ["route", "header:x-tenant"]
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - when: {call_index: 1}
+        respond: {status: in_progress}
+      - respond: {status: completed, content: done, response_time: 1.5}
+`, ring)
+
+	send := func(method, path, body string, header map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", bearer)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		for name, value := range header {
+			req.Header.Set(name, value)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	last := func() journal.Entry {
+		t.Helper()
+		entries := ring.Snapshot()
+		require.NotEmpty(t, entries)
+		return entries[len(entries)-1]
+	}
+
+	rec := send(http.MethodPost, "/research", `{"input":"research this"}`, map[string]string{"x-tenant": "acme"})
+	require.Equal(t, http.StatusCreated, rec.Code, "create failed: %s", rec.Body.String())
+	var created struct {
+		RequestID string `json:"request_id"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+
+	// The create declares no LaneFrom, so the entry's turn_key still lanes it.
+	assert.Contains(t, last().Outcome.FaultKey, "header:x-tenant=acme",
+		"the create must still lane by the entry's turn_key")
+
+	polls := []struct {
+		name   string
+		header map[string]string
+		code   int
+		want   string
+	}{
+		{"the create's tenant", map[string]string{"x-tenant": "acme"}, http.StatusAccepted, statusPending},
+		{"no tenant header", nil, http.StatusAccepted, statusInProgress},
+		{"another tenant", map[string]string{"x-tenant": "globex"}, http.StatusOK, statusCompleted},
+	}
+	for i, p := range polls {
+		rec := send(http.MethodGet, "/research/"+created.RequestID, "", p.header)
+		require.Equal(t, p.code, rec.Code, "poll %d (%s): %s", i, p.name, rec.Body.String())
+
+		var out struct {
+			Status string `json:"status"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+		assert.Equal(t, p.want, out.Status, "poll %d (%s) was served another position", i, p.name)
+
+		entry := last()
+		assert.Equal(t, i, entry.Outcome.AttemptIndex, "poll %d (%s)", i, p.name)
+		assert.Equal(t, FaultKeyResearchPoll+"|path:request_id="+created.RequestID, entry.Outcome.FaultKey,
+			"poll %d (%s): the lane is the task and nothing else", i, p.name)
+		for _, f := range entry.Findings {
+			assert.NotEqual(t, provider.CodeTurnKeyUnresolved, f.Code, "poll %d (%s): %s", i, p.name, f.Message)
+		}
+	}
+}
+
+// A body_json turn_key keys the create, whose POST carries the body. A HEAD or a
+// GET poll carries none, so an extractor evaluated there would resolve nothing
+// every time, and strict validation would promote that warning into a refusal of
+// every existence check and every poll. The HEAD step matters on its own: the
+// route's LaneFrom is the only thing that keeps the entry's turn_key off it, and
+// nothing else would notice the HEAD losing it.
+func TestResearchUnderStrictIgnoresABodyJSONTurnKey(t *testing.T) {
+	t.Parallel()
+
+	ring := journal.NewRing(16, 1<<16)
+	h := newHandler(t, `
+version: 1
+name: tavily-research-strict-body-key
+providers:
+  tavily_research:
+    validation: {strict: true}
+    turn_key: ["route", "body_json:input"]
+    turns:
+      - when: {call_index: 0}
+        respond: {status: pending}
+      - when: {call_index: 1}
+        respond: {status: in_progress}
+      - respond: {status: completed, content: done, response_time: 1.5}
+`, ring)
+	unresolved := func(step string) {
+		t.Helper()
+		entries := ring.Snapshot()
+		require.NotEmpty(t, entries)
+		for _, f := range entries[len(entries)-1].Findings {
+			assert.NotEqual(t, provider.CodeTurnKeyUnresolved, f.Code, "%s: %s", step, f.Message)
+		}
+	}
+
+	id := researchCreate(t, h, `{"input":"research this"}`)
+
+	req := httptest.NewRequest(http.MethodHead, "/research/"+id, nil)
+	req.Header.Set("Authorization", bearer)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code, "HEAD")
+	unresolved("HEAD")
+
+	// The first poll after the HEAD still serves call_index 0: the HEAD claimed nothing.
+	for i, want := range []string{statusPending, statusInProgress, statusCompleted} {
+		_, out := researchPoll(t, h, id)
+		assert.Equal(t, want, out["status"], "poll %d", i)
+		unresolved("poll " + strconv.Itoa(i))
+	}
 }
 
 // A create refused at the job bound is a Servicesim configuration wall, not a

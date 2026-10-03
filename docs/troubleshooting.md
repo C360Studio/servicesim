@@ -514,8 +514,11 @@ Read `outcome.fault_key` on the journal entry to see which lane actually served 
 {"outcome":{"kind":"scenario","fault_key":"demo/perplexity:completions|body_json:model=sonar","attempt_index":0}}
 ```
 
-The parts are the namespace, the route's fault key, and one segment per `turn_key` extractor that resolved. If the
-discriminator you expected is missing from that string, look for a warning on the same entry:
+The parts are the namespace, the route's fault key, and one segment per `turn_key` extractor that resolved — except on
+a route with a per-job lane (an async poll, `HEAD` or cancel, a background retrieve), whose one extra segment is
+`path:<wildcard>=<id>` because it reads no `turn_key` at all and so raises no warning for one
+([`turn_key`](scenario-schema.md#turn_key--what-the-cursor-counts-per)). Elsewhere, if the discriminator you expected
+is missing from that string, look for a warning on the same entry:
 
 ```json
 {"severity":"warning","code":"scenario.turn_key_unresolved","field":"turn_key",

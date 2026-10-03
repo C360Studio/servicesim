@@ -793,9 +793,9 @@ credentials are accepted and the id resolves, so a refused or unknown retrieve s
   zero the scenario did not script is a placeholder, never a billing fact. The synchronous path still always renders
   `usage.cost`, zeros included — see "Observed, not changed here".
 - **The retrieve has a budget of its own.** Fault key `perplexity:agent.retrieve`, per job, so a retry on the retrieve
-  never spends a create's attempt, and `call_index` in a `background:` turn counts that job's retrieves as long as the
-  entry declares no `turn_key` extractor beyond `route`. The entry's `turn_key` keys the retrieve's lane too; the
-  schema's [background section](../../../docs/scenario-schema.md#background-runs-background) has what that does. Its
+  never spends a create's attempt, and `call_index` in a `background:` turn counts that job's retrieves whatever the
+  entry's `turn_key` says: the retrieve's lane is the job alone, and the entry's `turn_key` keys only its creates (the
+  schema's [background section](../../../docs/scenario-schema.md#background-runs-background) has the detail). Its
   plan is the first `background.turns[*].fault` that declares attempts. A retrieve answered with a scripted fault still
   spends its index and advances the job's `polls`, and it keeps the label of the snapshot it would have served: read
   the label beside the entry's `fault_kind`. An attempt's `extra_fields` cannot carry `id` or `status`, because an

@@ -659,6 +659,10 @@ func turnLaneKey(x *Exchange) string {
 	}
 ```
 
+**Shipped as (#29): a route that declares `LaneFrom` is laned by it alone; the entry's `turn_key` keys only the
+create.** `turnLaneKey` takes `x.Route.LaneFrom` in place of the entry's extractors rather than appending to them,
+so the key is `<route key> | <route extractors>` and both sketches above overstate it.
+
 **A failing `LaneFrom` extractor raises its own finding, not `scenario.turn_key_unresolved`.** Reusing that code
 would address a `turn_key` field to an author who never wrote one — `LaneFrom` is declared on the route, in Go, and
 is deliberately not scenario-facing. Someone reading `scenario.turn_key_unresolved` on `field: turn_key` goes
