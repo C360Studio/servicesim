@@ -39,10 +39,11 @@ const (
 const (
 	// codeAgentBackgroundField is raised, as an error, for a `response_id` or
 	// `stream` key in a background snapshot's respond body, or an `id` or
-	// `status` key in its `extra_fields`. A snapshot's id is always its job's,
-	// so a scripted one would contradict it; a retrieve serves no stream, so a
-	// script for one could never play; and extra fields win over the rendered
-	// body, so those two would replace the job's id and the status the journal
+	// `status` key in its `extra_fields` or in the `extra_fields` of one of the
+	// turn's fault attempts. A snapshot's id is always its job's, so a scripted
+	// one would contradict it; a retrieve serves no stream, so a script for one
+	// could never play; and extra fields win over the body they are merged
+	// into, so those two would replace the job's id and the status the journal
 	// label reports. Each key is refused rather than silently ignored.
 	codeAgentBackgroundField = "perplexity.agent.background.field"
 
@@ -347,11 +348,14 @@ func backgroundTerminal(status agentStatus) (terminal, known bool) {
 // retrieve serves no stream for a stream script to play on.
 var backgroundFields = []string{"response_id", "stream"}
 
-// backgroundExtraFields are the extra_fields keys a background snapshot may
-// not carry, each with the reason. Extra fields are merged into the rendered
-// body last and win (provider.Render), so these two would let a snapshot
-// contradict what it is: its id is always its job's, and its status is the one
-// the journal label reports and the terminal check judged.
+// backgroundExtraFields are the extra_fields keys a background turn may not
+// carry, in its snapshot or in any of its fault attempts, each with the reason.
+// Extra fields are merged into the body last and win — the snapshot's by
+// provider.Render, an attempt's by the fault executor — so these two would let
+// a retrieve contradict what it is: its id is always its job's, and its status
+// is the one the journal label reports and the terminal check judged. An
+// attempt that sets nothing but extra_fields is no fault in the journal either,
+// so its entry would carry no fault_kind to read the label beside.
 var backgroundExtraFields = []struct{ key, why string }{
 	{"id", "a snapshot's id is always its job's"},
 	{"status", "a snapshot's status is its respond.status, which the journal label reports and the " +
@@ -388,6 +392,7 @@ func validateBackground(s *scenario.Scenario, e *scenario.ProviderEntry) []scena
 			findings = append(findings, decodeFinding(path, fmt.Errorf("%s: %w", path, err)))
 		} else {
 			decoded[i] = &p
+			findings = append(findings, backgroundExtraFieldFindings(path, p.ExtraFields)...)
 			findings = append(findings, s.ResolveRefs(path, &p)...)
 			findings = append(findings, validateAgentProjection(path, &p)...)
 		}
@@ -452,10 +457,11 @@ func effectiveStatus(p *perplexityAgent) agentStatus {
 	return p.Status
 }
 
-// backgroundFieldFindings refuses a respond key, or an extra_fields key, a
-// background snapshot may not carry. The keys are read from the YAML itself,
-// aliases and merges resolved, rather than from the decoded projection, so an
-// explicitly empty value is refused too: the author still wrote the key.
+// backgroundFieldFindings refuses a respond key a background snapshot may not
+// carry. The keys are read from the YAML itself, aliases and merges resolved,
+// rather than from the decoded projection, so an explicitly empty value is
+// refused too: the author still wrote the key. extra_fields is read decoded
+// instead (backgroundExtraFieldFindings).
 func backgroundFieldFindings(path string, turn *scenario.Turn) []scenario.Finding {
 	if turn.Respond.Kind == 0 {
 		return nil
@@ -477,8 +483,19 @@ func backgroundFieldFindings(path string, turn *scenario.Turn) []scenario.Findin
 				"job's, and GET /v1/agent/{id} serves no stream; remove %s", key, key),
 		})
 	}
-	// Not a mapping, or absent: the strict decode reports the shape.
-	extra, _ := keys["extra_fields"].(map[string]any)
+	return findings
+}
+
+// backgroundExtraFieldFindings refuses an extra_fields key a background turn
+// may not carry, path being the respond or the fault attempt that declares
+// extra. It reads the DECODED map, whose keys are the strings the wire
+// carries: a raw-YAML read decodes a mapping with any non-string key (`1`,
+// `true`) into a map not keyed by string, and would then see no id at all,
+// while the projection's decode coerces each key to its text, so the id is
+// still served. A key written with a null or empty value is still in the
+// decoded map.
+func backgroundExtraFieldFindings(path string, extra scenario.ExtraFields) []scenario.Finding {
+	var findings []scenario.Finding
 	for _, f := range backgroundExtraFields {
 		if _, ok := extra[f.key]; !ok {
 			continue
@@ -487,15 +504,16 @@ func backgroundFieldFindings(path string, turn *scenario.Turn) []scenario.Findin
 			Severity: scenario.SeverityError,
 			Code:     codeAgentBackgroundField,
 			Path:     path + ".extra_fields." + f.key,
-			Message: fmt.Sprintf("extra_fields.%s is not allowed in a background snapshot: extra fields are "+
-				"merged last and win, and %s; remove extra_fields.%s", f.key, f.why, f.key),
+			Message: fmt.Sprintf("extra_fields.%s is not allowed on a background turn: extra fields are "+
+				"merged into the body last and win, and %s; remove extra_fields.%s", f.key, f.why, f.key),
 		})
 	}
 	return findings
 }
 
 // backgroundTurnFindings checks what a background turn declares beside its
-// respond body: its route, its body predicates and its fault kinds.
+// respond body: its route, its body predicates, and each fault attempt's kind
+// and extra_fields.
 func backgroundTurnFindings(turnPath string, turn *scenario.Turn) []scenario.Finding {
 	var findings []scenario.Finding
 	if w := turn.When; w != nil {
@@ -521,15 +539,17 @@ func backgroundTurnFindings(turnPath string, turn *scenario.Turn) []scenario.Fin
 	}
 	if f := turn.Fault; f != nil {
 		for j := range f.Attempts {
+			attemptPath := fmt.Sprintf("%s.fault.attempts[%d]", turnPath, j)
 			if kind := f.Attempts[j].EffectiveKind(); kind.IsStream() {
 				findings = append(findings, scenario.Finding{
 					Severity: scenario.SeverityError,
 					Code:     scenario.CodeStreamFaultMismatch,
-					Path:     fmt.Sprintf("%s.fault.attempts[%d].kind", turnPath, j),
+					Path:     attemptPath + ".kind",
 					Message: fmt.Sprintf("kind %q assumes a chunked SSE transport, but GET /v1/agent/{id} never "+
 						"streams: a background snapshot is always an ordinary JSON body", kind),
 				})
 			}
+			findings = append(findings, backgroundExtraFieldFindings(attemptPath, f.Attempts[j].ExtraFields)...)
 		}
 	}
 	return findings

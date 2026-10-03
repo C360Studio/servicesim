@@ -985,6 +985,56 @@ func TestBackgroundValidator(t *testing.T) {
 		{"extra_fields would contradict the scripted status",
 			"        - respond: {status: queued, extra_fields: {status: completed}}\n",
 			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.extra_fields.status"},
+		// A mapping with any non-string key decodes, as raw YAML, into a map
+		// whose keys are not strings; the projection still decodes it and the
+		// wire still carries the id, so the refusal must not depend on it.
+		{"extra_fields with a non-string key still may not replace the job id",
+			"        - respond: {status: completed, extra_fields: {id: resp_forged, 1: y}}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.extra_fields.id"},
+		{"extra_fields with a non-string key still may not contradict the status",
+			"        - respond: {status: completed, extra_fields: {status: failed, true: y}}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.extra_fields.status"},
+		{"an explicitly null id in extra_fields is still written",
+			"        - respond: {status: completed, extra_fields: {id: null}}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.extra_fields.id"},
+		{"an explicitly empty status in extra_fields is still written",
+			"        - respond: {status: completed, extra_fields: {status: \"\"}}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.extra_fields.status"},
+		{"a !!str-tagged id in extra_fields is the id",
+			"        - respond: {status: completed, extra_fields: {!!str id: resp_forged}}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.extra_fields.id"},
+		{"extra_fields reached through an alias",
+			"        - when: {call_index: 0}\n          respond: {status: queued, extra_fields: &forged {id: resp_forged}}\n" +
+				"        - respond: {status: completed, extra_fields: *forged}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[1].respond.extra_fields.id"},
+		{"an id merged into extra_fields",
+			"        - when: {call_index: 0}\n          respond: {status: queued, extra_fields: &forged {id: resp_forged}}\n" +
+				"        - respond: {status: completed, extra_fields: {<<: *forged, vendor_hint: kept}}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[1].respond.extra_fields.id"},
+		{"extra_fields merged into the respond",
+			"        - when: {call_index: 0}\n          respond: &snap {status: queued, extra_fields: {status: completed}}\n" +
+				"        - respond: {<<: *snap, status: completed}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[1].respond.extra_fields.status"},
+		{"an explicitly empty response_id is still written",
+			"        - respond: {status: completed, response_id: \"\"}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.response_id"},
+		{"an explicitly null stream is still written",
+			"        - respond: {status: completed, stream: null}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.stream"},
+		// A fault attempt's extra_fields are merged into the body it serves just
+		// as a snapshot's are, and an attempt that sets nothing else is no fault
+		// in the journal, so the forged id or status would carry no fault_kind.
+		{"a retrieve fault's extra_fields would replace the job id",
+			"        - respond: {status: completed}\n          fault: {attempts: [{extra_fields: {id: resp_forged}}]}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].fault.attempts[0].extra_fields.id"},
+		{"a retrieve fault's extra_fields would contradict the status",
+			"        - when: {call_index: 0}\n          respond: {status: queued}\n" +
+				"          fault: {attempts: [{status: 503}, {extra_fields: {status: completed}}]}\n" +
+				"        - respond: {status: completed}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].fault.attempts[1].extra_fields.status"},
+		{"a retrieve fault's extra_fields with a non-string key",
+			"        - respond: {status: completed}\n          fault: {attempts: [{extra_fields: {id: resp_forged, 1: y}}]}\n",
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].fault.attempts[0].extra_fields.id"},
 		{"a create route never selects a background turn",
 			"        - when: {route: \"perplexity:agent\"}\n          respond: {status: queued}\n        - respond: {status: completed}\n",
 			provider.CodeTurnRouteUnknown, scenario.SeverityError, base + "[0].when.route"},
@@ -1081,8 +1131,15 @@ func TestBackgroundValidator(t *testing.T) {
 	// exists for, an additive field the consumer must tolerate.
 	t.Run("extra_fields other than id and status load clean", func(t *testing.T) {
 		t.Parallel()
-		assert.Empty(t, bgValidate(t, bgEntry(
-			"        - respond: {status: completed, extra_fields: {vendor_hint: kept}}\n")))
+		for _, block := range []string{
+			"        - respond: {status: completed, extra_fields: {vendor_hint: kept}}\n",
+			"        - respond: {status: completed, extra_fields: {vendor_hint: kept, 1: y}}\n",
+			"        - respond: {status: completed, extra_fields: null}\n",
+			"        - respond: {status: completed, extra_fields: {}}\n",
+			"        - respond: {status: completed}\n          fault: {attempts: [{extra_fields: {vendor_hint: kept}}]}\n",
+		} {
+			assert.Empty(t, bgValidate(t, bgEntry(block)), block)
+		}
 	})
 
 	t.Run("a synchronous turn may not name the retrieve route", func(t *testing.T) {
