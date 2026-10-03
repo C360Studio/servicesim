@@ -8,7 +8,8 @@ version: 1
 name: extra-fields
 description: >-
   Well-formed 200s carrying additional unknown properties, so a consumer proves
-  its decoder tolerates a vendor adding fields.
+  its decoder tolerates a vendor adding fields (a Perplexity `background: true`
+  run's snapshots carry none).
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -102,6 +103,28 @@ providers:
     answer: Report A states the finding.
     search_results:
       - source-a
+    # The background lifecycle: what `background: true` on POST /v1/agent starts and
+    # GET /v1/agent/{id} retrieves. A job's retrieves are queued, then in progress,
+    # then completed for good, with the usage and cost the run billed. The block is
+    # identical in every built-in and carries no fault on purpose: this entry's own
+    # `fault:` or `turns:` shape the CREATE, and the retrieve's budget is its own.
+    background:
+      turns:
+        - when: {call_index: 0}
+          respond:
+            status: queued
+        - when: {call_index: 1}
+          respond:
+            status: in_progress
+        - respond:
+            status: completed
+            answer: The background run has completed.
+            usage:
+              input_tokens: 24
+              output_tokens: 96
+              cost:
+                input_cost: 0.0001
+                output_cost: 0.0004
 
   exa_agent_runs:
     status: completed

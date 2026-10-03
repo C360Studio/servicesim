@@ -495,6 +495,13 @@ abandoned server-side, and there is no entry for `AwaitRequests` to find — the
 times out. Give the deadline real margin over request-delivery latency: a second or two is safe and still tiny
 beside the `timeout` built-in's 30s hang. `100ms` has flaked in this repository's own CI for exactly this reason.
 
+When the deadline does fire after the simulator has read the request, a Perplexity `background: true` create against
+the `timeout` built-in leaves an orphan. The job is minted before the hang, and an attempt that only delays still
+delivers its body, so the job is kept; but the client that timed out holds no identifier for it, and its retry mints a
+second job. Both show in `GET /__admin/jobs` (`sim.Jobs()` in Go), so expect one more job than your client holds
+identifiers for. Read what the simulator holds as
+[the job-exists entry above](#my-create-failed-and-i-need-to-know-whether-a-job-exists) describes.
+
 ## The wrong turn answered, or two callers got each other's responses
 
 Turn cursors are per **lane**, and the default lane is one per route. One route serving several concurrent callers

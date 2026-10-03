@@ -23,7 +23,9 @@
 #
 # `turn_key` is declared on the `perplexity` entry and governs the whole
 # Perplexity listener, the Agent surface included: the lane is resolved once, by
-# the listener, before a handler has chosen which entry answers.
+# the listener, before a handler has chosen which entry answers. The one route it
+# does not govern is a background job's retrieve (`GET /v1/agent/{id}`): that
+# lane is the job's own id, so two jobs never share a cursor whatever the model.
 version: 1
 name: namespaced
 description: >-
@@ -154,6 +156,28 @@ providers:
     search_results:
       - source-a
       - source-b
+    # The background lifecycle: what `background: true` on POST /v1/agent starts and
+    # GET /v1/agent/{id} retrieves. A job's retrieves are queued, then in progress,
+    # then completed for good, with the usage and cost the run billed. The block is
+    # identical in every built-in and carries no fault on purpose: this entry's own
+    # `fault:` or `turns:` shape the CREATE, and the retrieve's budget is its own.
+    background:
+      turns:
+        - when: {call_index: 0}
+          respond:
+            status: queued
+        - when: {call_index: 1}
+          respond:
+            status: in_progress
+        - respond:
+            status: completed
+            answer: The background run has completed.
+            usage:
+              input_tokens: 24
+              output_tokens: 96
+              cost:
+                input_cost: 0.0001
+                output_cost: 0.0004
 
   # This file's lane story is about `turn_key` on the Sonar route; the happy
   # shape here is just a coherent async surface so one --scenario flag still

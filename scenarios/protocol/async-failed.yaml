@@ -1,5 +1,6 @@
 # A run/task on each async surface that reaches a terminal FAILED status
-# instead of completing.
+# instead of completing. (Perplexity's `background: true` run is not one of
+# them: every built-in scripts it identically, and it completes.)
 #
 # The four synchronous surfaces stay in the ordinary happy shape — this file
 # is about the async lifecycle, not about anything those four surfaces do
@@ -11,7 +12,8 @@ description: >-
   async surface that reaches a terminal failed status — Exa's run is
   `status: failed` with `stopReason: error` and no error object (the live
   schema has none); Tavily's failed poll carries none either, which a
-  consumer's failure branch must handle too.
+  consumer's failure branch must handle too. A Perplexity `background: true`
+  run is the exception: it completes, as in every built-in.
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -57,6 +59,28 @@ providers:
     answer: Report A states the finding.
     search_results:
       - source-a
+    # The background lifecycle: what `background: true` on POST /v1/agent starts and
+    # GET /v1/agent/{id} retrieves. A job's retrieves are queued, then in progress,
+    # then completed for good, with the usage and cost the run billed. The block is
+    # identical in every built-in and carries no fault on purpose: this entry's own
+    # `fault:` or `turns:` shape the CREATE, and the retrieve's budget is its own.
+    background:
+      turns:
+        - when: {call_index: 0}
+          respond:
+            status: queued
+        - when: {call_index: 1}
+          respond:
+            status: in_progress
+        - respond:
+            status: completed
+            answer: The background run has completed.
+            usage:
+              input_tokens: 24
+              output_tokens: 96
+              cost:
+                input_cost: 0.0001
+                output_cost: 0.0004
 
   # One running poll, then a terminal FAILED status. The live AgentRun schema
   # has no run-level error object, so a failed run is expressed through its

@@ -19,8 +19,22 @@
 // generic hostile-content pack (prompt injection, credential-shaped bait,
 // active markup, exfiltration instructions and long content) exercising a
 // consumer's guardrail on every dispatch path (an Exa run the consumer cancels
-// renders no output, so no marker), and a provider this build has
+// renders no output, and a Perplexity background run a fixed answer with no
+// sources, so neither carries a marker), and a provider this build has
 // no handler for.
+//
+// Every built-in also scripts, identically, the background run a Perplexity
+// Agent request with background: true starts: GET /v1/agent/{id} answers queued,
+// then in progress, then completed for good, with a fixed answer and the usage and
+// cost the run billed. That includes async-failed and async-stuck, whose failed and
+// never-terminal runs are Exa's and Tavily's. The block carries no fault, so a
+// scenario that faults the Agent create (rate-limited, server-error,
+// malformed-json, brownout, timeout, oversized-body, hang-then-abort) faults a
+// background create the same way, because it shares the create's budget, while the
+// retrieve has a budget of its own and is never faulted. A create that fails mints
+// no job, so there is nothing to retrieve; a create whose body is delayed or padded
+// still does.
+//
 // A product-specific corpus — including a specific adopter's own
 // guardrail-classifier vectors — belongs in the consuming repository and is
 // mounted, not embedded here.

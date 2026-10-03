@@ -903,6 +903,8 @@ differences, each there so that no retrieve invents a fact:
   invented. The synchronous path still renders `cost` with zeros when none is scripted.
 - `model` falls back to `servicesim/unscripted` when the snapshot scripts none, because a retrieve has no request to
   echo and the specification requires the field. The create's `queued` stub echoes the request's selection instead.
+  The built-in scenarios script no `model:` in their background blocks, so for a built-in the two differ; a consumer
+  that asserts they are equal must script `model:` in its own scenario.
 - A `queued` or `in_progress` snapshot with no `answer` renders `output: []`. `created_at` defaults to `time.base`.
 
 **A script never un-completes.** `completed`, `failed`, `incomplete` and `cancelled` are terminal, and `queued` and
@@ -914,6 +916,13 @@ judged in serve order as [above](#terminal-is-judged-in-serve-order).
 first `background.turns[*].fault` that declares attempts, as [Faults and turns](#faults-and-turns) describes for every
 multi-turn entry. The create's plan is the one the entry's own turns (or its single-shot `fault:`) declare, and it
 serves synchronous and background creates alike, because the three create spellings share one fault key.
+
+A background create keeps its job under the same rule as any other create of
+[the async surfaces](#the-async-surfaces-exa_agent_runs-and-tavily_research): exactly when the client receives its
+body. Measured on the built-ins, delay-only and `oversized_body` attempts keep it; a status of 400 or above,
+`invalid_json`, `truncate_body` and `close_before_headers` do not. A `truncate_body` cut at the default still carries a
+complete `resp_<32 hex>` id in the prefix the client receives, but no job backs it, so retrieving that id answers `404`
+(the `hang-then-abort` built-in's cut creates show it).
 
 ```yaml
 providers:
