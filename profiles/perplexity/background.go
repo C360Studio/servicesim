@@ -33,9 +33,17 @@ const (
 	unscriptedModel = "servicesim/unscripted"
 )
 
-// Finding codes the background script raises at load, beside the exported
-// [CodeAgentBackgroundField]. Unexported: a consumer asserts on the string.
+// Finding codes the background script raises at load. Unexported, like every
+// other load-time code of this profile and of Exa's: a consumer asserts on the
+// string, which docs/scenario-schema.md lists.
 const (
+	// codeAgentBackgroundField is raised, as an error, for a `response_id` or
+	// `stream` key in a background snapshot's respond body. A snapshot's id is
+	// always its job's, so a scripted one would contradict it, and a retrieve
+	// serves no stream, so a script for one could never play. Either key is
+	// refused rather than silently ignored.
+	codeAgentBackgroundField = "perplexity.agent.background.field"
+
 	// codeAgentBackgroundTerminalThenPending is raised for a non-terminal
 	// snapshot SERVED after a terminal one — a run that un-completes. It is
 	// judged in poll order (provider.TerminalRegressions), not declaration
@@ -429,7 +437,7 @@ func backgroundFieldFindings(path string, turn *scenario.Turn) []scenario.Findin
 		}
 		findings = append(findings, scenario.Finding{
 			Severity: scenario.SeverityError,
-			Code:     CodeAgentBackgroundField,
+			Code:     codeAgentBackgroundField,
 			Path:     path + "." + key,
 			Message: fmt.Sprintf("%s is not allowed in a background snapshot: a snapshot's id is always its "+
 				"job's, and GET /v1/agent/{id} serves no stream; remove %s", key, key),

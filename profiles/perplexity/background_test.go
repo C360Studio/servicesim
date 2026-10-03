@@ -791,10 +791,10 @@ func TestBackgroundValidator(t *testing.T) {
 	}{
 		{"response_id would contradict the job id",
 			"        - respond: {status: completed, response_id: resp_x}\n",
-			CodeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.response_id"},
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.response_id"},
 		{"a retrieve serves no stream",
 			"        - respond: {status: completed, stream: {when_requested: stream}}\n",
-			CodeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.stream"},
+			codeAgentBackgroundField, scenario.SeverityError, base + "[0].respond.stream"},
 		{"a create route never selects a background turn",
 			"        - when: {route: \"perplexity:agent\"}\n          respond: {status: queued}\n        - respond: {status: completed}\n",
 			provider.CodeTurnRouteUnknown, scenario.SeverityError, base + "[0].when.route"},

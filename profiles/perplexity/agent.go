@@ -94,13 +94,6 @@ const (
 	// later GET /v1/agent/{id} of it is a 404.
 	CodeAgentBackgroundUnstored = "perplexity.agent.background.unstored"
 
-	// CodeAgentBackgroundField is raised at load, as an error, for a
-	// `response_id` or `stream` key in a background snapshot's respond body. A
-	// snapshot's id is always its job's, so a scripted one would contradict
-	// it, and a retrieve serves no stream, so a script for one could never
-	// play. Either key is refused rather than silently ignored.
-	CodeAgentBackgroundField = "perplexity.agent.background.field"
-
 	// CodeStreamDoneIgnored is raised, as a warning, when a turn declares
 	// terminal.omit_done on the Agent surface. GrammarTyped never writes a
 	// [DONE] sentinel — it is a chat-completions concept only
