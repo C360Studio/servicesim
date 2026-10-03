@@ -635,8 +635,8 @@ func TestTimeout_AnAbandonedBackgroundCreateLeavesItsJob(t *testing.T) {
 }
 
 // TestConversation_ABackgroundCreateCountsAsACall pins the sentence in the
-// conversation built-in's description: a `background: true` request answers from
-// the entry's background block, not from its turns, but it claims a call index like
+// conversation built-in's description: a `background: true` create answers a fixed
+// queued snapshot, not one of the entry's turns, but it claims a call index like
 // any other create, so the synchronous call after it receives the turn scripted for
 // the call after.
 func TestConversation_ABackgroundCreateCountsAsACall(t *testing.T) {

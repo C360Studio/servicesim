@@ -21,11 +21,12 @@
 # on the role instead — `turn_key: ["route", "header:x-role"]` — and the shape of
 # the script is identical.
 #
-# `turn_key` is declared on the `perplexity` entry and governs the whole
-# Perplexity listener, the Agent surface included: the lane is resolved once, by
-# the listener, before a handler has chosen which entry answers. The one route it
-# does not govern is a background job's retrieve (`GET /v1/agent/{id}`): that
-# lane is the job's own id, so two jobs never share a cursor whatever the model.
+# `turn_key` is declared on the `perplexity` entry, so it lanes the Sonar routes
+# only. A route reads the turn_key of the entry it is served from, and the Agent
+# routes are served from `perplexity_agent`, which declares none here: every
+# Agent create shares one lane whatever the model. A background job's retrieve
+# (`GET /v1/agent/{id}`) is served from `perplexity_agent` too, and its lane is
+# also keyed by the job's own id, so two jobs never share a cursor.
 version: 1
 name: namespaced
 description: >-
@@ -144,10 +145,10 @@ providers:
           answer: No further scripted turn in this lane.
           finish_reason: stop
 
-  # Single-shot, and deliberately so. The Agent surface shares the Perplexity
-  # listener, so it is already served in whatever lane the `perplexity` entry's
-  # turn_key named; a second turn_key here would describe a second resolution
-  # that never happens.
+  # Single-shot, and deliberately so: this file's lane story is about turn_key on
+  # the Sonar route. The Agent routes read this entry's turn_key, not the
+  # `perplexity` entry's, and it declares none, so every Agent call shares one
+  # lane whatever the model.
   perplexity_agent:
     answer: Report A and Report B agree on the finding.
     queries:

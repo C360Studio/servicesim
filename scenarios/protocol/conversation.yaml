@@ -19,8 +19,9 @@ name: conversation
 description: >-
   Three scripted turns on POST /v1/agent — search, answer once the tool result
   comes back, then a fallback — matched by call index, by body substring and
-  unconditionally (a `background: true` request answers from the entry's
-  background block instead, but still counts as a call).
+  unconditionally (a `background: true` create answers a fixed `queued`
+  snapshot instead, and the entry's background block answers its retrieves,
+  but the create still counts as a call).
 
 time:
   base: 2026-01-01T00:00:00Z
