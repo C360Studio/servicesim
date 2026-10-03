@@ -955,6 +955,8 @@ attempt raises `fault.accepted_unreachable` and applies as an ordinary fault. An
 `background.turns[i].fault.attempts[j].extra_fields.<key>`), as in a snapshot's: it is merged into the body the
 retrieve serves, and an attempt that sets nothing else is no fault in the journal, so its entry would carry no
 `fault_kind` to read the label beside.
+An attempt that sets only a `body` is no fault in the journal either, and nothing refuses it at load: it replaces
+the snapshot wholesale, so the wire can disagree with the label.
 
 A background create keeps its job under the same rule as any other create of
 [the async surfaces](#the-async-surfaces-exa_agent_runs-and-tavily_research): when the response carries its identifier

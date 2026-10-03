@@ -800,6 +800,9 @@ credentials are accepted and the id resolves, so a refused or unknown retrieve s
   spends its index and advances the job's `polls`, and it keeps the label of the snapshot it would have served: read
   the label beside the entry's `fault_kind`. An attempt's `extra_fields` cannot carry `id` or `status`, because an
   attempt that sets nothing else is no fault in the journal, and its entry would carry no `fault_kind` to read.
+  An attempt that sets only a `body` is the same, and nothing refuses it at load: it replaces the snapshot wholesale,
+  its entry carries no `fault_kind`, and the label still names the snapshot the retrieve would have served, so the
+  wire and the label can disagree.
 - **`HEAD`.** Go's `ServeMux` delivers `HEAD` to a `GET` pattern, so without its own branch a `HEAD` would claim the
   job's next retrieve and advance its poll position for a body `net/http` then discards: one existence check would
   silently consume a snapshot. The specification declares no `HEAD` on this path (ruling 1: spec-declared routes only),
