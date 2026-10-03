@@ -22,7 +22,7 @@ was, and the `spec:` block in `provenance.yaml`, the provider-level `verified:` 
 [`contracts/README.md`](../../../contracts/README.md) all stay at 2026-10-01 on purpose. What was read, what moved, and
 why the dates did not move are under "Lifecycle: background runs and retrieve" below.
 
-Source of truth: <https://docs.perplexity.ai/openapi.json> (OpenAPI 3.1.0, 208,564 bytes as of 2026-10-01, `servers: [https://api.perplexity.ai]`). Every table below is generated from that document, not from prose documentation pages and not from memory.
+Source of truth: <https://docs.perplexity.ai/openapi.json> (OpenAPI 3.1.0, 208,564 bytes as of 2026-10-01, `servers: [https://api.perplexity.ai]`). Every table below is generated from that document (except "Lifecycle: background runs and retrieve", read from the 2026-10-03 fetch), not from prose documentation pages and not from memory.
 
 > **Why this matters.** An earlier pass built this contract by reading Mintlify documentation pages and
 > produced fields borrowed from OpenAI's Responses API by analogy, plus one quotation that does not exist in
@@ -733,8 +733,8 @@ appears.
 | `background: true`, no `background:` block, or no `perplexity_agent` entry | `404` `ErrorInfo`; claims nothing | error `perplexity.agent.background.unscripted` at `body.background` |
 | `background: true` with `stream: true` | `400` `ErrorInfo`, `validation failed: …`; claims nothing | error `perplexity.agent.background.stream` at `body.stream` |
 | `background: true` with `store: false` | `200`, the queued snapshot under the id the synchronous path would derive; **no job is kept** | warning `perplexity.agent.background.unstored` at `body.store`; the same label |
-| the namespace already holds `--max-jobs` jobs | `503` carrying the finding's own message | `job.limit_reached` |
-| the job's id is already live | `500` carrying the finding's own message | `job.id_collision` |
+| the namespace already holds `--max-jobs` jobs | `503` carrying the finding's own message | `job.limit_reached` (with the framework's `fault.attempt_on_rejection` warning: the index was claimed, then refused) |
+| the job's id is already live | `500` carrying the finding's own message | `job.id_collision` (with the framework's `fault.attempt_on_rejection` warning: the index was claimed, then refused) |
 
 The last two rows are Servicesim's own configuration errors, not vendor answers (`SIMULATOR-POLICY`), which is why they
 carry the finding's message: it names the fix.
@@ -759,8 +759,9 @@ carry the finding's message: it names the fix.
   the same lane receives**. That is documented, not corrected. The three create spellings share one fault key,
   `perplexity:agent`, so the turn-level fault plan (the first `turns[*].fault` that declares attempts) serves
   synchronous and background creates alike.
-- **A faulted create keeps its job under the same rule as any other create:** when the client receives the body, or
-  the attempt says `accepted: true`. A `429` with no `accepted` leaves no job and a retry mints a new id.
+- **A faulted create keeps its job under the same rule as any other create:** when the response carries its
+  identifier intact, or the attempt says `accepted: true`. A `429` with no `accepted` leaves no job and a retry mints a
+  new id.
 - A request with `background` absent or `false` is the synchronous path, unchanged.
 
 ### The retrieve
@@ -775,13 +776,13 @@ credentials are accepted and the id resolves, so a refused or unknown retrieve s
 | an id this namespace never minted, one minted in another namespace, or a malformed id | `404` `ErrorInfo`; claims nothing | `perplexity.agent.error.404` |
 | the id of a `store: false` background create | the same `404` (vendor-documented) | `perplexity.agent.error.404` |
 | the id of a synchronous response | the same `404`: the named divergence below | `perplexity.agent.error.404` |
-| a job whose script has no turn for this retrieve | `404` `ErrorInfo`; the retrieve **is** spent: `scenario.no_matching_turn` is recorded and the job's `polls` advances | `perplexity.agent.error.404` |
+| a job whose script has no turn for this retrieve | `404` `ErrorInfo`; the retrieve **is** spent: `scenario.no_matching_turn` is recorded (with the framework's `fault.attempt_on_rejection` warning: the index was claimed, then refused) and the job's `polls` advances | `perplexity.agent.error.404` |
 | `HEAD` | `405`, `Allow: GET`, `ErrorInfo`; claims and resolves nothing | `perplexity.agent.retrieve.head_refused`, finding `route.method_not_allowed` |
 | any other method | the framework's `405`, `Allow: GET`, in the flat Sonar-shaped refusal body | `route.method_not_allowed` |
 | a scripted fault attempt | the fault's status and body | the handler's label, as for every route |
 
-- **The snapshot.** `id` is always the job's: a snapshot cannot script `response_id` (a load error). `object` is
-  `response`. `created_at` is the snapshot's, else the scenario's base time. `status` is the snapshot's; an absent
+- **The snapshot.** `id` is always the job's: a snapshot cannot script `response_id`, nor an `id` or a `status` in
+  its `extra_fields`, which are merged last and would win (each a load error). `object` is `response`. `created_at` is the snapshot's, else the scenario's base time. `status` is the snapshot's; an absent
   status is `completed`. `model` is the snapshot's, else the fixed placeholder `servicesim/unscripted`
   (`SIMULATOR-POLICY`): the specification requires `model`, a retrieve carries no request to echo one from, and the
   job record holds none. `output` is rendered as the synchronous path renders it, except that a `queued` or
@@ -791,9 +792,11 @@ credentials are accepted and the id resolves, so a refused or unknown retrieve s
   specification makes both optional, and the acceptance rule for this work is that no response invents a zero cost: a
   zero the scenario did not script is a placeholder, never a billing fact. The synchronous path still always renders
   `usage.cost`, zeros included — see "Observed, not changed here".
-- **The retrieve has a budget of its own.** Fault key `perplexity:agent.retrieve`, per job, so `call_index` in a
-  `background:` turn counts that job's retrieves, and a retry on the retrieve never spends a create's attempt. Its plan
-  is the first `background.turns[*].fault` that declares attempts. A retrieve answered with a scripted fault still
+- **The retrieve has a budget of its own.** Fault key `perplexity:agent.retrieve`, per job, so a retry on the retrieve
+  never spends a create's attempt, and `call_index` in a `background:` turn counts that job's retrieves as long as the
+  entry declares no `turn_key` extractor beyond `route`. The entry's `turn_key` keys the retrieve's lane too; the
+  schema's [background section](../../../docs/scenario-schema.md#background-runs-background) has what that does. Its
+  plan is the first `background.turns[*].fault` that declares attempts. A retrieve answered with a scripted fault still
   spends its index and advances the job's `polls`, and it keeps the label of the snapshot it would have served: read
   the label beside the entry's `fault_kind`.
 - **`HEAD`.** Go's `ServeMux` delivers `HEAD` to a `GET` pattern, so without its own branch a `HEAD` would claim the
@@ -836,9 +839,9 @@ service can leave `incomplete` or `failed` is not documented. The 2026-10-01 aud
 | `perplexity.agent.background.unscripted` | error, per request | `background: true` and no `background:` block |
 | `perplexity.agent.background.stream` | error, per request | `background: true` with `stream: true` |
 | `perplexity.agent.background.unstored` | warning, per request | `background: true` with `store: false` |
-| `perplexity.agent.background.field` | error, at load | a `response_id` or `stream` key in a background snapshot |
+| `perplexity.agent.background.field` | error, at load | a `response_id` or `stream` key in a background snapshot, or an `id` or `status` key in its `extra_fields` |
 | `perplexity.agent.background.terminal_then_pending` | error, at load | a non-terminal snapshot served after a terminal one, judged in serve order |
-| `perplexity.agent.background.script_exhausted` | warning, at load | the last background turn is conditional, so the retrieve after it is a `404` for a job that exists |
+| `perplexity.agent.background.script_exhausted` | warning, at load | the last background turn has a condition a retrieve can fail (anything but `route: agent.retrieve`), so the retrieve after it is a `404` for a job that exists |
 | `perplexity.agent.background.body_predicate` | warning, at load | `body_contains` or `body_json` on a background turn: a retrieve carries no body, so it can never match |
 
 The framework's own load findings for a `background:` block are in
@@ -866,8 +869,8 @@ route only, so `GET /v1/responses/{id}` answers `404` here. The inconsistency st
 ### Goldens
 
 `perplexity-agent-background-queued.json` is `simulator-chosen` as a whole: the envelope and the `queued` status come
-from the specification, but the id, the empty `output` and the omitted `usage` are Servicesim's, and an entry carries
-one `kind`. `perplexity-agent-background-completed.json` and `perplexity-agent-retrieve-404.json` are
+from the specification, but what a queued run's body carries — the empty `output` and the omitted `usage` — is
+`UNVERIFIED` and Servicesim's, and an entry carries one `kind`. `perplexity-agent-background-completed.json` and `perplexity-agent-retrieve-404.json` are
 `vendor-documented` for the status and the envelope, with the values and the `ErrorInfo` strings Servicesim's. All
 three are dated 2026-10-01 in `provenance.yaml`, with a comment saying why.
 
@@ -875,16 +878,23 @@ three are dated 2026-10-01 in `provenance.yaml`, with a comment saying why.
 
 The lifecycle operations were read against a fresh fetch of <https://docs.perplexity.ai/openapi.json> (215,432 bytes,
 sha256 `1a269d5596e506d3189e57c3ae84874a21c3532afe8c95de6f21e55f17001f15`, `info.version` `1.0.0`). `retrieveAgent`,
-`cancelAgentResponse`, the `background` and `store` descriptions, `Status`, `ResponsesResponse` and `ErrorInfo` are
-unchanged from the 2026-10-01 reading in
-[`docs/audits/2026-10-01-perplexity-agent.md`](../../../docs/audits/2026-10-01-perplexity-agent.md).
+`cancelAgentResponse`, the `background` and `store` descriptions, `Status`, `ResponsesResponse` and `ErrorInfo` agree
+with everything the 2026-10-01 audit recorded about them in
+[`docs/audits/2026-10-01-perplexity-agent.md`](../../../docs/audits/2026-10-01-perplexity-agent.md); with the old bytes
+gone, that is all that can be compared.
 
 The document has nonetheless moved. That hash is not the one recorded in `provenance.yaml`'s `spec:` block
 (`e0b92edf…`, 208,564 bytes, 2026-10-01), and the old bytes were not kept, so the full difference cannot be computed.
-One difference is confirmed: `ResponsesRequest` now has 20 properties where the audit counted 19, and the extra one is
-`tool_choice` (`allOf` `ToolChoice`: a string from `none`, `auto`, `required`, or an object). Neither `agentFields` nor
-the audit lists it, so a request carrying it still draws a `request.unknown_field` warning. It is a known difference,
-left for a re-audit, and was not added.
+Differences are confirmed. Re-running the audit's reproduction against the new bytes shows: `ResponsesRequest` has 20
+properties where the audit counted 19, the extra one `tool_choice` (`allOf` `ToolChoice`: a string from `none`,
+`auto`, `required`, or an object; its description names `{"type":"image_search"}`); `ResponsesCost` has a
+`tool_calls_cost_details` property this file's table does not list; `EventType` and `ResponseStreamEvent.oneOf` have 16
+members where this file records 14, the new ones `response.reasoning.image_search_queries` and
+`response.reasoning.image_search_results`; the `OutputItem` discriminator has 11 types where this profile counts ten,
+the new one `image_search_results`; and `sequence_number` occurs 32 times where the audit counted 28. Neither
+`agentFields` nor the audit lists `tool_choice`, so a request carrying it still draws a `request.unknown_field`
+warning. The lifecycle renders or requires none of these (`tool_calls_cost_details` is optional); all are left for the
+re-audit, tracked in #27.
 
 **A whole-bundle re-audit was not done.** `contracts/README.md`'s "sanctioned refresh procedure" is the way to move
 `verified:` and `spec:` forward, and it starts with re-reading every consumed field. Moving them now would record bytes

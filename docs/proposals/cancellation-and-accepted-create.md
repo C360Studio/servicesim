@@ -89,10 +89,15 @@ retrieve"). Where the build departs from the design below:
   to the `GET` handler and spend a snapshot, and the specification declares no `HEAD` (ruling 1).
 - **Q2's "No finding can fire on that `404`"** holds for a namespace that has minted no job. Once it has, a well-formed
   id that resolves to none, a synchronous response's id included, also raises the warning `job.foreign_id`.
-- **The spec was re-read on 2026-10-03** and its hash has moved since the 2026-10-01 audit. The lifecycle operations are
-  unchanged, `ResponsesRequest` gained `tool_choice`, and no whole-bundle re-audit has been done, so `provenance.yaml`'s
-  `spec:` block, the provider-level `verified:` date and the index table's Perplexity date stay at 2026-10-01
-  (`docs/audits/2026-10-01-perplexity-agent.md`, "Notes after 2026-10-01").
+- **The spec was re-read on 2026-10-03** and its hash has moved since the 2026-10-01 audit. The lifecycle operations
+  agree with everything the 2026-10-01 audit recorded about them; with the old bytes gone, that is all that can be
+  compared. Elsewhere the document grew what looks like one image-search feature: `ResponsesRequest` gained
+  `tool_choice`, `ResponsesCost` a `tool_calls_cost_details`, `EventType` and `ResponseStreamEvent` two
+  `response.reasoning.image_search_*` members (16 where 14 were recorded), the `OutputItem` discriminator an
+  `image_search_results` type (11 where ten were counted), and `sequence_number` occurs 32 times where 28 were counted.
+  The lifecycle renders or requires none of them. No whole-bundle re-audit has been done (tracked in #27), so
+  `provenance.yaml`'s `spec:` block, the provider-level `verified:` date and the index table's Perplexity date stay at
+  2026-10-01 (`docs/audits/2026-10-01-perplexity-agent.md`, "Notes after 2026-10-01").
 
 Not part of U5: Perplexity cancel (U6), and the documentation pass and tag note (U7).
 

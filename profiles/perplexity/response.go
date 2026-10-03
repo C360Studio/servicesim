@@ -249,8 +249,10 @@ type responsesResponse struct {
 	Usage *responsesUsage `json:"usage,omitempty"`
 }
 
-// Output item type discriminators. The specification declares ten; Servicesim
-// renders the two a research adapter parses.
+// Output item type discriminators. The specification declared ten at the
+// 2026-10-01 audit (the 2026-10-03 fetch declares eleven, adding
+// image_search_results; not yet re-audited, #27); Servicesim renders the two a
+// research adapter parses.
 const (
 	outputTypeSearchResults = "search_results"
 	outputTypeMessage       = "message"
@@ -399,8 +401,10 @@ type agentErrorResponse struct {
 // -----------------------------------------------------------------------------
 
 // The GrammarTyped event names this build emits: seven of the fourteen members
-// the specification's ResponseStreamEvent/EventType union declares
-// (contracts/perplexity/README.md "Responses / Agent"). The other seven — the
+// the specification's ResponseStreamEvent/EventType union declared at the
+// 2026-10-01 audit (contracts/perplexity/README.md "Responses / Agent"; the
+// 2026-10-03 fetch adds two image-search reasoning events, not yet re-audited,
+// #27). The other seven — the
 // reasoning.* family and response.in_progress — have no scenario vocabulary yet
 // and are never emitted; see renderAgentStream's doc comment.
 const (

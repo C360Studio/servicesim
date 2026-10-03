@@ -320,8 +320,10 @@ goldens:
 
   # The three entries below (the background lifecycle, issue #6) carry the date of the
   # 2026-10-01 audit, which read retrieveAgent, the Status enum, ResponsesResponse and the
-  # background description. The lifecycle operations were read again on 2026-10-03 and had
-  # not changed, but the document's hash had (see spec: above), and dating an entry
+  # background description. The lifecycle operations were read again on 2026-10-03 and
+  # agree with everything that audit recorded about them, but the document's hash had moved
+  # (the spec: block above keeps the 2026-10-01 hash; the 2026-10-03 fetch hashed
+  # 1a269d55…, see README.md "Dated note, 2026-10-03"), and dating an entry
   # 2026-10-03 would force this file's provider-level verified: and spec: forward to a
   # document whose other entries have not been re-read. The sanctioned refresh procedure
   # (contracts/README.md) does that move after a whole-bundle re-read, not before it.

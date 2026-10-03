@@ -64,7 +64,7 @@ Servicesim implements what a research adapter parses:
 | `output[]` items of type `message` and `search_results` | `sandbox_results`, `mcp_call`, `mcp_list_tools`, `function_call`, `finance_results`, `people_search_results`, `fetch_url_results`, `tool_search_output` |
 | `usage` with `ResponsesCost` | Streaming a background run (`background: true` with `stream: true`; it fails closed) |
 | `ErrorInfo` error envelope, `Status` enum | `GET /v1/agent/{id}/files`, file download, `POST /v1/agent/{id}/cancel` |
-| Request validation over the 18 `ResponsesRequest` properties | `POST /search`, embeddings, async Sonar, analytics endpoints |
+| Request validation over 19 of the 20 `ResponsesRequest` properties *(2026-10-03: this said 18; the 2026-10-01 audit counted 19, and `tool_choice`, new in the 2026-10-03 fetch, is not modelled, tracked in #27)* | `POST /search`, embeddings, async Sonar, analytics endpoints |
 | `background: true` and `GET /v1/agent/{id}`, since 2026-10-03 (issue #6) | |
 
 This follows the plan's first design principle. Each deferred item is a bounded addition behind the same scenario
