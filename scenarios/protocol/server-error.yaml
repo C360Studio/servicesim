@@ -101,7 +101,7 @@ providers:
     # The background lifecycle: what `background: true` on POST /v1/agent starts and
     # GET /v1/agent/{id} retrieves. A job's retrieves are queued, then in progress,
     # then completed for good, with the usage and cost the run billed. The block is
-    # identical in every built-in and carries no fault on purpose: this entry's own
+    # shared by sixteen built-ins (four script their own) and carries no fault on purpose: this entry's own
     # `fault:` or `turns:` shape the CREATE, and the retrieve's budget is its own.
     background:
       turns:
