@@ -279,7 +279,8 @@ ones.
 requests in that lane and nowhere else.
 
 The default is `["route"]`: one sequence per route, which is what a single serial caller wants and what every
-scenario written without this key gets.
+scenario written without this key gets. A route with a per-job lane — an async poll, `HEAD` or cancel, a background
+retrieve — ignores `turn_key`: its lane is the job ([per-job lanes](#the-async-surfaces-exa_agent_runs-and-tavily_research)).
 
 ```yaml
 providers:
@@ -352,10 +353,9 @@ be visible where a consumer already looks.
 
 Two further properties are worth knowing before you write a fixture against this:
 
-- The lane is resolved **once per request, by the listener**, before a handler has chosen which provider entry
-  answers. A listener that serves two entries — Perplexity's Sonar and Agent surfaces do — therefore keys both on
-  the primary entry's `turn_key`, and declaring a second one on the other entry describes a resolution that never
-  happens.
+- The lane is resolved **once per request**, before the handler runs, from the entry the matched route is served
+  from. A listener that serves two entries — Perplexity's Sonar and Agent surfaces do — keys each surface on its own
+  entry's `turn_key`: Sonar on the `perplexity` entry's, the Agent creates on `perplexity_agent`'s.
 - An unrecognised extractor form is a **load error**, `scenario.turn_key.invalid`, naming the offending index. A
   typo here would otherwise present as one silently shared lane.
 
@@ -887,8 +887,8 @@ done
 **Selecting a snapshot.** `background.turns` is selected the way an async entry's poll script is, by the
 [turn selection rules](#turn-selection-rules): first match on `when`, then the unconditional fallback. `call_index`
 counts **this job's** retrieves, because the retrieve's lane is per job: two jobs polled in interleaved order each walk
-their own script. That holds while the entry's `turn_key` names nothing beyond `route`; the next paragraph says what
-another extractor does. A retrieve answered with a scripted fault counts. A retrieve that matches no turn is the Agent
+their own script, whatever the entry's `turn_key` says (next paragraph). A retrieve answered with a scripted fault
+counts. A retrieve that matches no turn is the Agent
 `404` with `scenario.no_matching_turn` (and the framework's `fault.attempt_on_rejection` warning: the index was
 claimed, then refused), and it is spent — the job's `polls` still advances — so end the script with an unconditional
 turn, or one conditioned only on `route: agent.retrieve`; the loader warns when you do not. A `when.route` in a
@@ -897,16 +897,16 @@ the create's `agent` is `scenario.turn.route_unknown`, and so is naming the retr
 turn never silently fails to fire. `body_contains` and `body_json` can never match, since a `GET` carries no body, and
 are warned about.
 
-**The entry's `turn_key` keys the retrieve too.** The retrieve is served from the `perplexity_agent` entry, so a
-`turn_key:` written on that entry for its synchronous create is also applied to every retrieve's lane, on top of the
-job's id, as it is to an async entry's polls ([per-job lanes](#the-async-surfaces-exa_agent_runs-and-tavily_research)).
-A `header:<name>` extractor therefore re-keys a job's retrieves by that header: a retrieve that sends a different value
-is served from another lane starting at `call_index` 0, so a job that has completed can read as `queued`, and the job's
-`polls` stops counting every retrieve. A retrieve that sends no such header raises `scenario.turn_key_unresolved` and
-is served from another lane the same way; under `validation: {strict: true}` that warning is promoted and the retrieve
-is a `400`. A `body_json:<path>` extractor never resolves on a `GET`, so every retrieve raises
-`scenario.turn_key_unresolved`; under `validation: {strict: true}` that warning is promoted and every retrieve is a
-`400`, so no background run can be retrieved. None of this is reported at load.
+**The entry's `turn_key` does not key the retrieve.** The retrieve is served from the `perplexity_agent` entry, but its
+lane is the job and nothing else: a `turn_key:` written on that entry keys its creates, synchronous and background
+alike, and is never read on a retrieve, as it is never read on an async entry's polls
+([per-job lanes](#the-async-surfaces-exa_agent_runs-and-tavily_research)). A retrieve that sends another value for a
+`header:<name>` extractor, or none, walks the job's one script all the same, and a `body_json:<path>` extractor, which a
+`GET` could never resolve, raises no `scenario.turn_key_unresolved` on a retrieve, so `validation: {strict: true}`
+refuses none. No header or body a retrieve sends can change which snapshot it gets: [`when`](#when--the-turn-predicate)
+has no header predicate, and a retrieve's selection never reads a body. To give different callers different scripts,
+give each its own scenario, served from `-scenario-dir` and selected with the `/x/<scenario>` path prefix on the create
+and on every retrieve ([README](../README.md#one-container-many-concurrent-tests)).
 
 **What a snapshot says.** A `respond:` takes the keys of the table above and is checked the same way, with these
 differences, each there so that no retrieve invents a fact:
@@ -1429,12 +1429,14 @@ this route*: two jobs polled concurrently in one namespace get two independent c
 budgets, and everything [`turn_key`](#turn_key--what-the-cursor-counts-per) already lists comes free with it,
 because the poll cursor *is* the fault attempt counter.
 
-A `turn_key:` written on the async entry itself still applies on top of that job discriminator, and `header:<name>`
-is the extractor to reach for if you need a second axis. `body_json:<path>` is not: a `GET` poll carries no body,
-so the path can never resolve and **every poll** raises `scenario.turn_key_unresolved`. Without
-`validation: {strict: true}` the request is still served, just from a lane missing that discriminator; with it, the
-warning is promoted and every poll is a `400`. Leave `turn_key` unset unless you need one; the per-job lane is
-automatic and needs no declaration.
+A `turn_key:` written on the async entry keys its create and **not** the job's own routes: the poll, the `HEAD` and
+Exa's cancel are laned by the job alone. A poll that sends another value for a `header:<name>` extractor, or none,
+still walks the job's one script, and a `body_json:<path>` extractor, which a `GET` poll could never resolve, raises no
+`scenario.turn_key_unresolved` there. The per-job lane is automatic and needs no declaration. A poll's headers cannot
+select its snapshot either — [`when`](#when--the-turn-predicate) has no header predicate — and nor, in practice, can
+its body: a `GET` poll is sent without one, and an `exa_agent_runs` poll ignores one that is sent. To give different
+callers different scripts, give each its own scenario, served from `-scenario-dir` and selected with the
+`/x/<scenario>` path prefix on the create and on every poll ([README](../README.md#one-container-many-concurrent-tests)).
 
 **Validation.** Each async entry's `ValidateProjections` decodes every turn and reports these findings, in addition
 to the generic ones every provider raises for a malformed `respond:` node or an unresolved source reference (see

@@ -202,9 +202,10 @@ type Profile struct {
 	//     background turn's `fault:` unapplied and applies the create's plan to
 	//     retrieves.
 	//   - The retrieve's LaneFrom keys its lane by job ([LaneFromPath] plus the
-	//     path wildcard's name), and its Entry is the create's. Without
-	//     LaneFrom every job in a namespace shares one cursor, and one job's
-	//     retrieve is served another job's snapshot.
+	//     path wildcard's name) and by nothing else — the entry's turn_key
+	//     keys the create, never the retrieve — and its Entry is the create's.
+	//     Without LaneFrom every job in a namespace shares one cursor, and one
+	//     job's retrieve is served another job's snapshot.
 	//   - The validator decodes background.turns with [scenario.DecodeStrict]
 	//     and a path of its own: [scenario.Turn.DecodeProjection] writes
 	//     providers.<name>.turns[i] into its errors, which is the wrong address

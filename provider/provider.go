@@ -83,9 +83,16 @@ type Route struct {
 	FaultKey string
 
 	// LaneFrom names lane discriminators this ROUTE contributes, in the same
-	// extractor grammar as scenario.TurnKey and evaluated after the scenario's,
-	// so a lane key reads "<route key> | <scenario extractors> | <route
-	// extractors>".
+	// extractor grammar as scenario.TurnKey. A route that declares any is laned
+	// by them alone, "<route key> | <route extractors>": the entry's turn_key
+	// does not apply to it. That entry's turn_key still lanes the entry's other
+	// routes, the create that mints a job among them.
+	//
+	// The turn_key is not read because the job already is the lane. Adding the
+	// entry's extractors would split one job across as many lanes as its client
+	// varies their values, each serving the job's script from the start, and an
+	// extractor a poll cannot carry — a body_json one, on a GET — would fail on
+	// every poll.
 	//
 	// It exists because a poll route's per-job lane is not a scenario author's
 	// choice. Two jobs polled concurrently in one namespace share a route, and a

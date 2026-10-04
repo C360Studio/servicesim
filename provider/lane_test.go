@@ -332,33 +332,54 @@ providers:
 	}
 }
 
-// Route extractors come after the scenario's, because order is part of the key:
-// reversing it would rename every lane.
-func TestLaneFromOrdersAfterTheScenarioTurnKey(t *testing.T) {
+// A route that declares LaneFrom is laned by those extractors alone; the entry's
+// turn_key keys the create that minted the job and never the job's own routes
+// (issue #29). Were it read here too, one job would sit in as many lanes as its
+// client varies the extractor's value, and each lane would serve the job's
+// script from its first poll. An extractor that is never evaluated cannot fail
+// either, so a body_json one on a bodyless GET raises nothing.
+func TestLaneFromIgnoresTheScenarioTurnKey(t *testing.T) {
 	t.Parallel()
 
-	s := mustScenario(t, `
+	tests := []struct {
+		name    string
+		turnKey string
+		header  map[string]string
+	}{
+		{"header extractor, header sent", `["route", "header:x-tenant"]`, map[string]string{"x-tenant": "acme"}},
+		{"header extractor, another value", `["route", "header:x-tenant"]`, map[string]string{"x-tenant": "globex"}},
+		{"header extractor, header absent", `["route", "header:x-tenant"]`, nil},
+		{"body_json extractor on a bodyless GET", `["route", "body_json:tenant"]`, nil},
+		{"no route in the turn_key", `["header:x-tenant"]`, map[string]string{"x-tenant": "acme"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := mustScenario(t, `
 version: 1
 name: async
 providers:
   exa:
-    turn_key: ["route", "header:x-tenant"]
+    turn_key: `+tc.turnKey+`
     turns:
       - respond: {}
 `)
+			x := laneFromExchange(t, s, "run_aaa")
+			for name, value := range tc.header {
+				x.Request.Header.Set(name, value)
+			}
 
-	x := laneFromExchange(t, s, "run_aaa")
-	x.Request.Header.Set("x-tenant", "acme")
-
-	got := turnLaneKey(x)
-	tenant := strings.Index(got, "header:x-tenant=acme")
-	id := strings.Index(got, "path:id=run_aaa")
-
-	if tenant < 0 || id < 0 {
-		t.Fatalf("lane = %q, want both extractors present", got)
-	}
-	if tenant > id {
-		t.Errorf("lane = %q, want the scenario's extractor before the route's", got)
+			// One literal for every case, which is what makes the key
+			// byte-identical with the header, without it and with another value.
+			want := x.Route.FaultKey + laneKeySeparator + LaneFromPath + "id=run_aaa"
+			if got := turnLaneKey(x); got != want {
+				t.Errorf("lane = %q, want %q: the entry's turn_key reached a LaneFrom route", got, want)
+			}
+			if f := x.Findings(); len(f) != 0 {
+				t.Errorf("findings = %+v, want none: the entry's extractors were evaluated", f)
+			}
+		})
 	}
 }
 

@@ -45,8 +45,9 @@ const (
 // agentRunRoutes returns the four async routes, in registration order.
 //
 // All four name the exa_agent_runs ENTRY rather than the listener, so the
-// entry's own turn_key and validation block are honoured. Without Route.Entry
-// they would silently read the primary `exa` block's.
+// entry's own validation block is honoured, and its turn_key on the create (the
+// three per-run routes declare LaneFrom, which the turn_key does not apply to).
+// Without Route.Entry they would silently read the primary `exa` block's.
 func agentRunRoutes() []provider.Route {
 	laneFromID := []string{provider.LaneFromPath + "id"}
 	return []provider.Route{

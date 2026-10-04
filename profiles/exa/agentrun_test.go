@@ -307,6 +307,121 @@ func TestAgentRunPollCursorsArePerRun(t *testing.T) {
 		"the second run's first poll drew from the first run's cursor")
 }
 
+// tenantKeyedRuns keys exa_agent_runs on a tenant header and scripts a run whose
+// every poll position answers a different status, so a poll served from the
+// wrong position is visible in its body.
+const tenantKeyedRuns = `
+version: 1
+name: agent-run-tenant-key
+providers:
+  exa_agent_runs:
+    turn_key: ["route", "header:x-tenant"]
+    turns:
+      - when: {call_index: 0}
+        respond: {status: queued}
+      - when: {call_index: 1}
+        respond: {status: running}
+      - respond: {status: completed, cost_dollars: {total: 0.01}}
+`
+
+// A run's poll lane is the run (issue #29). The entry's turn_key keys the create
+// and nothing after it: a poll that read it too would put the run in one lane per
+// tenant value, each walking the script from poll 0, and a poll without the
+// header in a lane of its own besides, with a turn_key_unresolved finding.
+func TestAgentRunPollLaneIgnoresTheEntryTurnKey(t *testing.T) {
+	t.Parallel()
+
+	store := jobs.NewRegistry(jobs.Limits{})
+	s := newSimWithJobs(t, tenantKeyedRuns, store)
+
+	rec := s.do(request{
+		method:  http.MethodPost,
+		path:    "/agent/runs",
+		body:    `{"query":"q"}`,
+		headers: map[string]string{"x-tenant": "acme"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code, "create failed: %s", rec.Body.String())
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+
+	// The create declares no LaneFrom, so the entry's turn_key still lanes it.
+	entries := s.journal.Snapshot()
+	require.Len(t, entries, 1)
+	assert.Contains(t, entries[0].Outcome.FaultKey, "header:x-tenant=acme",
+		"the create must still lane by the entry's turn_key")
+
+	polls := []struct {
+		name   string
+		header map[string]string
+		want   string
+	}{
+		{"the create's tenant", map[string]string{"x-tenant": "acme"}, statusQueued},
+		{"no tenant header", nil, statusRunning},
+		{"another tenant", map[string]string{"x-tenant": "globex"}, statusCompleted},
+	}
+	for i, p := range polls {
+		rec := s.do(request{method: http.MethodGet, path: "/agent/runs/" + created.ID, headers: p.header})
+		require.Equal(t, http.StatusOK, rec.Code, "poll %d (%s): %s", i, p.name, rec.Body.String())
+
+		var out struct {
+			Status string `json:"status"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+		assert.Equal(t, p.want, out.Status, "poll %d (%s) was served another position", i, p.name)
+
+		entries := s.journal.Snapshot()
+		entry := entries[len(entries)-1]
+		assert.Equal(t, i, entry.Outcome.AttemptIndex, "poll %d (%s)", i, p.name)
+		assert.Equal(t, faultKeyRunPoll+"|path:id="+created.ID, entry.Outcome.FaultKey,
+			"poll %d (%s): the lane is the run and nothing else", i, p.name)
+		assert.NotContains(t, codesIn(entry), provider.CodeTurnKeyUnresolved, "poll %d (%s)", i, p.name)
+	}
+
+	// The job store counts polls by run, the lane cursor by lane; with one lane
+	// per run the two agree.
+	job, ok := store.Lookup(provider.DefaultNamespace, created.ID)
+	require.True(t, ok)
+	assert.Equal(t, len(polls), job.Polls)
+}
+
+// A body_json turn_key keys the create, whose POST carries the body. A poll is a
+// GET with none and a HEAD likewise, so an extractor evaluated on either would
+// resolve nothing every time, and strict validation would promote that warning
+// into a refusal of every poll and every existence check of every run. The HEAD
+// step matters on its own: the route's LaneFrom is the only thing that keeps the
+// entry's turn_key off it, and nothing else would notice the HEAD losing it.
+func TestAgentRunPollUnderStrictIgnoresABodyJSONTurnKey(t *testing.T) {
+	t.Parallel()
+
+	s := asyncSim(t, `
+version: 1
+name: agent-run-strict-body-key
+providers:
+  exa_agent_runs:
+    validation: {strict: true}
+    turn_key: ["route", "body_json:query"]
+    turns:
+      - when: {call_index: 0}
+        respond: {status: queued}
+      - when: {call_index: 1}
+        respond: {status: running}
+      - respond: {status: completed, cost_dollars: {total: 0.01}}
+`)
+	id := createRun(t, s, `{"query":"q"}`)
+
+	rec := s.do(request{method: http.MethodHead, path: "/agent/runs/" + id})
+	assert.Equal(t, http.StatusOK, rec.Code, "HEAD: %s", rec.Body.String())
+	assert.False(t, s.hasFinding(provider.CodeTurnKeyUnresolved), "HEAD: %+v", s.findings())
+
+	// The first poll after the HEAD still serves call_index 0: the HEAD claimed nothing.
+	for i, want := range []string{statusQueued, statusRunning, statusCompleted} {
+		assert.Equal(t, want, pollRun(t, s, id)["status"], "poll %d", i)
+		assert.False(t, s.hasFinding(provider.CodeTurnKeyUnresolved), "poll %d: %+v", i, s.findings())
+	}
+}
+
 // An identifier this process never minted is the vendor's 404, and it must not
 // consume a poll from any run's script.
 func TestAgentRunPollUnknownIdentifier(t *testing.T) {

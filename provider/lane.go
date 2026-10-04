@@ -86,7 +86,8 @@ const (
 //   - Scenario is the behaviour dimension, selected by the /x/ prefix and
 //     defaulting to the loaded scenario's name.
 //   - Key is the route this request matched, plus whatever additional
-//     discriminators the provider's turn_key extractors resolved. It is what keeps
+//     discriminators the entry's turn_key extractors resolved — or, for a route
+//     that declares Route.LaneFrom, those extractors alone. It is what keeps
 //     N concurrent agent roles on one LLM route from drawing turns out of one
 //     another's sequence.
 type Lane struct {
@@ -98,8 +99,9 @@ type Lane struct {
 	Scenario string
 
 	// Key opens with Route.FaultKey and continues with one component per turn_key
-	// extractor that resolved something. The route is always present: turn_key
-	// subdivides a route's lane and never replaces it.
+	// extractor that resolved something — or, for a route that declares
+	// Route.LaneFrom, per LaneFrom extractor and none of the turn_key's. The route
+	// is always present: neither subdivision ever replaces it.
 	Key string
 }
 
@@ -385,8 +387,9 @@ func resolveLane(x *Exchange, p lanePrefix) {
 }
 
 // turnLaneKey composes the lane key: the route the request matched, followed by
-// whatever the provider entry's remaining turn_key extractors resolved, in
-// declaration order.
+// whatever its discriminators resolved, in declaration order — the route's own
+// LaneFrom when it declares one, the entry's remaining turn_key extractors
+// otherwise.
 //
 // The route is not optional and turn_key cannot remove it. turn_key declares
 // discriminators ADDITIONAL to the route — one lane per model, per role, per
@@ -402,11 +405,20 @@ func resolveLane(x *Exchange, p lanePrefix) {
 // doubled, so the documented default ["route"] and every scenario written against
 // it produce byte-identical keys to before.
 //
-// The entry is the one named for this listener's provider. A listener serving a
-// second scenario entry — Perplexity's Agent surface is one — keys its lanes on
-// the primary entry's turn_key; per-entry keys would mean resolving the lane
-// after the handler has chosen an entry, which is exactly the "derive it twice"
-// shape the single-resolution rule forbids.
+// The entry is the one the route is served from ([Exchange.Entry]), which the
+// route names before the handler runs. Resolving it from the handler's choice
+// of entry instead would be exactly the "derive it twice" shape the
+// single-resolution rule forbids.
+//
+// A route that declares LaneFrom never reads the entry's turn_key (issue #29).
+// It serves one job — a poll, a HEAD, a cancel, a background retrieve — and the
+// job is the whole of its lane. Adding the entry's extractors would split one
+// job across as many lanes as its client varies their values, each serving the
+// job's script from its first poll while the job store counts a single run of
+// polls; and an extractor that cannot resolve on such a route at all, a
+// body_json one on a bodyless GET, would warn on every poll and, under
+// validation.strict, refuse it. The entry's turn_key still keys the create that
+// minted the job.
 //
 // An extractor that resolves nothing contributes nothing and raises
 // CodeTurnKeyUnresolved, leaving the lane named by the route and the extractors
@@ -461,16 +473,10 @@ func resolveLane(x *Exchange, p lanePrefix) {
 // ("header:authorization=<fp>"), so a reader of outcome.fault_key still sees
 // WHICH extractor contributed.
 func turnLaneKey(x *Exchange) string {
-	scenarioExtractors := entryTurnKey(x).Extractors()
-
-	// Route discriminators come last, so a scenario's turn_key subdivides the
-	// route and these subdivide that. Order is part of the key: reversing it
-	// would rename every lane.
-	extractors := scenarioExtractors
-	if len(x.Route.LaneFrom) > 0 {
-		extractors = make([]string, 0, len(scenarioExtractors)+len(x.Route.LaneFrom))
-		extractors = append(extractors, scenarioExtractors...)
-		extractors = append(extractors, x.Route.LaneFrom...)
+	// One source or the other, never both: see the doc comment above.
+	extractors := x.Route.LaneFrom
+	if len(extractors) == 0 {
+		extractors = entryTurnKey(x).Extractors()
 	}
 
 	// The default is one lane per route, and it must produce Route.FaultKey
@@ -484,10 +490,10 @@ func turnLaneKey(x *Exchange) string {
 	// awareness of its own.) A turn_key of nothing but "route" entries says
 	// the same thing.
 	//
-	// The route's own extractors are included in this question. Without them a
-	// poll route with the default turn_key would take this path and return the
-	// fault key verbatim — one lane for every job, which is the whole bug
-	// LaneFrom exists to prevent.
+	// For a LaneFrom route the route's own extractors are the ones asked about
+	// here. Asking about the entry's instead would send a poll route with the
+	// default turn_key down this path to the fault key verbatim — one lane for
+	// every job, which is the whole bug LaneFrom exists to prevent.
 	if !hasDiscriminator(extractors) {
 		return x.Route.FaultKey
 	}
@@ -608,8 +614,9 @@ func appendLanePart(x *Exchange, parts []string, extractor, value string, ok boo
 	return append(parts, extractor+"="+value)
 }
 
-// entryTurnKey returns the turn key declared for this listener's provider entry,
-// tolerating a scenario that declares no such entry.
+// entryTurnKey returns the turn key declared for the entry this request's route
+// is served from ([Exchange.Entry]), tolerating a scenario that declares no such
+// entry.
 func entryTurnKey(x *Exchange) scenario.TurnKey {
 	e := x.Entry()
 	if e == nil {

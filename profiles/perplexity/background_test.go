@@ -813,6 +813,53 @@ func TestBackgroundJobsAreIndependent(t *testing.T) {
 	assert.Equal(t, []string{"queued", "in_progress", "queued", "completed", "in_progress", "completed"}, got)
 }
 
+// TestBackgroundRetrieveLaneIgnoresTheEntryTurnKey: a run's retrieve lane is the
+// run (issue #29). A turn_key on perplexity_agent keys the create and nothing
+// after it: a retrieve that read it too would put the run in one lane per tenant
+// value, each walking the background script from its first retrieve, and a
+// retrieve without the header in a lane of its own besides.
+func TestBackgroundRetrieveLaneIgnoresTheEntryTurnKey(t *testing.T) {
+	t.Parallel()
+	src := strings.Replace(backgroundScenario, "  perplexity_agent:\n",
+		"  perplexity_agent:\n    turn_key: [\"route\", \"header:x-tenant\"]\n", 1)
+	sim := startBackground(t, src)
+	base := sim.URL(Name)
+
+	r := bgSend(t, sim, base, http.MethodPost, "/v1/agent", backgroundRequest,
+		map[string]string{"x-tenant": "acme"}, false)
+	require.Equal(t, http.StatusOK, r.status, "create: %s", r.body)
+	id, _ := r.json(t)["id"].(string)
+	require.NotEmpty(t, id)
+
+	var got []string
+	for _, header := range []map[string]string{{"x-tenant": "acme"}, nil, {"x-tenant": "globex"}} {
+		got = append(got, statusIn(t, bgSend(t, sim, base, http.MethodGet, "/v1/agent/"+id, "", header, false)))
+	}
+	assert.Equal(t, []string{"queued", "in_progress", "completed"}, got,
+		"retrieved with the create's tenant, without the header and with another tenant")
+
+	entries := sim.AwaitRequests(t, Name, 4)
+	creates := onRoute(entries, "POST /v1/agent")
+	require.Len(t, creates, 1)
+	assert.Contains(t, creates[0].Outcome.FaultKey, "header:x-tenant=acme",
+		"the create declares no LaneFrom, so the entry's turn_key must still lane it")
+
+	retrieves := onRoute(entries, "GET /v1/agent/{id}")
+	require.Len(t, retrieves, 3)
+	for i, e := range retrieves {
+		assert.Equal(t, i, e.Outcome.AttemptIndex, "retrieve %d", i)
+		assert.Equal(t, faultKeyAgentRetrieve+"|path:id="+id, e.Outcome.FaultKey,
+			"retrieve %d: the lane is the run and nothing else", i)
+		testkit.AssertNoFindings(t, e)
+	}
+
+	// The job store counts retrieves by run, the lane cursor by lane; with one
+	// lane per run the two agree.
+	jobs := sim.Jobs()
+	require.Len(t, jobs, 1)
+	assert.Equal(t, 3, jobs[0].Polls)
+}
+
 // TestBackgroundAcceptedCreateKeepsTheJob: Perplexity's background create takes
 // part in the accepted-create mechanism through the turn-level plan it shares
 // with synchronous creates. The client sees the 500, and the job exists.
