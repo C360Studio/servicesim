@@ -26,14 +26,18 @@ gin, viper, zap, cobra or mock framework here, and that is deliberate.
 ```text
 scenario YAML ──► canonical sources ──► per-provider projection ──► wire response
                                              │
-                                             ├─► exa      listener :8081  POST /search
-                                             ├─► tavily   listener :8082  POST /search
-                                             ├─► perplexity listener :8083  POST /v1/sonar, /chat/completions
+                                             ├─► exa      listener :8081  POST /search …
+                                             ├─► tavily   listener :8082  POST /search …
+                                             ├─► perplexity listener :8083  POST /v1/sonar, POST /v1/agent …
                                              └─► mcp      listener :8084  POST /mcp
 
      admin listener :8080  /healthz  /readyz  /__admin/requests  /__admin/namespaces  /__admin/scenario
                             /__admin/jobs  /__admin/reset
 ```
+
+A listener line names a route or two, and `…` marks that it serves more: other operations, and the poll, HEAD, retrieve
+and cancel routes of the async surfaces. `go run ./cmd/servicesim --print-routes` lists every provider route; the
+diagram is orientation, not the route table.
 
 Separate listeners are not a stylistic choice — Exa and Tavily both serve `POST /search`, so preserving each
 vendor's real path requires one listener per provider. The four listeners above are reference profiles under

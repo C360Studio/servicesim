@@ -432,7 +432,7 @@ validate a body against the whole schema.
 
 | Field | Type | Spec | Servicesim |
 |---|---|---|---|
-| `id` | `string` | `AgentRunId`: pattern `^[A-Za-z0-9_.:-]+$`, 1-200, "new run IDs are returned with the `agent_run_` prefix" (4831-4836) | `agent_run_` plus 32 hex characters, derived from the scenario seed (SIMULATOR-POLICY for the suffix) |
+| `id` | `string` | `AgentRunId`: pattern `^[A-Za-z0-9_.:-]+$`, 1-200, "new run IDs are returned with the `agent_run_` prefix" (4831-4836) | `agent_run_` plus 32 hex characters, derived from the scenario seed, the create's lane and its call index (SIMULATOR-POLICY for the suffix) |
 | `object` | `string` | `const: agent_run` (5798) | the constant |
 | `status` | `string` | the five-value enum (5840) | as scripted |
 | `stopReason` | `string\|null` | six values, `null` while queued or running (5803, 5848) | `null` until terminal; a terminal status derives one unless scripted (SIMULATOR-POLICY, below) |

@@ -1284,9 +1284,11 @@ does not stay invisible until an adopter hits it.
 
 ### 4.6 Job state and the cancel mechanism
 
-> **Added for issue #6** (`docs/proposals/cancellation-and-accepted-create.md`, §Q1). This build lands the mechanism —
-> the job's state, two store operations, `provider.SelectPollTurn` and `provider.CancelJob` — and adopts it on the Exa
-> poll route only. No cancel route is registered yet; the route units add them.
+> **Added for issue #6** (`docs/proposals/cancellation-and-accepted-create.md`, §Q1). The mechanism landed first (PR
+> #16): the job's state, two store operations, `provider.SelectPollTurn` and `provider.CancelJob`, adopted on the Exa
+> poll route only. The cancel routes followed: Exa's `POST /agent/runs/{id}/cancel` (PR #19) and, once Perplexity's
+> background retrieve (PR #26) selected its snapshots with `SelectPollTurn` too, Perplexity's
+> `POST /v1/agent/{id}/cancel` of a background run (PR #32).
 
 Until issue #6 a job record was immutable after `Create`: its coordinates, and nothing about what happened to it
 since. A cancel cannot be modelled that way, because what a cancel answers depends on where the job is, and every
@@ -2029,11 +2031,13 @@ None of those are in this design.
   Tavily, echoed request fields (§4.3's Shipped-as note has the full field set for both vendors) — and none of them
   can be set by a scenario's `turns:`. `create:` as a reserved envelope key is the additive migration path if a
   vendor ever needs a scriptable create body.
-- **No list, cancel, events or delete routes.** Exa publishes `GET /agent/runs`, `POST /agent/runs/{id}/cancel`,
-  `GET /agent/runs/{id}/events` and `DELETE /agent/runs/{id}`. Each is a bounded addition behind this same model —
-  cancel is a route with the same `LaneFrom` and a `cancelled` status (two Ls, matching the shipped enum), events is
-  the streaming surface and is deferred with it — and none should be added speculatively. Unimplemented routes fall
-  to the catch-all's provider-shaped 404, which is loud enough.
+- **No list, events or delete routes.** Exa publishes `GET /agent/runs`, `GET /agent/runs/{id}/events` and
+  `DELETE /agent/runs/{id}`. Each is a bounded addition behind this same model — events is the streaming surface and
+  is deferred with it — and none should be added speculatively. Unimplemented routes fail closed in the provider's
+  flat error shape, loud enough either way: the list and the delete share a path with a simulated operation, so they
+  answer `405` (with `Allow: POST` and `Allow: GET, HEAD`), and `/events` falls to the catch-all's `404`. Exa's
+  `POST /agent/runs/{id}/cancel` was the same kind of addition, a route with the same `LaneFrom` and a `cancelled`
+  status (two Ls, matching the shipped enum), and has shipped: §4.6.
 - **No shared job state across replicas** ([§8](#8-multi-replica-the-consequence-stated-explicitly)).
 - **No per-turn or per-lane fault plans.** Still deferred, still one plan per route — but the poll route's plan is now
   per job *in effect*, because the lane is.

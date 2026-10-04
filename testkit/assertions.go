@@ -144,11 +144,13 @@ func leakFields(e Entry) []leakField {
 		{"body", string(e.Body)},
 		{"body_parse_error", e.BodyParseError},
 		{"outcome.label", e.Outcome.Label},
-		// outcome.fault_key is the turn_key extractor's composed lane key
-		// (provider/lane.go turnLaneKey). A credential-named extractor is
-		// fingerprinted there, and journal.Redact masks a credential-shaped one
-		// as a second pass, but this scan exists precisely so a consumer's suite
-		// does not have to trust either of those in isolation.
+		// outcome.fault_key is the composed lane key (provider/lane.go
+		// turnLaneKey): the route's fault key plus the entry's turn_key
+		// extractors, or a job route's own path extractor (the job id) in their
+		// place. A credential-named extractor is fingerprinted there, and
+		// journal.Redact masks a credential-shaped one as a second pass, but this
+		// scan exists precisely so a consumer's suite does not have to trust
+		// either of those in isolation.
 		{"outcome.fault_key", e.Outcome.FaultKey},
 	}
 	// Sorted, not map order: a failure message must name the same header on every
@@ -568,10 +570,11 @@ func cursorKeys(entries []Entry) []string {
 // It requires exactly len(wantStatuses) such entries, and for entry i requires
 // both e.Outcome.Status == wantStatuses[i] AND e.Outcome.AttemptIndex == i. The
 // attempt-index half is the point: it is what proves the polls drew
-// consecutive positions from the one per-job lane a create and its polls
-// share — the create-then-poll correlation — so that nothing else (a HEAD, a
-// poll of a different id, a request the route rejected) consumed one of this
-// job's polls. HEAD is already excluded by the method filter.
+// consecutive positions from the job's own poll lane — one per job, on the
+// poll route's fault key, which the create does not share — so that nothing
+// else (a poll of a different id, a request the route rejected) consumed one of
+// this job's polls. A HEAD claims nothing and a cancel draws on a lane of its
+// own; the method filter excludes both.
 //
 // The journal retains request bodies, not response bodies, so the vendor's
 // own `status` string in the poll response is not something this assertion

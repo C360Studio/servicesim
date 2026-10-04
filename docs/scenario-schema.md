@@ -195,7 +195,7 @@ everything.
 | Key | Type | Matches when |
 |---|---|---|
 | `route` | string | The route serving the request is this one. See [`route`](#route--scripting-one-providers-several-routes) below. A name the provider does not serve is a load error. |
-| `call_index` | integer | The zero-based count of prior requests **in this turn lane** equals it — see [`turn_key`](#turn_key--what-the-cursor-counts-per), whose default of `["route"]` makes the lane the route. A negative value is a load error. Inside a `cancel.turns` script it counts polls **since the cancel** instead — see [Cancelling a job](#cancelling-a-job). Inside a `background.turns` script it counts **this job's** retrieves — see [Background runs](#background-runs-background) — and inside `background.cancel.turns`, this job's retrieves **since the cancel** — see [Cancelling a background run](#cancelling-a-background-run). |
+| `call_index` | integer | The zero-based count of prior requests **in this turn lane** equals it — see [`turn_key`](#turn_key--what-the-cursor-counts-per), whose default of `["route"]` makes the lane the route. On the routes that serve one job the lane is the job, not the route: in an async entry's own `turns` (the polls of `exa_agent_runs` and `tavily_research`) it counts **this job's** polls, however many other jobs the route has served — see [per-job lanes](#the-async-surfaces-exa_agent_runs-and-tavily_research). A negative value is a load error. Inside a `cancel.turns` script it counts this job's polls **since the cancel** instead — see [Cancelling a job](#cancelling-a-job). Inside a `background.turns` script it counts **this job's** retrieves — see [Background runs](#background-runs-background) — and inside `background.cancel.turns`, this job's retrieves **since the cancel** — see [Cancelling a background run](#cancelling-a-background-run). |
 | `body_contains` | string | The raw request body contains this substring. Deliberately crude — it covers "which tool result came back" without becoming an expression language. |
 | `body_json` | map of string to string | Every dotted path matches, for example `{model: sonar, "messages.0.role": system}`. A numeric segment indexes an array. Values compare as strings after JSON scalar formatting. An empty key is a load error. |
 
@@ -484,7 +484,7 @@ A deterministic failure plan. Attempt *N* of a route receives `attempts[N]` afte
 | `body_bytes` | integer | For `oversized_body`: the response body is padded with insignificant JSON whitespace to at least this many bytes. There is no default size — unlike `truncate_after_bytes`, a zero or absent value under `kind: oversized_body` is a load error, not a fallback. If the unpadded body is already this size or larger, nothing is appended. Setting it under any other explicit `kind` is also a load error. The padded response declares an exact `Content-Length`. |
 | `after_chunk` | integer | `stream_disconnect` \| `stream_truncate_chunk` \| `stream_stall` only: the zero-based index of the first chunk this attempt affects. See [Streaming fault kinds](#streaming-fault-kinds). |
 | `extra_fields` | map | Additive properties merged into this attempt's body. |
-| `accepted` | boolean | The request took effect before the failure this attempt scripts, so the async job it created is kept even though the response that carries its identifier does not arrive intact — "accepted, reply lost". It keeps the job, not the secret: which shapes also withhold the identifier is below. Meaningful only where the attempt does not deliver its body; an error where it does. See [An accepted create whose reply is lost](#an-accepted-create-whose-reply-is-lost). |
+| `accepted` | boolean | The request took effect before the failure this attempt scripts, so the async job it created is kept, or the cancel it asked for is recorded, even though the response does not arrive intact — "accepted, reply lost". On a create it keeps the job, not the secret: which shapes also withhold the identifier is below. Meaningful only where the attempt does not deliver its body; an error where it does. See [An accepted create whose reply is lost](#an-accepted-create-whose-reply-is-lost) and, for a cancel, [Cancelling a job](#cancelling-a-job) and [Cancelling a background run](#cancelling-a-background-run). |
 | `repeat` | integer | Applies this attempt to N consecutive attempts. "Fail the first three, then succeed" is one attempt with `repeat: 3` and the default `after`. |
 
 An omitted `kind` is inferred, in this order: `raw_body` set means `invalid_json`; `content_type` set means
@@ -603,6 +603,12 @@ journaled with `"attempt_index": -1`, which is how you tell the two apart:
 | `perplexity_agent`: a background create | yes — the create route's own lane, shared with synchronous creates; **no** when it is refused for want of a `background:` block or for `stream: true`, or when strict validation promotes the `store: false` warning |
 | `perplexity_agent`: a retrieve that resolves a background job | yes — the job's own per-job lane, one the script has no snapshot for included |
 | `perplexity_agent`: `HEAD` on the retrieve, or a retrieve of an id that is unknown, synchronous or from a `store: false` create | **no** — `attempt_index: -1` |
+| `exa_agent_runs`: a cancel that resolves a job | yes — exactly one attempt of the job's own cancel lane (fault key `exa:agent_runs.cancel`), whatever the cancel then decides. A run already terminal answers its snapshot as a served response, so a `cancel.fault` can fault it; see [Cancelling a job](#cancelling-a-job) |
+| `perplexity_agent`: a cancel that resolves a background job | yes — exactly one attempt of the job's own cancel lane (fault key `perplexity:agent.cancel`), whatever the cancel then decides. The `400` of a run already terminal is a served response, so a `background.cancel.fault` can fault it; see [Cancelling a background run](#cancelling-a-background-run) |
+| `exa_agent_runs` / `perplexity_agent`: a cancel whose job a reset removed after the cancel resolved it — a request racing a reset, which stays undefined (reset between requests) | yes — the attempt was claimed first, so the vendor's 404 it answers is a served, fault-eligible response, and the attempt is not reported as stripped |
+| `exa_agent_runs` / `perplexity_agent`: a cancel with no valid credential, of an identifier that resolves no job (unknown, malformed, another namespace's or entry's, and on Perplexity a synchronous response's or a `store: false` run's), or with a body the request lifecycle refuses (not JSON, JSON that is not an object, or too large: `413`) | **no** — `attempt_index: -1` |
+| `exa_agent_runs` / `perplexity_agent`: a cancel sent with any method but `POST` | **no** — `attempt_index: -1`; the listener answers the provider's `405` with `Allow: POST` before the cancel handler runs |
+| `exa_agent_runs` / `perplexity_agent`: a cancel the scenario cannot script (`job.cancel_unscripted`, `job.cancel_contended`) | yes — the attempt is spent, but the cancel is a rejection: the answer is the vendor's 500, the attempt's fault is not applied, and the entry carries `fault.attempt_on_rejection` |
 | A `stream_*` fault attempt, claimed by a request that did not itself ask to stream | yes — claimed at turn selection, before the handler has looked at `stream` on the wire; see [Streaming](#streaming-stream) |
 
 This is deliberate, and it is the reason a scenario stays readable. If a rejection consumed an index, then adding
@@ -988,8 +994,10 @@ these invent a script. Each is refused before anything is claimed, and no job ex
 **A background create shares the create lane's call index.** It claims the index a synchronous create would, so it
 shifts which of the entry's `turns[i]` the next synchronous call in the same lane receives. With turns `first`
 (`call_index: 0`) and `second`, a background create followed by a synchronous call serves `second`. Documented, not
-corrected. Job ids derive from the scenario and that index, so they are stable across runs and unique only within a
-namespace: call 0 in two namespaces mints the same id.
+corrected. Job ids derive from the scenario, the create's lane key and that index, so they are stable across runs and
+unique only within a namespace: call 0 in two namespaces mints the same id. The lane key is an input, so with a
+`turn_key` that splits the creates into lanes (`["route", "body_json:model"]`, say), call 0 of two lanes mints two
+different ids.
 
 **Only background runs are retrievable.** A synchronous response's id, an id never minted, another namespace's, and a
 `store: false` run's all answer the Agent `404` and claim nothing. The first is a named divergence from the real API,
@@ -1671,10 +1679,10 @@ cancel.
 its fault and turn cursors, in the same call; `testkit.Sim.Reset()` does the same but for every namespace at once,
 since it carries no namespace argument. Neither may run alone: dropping only the cursors would let the next
 create claim index 0 again and collide with a job record that is still live (`job.id_collision`); dropping only the
-jobs would 404 every live identifier while the create kept advancing. A job's identifier derives from the call
-index it was minted at, so the same create issued after a reset, at the same call position, mints the identifier
-it minted before — which is what keeps a golden file portable across a reset the same way every other derived
-identifier already is.
+jobs would 404 every live identifier while the create kept advancing. A job's identifier derives from the scenario,
+the create's lane and the call index it was minted at, so the same create issued after a reset, in the same lane at
+the same call position, mints the identifier it minted before — which is what keeps a golden file portable across a
+reset the same way every other derived identifier already is.
 
 #### Terminal is judged in serve order
 
