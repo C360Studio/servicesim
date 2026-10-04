@@ -2,6 +2,7 @@ package exa
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -92,6 +93,13 @@ providers:
             cost_dollars: {total: 0.031, agent_compute: 0.025, search: 0.006}
 `
 
+// agentRunGoldenCancelFaultScenario is the cancel golden scenario with a cancel
+// fault plan: a 429, then a 400, then the real answer. It is derived rather than
+// restated so the 200 it ends on cannot drift from the scenario that backs
+// exa-agent-runs-cancelled.json.
+var agentRunGoldenCancelFaultScenario = strings.Replace(agentRunGoldenCancelScenario,
+	"    cancel:\n", "    cancel:\n      fault: {attempts: [{status: 429}, {status: 400}, {}]}\n", 1)
+
 // TestGolden_AgentRunCancelled pins POST /agent/runs/{id}/cancel's 200 body for a
 // cancel that was recorded: the AgentRun its next poll returns, here cancelled,
 // with stopReason cancelled and the scripted usage and cost.
@@ -109,8 +117,10 @@ func TestGolden_AgentRunCancelled(t *testing.T) {
 // TestGolden_AgentRunCancelErrors pins the three error bodies the cancel route
 // produces on its own: 401 for a missing credential, 404 for a run this process
 // does not hold, and the 500 for a cancel the scenario cannot answer. Each is
-// AgentErrorResponse. A scripted fault's body is the fault's own, and the fault
-// tests pin it rather than a golden.
+// AgentErrorResponse. A scripted fault's body is the fault's own; the 429 and the
+// 400 a scripted fault renders with the status's default message are pinned by
+// TestGolden_AgentRunCancelFaultedStatuses, and the other fault tests pin the
+// rest.
 func TestGolden_AgentRunCancelErrors(t *testing.T) {
 	t.Parallel()
 
@@ -136,6 +146,36 @@ func TestGolden_AgentRunCancelErrors(t *testing.T) {
 			require.Equal(t, tc.status, rec.Code, rec.Body.String())
 			assertGoldenWire(t, tc.fixture, rec.Body.Bytes())
 		})
+	}
+}
+
+// TestGolden_AgentRunCancelFaultedStatuses pins what a scripted cancel.fault of
+// status 429 and of status 400 renders when the attempt scripts no message: the
+// status's default one. The 429 has no other source on this route. The 400 the
+// route refuses a malformed body with carries the finding's text instead and is
+// not this golden. A third cancel of the same run, after both faults, reaches the
+// real answer.
+func TestGolden_AgentRunCancelFaultedStatuses(t *testing.T) {
+	t.Parallel()
+
+	require.NotEqual(t, agentRunGoldenCancelScenario, agentRunGoldenCancelFaultScenario,
+		"the cancel: anchor moved; the fault plan was not spliced in")
+
+	s := newSim(t, agentRunGoldenCancelFaultScenario)
+	id := createRun(t, s, `{"query":"find the finding"}`)
+
+	steps := []struct {
+		status  int
+		fixture string
+	}{
+		{http.StatusTooManyRequests, "exa-agent-runs-cancel-429.json"},
+		{http.StatusBadRequest, "exa-agent-runs-cancel-400.json"},
+		{http.StatusOK, "exa-agent-runs-cancelled.json"},
+	}
+	for i, step := range steps {
+		rec := s.do(request{method: http.MethodPost, path: "/agent/runs/" + id + "/cancel"})
+		require.Equal(t, step.status, rec.Code, "cancel %d: %s", i, rec.Body.String())
+		assertGoldenWire(t, step.fixture, rec.Body.Bytes())
 	}
 }
 

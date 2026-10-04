@@ -45,8 +45,8 @@
 # additions). The hash says "go re-read the pages", not "here is what
 # changed" — the per-entry documentation_url and verified date remain the
 # record of what was actually verified and against what. Only entries whose
-# documentation_url IS the spec (the three /findSimilar entries and the ten
-# exa-agent-runs-* entries below: thirteen in all) carry api_version, because only
+# documentation_url IS the spec (the three /findSimilar entries and the twelve
+# exa-agent-runs-* entries below: fifteen in all) carry api_version, because only
 # those were read from this versioned document; every other entry was read from
 # an undated prose page and carries none.
 #
@@ -64,9 +64,13 @@
 # 2026-10-02: the spec was re-fetched and its hash is IDENTICAL to the one
 # adopted on 2026-10-01, so retrieved moved and sha256 did not. Only
 # cancelAgentRun and stopAgentRun were read against it, for the four
-# exa-agent-runs-cancel* entries (docs/audits/2026-10-01-exa-agent.md, "Cancel,
-# 2026-10-02"); the provider-level date moved because contracts.Conform requires
-# it to be no older than those entries, on the same terms as above.
+# exa-agent-runs-cancel* entries it then had (exa-agent-runs-cancelled and the
+# -cancel-401, -cancel-404 and -cancel-500; docs/audits/2026-10-01-exa-agent.md,
+# "Cancel, 2026-10-02"); the provider-level date moved because contracts.Conform
+# requires it to be no older than those entries, on the same terms as above.
+# The exa-agent-runs-cancel-400 and -429 entries were added afterwards (issue #37)
+# from this same reading of cancelAgentRun and carry its date; see the note above
+# them.
 
 provider: exa
 verified: 2026-10-02
@@ -432,6 +436,72 @@ goldens:
       recorded on the run. A scripted {status: 500} fault answers the
       fault's own body instead ("Server error"), which this golden does not
       cover.
+
+  # The 400 and the 429 below were added by issue #37, to give cancelAgentRun's two
+  # remaining documented statuses a golden each. A golden is dated by the audit that
+  # actually read its operation, and cancelAgentRun was read on 2026-10-02
+  # (docs/audits/2026-10-01-exa-agent.md, "Cancel, 2026-10-02"), so both carry
+  # that date. The operation and AgentErrorResponse were read once more on
+  # 2026-10-04 against a fresh fetch of exa-spec.yaml whose sha256 is identical to
+  # the spec: block's, so nothing moved. Neither entry is dated 2026-10-04: an
+  # entry newer than the provider-level verified: fails contracts.Conform, so it
+  # would drag that date and spec.retrieved forward for a confirmation recorded
+  # only here, and the re-read of the other Exa routes is still owed (issue #11).
+  - golden: exa-agent-runs-cancel-400.json
+    endpoint: POST /agent/runs/{id}/cancel, a scripted cancel.fault of status 400
+    status: 400
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-02
+    note: >-
+      cancelAgentRun documents a 400 "Invalid request." (spec line 1178,
+      #/paths/~1agent~1runs~1{id}~1cancel/post/responses/400) in
+      AgentErrorResponse's shape (line 6044): one required key, error, and no
+      other. From the specification: that envelope, AgentError's three required
+      string keys (type, code, message; line 6052) and the closed enums the two
+      values below belong to (#/components/schemas/AgentError/properties/type/enum
+      and /properties/code/enum). The spec pairs no type and code with a status:
+      INVALID_REQUEST / INVALID_REQUEST is INFERENCE from the enum names and the
+      description. The message is Servicesim's: AgentError.message is a bare
+      string with no description or example, so "Invalid request" is the response
+      description with its full stop dropped (SIMULATOR-POLICY). It is the body a
+      scripted cancel.fault attempt of status 400 renders when it scripts no
+      error:, tag: or body: of its own (they would replace the message, the
+      code, or the whole body). The route's own 400, for a body that is not a
+      JSON object, is a different body (the finding's text: "request body must
+      be a JSON object", or "request body is not valid JSON" for malformed JSON;
+      measured on the handler; SIMULATOR-POLICY) and has no golden. A faulted
+      attempt that is not accepted: true records nothing on the run. The
+      x-request-id header the spec documents on this response is not part of the
+      body and is asserted in the tests.
+
+  - golden: exa-agent-runs-cancel-429.json
+    endpoint: POST /agent/runs/{id}/cancel, a scripted cancel.fault of status 429
+    status: 429
+    kind: simulator-chosen
+    documentation_url: https://exa.ai/docs/exa-spec.yaml
+    api_version: "2.0.0"
+    verified: 2026-10-02
+    note: >-
+      cancelAgentRun documents a 429 "Agent run concurrency limit reached."
+      (spec line 1205,
+      #/paths/~1agent~1runs~1{id}~1cancel/post/responses/429) in
+      AgentErrorResponse's shape (line 6044). From the specification: that
+      envelope, AgentError's three required string keys and the closed enums the
+      two values below belong to (#/components/schemas/AgentError/properties/type/enum
+      and /properties/code/enum). The spec pairs no type and code with a status:
+      RATE_LIMIT_ERROR / CONCURRENCY_LIMIT_REACHED is INFERENCE from the enum
+      names and the description. The message is Servicesim's: AgentError.message
+      is a bare string with no description or example, so the text is the
+      response description with its full stop dropped (SIMULATOR-POLICY). The
+      profile models no concurrency limit and serves a cancel 429 only from a
+      scripted cancel.fault attempt; an attempt's own error: would replace the
+      message, its tag: the code and its body: the whole body, none of which
+      this golden covers. A faulted attempt that is not accepted: true records
+      nothing on the run.
+      The x-request-id header the spec documents on this response is not part of
+      the body and is asserted in the tests.
 
   - golden: exa-contents-happy.json
     endpoint: POST /contents

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "type": "RATE_LIMIT_ERROR",
+    "code": "CONCURRENCY_LIMIT_REACHED",
+    "message": "Agent run concurrency limit reached"
+  }
+}
