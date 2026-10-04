@@ -7,8 +7,10 @@
 # background run answers `queued` on its first retrieve, then `in_progress` on
 # every one after it) — unless the consumer cancels the Exa run: the cancel's
 # response and the first poll after it still answer
-# `running`, and the second poll after it answers `cancelled`. Servicesim never decides a
-# job is stuck — there is no timeout logic here — so what this scenario tests
+# `running`, and the second poll after it answers `cancelled`; or cancels the
+# Perplexity background run: the cancel answers `cancelling`, the first retrieve
+# after it answers `in_progress`, and the second answers `cancelled`. Servicesim
+# never decides a job is stuck — there is no timeout logic here — so what this scenario tests
 # is entirely on the consumer's side: does its own poll loop eventually give
 # up, rather than retrying forever against a real API that can legitimately
 # leave a job outstanding for a long time.
@@ -19,10 +21,11 @@ version: 1
 name: async-stuck
 description: >-
   A well-formed 200 from every synchronous surface, and a run/task on each
-  async surface that never terminates on its own (an Exa run reports
-  `cancelled` once the consumer cancels it), so a consumer's own poll timeout
-  is what is under test. A Perplexity `background: true` run is one of them:
-  its first retrieve answers queued and every retrieve after it in_progress.
+  async surface that never terminates on its own (an Exa run or a Perplexity
+  background run reports `cancelled` once the consumer cancels it), so a
+  consumer's own poll timeout is what is under test. A Perplexity
+  `background: true` run is one of them: its first retrieve answers queued and
+  every retrieve after it in_progress.
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -74,11 +77,13 @@ providers:
     # would break this file's promise on the route a background poll uses. A job's
     # first retrieve is queued, and every retrieve after it is in progress, for good:
     # the last turn is unconditional and non-terminal, so no retrieve is ever served a
-    # terminal snapshot, and none bills (an unfinished run scripts no usage). Nothing
-    # serves a cancel of a background run, so a consumer's own poll timeout is the only
-    # way out. The create still answers the fixed queued stub; this block scripts only
-    # the retrieves. It carries no fault on purpose: this entry's own `fault:` or
-    # `turns:` shape the CREATE, and the retrieve's budget is its own.
+    # terminal snapshot, and none bills (an unfinished run scripts no usage). Only a
+    # cancel ends it, with the shared cancel block below (in progress, then cancelled
+    # with the usage the run accrued), so a consumer that does not cancel has only its
+    # own poll timeout. The create still answers the fixed queued stub; this block
+    # scripts only the retrieves, and the cancel after them. It carries no fault on
+    # purpose: this entry's own `fault:` or `turns:` shape the CREATE, and the
+    # retrieve's budget is its own.
     background:
       turns:
         - when: {call_index: 0}
@@ -86,6 +91,29 @@ providers:
             status: queued
         - respond:
             status: in_progress
+      # A cancel is answered `cancelling`, and the retrieves after it read in progress,
+      # since an acknowledgement is not proof the run stopped, and then cancelled,
+      # billing the usage the run accrued before it stopped: its 24 input tokens and
+      # 12 output tokens, at the per-token rates of the corpus's completed run.
+      # Nineteen built-ins share this cancel block (extra-fields scripts its own). A
+      # cancel made once the run has ended, when its next retrieve would be terminal,
+      # is the vendor's 400 and records nothing. It carries no fault on purpose: the
+      # cancel's budget is its own. The total_cost is scripted rather than left to the
+      # renderer, whose float sum of the two costs would print 0.00015000000000000001.
+      cancel:
+        turns:
+          - when: {call_index: 0}
+            respond:
+              status: in_progress
+          - respond:
+              status: cancelled
+              usage:
+                input_tokens: 24
+                output_tokens: 12
+                cost:
+                  input_cost: 0.0001
+                  output_cost: 0.00005
+                  total_cost: 0.00015
 
   # Single-shot, unconditional, and non-terminal: every poll answers running until
   # a cancel; the second poll after one answers cancelled.

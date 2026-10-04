@@ -102,16 +102,16 @@ func routeResponsesBare() provider.Route {
 		Credentials: bearerOnly, Fault: agentFault}
 }
 
-// Routes returns the seven Perplexity routes across two surfaces, in
+// Routes returns the eight Perplexity routes across two surfaces, in
 // registration order. Each carries the fault budget it draws on and the selector
 // for the scenario entry that budget is declared in, so the composition layer can
 // build the fault engine's key set by concatenating the providers' Routes().
 //
-// Seven routes, not seven endpoints: three spellings of Sonar, three spellings
+// Eight routes, not eight endpoints: three spellings of Sonar, three spellings
 // of the Agent API's create, then GET /v1/agent/{id}, which retrieves a
-// background run on a budget of its own. The fault engine registers one counter
-// per distinct FaultKey, so the extra spellings cost nothing and cannot fork a
-// budget.
+// background run, and POST /v1/agent/{id}/cancel, which cancels one, each on a
+// budget of its own. The fault engine registers one counter per distinct
+// FaultKey, so the extra spellings cost nothing and cannot fork a budget.
 //
 // It is a function, not a package-level var, so no consumer can mutate the route
 // table of a package it merely imported.
@@ -145,6 +145,7 @@ func handlers() map[string]provider.Handler {
 		PatternResponses:         handleAgent,
 		PatternResponsesBare:     handleAgent,
 		patternAgentRetrieve:     handleAgentRetrieve,
+		patternAgentCancel:       handleAgentCancel,
 	}
 }
 

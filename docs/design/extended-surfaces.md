@@ -63,7 +63,7 @@ Servicesim implements what a research adapter parses:
 | `POST /v1/agent`, `POST /v1/responses` | Streaming (`EventType`'s 14 members) |
 | `output[]` items of type `message` and `search_results` | `sandbox_results`, `mcp_call`, `mcp_list_tools`, `function_call`, `finance_results`, `people_search_results`, `fetch_url_results`, `tool_search_output` *(2026-10-03: this row, like the "ten item types" above, lists ten; `OutputItem` in the 2026-10-03 fetch declares 11, and the new one, `image_search_results`, is not modelled, tracked in #27)* |
 | `usage` with `ResponsesCost` | Streaming a background run (`background: true` with `stream: true`; it fails closed) |
-| `ErrorInfo` error envelope, `Status` enum | `GET /v1/agent/{id}/files`, file download, `POST /v1/agent/{id}/cancel` |
+| `ErrorInfo` error envelope, `Status` enum | `GET /v1/agent/{id}/files`, file download, `POST /v1/agent/{id}/cancel` *(2026-10-04: the cancel is no longer deferred, see "Shipped as" below)* |
 | Request validation over 19 of the 20 `ResponsesRequest` properties *(2026-10-03: this said 18; the 2026-10-01 audit counted 19, and `tool_choice`, new in the 2026-10-03 fetch, is not modelled, tracked in #27)* | `POST /search`, embeddings, async Sonar, analytics endpoints |
 | `background: true` and `GET /v1/agent/{id}`, since 2026-10-03 (issue #6) | |
 
@@ -90,6 +90,11 @@ believe it had exercised a path it never touched. *(`perplexity.agent.background
 > warning does not make honest. `POST /v1/agent/{id}/cancel`, the files endpoints and streaming a background run remain
 > deferred. The wire contract is in `profiles/perplexity/contracts/README.md`, "Lifecycle: background runs and
 > retrieve".
+>
+> **Shipped as (issue #31, unit U6, 2026-10-04):** `POST /v1/agent/{id}/cancel` is served, on a fault key of its own,
+> and answers `200 {response_id, status: "cancelling"}`; the retrieves after it are scripted by `background.cancel`
+> beside `background.turns` (`docs/scenario-schema.md`, "Cancelling a background run"). The files endpoints and
+> streaming a background run remain deferred.
 
 ## Scenario model amendment
 

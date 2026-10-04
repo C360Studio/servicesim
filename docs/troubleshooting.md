@@ -67,7 +67,7 @@ single port cannot disambiguate them.
 |---:|---|---|
 | 8081 | exa | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar`, `POST /agent/runs`, `GET /agent/runs/{id}`, `HEAD /agent/runs/{id}`, `POST /agent/runs/{id}/cancel` |
 | 8082 | tavily | `POST /search`, `POST /extract`, `POST /research`, `GET /research/{request_id}`, `HEAD /research/{request_id}` |
-| 8083 | perplexity | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses`, `GET /v1/agent/{id}` |
+| 8083 | perplexity | `POST /v1/sonar`, `POST /chat/completions`, `POST /v1/chat/completions`, `POST /v1/agent`, `POST /v1/responses`, `POST /responses`, `GET /v1/agent/{id}`, `POST /v1/agent/{id}/cancel` |
 | 8084 | mcp | `POST /mcp` |
 
 Sending Tavily's request to port 8081 reaches Exa's handler, which will reject it as a malformed Exa request. Check
@@ -515,8 +515,8 @@ Read `outcome.fault_key` on the journal entry to see which lane actually served 
 ```
 
 The parts are the namespace, the route's fault key, and one segment per `turn_key` extractor that resolved — except on
-a route with a per-job lane (an async poll, `HEAD` or cancel, a background retrieve), whose one extra segment is
-`path:<wildcard>=<id>` because it reads no `turn_key` at all and so raises no warning for one
+a route with a per-job lane (an async poll, `HEAD` or cancel, a background retrieve or cancel), whose one extra segment
+is `path:<wildcard>=<id>` because it reads no `turn_key` at all and so raises no warning for one
 ([`turn_key`](scenario-schema.md#turn_key--what-the-cursor-counts-per)). Elsewhere, if the discriminator you expected
 is missing from that string, look for a warning on the same entry:
 

@@ -396,6 +396,15 @@ type agentErrorResponse struct {
 	Error errorInfo `json:"error"`
 }
 
+// cancelResponse is cancelAgentResponse's 200 body: both properties required,
+// in the specification's order, and nothing else. Status is a plain string
+// rather than an agentStatus because its one value, cancelling, is not a
+// member of the run's Status enum.
+type cancelResponse struct {
+	ResponseID string `json:"response_id"`
+	Status     string `json:"status"`
+}
+
 // -----------------------------------------------------------------------------
 // Surface 2 — Agent API — GrammarTyped SSE events
 // -----------------------------------------------------------------------------

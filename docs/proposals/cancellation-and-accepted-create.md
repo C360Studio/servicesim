@@ -101,6 +101,50 @@ retrieve"). Where the build departs from the design below:
 
 Not part of U5: Perplexity cancel (U6), and the documentation pass and tag note (U7).
 
+### U6 note (2026-10-04)
+
+U6, the Perplexity cancel (`POST /v1/agent/{id}/cancel`, `cancelAgentResponse`; issue
+[#31](https://github.com/C360Studio/servicesim/issues/31)), is built. The rulings above are unchanged and bind it. It
+ships three things: the route, a `background.cancel` block, and a retrieve that reads that block once a cancel is
+recorded. The contract notes record the cancel's answers and every choice the specification leaves open
+(`profiles/perplexity/contracts/README.md`, "The cancel"). Where the build departs from the design below, or settles
+what it left open:
+
+- **This supersedes the U5 note's "`background:` carries `turns` only."** `cancel:` under `background:` now loads, as
+  the `background: {turns, cancel}` block Q2 sketches, with `cancel` shaped like the existing `CancelPolicy`,
+  `{fault, turns}`. Its `turns` are what a retrieve is served once a cancel is recorded, with `when.call_index`
+  counting retrieves since the cancel while the journal's `attempt_index` stays absolute; its `fault` is the cancel
+  route's own plan, fault key `perplexity:agent.cancel`, one budget per job. The U5 note above stays as the record of
+  what was true on 2026-10-03.
+- **The opt-in is framework-level, and a third one.** The owner decided on 2026-10-04 (recorded in the description of
+  PR [#32](https://github.com/C360Studio/servicesim/pull/32)) that a `cancel:` nested in `background:` mirrors
+  `cancel:` and `background:` (ruling 9 on issue #6, and ruling 1 of 2026-10-03) rather than being a block known to
+  `perplexity_agent` alone: `provider.Profile.BackgroundCancellable`, rejected by default with
+  `provider.CodeBackgroundCancelUnsupported` (`scenario.provider.background_cancel_unsupported`, at
+  `providers.<entry>.background.cancel`). It is independent of `Cancellable`, so an entry-level `cancel:` on
+  `perplexity_agent` is still a load error. `NewSet` refuses a name that is not one of the profile's own entry kinds,
+  and one that `Backgroundable` does not also name, because the nested block lives inside a `background:` block that
+  entry would reject. A `background:` block refused for want of its own opt-in takes its `cancel:` with it, under
+  `provider.CodeBackgroundUnsupported` alone.
+- **The `200` carries no snapshot.** Q1 has it so for Perplexity, unlike Exa's cancel: the body is
+  `{response_id, status: "cancelling"}`, and what the run did is what its next retrieve serves.
+- **The `400`'s text and the repeat-cancel rule are simulator policy.** The specification gives the `400` no body and
+  says nothing of a second cancel. The text is `The response is already terminal and cannot be cancelled.`; a repeat is
+  judged as the first was, by the cancel script's next snapshot: `200` again while it is pending, `400` once it is
+  terminal.
+- **Each script is judged for terminal regressions on its own.** Q1's "absorbing-terminal check on every script" is
+  applied to `background.turns` and to `background.cancel.turns` separately, because a cancel is recorded only while the
+  run's next retrieve is pending: a terminal `turns` followed by a pending `cancel.turns` is no run that un-completes.
+  A `when.route` in either script is checked against the retrieve route alone.
+- **Exported surface.** `scenario.BackgroundPolicy.Cancel` (a `*CancelPolicy`, YAML `cancel:`),
+  `provider.Profile.BackgroundCancellable` and `provider.CodeBackgroundCancelUnsupported`. The "Exported surface" table
+  below is not rewritten: they are what its `CancelPolicy` and `background:` rows grow by. Nothing new is exported from
+  `profiles/perplexity`; the cancel's pattern and fault key stay unexported, as the table's `profiles/perplexity` row
+  says, and the findings a cancel raises while it is served are U3's `job.cancel_unscripted` and `job.cancel_contended`.
+
+Not part of U6 (issue #31): moving `spec:` and `verified:` (the whole-bundle re-audit is tracked in #27), and the
+documentation pass and tag note (U7).
+
 ## Facts that force the design
 
 - `internal/jobs.Job` is immutable coordinates — ID, namespace, entry, lane key, create index, creation time. A poll

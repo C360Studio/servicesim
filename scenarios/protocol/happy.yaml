@@ -156,6 +156,29 @@ providers:
               cost:
                 input_cost: 0.0001
                 output_cost: 0.0004
+      # A cancel is answered `cancelling`, and the retrieves after it read in progress,
+      # since an acknowledgement is not proof the run stopped, and then cancelled,
+      # billing the usage the run accrued before it stopped: its 24 input tokens and
+      # 12 output tokens, at the per-token rates of the corpus's completed run.
+      # Nineteen built-ins share this cancel block (extra-fields scripts its own). A
+      # cancel made once the run has ended, when its next retrieve would be terminal,
+      # is the vendor's 400 and records nothing. It carries no fault on purpose: the
+      # cancel's budget is its own. The total_cost is scripted rather than left to the
+      # renderer, whose float sum of the two costs would print 0.00015000000000000001.
+      cancel:
+        turns:
+          - when: {call_index: 0}
+            respond:
+              status: in_progress
+          - respond:
+              status: cancelled
+              usage:
+                input_tokens: 24
+                output_tokens: 12
+                cost:
+                  input_cost: 0.0001
+                  output_cost: 0.00005
+                  total_cost: 0.00015
 
   # Exa's Agent API. Its own entry, independent of the block above: a turn here
   # is one poll snapshot, not a request/response pair, so the two pending polls

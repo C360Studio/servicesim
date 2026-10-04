@@ -99,10 +99,10 @@ func TestValidateScenarioLeavesAnUnimplementedEntrysBackgroundAlone(t *testing.T
 }
 
 // The framework route-checks an entry's turns against the routes its validator
-// lists, but never its background.turns: the two scripts are selected by
-// different routes (a create and a retrieve), so one list for both would let a
-// route that never selects a script load clean in it. Checking background
-// routes is the opted-in profile's own validator's job.
+// lists, but never its background.turns or background.cancel.turns: those are
+// selected by the retrieve, not by the routes the entry's own turns are, so one
+// list for both would let a route that never selects a script load clean in it.
+// Checking background routes is the opted-in profile's own validator's job.
 func TestValidateScenarioDoesNotRouteCheckABackgroundScript(t *testing.T) {
 	t.Parallel()
 
@@ -118,6 +118,11 @@ providers:
         - when: {route: not-a-route-the-lister-names}
           respond: {status: in_progress}
         - respond: {status: completed}
+      cancel:
+        turns:
+          - when: {route: nor-is-this-one}
+            respond: {status: in_progress}
+          - respond: {status: cancelled}
     turns:
       - when: {route: answr}
         respond: {answer: a}
@@ -127,6 +132,7 @@ providers:
 	p := acmeProfile(okHandler(`{}`))
 	p.Validators = map[string]Validator{"acme": lister}
 	p.Backgroundable = []string{"acme"}
+	p.BackgroundCancellable = []string{"acme"}
 
 	findings := ValidateScenario(mustScenario(t, src), MustSet(p).Validators())
 	require.Len(t, findings, 1, "only the entry's own turn is route-checked: %+v", findings)

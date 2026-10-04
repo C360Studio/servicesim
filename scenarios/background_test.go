@@ -389,6 +389,21 @@ turns:
 `,
 }
 
+// canonicalTurns is a script's turns as plain values, so two files that spell the
+// same mapping differently (flow or block style, an alias or a written-out list)
+// agree: the respond body is decoded rather than compared as a YAML node.
+func canonicalTurns(t *testing.T, turns []scenario.Turn) []map[string]any {
+	t.Helper()
+
+	out := make([]map[string]any, 0, len(turns))
+	for i := range turns {
+		var respond map[string]any
+		require.NoError(t, turns[i].Respond.Decode(&respond))
+		out = append(out, map[string]any{"when": turns[i].When, "fault": turns[i].Fault, "respond": respond})
+	}
+	return out
+}
+
 // TestBuiltins_TheBackgroundBlockIsTheOneTheDocsDescribe pins the blocks that
 // scenarios/doc.go, the README and each built-in's own comment describe: the
 // shared block in sixteen built-ins, and its own block in each of the four in
@@ -398,19 +413,10 @@ turns:
 func TestBuiltins_TheBackgroundBlockIsTheOneTheDocsDescribe(t *testing.T) {
 	t.Parallel()
 
-	// The respond body is decoded rather than compared as a YAML node, so two
-	// files that spell the same mapping differently (flow or block style, an alias
-	// or a written-out list) agree.
 	canonical := func(t *testing.T, b *scenario.BackgroundPolicy) []map[string]any {
 		t.Helper()
 		require.NotNil(t, b)
-		out := make([]map[string]any, 0, len(b.Turns))
-		for i := range b.Turns {
-			var respond map[string]any
-			require.NoError(t, b.Turns[i].Respond.Decode(&respond))
-			out = append(out, map[string]any{"when": b.Turns[i].When, "fault": b.Turns[i].Fault, "respond": respond})
-		}
-		return out
+		return canonicalTurns(t, b.Turns)
 	}
 	// A documented block is decoded on its own rather than parsed as a scenario,
 	// because malicious-content's names sources a probe scenario would have to

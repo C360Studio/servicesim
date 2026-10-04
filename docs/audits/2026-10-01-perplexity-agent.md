@@ -393,3 +393,13 @@ A whole-bundle re-audit was **not** done. The provider-level `verified:` date, t
 and the Perplexity cell of the `contracts/README.md` index therefore stay at 2026-10-01, and the three golden entries
 added for the lifecycle carry that date as well, with a comment in `provenance.yaml` saying why. Moving them would have
 recorded bytes the bundle was not audited against and erased the drift signal that "Reproducing it" above relies on.
+
+### 2026-10-04: the cancel is served (issue #31, unit U6)
+
+`cancelAgentResponse` is now simulated, as `POST /v1/agent/{id}/cancel`, so the row of the 2026-10-03 table above that
+reads "Not served" no longer holds. The cancel is scripted under a scenario's `background:` block (`background.cancel`);
+a `cancel:` on the `perplexity_agent` entry itself is still a load error, and the files operations are still not served.
+The operation was read again against a fresh fetch with the same sha256 as the 2026-10-03 one, and its `200`, `400` and
+`404` agree with what this record says of it. The wire contract is the "The cancel" section of
+`profiles/perplexity/contracts/README.md`, and the two goldens added for it carry 2026-10-01 for the reason the previous
+note gives.

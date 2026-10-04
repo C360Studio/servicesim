@@ -119,8 +119,8 @@ body.
 | `turns` | list of [Turn](#the-multi-turn-form) | A conversation script. Mutually exclusive with a projection body at block level. |
 | `turn_key` | list of string | What the turn cursor is keyed on. Defaults to `["route"]`. See [`turn_key`](#turn_key--what-the-cursor-counts-per). |
 | `create` | `{fault}` | The create route's own attempt budget, on a create-then-poll async entry (`exa_agent_runs`, `tavily_research`). See [The async surfaces](#the-async-surfaces-exa_agent_runs-and-tavily_research). |
-| `cancel` | `{fault, turns}` | What cancelling a create-then-poll job answers, and what the job's polls serve after a recorded cancel. Loads only on an entry whose profile serves a cancel for it — `exa_agent_runs` in tree; every other entry rejects it. See [Cancelling a job](#cancelling-a-job). |
-| `background` | `{turns}` | What a retrieve serves for a job that a create asked to run in the background: one snapshot per retrieve. Loads only on an entry whose profile serves a background lifecycle for it — `perplexity_agent` in tree; every other entry rejects it. See [Background runs](#background-runs-background). |
+| `cancel` | `{fault, turns}` | What cancelling a create-then-poll job answers, and what the job's polls serve after a recorded cancel. Loads only on an entry whose profile serves a cancel for it — `exa_agent_runs` in tree; every other entry rejects it, `perplexity_agent` included, whose cancel is scripted under `background:` instead. See [Cancelling a job](#cancelling-a-job). |
+| `background` | `{turns, cancel}` | What a retrieve serves for a job that a create asked to run in the background: one snapshot per retrieve (`turns`), and, under `cancel` (`{fault, turns}`), the cancel route's own fault plan and the snapshots a retrieve serves once a cancel is recorded. Loads only on an entry whose profile serves a background lifecycle for it — `perplexity_agent` in tree; every other entry rejects it — and its nested `cancel` only where the profile also serves a cancel of a background job, as `perplexity_agent` does. See [Background runs](#background-runs-background) and [Cancelling a background run](#cancelling-a-background-run). |
 
 `extra_fields` is **not** in that list, even though it reads like envelope machinery. Every provider projection
 declares its own `extra_fields`, so the key is left in the body and behaves identically in a single-shot block and
@@ -195,7 +195,7 @@ everything.
 | Key | Type | Matches when |
 |---|---|---|
 | `route` | string | The route serving the request is this one. See [`route`](#route--scripting-one-providers-several-routes) below. A name the provider does not serve is a load error. |
-| `call_index` | integer | The zero-based count of prior requests **in this turn lane** equals it — see [`turn_key`](#turn_key--what-the-cursor-counts-per), whose default of `["route"]` makes the lane the route. A negative value is a load error. Inside a `cancel.turns` script it counts polls **since the cancel** instead — see [Cancelling a job](#cancelling-a-job). Inside a `background.turns` script it counts **this job's** retrieves — see [Background runs](#background-runs-background). |
+| `call_index` | integer | The zero-based count of prior requests **in this turn lane** equals it — see [`turn_key`](#turn_key--what-the-cursor-counts-per), whose default of `["route"]` makes the lane the route. A negative value is a load error. Inside a `cancel.turns` script it counts polls **since the cancel** instead — see [Cancelling a job](#cancelling-a-job). Inside a `background.turns` script it counts **this job's** retrieves — see [Background runs](#background-runs-background) — and inside `background.cancel.turns`, this job's retrieves **since the cancel** — see [Cancelling a background run](#cancelling-a-background-run). |
 | `body_contains` | string | The raw request body contains this substring. Deliberately crude — it covers "which tool result came back" without becoming an expression language. |
 | `body_json` | map of string to string | Every dotted path matches, for example `{model: sonar, "messages.0.role": system}`. A numeric segment indexes an array. Values compare as strings after JSON scalar formatting. An empty key is a load error. |
 
@@ -280,7 +280,7 @@ requests in that lane and nowhere else.
 
 The default is `["route"]`: one sequence per route, which is what a single serial caller wants and what every
 scenario written without this key gets. A route with a per-job lane — an async poll, `HEAD` or cancel, a background
-retrieve — ignores `turn_key`: its lane is the job ([per-job lanes](#the-async-surfaces-exa_agent_runs-and-tavily_research)).
+retrieve or cancel — ignores `turn_key`: its lane is the job ([per-job lanes](#the-async-surfaces-exa_agent_runs-and-tavily_research)).
 
 ```yaml
 providers:
@@ -412,7 +412,7 @@ Defaults are **per route**, because the real vendors vary placement per route:
 | Exa | `POST /search`, `POST /answer`, `POST /contents`, `POST /findSimilar` | `authorization`, `x-api-key` |
 | Tavily | `POST /search`, `POST /research` | `authorization`, `body:api_key` — decision D2, a v0.1.1 owner decision on client-level evidence. |
 | Tavily | `POST /extract` | `authorization` only — the vendor's `/extract` page documents Bearer only, and D2 is not extended to routes verified after it. See `contracts/tavily/README.md`'s "POST /extract" § "Auth". |
-| Perplexity | all seven routes | `authorization` |
+| Perplexity | all eight routes | `authorization` |
 | MCP | `POST /mcp` | `authorization` — **optional** by default, unlike every route above; a scenario opts into `required` explicitly. |
 
 (The two Exa agent-run routes and Tavily's `GET /research/{request_id}` poll are omitted from this table as a
@@ -815,9 +815,10 @@ omitting the keys.
 ### `perplexity_agent`
 
 The Agent API, served on `POST /v1/agent` and its aliases `POST /v1/responses` and `POST /responses`, with
-`GET /v1/agent/{id}` retrieving a background run ([below](#background-runs-background)). Its envelope shares no fields
-with Sonar's: Sonar returns `choices[]`, the Agent API returns an ordered `output[]` execution trace. Ordering within
-`output[]` is fixed — `search_results` first, then `message` — and a scenario cannot reorder it.
+`GET /v1/agent/{id}` retrieving a background run and `POST /v1/agent/{id}/cancel` cancelling one
+([below](#background-runs-background)). Its envelope shares no fields with Sonar's: Sonar returns `choices[]`, the
+Agent API returns an ordered `output[]` execution trace. Ordering within `output[]` is fixed — `search_results` first,
+then `message` — and a scenario cannot reorder it.
 
 | Key | Type | Renders to |
 |---|---|---|
@@ -887,15 +888,17 @@ done
 **Selecting a snapshot.** `background.turns` is selected the way an async entry's poll script is, by the
 [turn selection rules](#turn-selection-rules): first match on `when`, then the unconditional fallback. `call_index`
 counts **this job's** retrieves, because the retrieve's lane is per job: two jobs polled in interleaved order each walk
-their own script, whatever the entry's `turn_key` says (next paragraph). A retrieve answered with a scripted fault
-counts. A retrieve that matches no turn is the Agent
-`404` with `scenario.no_matching_turn` (and the framework's `fault.attempt_on_rejection` warning: the index was
-claimed, then refused), and it is spent — the job's `polls` still advances — so end the script with an unconditional
-turn, or one conditioned only on `route: agent.retrieve`; the loader warns when you do not. A `when.route` in a
-background turn is checked against the retrieve route alone (`agent.retrieve`, or `perplexity:agent.retrieve`): naming
-the create's `agent` is `scenario.turn.route_unknown`, and so is naming the retrieve in the entry's own `turns`, so a
-turn never silently fails to fire. `body_contains` and `body_json` can never match, since a `GET` carries no body, and
-are warned about.
+their own script, whatever the entry's `turn_key` says (next paragraph). Until a cancel of the job is recorded, that is;
+from then on its retrieves are served from `background.cancel.turns` ([below](#cancelling-a-background-run)). A retrieve
+answered with a scripted fault counts. A retrieve that matches no turn is the Agent `404` with
+`scenario.no_matching_turn` (and the framework's `fault.attempt_on_rejection` warning: the index was claimed, then
+refused), and it is spent — the job's `polls` still advances — so end the script with an unconditional turn, or one
+conditioned only on `route: agent.retrieve`; the loader warns when you do not. A cancel sent when the job's next
+retrieve matches no turn here is a `500` (`job.cancel_unscripted`) for the same reason: it cannot judge whether that
+retrieve is terminal. A `when.route` in a background turn is checked against the retrieve route alone (`agent.retrieve`,
+or `perplexity:agent.retrieve`): naming the create's `agent` is `scenario.turn.route_unknown`, and so is naming the
+retrieve in the entry's own `turns`, so a turn never silently fails to fire. `body_contains` and `body_json` can never
+match, since a `GET` carries no body, and are warned about.
 
 **The entry's `turn_key` does not key the retrieve.** The retrieve is served from the `perplexity_agent` entry, but its
 lane is the job and nothing else: a `turn_key:` written on that entry keys its creates, synchronous and background
@@ -915,7 +918,10 @@ differences, each there so that no retrieve invents a fact:
   last and would win over the rendered body. A snapshot's `id` is always its job's, its `status` is the one its journal
   label reports, and a retrieve serves no stream. Aliases and merges are resolved and an explicitly empty value is
   refused too. An `extra_fields` key is judged as the wire would carry it, so a key that is not a string, such as `1`,
-  beside an `id` does not hide the `id`.
+  beside an `id` does not hide the `id`. It is also compared the way a Go JSON decoder compares keys, case-insensitively
+  under Unicode simple folding, so `Status` and `ſtatus` (U+017F, long s) are refused as `status`, each reported at the
+  key as written: a Go consumer reads either as `status`, and the merged body's keys are sorted, so `ſtatus` comes last
+  and would replace the real one.
 - `usage` renders only when the snapshot scripts it, and `usage.cost` only when that is scripted too: no zero is
   invented. The synchronous path still renders `cost` with zeros when none is scripted.
 - `model` falls back to `servicesim/unscripted` when the snapshot scripts none, because a retrieve has no request to
@@ -927,12 +933,14 @@ differences, each there so that no retrieve invents a fact:
 **A script never un-completes.** `completed`, `failed`, `incomplete` and `cancelled` are terminal, and `queued` and
 `in_progress` are not; an absent `status` is `completed`. The vendor's `Status` enum has no such split, so it is
 simulator policy. A non-terminal snapshot **served** after a terminal one is `perplexity.agent.background.terminal_then_pending`,
-judged in serve order as [above](#terminal-is-judged-in-serve-order).
+judged in serve order as [above](#terminal-is-judged-in-serve-order), on `background.turns` and on
+`background.cancel.turns` each by itself.
 
 **Faults.** The retrieve's budget is its own (fault key `perplexity:agent.retrieve`, one per job), and its plan is the
 first `background.turns[*].fault` that declares attempts, as [Faults and turns](#faults-and-turns) describes for every
 multi-turn entry. The create's plan is the one the entry's own turns (or its single-shot `fault:`) declare, and it
-serves synchronous and background creates alike, because the three create spellings share one fault key.
+serves synchronous and background creates alike, because the three create spellings share one fault key. The cancel's
+is a third, `background.cancel.fault` ([below](#cancelling-a-background-run)).
 
 ```yaml
 providers:
@@ -952,9 +960,9 @@ A `stream_*` fault kind on a background turn is a load error (`scenario.fault.st
 streams. `accepted: true` is not refused at load, but a retrieve takes nothing into effect, so a claimed `accepted`
 attempt raises `fault.accepted_unreachable` and applies as an ordinary fault. An `id` or a `status` in an attempt's
 `extra_fields` is a load error too (`perplexity.agent.background.field`, at
-`background.turns[i].fault.attempts[j].extra_fields.<key>`), as in a snapshot's: it is merged into the body the
-retrieve serves, and an attempt that sets nothing else is no fault in the journal, so its entry would carry no
-`fault_kind` to read the label beside.
+`background.turns[i].fault.attempts[j].extra_fields.<key>`), as in a snapshot's, key matching included: it is merged
+into the body the retrieve serves, and an attempt that sets nothing else is no fault in the journal, so its entry would
+carry no `fault_kind` to read the label beside.
 An attempt that sets only a `body` is no fault in the journal either, and nothing refuses it at load: it replaces
 the snapshot wholesale, so the wire can disagree with the label.
 
@@ -988,34 +996,201 @@ namespace: call 0 in two namespaces mints the same id.
 which retrieves a response stored by default; the contract notes give the reasons. `HEAD /v1/agent/{id}` is `405` with
 `Allow: GET` and claims nothing, because Go's mux would otherwise route it to the `GET` handler and spend a snapshot.
 
+##### Cancelling a background run
+
+`POST /v1/agent/{id}/cancel` asks a background run to stop. The mechanics are those of
+[Cancelling a job](#cancelling-a-job) — a poll position, what a cancel records and when, the claim rule, `accepted`
+attempts — and `background.cancel` is shaped like an async entry's `cancel:`, `{fault, turns}`. As there, a scenario
+scripts the retrieves that follow a cancel rather than the cancel's reply, so the two cannot disagree. The wire
+contract is the "The cancel" section of
+[`profiles/perplexity/contracts/README.md`](../profiles/perplexity/contracts/README.md#the-cancel). What a Perplexity
+scenario author sees:
+
+- `cancel.turns` are the **retrieve snapshots served after a cancel is recorded**, selected by the usual
+  [turn selection rules](#turn-selection-rules). Inside them `when.call_index` counts the job's retrieves **since the
+  cancel**. The journal's `attempt_index` for the same retrieve stays absolute: the retrieve lane's own count.
+- `cancel.fault` is the cancel route's own attempt budget (fault key `perplexity:agent.cancel`, one per job),
+  independent of the create's and the retrieve's.
+
+```yaml
+version: 1
+name: background-cancel
+providers:
+  perplexity_agent:
+    answer: A synchronous answer.
+    background:
+      turns:                               # a job's retrieves, until a cancel of it is recorded
+        - when: {call_index: 0}
+          respond: {status: queued}
+        - when: {call_index: 1}
+          respond: {status: in_progress}
+        - respond:
+            status: completed
+            answer: Done.
+      cancel:
+        turns:                             # a job's retrieves after a recorded cancel
+          - when: {call_index: 0}          # the first retrieve since the cancel
+            respond: {status: in_progress} # stopping, not yet stopped
+          - respond: {status: cancelled}   # every retrieve after that
+```
+
+With that scenario loaded on the default ports, create a run, retrieve it once, cancel it, and retrieve it twice more:
+
+```bash
+ID=$(curl -s -X POST localhost:8083/v1/agent -H 'Authorization: Bearer k' -H 'Content-Type: application/json' \
+  -d '{"input":"q","model":"openai/gpt-5","background":true}' | jq -r .id)
+curl -s localhost:8083/v1/agent/$ID -H 'Authorization: Bearer k' | jq -c '[.status]'
+curl -s -X POST localhost:8083/v1/agent/$ID/cancel -H 'Authorization: Bearer k'
+echo
+for i in 1 2; do
+  curl -s localhost:8083/v1/agent/$ID -H 'Authorization: Bearer k' | jq -c '[.status]'
+done
+```
+
+```text
+["queued"]
+{"response_id":"resp_35db3f5a8443fc656c774584931d72be","status":"cancelling"}
+["in_progress"]
+["cancelled"]
+```
+
+The cancel came after one retrieve, so it was recorded at position 1, the position of the job's next retrieve, which
+`background.turns` would have served as `in_progress`. That retrieve and the next are `cancel.turns` at call index 0 and
+1, and their journal entries read `attempt_index` 1 and 2. A reply carries no snapshot, unlike Exa's: it is always the
+`cancelling` acknowledgement, and what the run did afterwards is what its next retrieve serves.
+
+**Terminal at cancel time.** A cancel judges the run by the snapshot its **next retrieve** would serve —
+`background.turns` at the job's current position, peeked without claiming it — not by the last snapshot served, which a
+client may never have seen. `completed`, `failed`, `incomplete` and `cancelled` are terminal; `queued` and
+`in_progress` are not. What the cancel answers:
+
+| The cancel finds | It answers | Journal label |
+|---|---|---|
+| no valid credential | `401` | `perplexity.agent.error.401` |
+| an id that is not a background job of this namespace: unknown, malformed, another namespace's, a synchronous response's | `404` `{error}`; claims nothing | `perplexity.agent.error.404` |
+| the next retrieve is terminal: completion wins | `400` `{error}`; nothing is recorded, and no `cancel:` block is needed | `perplexity.agent.cancel.terminal` |
+| the next retrieve is pending, and the attempt commits | `200` `{"response_id": "<id>", "status": "cancelling"}`; the cancel is recorded at the job's position | `perplexity.agent.cancel.accepted` |
+| the next retrieve is pending, and the attempt does not commit | the same `200`, which the scripted fault replaces; nothing is recorded | `perplexity.agent.cancel.unrecorded` |
+| a cancel is already recorded, and the next `cancel.turns` snapshot is pending | the same `200` again; nothing new is recorded | `perplexity.agent.cancel.repeated` |
+| a cancel is already recorded, and the next `cancel.turns` snapshot is terminal | `400` | `perplexity.agent.cancel.terminal` |
+| a cancel that cannot be scripted (see the end of this section) | `500`; nothing is recorded | `perplexity.agent.error.500` |
+
+Any other method on the path is a `405` with `Allow: POST`, and claims nothing. The request needs no body and no
+`Content-Type` — the specification declares none — and a JSON object body is ignored; a body that is JSON but not an
+object (`[1]`, `"s"`) is refused with a `400` (`request.body_not_object`), and one that is not JSON at all with a `400`
+(`request.malformed_json`), each before anything is claimed. A cancel still in flight when a reset lands is undefined,
+as everywhere else: reset between requests.
+
+The `200` is the specification's: `response_id` and `status` are both required, and `cancelling` is the only member of
+`status`'s enum. The `400` and the `404` carry the specification's `{error: ErrorInfo}` envelope. Where it is silent,
+the simulator decides, and says so here:
+
+- **SIMULATOR-POLICY, the `400`'s text.** The specification documents the `400` ("the response is already terminal, or
+  the request is invalid") and gives no body for it; its message, `The response is already terminal and cannot be
+  cancelled.`, is Servicesim's.
+- **SIMULATOR-POLICY, the first cancel always acknowledges.** A cancel that is recorded answers `200` even when
+  `cancel.turns` at call index 0 is already terminal; an immediate repeat then answers `400`.
+- **SIMULATOR-POLICY, a repeat is judged as the first was**, by the cancel script's next snapshot: `200` again while it
+  is pending, `400` once it is terminal.
+- **SIMULATOR-POLICY, a retrieve after a recorded cancel serves `cancel.turns`, never `cancelling`.** `cancelling` is
+  the `200`'s status and not a member of the run's `Status` enum, so a `cancel.turns` snapshot that says
+  `status: cancelling` is a load error (`perplexity.agent.status.invalid`). A `completed` snapshot is allowed there, to
+  script "the cancel was acknowledged and the run completed anyway".
+- **SIMULATOR-POLICY, the scripts are judged apart.** `background.turns` and `background.cancel.turns` are each checked
+  for a terminal snapshot followed by a pending one on their own, because a cancel is recorded only while the job's
+  next retrieve is pending: a terminal `turns` followed by a pending `cancel.turns` is no run that un-completes.
+
+The snapshots of `cancel.turns` are checked and rendered exactly as `background.turns` ones are
+([What a snapshot says](#background-runs-background)): a `cancelled` snapshot renders `usage` and `cost` only when it
+scripts them. It carries no `fault:`, which is a load error — the retrieve route's plan stays on `background.turns` and
+the cancel route's is `cancel.fault`, validated at `providers.perplexity_agent.background.cancel.fault…` like a
+create's. A `when.route` in `cancel.turns` must name the retrieve, as in `turns`: a cancel selects no snapshot of its
+own, so naming its route is `scenario.turn.route_unknown`. The script needs its own unconditional final turn, or the
+retrieve after its last turn is a `404` and a repeated cancel there a `500`
+(`perplexity.agent.background.script_exhausted` warns).
+
+`cancel.fault` is checked at load too, each attempt at `providers.perplexity_agent.background.cancel.fault.attempts[j]`.
+A `response_id` or `status` key in an attempt's `extra_fields` is `perplexity.agent.background.field`: extra fields are
+merged into the body last and win, while the acknowledgement's `response_id` is always its job's id and its `status`
+always `cancelling`. The keys are matched as in a snapshot's `extra_fields`, so `Status` and `ſtatus` are refused too.
+A `stream_disconnect`, `stream_truncate_chunk` or `stream_stall` kind is
+`scenario.fault.stream_mismatch`, because a cancel never streams. Other `extra_fields` keys, `id` included, still load,
+and so does `accepted: true`, and an attempt that sets only a `body`: a replacement body is not inspected.
+
+**Every cancel claims exactly one attempt.** A cancel that resolves a job claims one attempt from the job's cancel
+budget first, whatever it then decides, so the attempt a client's retry draws depends on how many cancels it sent, never
+on the run's state. That is why the `400` of a run already terminal is a served response: a `cancel.fault` can fault
+it, with the journal label staying `perplexity.agent.cancel.terminal` beside the entry's `fault_kind`. A cancel whose
+attempt loses the reply and is not marked `accepted` records nothing, as a vendor that never received it would; one
+marked `accepted` records the cancel and loses the reply, so the next retrieve shows it took effect. The `401` and the
+`404` of an id that resolves no job claim nothing. A cancel that cannot be scripted claims its attempt and raises an
+error, so the attempt is not applied (`fault.attempt_on_rejection`) and its index stays spent.
+
+**The built-in scenarios** script a `background.cancel` on the Perplexity background run of every one of the twenty, so
+a cancel of a shipped run is answered rather than failed closed with `job.cancel_unscripted`; a test enforces this for
+every built-in. Call 0 of the block is `in_progress` and an unconditional `cancelled` snapshot follows, with a scripted
+`usage` and `cost` of 24 input and 12 output tokens, less than a completed run's. Nineteen share the block textually;
+`extra-fields` has a variant whose cancel snapshots keep its extra fields, as every snapshot of its retrieve script
+does. `async-stuck`'s run has no terminal snapshot of its own and is cancellable all the same, and `malicious-content`'s
+cancelled run carries no marker. The `in_progress` before `cancelled` is the corpus's reading of the specification's
+"the run stops shortly after" — simulator policy, not vendor fact — and it applies only inside a window: once the run's
+next retrieve would serve a terminal snapshot, completion wins and the cancel is the `400`. `happy` cancelled after its
+second retrieve answers `400` and its retrieves go on to `completed`; cancelled after its first, it is recorded.
+
+**When the cancel cannot be scripted.** A cancel script is needed only if a cancel can be recorded. A cancel of a run
+whose next retrieve is terminal is the `400` whatever `cancel:` says, and a scenario with no `cancel:` block at all
+answers it. A cancel that would be recorded needs two things the scenario may not supply: a `background.turns` turn that
+answers the job's next retrieve, so the cancel can judge whether it is terminal, and a `cancel.turns` turn that matches
+call index 0, so the retrieves after it can be answered. A repeated cancel needs the cancel script's next snapshot.
+Without them the request records an error, nothing is recorded on the job, and a later retrieve is never indexed into a
+script that does not exist.
+
+| Code | Severity | Condition |
+|---|---|---|
+| `job.cancel_unscripted` | error, per request | The cancel would take effect, but the scenario cannot answer what follows it: no `cancel:` block or no `cancel.turns`, no `cancel.turns` turn matching call index 0, or no `turns` turn answering the job's next retrieve. Also a repeated cancel whose next `cancel.turns` snapshot matches nothing. |
+| `job.cancel_contended` | error, per request | Retrieves of the same job kept landing while the cancel was being recorded, eight times in a row. A retried cancel starts afresh. |
+
+The wire answer to both is a `500`.
+
 ##### Entries that accept a background block
 
 Like `cancel:`, a `background:` block loads only on an entry whose profile declares a background lifecycle for it
 (`provider.Profile.Backgroundable`); on every other entry the framework rejects it, whichever profile serves the entry.
-In tree, `perplexity_agent` is the one that accepts it. A `cancel:` key under `background:` is a load error until a
-later release serves a cancel for it, like any other unknown key.
+In tree, `perplexity_agent` is the one that accepts it. The `cancel:` nested in the block is gated separately
+(`provider.Profile.BackgroundCancellable`): accepting a `background:` block accepts nothing nested in it, so on an entry
+whose profile serves no cancel of a background job the framework rejects that `cancel:` and leaves the rest of the block
+alone. `perplexity_agent` serves one ([above](#cancelling-a-background-run)). A `cancel:` on the entry itself, beside
+`background:`, is still a load error, `scenario.provider.cancel_unsupported`
+([below](#entries-that-serve-no-cancel)): its cancel is scripted inside `background:`, not beside it. Any other key
+under `background:` is a load error too.
 
 | Code | Severity | Condition |
 |---|---|---|
-| `scenario.provider.background_unsupported` | error, at load | a `background:` block on an entry whose profile has no background lifecycle for it, reported at `providers.<entry>.background` |
+| `scenario.provider.background_unsupported` | error, at load | a `background:` block on an entry whose profile has no background lifecycle for it, reported at `providers.<entry>.background`; a `cancel:` nested in the rejected block is not reported separately |
+| `scenario.provider.background_cancel_unsupported` | error, at load | a `cancel:` nested in an accepted `background:` block, on an entry whose profile serves no cancel of a background job for it, reported at `providers.<entry>.background.cancel` |
 | `scenario.provider.background.turns.empty` | error, at load | a `background:` block with no turns: it could answer no retrieve |
-| `perplexity.agent.background.field` | error, at load | a `response_id` or `stream` key in a snapshot, or an `id` or `status` key in its `extra_fields` or in the `extra_fields` of one of the turn's fault attempts |
-| `perplexity.agent.background.terminal_then_pending` | error, at load | a non-terminal snapshot served after a terminal one |
-| `scenario.turn.route_unknown` | error, at load | a background turn's `when.route` that is not the retrieve route |
-| `scenario.fault.stream_mismatch` | error, at load | a `stream_*` fault kind on a background turn |
-| `perplexity.agent.background.script_exhausted` | warning, at load | the last turn has a condition a retrieve can fail (any condition but a `route` naming the retrieve, in either spelling), so the retrieve after it is a `404` for a job that exists |
+| `perplexity.agent.background.field` | error, at load | a `response_id` or `stream` key in a snapshot, or an `id` or `status` key in its `extra_fields` or in the `extra_fields` of one of the turn's fault attempts; in `background.cancel.fault`, a `response_id` or `status` key in an attempt's `extra_fields`, at `background.cancel.fault.attempts[j].extra_fields.<key>`. An `extra_fields` key is matched case-insensitively under Unicode simple folding (`Status`, `ſtatus`), once per key as written |
+| `perplexity.agent.background.terminal_then_pending` | error, at load | a non-terminal snapshot served after a terminal one, in `background.turns` or in `background.cancel.turns`, each judged by itself |
+| `perplexity.agent.status.invalid` | error, at load | a snapshot whose `status` is not a member of the run's `Status` enum, `cancelling` included |
+| `scenario.turn.route_unknown` | error, at load | a background turn's `when.route`, in either script, that is not the retrieve route |
+| `scenario.fault.stream_mismatch` | error, at load | a `stream_*` fault kind on a background turn, or in a `background.cancel.fault` attempt (at `background.cancel.fault.attempts[j].kind`) |
+| `perplexity.agent.background.script_exhausted` | warning, at load | the last turn of `background.turns` or of `background.cancel.turns` has a condition a retrieve can fail (any condition but a `route` naming the retrieve, in either spelling), so the retrieve after it is a `404` for a job that exists, and a cancel sent there is a `500` (the first cancel, after `background.turns`' last turn; a repeated one, after `background.cancel.turns`') |
 | `perplexity.agent.background.body_predicate` | warning, at load | `body_contains` or `body_json` on a background turn |
 | `perplexity.agent.background.unscripted` | error, per request | `background: true` and no block |
 | `perplexity.agent.background.stream` | error, per request | `background: true` with `stream: true` |
 | `perplexity.agent.background.unstored` | warning, per request | `background: true` with `store: false` |
+| `job.cancel_unscripted`, `job.cancel_contended` | error, per request | a cancel that cannot be scripted, [above](#cancelling-a-background-run) |
 
 ##### What a test can see
 
 A background job is listed by `GET /__admin/jobs` and `sim.Jobs()` like any other, under entry `perplexity_agent`, with
 its `polls`. The journal keeps no bodies, so the label carries what happened: `perplexity.agent.background.created` or
 `perplexity.agent.background.unstored` on the create, `perplexity.agent.retrieved.<status>` on a retrieve (the status
-its snapshot reports, kept even when a scripted fault replaced the response — read it beside the entry's
-`fault_kind`), and `perplexity.agent.retrieve.head_refused` on a `HEAD`.
+its snapshot reports, from `cancel.turns` once a cancel is recorded, and kept even when a scripted fault replaced the
+response — read it beside the entry's `fault_kind`), `perplexity.agent.retrieve.head_refused` on a `HEAD`, and
+`perplexity.agent.cancel.accepted`, `.repeated`, `.terminal` or `.unrecorded` on a cancel, as the [outcome
+table](#cancelling-a-background-run) says. The listing carries `cancel_at_poll` for a cancelled background job as it
+does for an Exa run: the position the cancel was recorded at, **absent** when none was, and `0` is a real position.
 
 ### `mcp`
 
@@ -1576,11 +1751,12 @@ What `accepted` does **not** do:
 **Where it can appear.** Load accepts `accepted` on any fault attempt — `create.fault`, a turn's plan, a block-level
 plan — because load sees one attempt in isolation, and whether the request that claims it creates a job is a fact only
 the routes know. It means something only on a route whose request can take effect: an async create, which keeps its
-job, and a cancel, which records its cancel ([Cancelling a job](#cancelling-a-job); Exa's agent-run cancel is the
-in-tree one). Exa's Agent create is the one this is built and tested against; `tavily_research`'s create mints
-through the same seam. An accepted attempt claimed by a request that neither creates a job nor runs a cancel — an
-`accepted` in a poll plan, say — raises `fault.accepted_unreachable`, an error on that request's journal entry, and
-the attempt still applies as an ordinary fault.
+job, and a cancel, which records its cancel ([Cancelling a job](#cancelling-a-job); Exa's agent-run cancel and
+Perplexity's [background cancel](#cancelling-a-background-run) are the two in-tree ones). Exa's Agent create is the one
+this is built and tested against; `tavily_research`'s create mints through the same seam. An accepted attempt claimed
+by a request that neither creates a job nor runs a cancel — an `accepted` in a poll plan, say — raises
+`fault.accepted_unreachable`, an error on that request's journal entry, and the attempt still applies as an ordinary
+fault.
 
 **When it is redundant.** `accepted` on an attempt whose client still receives the create's body is a load error,
 `scenario.fault.accepted.redundant`: the job is kept without it, so declaring it claims a lost reply the attempt does
@@ -1749,7 +1925,8 @@ snapshot: `happy` cancelled after two polls answers `completed`, and `async-fail
 A `cancel:` block loads only on an entry whose profile declares a cancel lifecycle for it; on every other entry the
 framework itself rejects it at load, whichever profile serves the entry, because a block that could never take effect
 is a scenario bug, not a no-op. In tree, `exa_agent_runs` is the one entry that accepts it — `tavily_research` has a
-poll lifecycle, but Tavily's Research API documents no cancel.
+poll lifecycle, but Tavily's Research API documents no cancel. `perplexity_agent` rejects a `cancel:` beside its
+`background:` block and accepts one inside it ([Cancelling a background run](#cancelling-a-background-run)).
 
 | Code | Severity | Condition |
 |---|---|---|

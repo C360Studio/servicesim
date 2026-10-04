@@ -10,7 +10,9 @@ description: >-
   Well-formed 200s carrying additional unknown properties, so a consumer proves
   its decoder tolerates a vendor adding fields. A Perplexity `background: true`
   run's retrieves carry them on every snapshot, queued, in_progress and
-  completed; the create answers a fixed queued stub that carries none.
+  completed, and after a cancel in_progress and cancelled; the create answers
+  a fixed queued stub, and the cancel the fixed {response_id, status}
+  acknowledgement, and neither carries any.
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -117,8 +119,9 @@ providers:
     #
     # The CREATE does not: a `background: true` create answers a fixed queued stub
     # that no scenario scripts, so it carries no extra field here either. This block
-    # scripts only the retrieves. It carries no fault on purpose: this entry's own
-    # `fault:` or `turns:` shape the CREATE, and the retrieve's budget is its own.
+    # scripts only the retrieves, and the cancel after them. It carries no fault on
+    # purpose: this entry's own `fault:` or `turns:` shape the CREATE, and the
+    # retrieve's budget is its own.
     background:
       turns:
         - when: {call_index: 0}
@@ -145,6 +148,38 @@ providers:
               cost:
                 input_cost: 0.0001
                 output_cost: 0.0004
+      # A cancel is answered `cancelling`: the specification's fixed acknowledgement,
+      # `{response_id, status}`, which no scenario scripts, so like the create's queued
+      # stub it carries no extra field. EVERY retrieve after it carries the two
+      # extra_fields, as every snapshot above does: in progress first, since an
+      # acknowledgement is not proof the run stopped, then cancelled, billing the usage
+      # the run accrued before it stopped: its 24 input tokens and 12 output tokens, at
+      # the per-token rates of the corpus's completed run. This is the one built-in that
+      # scripts its own cancel block, because the shared one carries no unknown field. A
+      # cancel made once the run has ended, when its next retrieve would be terminal, is
+      # the vendor's 400 and records nothing. It carries no fault on purpose: the
+      # cancel's budget is its own. The total_cost is scripted rather than left to the
+      # renderer, whose float sum of the two costs would print 0.00015000000000000001.
+      cancel:
+        turns:
+          - when: {call_index: 0}
+            respond:
+              status: in_progress
+              extra_fields:
+                experimental_trace_id: trace-0
+                service_tier: default
+          - respond:
+              status: cancelled
+              extra_fields:
+                experimental_trace_id: trace-0
+                service_tier: default
+              usage:
+                input_tokens: 24
+                output_tokens: 12
+                cost:
+                  input_cost: 0.0001
+                  output_cost: 0.00005
+                  total_cost: 0.00015
 
   exa_agent_runs:
     status: completed

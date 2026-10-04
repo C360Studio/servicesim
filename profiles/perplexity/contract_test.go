@@ -3,6 +3,7 @@ package perplexity
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/c360studio/servicesim/contracts"
@@ -136,6 +137,29 @@ func TestPerplexityAgentSearchResultIDsAreIntegers(t *testing.T) {
 	}
 }
 
+// TestPerplexityCancelAcknowledgementCarriesOnlyTheRequiredKeys pins the cancel's
+// 200 against cancelAgentResponse: response_id and status are both required and
+// are its only properties, and status has exactly one enum member, cancelling —
+// a terminal status never appears there, because an already-terminal run is the
+// 400. A third key, or any other status, is a body the specification does not
+// describe.
+func TestPerplexityCancelAcknowledgementCarriesOnlyTheRequiredKeys(t *testing.T) {
+	t.Parallel()
+
+	body := decodeContractGolden(t, "perplexity-agent-cancel-200.json")
+
+	if len(body) != 2 {
+		t.Errorf("body has %d keys, want exactly response_id and status: %v", len(body), body)
+	}
+	id, ok := body["response_id"].(string)
+	if !ok || !strings.HasPrefix(id, "resp_") {
+		t.Errorf("response_id is %v (%T), want a resp_<...> string", body["response_id"], body["response_id"])
+	}
+	if body["status"] != "cancelling" {
+		t.Errorf("status is %v, want cancelling, the enum's only member", body["status"])
+	}
+}
+
 // TestPerplexityErrorEnvelopesStaySeparate pins the asymmetry between the two
 // surfaces: Sonar's 422 is FastAPI's array-valued detail, its other statuses are
 // a string-valued detail, and every Agent error — validation failures included,
@@ -174,6 +198,7 @@ func TestPerplexityErrorEnvelopesStaySeparate(t *testing.T) {
 		}},
 		{"perplexity-agent-400-validation.json", errorInfo},
 		{"perplexity-agent-429.json", errorInfo},
+		{"perplexity-agent-cancel-400.json", errorInfo},
 	}
 
 	for _, tc := range cases {

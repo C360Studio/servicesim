@@ -102,9 +102,81 @@ func TestEmptyBackgroundBlockIsDeclared(t *testing.T) {
 	}
 }
 
+// A `cancel:` under background: decodes the way an entry-level `cancel:` does —
+// a fault plan for the cancel route, and the retrieve snapshots served once a
+// cancel is recorded, each turn normalised — onto the background block, never
+// onto the entry's own Cancel.
+func TestBackgroundCancelBlockDecodes(t *testing.T) {
+	t.Parallel()
+
+	s, report, err := Parse([]byte(backgroundScenario(
+		"      turns:\n        - respond: {status: queued}\n" +
+			"      cancel:\n" +
+			"        fault: {attempts: [{status: 500}, {}]}\n" +
+			"        turns:\n" +
+			"          - when: {call_index: 0}\n" +
+			"            respond: {status: in_progress}\n" +
+			"          - {}\n")))
+	if err != nil {
+		t.Fatalf("Parse: %v (%+v)", err, report.Findings)
+	}
+
+	e := s.Provider("perplexity_agent")
+	if e == nil || e.Background == nil || e.Background.Cancel == nil {
+		t.Fatal("background.cancel did not decode onto the background block")
+	}
+	cancel := e.Background.Cancel
+	if cancel.Fault == nil {
+		t.Error("background.cancel.fault did not decode")
+	} else if got := len(cancel.Fault.Attempts); got != 2 {
+		t.Errorf("background.cancel.fault attempts = %d, want 2", got)
+	}
+	if got := len(cancel.Turns); got != 2 {
+		t.Fatalf("background.cancel.turns = %d, want 2", got)
+	}
+	if w := cancel.Turns[0].When; w == nil || w.CallIndex == nil || *w.CallIndex != 0 {
+		t.Errorf("background.cancel.turns[0].when = %+v, want call_index 0", w)
+	}
+	var first map[string]any
+	if err := cancel.Turns[0].Respond.Decode(&first); err != nil || first["status"] != "in_progress" {
+		t.Errorf("background.cancel.turns[0].respond = %v (err %v), want status in_progress", first, err)
+	}
+	if cancel.Turns[1].Respond.Kind != yaml.MappingNode {
+		t.Errorf("a cancel turn with no respond must normalise to an empty mapping, got kind %v",
+			cancel.Turns[1].Respond.Kind)
+	}
+	if len(e.Background.Turns) != 1 {
+		t.Errorf("background.turns must be untouched by background.cancel, got %d turns", len(e.Background.Turns))
+	}
+	if e.Cancel != nil {
+		t.Error("background.cancel must not populate the entry's own cancel: block")
+	}
+}
+
+// A cancel script may be empty, like an entry-level one: a background lifecycle
+// whose every cancel is judged terminal, or fails, needs no snapshots.
+func TestBackgroundCancelBlockMayBeEmpty(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		"      cancel:\n",
+		"      cancel: {fault: {attempts: [{status: 500}]}}\n",
+	} {
+		s, report, err := Parse([]byte(backgroundScenario("      turns:\n        - respond: {status: queued}\n" + body)))
+		if err != nil {
+			t.Fatalf("%q: Parse: %v (%+v)", body, err, report.Findings)
+		}
+		if len(report.Findings) != 0 {
+			t.Errorf("%q: unexpected findings: %+v", body, report.Findings)
+		}
+		if s.Provider("perplexity_agent").Background.Cancel == nil {
+			t.Errorf("%q: a declared cancel: block must decode to a non-nil CancelPolicy", body)
+		}
+	}
+}
+
 // The block is decoded strictly. A typo is a load error rather than a block that
-// quietly does nothing — and so is `cancel:`, which is not served under
-// background: yet and must not decode into something no route reads.
+// quietly does nothing.
 func TestBackgroundBlockDecodesStrictly(t *testing.T) {
 	t.Parallel()
 
@@ -119,10 +191,25 @@ func TestBackgroundBlockDecodesStrictly(t *testing.T) {
 			wantErr: []string{"providers.perplexity_agent.background", "turnz", "scenario.BackgroundPolicy"},
 		},
 		{
-			name: "a cancel block",
-			body: "      cancel:\n        turns:\n          - respond: {status: cancelled}\n" +
-				"      turns:\n        - respond: {status: queued}\n",
-			wantErr: []string{"providers.perplexity_agent.background", "cancel", "scenario.BackgroundPolicy"},
+			name: "an unknown key in the cancel block",
+			body: "      turns:\n        - respond: {status: queued}\n" +
+				"      cancel:\n        turnz: []\n",
+			wantErr: []string{"providers.perplexity_agent.background.cancel", "turnz", "scenario.CancelPolicy"},
+		},
+		{
+			// A cancel turn is a retrieve snapshot: the cancel route's plan is
+			// background.cancel.fault and the retrieve's is on background.turns.
+			name: "a fault plan on a cancel turn",
+			body: "      turns:\n        - respond: {status: queued}\n" +
+				"      cancel:\n        turns:\n          - fault: {attempts: [{status: 503}]}\n" +
+				"            respond: {status: cancelled}\n",
+			wantErr: []string{"providers.perplexity_agent.background.cancel.turns[0].fault"},
+		},
+		{
+			name: "a cancel block that is not a mapping",
+			body: "      turns:\n        - respond: {status: queued}\n" +
+				"      cancel:\n        - respond: {status: cancelled}\n",
+			wantErr: []string{"providers.perplexity_agent.background.cancel", "expected a mapping"},
 		},
 		{
 			name:    "a block-level fault",
@@ -231,6 +318,48 @@ func TestBackgroundBlockIsValidated(t *testing.T) {
 			wantCode: "scenario.turn.respond.not_mapping",
 			wantPath: "providers.perplexity_agent.background.turns[0].respond",
 		},
+		{
+			name:     "an empty background.cancel.fault",
+			body:     "      turns:\n        - respond: {status: queued}\n      cancel: {fault: {attempts: []}}\n",
+			wantCode: "scenario.fault.attempts.empty",
+			wantPath: "providers.perplexity_agent.background.cancel.fault.attempts",
+		},
+		{
+			name: "an unknown kind in background.cancel.fault",
+			body: "      turns:\n        - respond: {status: queued}\n" +
+				"      cancel: {fault: {attempts: [{kind: explode}]}}\n",
+			wantCode: "scenario.fault.kind.unknown",
+			wantPath: "providers.perplexity_agent.background.cancel.fault.attempts[0].kind",
+		},
+		{
+			name: "accepted on a cancel attempt that delivers its body",
+			body: "      turns:\n        - respond: {status: queued}\n" +
+				"      cancel: {fault: {attempts: [{status: 200, accepted: true}]}}\n",
+			wantCode: CodeAcceptedRedundant,
+			wantPath: "providers.perplexity_agent.background.cancel.fault.attempts[0].accepted",
+		},
+		{
+			name: "an unconditional cancel turn before another",
+			body: "      turns:\n        - respond: {status: queued}\n" +
+				"      cancel:\n        turns:\n          - respond: {status: in_progress}\n" +
+				"          - respond: {status: cancelled}\n",
+			wantCode: "scenario.turn.unreachable",
+			wantPath: "providers.perplexity_agent.background.cancel.turns[0]",
+		},
+		{
+			name: "a negative call_index in a cancel turn",
+			body: "      turns:\n        - respond: {status: queued}\n" +
+				"      cancel:\n        turns:\n          - when: {call_index: -1}\n            respond: {status: cancelled}\n",
+			wantCode: "scenario.turn.when.invalid",
+			wantPath: "providers.perplexity_agent.background.cancel.turns[0].when.call_index",
+		},
+		{
+			name: "a cancel respond that is not a mapping",
+			body: "      turns:\n        - respond: {status: queued}\n" +
+				"      cancel:\n        turns:\n          - respond: cancelled\n",
+			wantCode: "scenario.turn.respond.not_mapping",
+			wantPath: "providers.perplexity_agent.background.cancel.turns[0].respond",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -272,6 +401,23 @@ func TestHasFaultsCountsABackgroundTurnPlan(t *testing.T) {
 	}
 	if clean.HasFaults() {
 		t.Error("HasFaults() = true for a scenario that declares no plan at all")
+	}
+}
+
+// background.cancel.fault is the cancel route's plan: a scenario whose only
+// fault is there must still count as declaring faults, or the scripted cancel
+// fault silently never fires on a process wired without a fault engine.
+func TestHasFaultsCountsABackgroundCancelPlan(t *testing.T) {
+	t.Parallel()
+
+	s, report, err := Parse([]byte(backgroundScenario(
+		"      turns:\n        - respond: {status: queued}\n" +
+			"      cancel: {fault: {attempts: [{status: 500}]}}\n")))
+	if err != nil {
+		t.Fatalf("Parse: %v (%+v)", err, report.Findings)
+	}
+	if !s.HasFaults() {
+		t.Error("HasFaults() = false for a scenario whose only plan is background.cancel.fault")
 	}
 }
 
