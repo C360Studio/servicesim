@@ -6,11 +6,13 @@ the phased plan, and the decisions already taken. It exists so the work can be p
 
 ## Where this stands — read this first
 
-Recorded 2026-08-18, against **v0.5.0** — the framework release, tagged from `main` at `5ac0a35`, digest
-`sha256:8c23f154…`, every spelling resolving to it. It carries **Phase 10** (the framework seam, merged at
-`ae437c7`, PR #5), **Phase 8** (the MCP profile, `16c4688`, PR #4) and **Phase 7** (contract fidelity,
-`6a43316`, PR #3), which had been unreleased since v0.4.0. `main` is clean; `phase-8` and `phase-10` are merged
-and deleted.
+Recorded 2026-10-04, against **v0.6.0** — the cancellation release, tagged from `main` at `0282077`, digest
+`sha256:1371f9a0…`, every spelling resolving to it. It carries issue #6 (Exa and Perplexity cancel, the Perplexity
+background lifecycle and the accepted-create fault) and what it stood on, fourteen merges since v0.5.0; the tag
+message lists every consumer-visible change and the breaking ones first. `main` is clean. The paragraphs below
+were recorded 2026-08-18 against **v0.5.0** — the framework release, tagged from `main` at `5ac0a35`, digest
+`sha256:8c23f154…` — which carried **Phase 10** (the framework seam, merged at `ae437c7`, PR #5), **Phase 8**
+(the MCP profile, `16c4688`, PR #4) and **Phase 7** (contract fidelity, `6a43316`, PR #3), unreleased since v0.4.0.
 
 **What Phase 10 did, in one sentence:** `provider.Profile`/`Set` is the registration record, the root
 `servicesim` package is the composition entry point a consumer's own `main.go` calls, the four profiles moved to
