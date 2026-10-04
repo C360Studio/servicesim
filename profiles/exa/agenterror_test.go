@@ -177,8 +177,8 @@ providers:
 	assert.Equal(t, "RUN_NOT_FOUND", code)
 }
 
-// A scripted fault status becomes the nested envelope on both routes, with the
-// type and code the pairing table gives it.
+// A scripted fault status becomes the nested envelope on all three routes (create,
+// poll and cancel), with the type and code the pairing table gives it.
 func TestAgentErrorEnvelopeForFaultInjectedStatuses(t *testing.T) {
 	t.Parallel()
 
@@ -201,7 +201,10 @@ func TestAgentErrorEnvelopeForFaultInjectedStatuses(t *testing.T) {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			t.Parallel()
 
-			// create.fault is the create route's plan; the turn's fault is the poll's.
+			// create.fault is the create route's plan; the turn's fault is the poll's;
+			// cancel.fault is the cancel's. No cancel.turns: an attempt the fault
+			// replaces does not commit, so the cancel records nothing and never reads
+			// them; a regression that recorded it would fail here for want of them.
 			s := asyncSim(t, `
 version: 1
 name: faulted
@@ -216,6 +219,10 @@ providers:
           attempts:
             - {status: `+strconv.Itoa(tc.status)+`}
         respond: {status: running}
+    cancel:
+      fault:
+        attempts:
+          - {status: `+strconv.Itoa(tc.status)+`}
 `)
 			create := s.do(request{method: http.MethodPost, path: "/agent/runs", body: `{"query":"q"}`})
 			require.Equal(t, tc.status, create.Code)
@@ -233,6 +240,13 @@ providers:
 			assert.Equal(t, tc.typ, typ)
 			assert.Equal(t, tc.code, code)
 			assertRequestIDHeader(t, poll)
+
+			cancel := s.do(request{method: http.MethodPost, path: "/agent/runs/" + id + "/cancel"})
+			require.Equal(t, tc.status, cancel.Code, "body: %s", cancel.Body.String())
+			typ, code, _ = decodeAgentError(t, cancel, true)
+			assert.Equal(t, tc.typ, typ)
+			assert.Equal(t, tc.code, code)
+			assertRequestIDHeader(t, cancel)
 		})
 	}
 }
@@ -257,6 +271,10 @@ providers:
           - {status: 400, error: "bad shape"}
     turns:
       - respond: {status: running}
+    cancel:
+      fault:
+        attempts:
+          - {status: 429, error: "slow down", tag: TIMEOUT}
 `
 	s := asyncSim(t, src)
 
@@ -288,6 +306,16 @@ providers:
 	assert.Equal(t, "INVALID_REQUEST", typ)
 	assert.Equal(t, "INVALID_REQUEST", code, "an absent tag leaves the status's default code")
 	assert.Equal(t, "bad shape", message)
+
+	// The cancel route maps the same two fields. TIMEOUT differs from the 429's
+	// default code, so a cancel that ignored tag: would show CONCURRENCY_LIMIT_REACHED.
+	id := createRun(t, s, `{"query":"q"}`)
+	cancel := s.do(request{method: http.MethodPost, path: "/agent/runs/" + id + "/cancel"})
+	require.Equal(t, http.StatusTooManyRequests, cancel.Code, "body: %s", cancel.Body.String())
+	typ, code, message = decodeAgentError(t, cancel, true)
+	assert.Equal(t, "RATE_LIMIT_ERROR", typ)
+	assert.Equal(t, "TIMEOUT", code, "a cancel fault's tag is emitted verbatim as code")
+	assert.Equal(t, "slow down", message, "a cancel fault's error replaces the default message")
 }
 
 // The verbatim tag -> code mapping stays, but a tag outside the spec's ten-member

@@ -71,7 +71,7 @@ consumed fields are still verified mostly against the vendor's rendered prose pa
 Exa Websets endpoint, an unrelated Tavily `/crawl` field, and so on. A changed hash is therefore the SIGNAL that
 something may have moved, not a diff of what moved: the next step is always a person re-reading the consumed fields
 against both the cited `documentation_url` pages and the spec itself. Only the entries whose own `documentation_url`
-IS the spec's URL (all of Perplexity's, and Exa's three `/findSimilar` and ten agent-run entries) were read from the
+IS the spec's URL (all of Perplexity's, and Exa's three `/findSimilar` and twelve agent-run entries) were read from the
 spec directly; every other entry was read from an undated prose page, and re-checking it means re-reading that page,
 not re-hashing anything.
 

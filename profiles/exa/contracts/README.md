@@ -525,7 +525,7 @@ the response descriptions, and the messages are the response descriptions reused
 
 | Status | `type` | `code` | `message` |
 |---|---|---|---|
-| 400 | `INVALID_REQUEST` | `INVALID_REQUEST` | the rejecting finding's text |
+| 400 | `INVALID_REQUEST` | `INVALID_REQUEST` | the rejecting finding's text; "Invalid request" for a scripted fault |
 | 401 | `AUTHENTICATION_ERROR` | `TEAM_NOT_FOUND` | "Team context or authentication was not found" |
 | 404 | `NOT_FOUND` | `RUN_NOT_FOUND` | "Run not found" |
 | 429 | `RATE_LIMIT_ERROR` | `CONCURRENCY_LIMIT_REACHED` | "Agent run concurrency limit reached" |
@@ -605,10 +605,10 @@ Verified 2026-10-02 against the same spec, hash unchanged. Classifications as ab
   | Status | When | Body |
   |---|---|---|
   | `200` | the cancel was recorded, repeated, or found the run's next poll terminal | `AgentRun` |
-  | `400` | a body that is not a JSON object (SIMULATOR-POLICY) | `INVALID_REQUEST` / `INVALID_REQUEST`, the finding's text |
+  | `400` | a body that is not a JSON object (SIMULATOR-POLICY); or a scripted `cancel.fault` attempt | `INVALID_REQUEST` / `INVALID_REQUEST`, the finding's text (a scripted fault: its own body, "Invalid request" by default, pinned by `exa-agent-runs-cancel-400.json`) |
   | `401` | no credential in an accepted header; a credential that does not match `auth.expect_key`, only when the scenario sets one; or any request under `auth.mode: reject` | `AUTHENTICATION_ERROR` / `TEAM_NOT_FOUND` |
   | `404` | a run this namespace does not hold: never minted, minted in another namespace, or a malformed id; or a run a reset removed after the cancel resolved it | `NOT_FOUND` / `RUN_NOT_FOUND` |
-  | `429` | only a scripted `cancel.fault` attempt | the fault's |
+  | `429` | only a scripted `cancel.fault` attempt | `RATE_LIMIT_ERROR` / `CONCURRENCY_LIMIT_REACHED`, "Agent run concurrency limit reached" by default, pinned by `exa-agent-runs-cancel-429.json` (an attempt's own `error:` replaces the message and `tag:` the code) |
   | `500` | the cancel would take effect but the scenario cannot answer the polls after it (`job.cancel_unscripted`), or the run's position kept moving (`job.cancel_contended`); or a scripted `cancel.fault` attempt | `SERVER_ERROR` / `SERVER_ERROR`, "Internal server error" (SIMULATOR-POLICY, below; a scripted fault: its own body, "Server error" by default) |
   | `413` | a body over `--max-request-bytes`, refused by the shared request lifecycle as on every route (SIMULATOR-POLICY) | `INVALID_REQUEST` / `INVALID_REQUEST`, the finding's text |
   | `503` | a request in a new namespace while the process is at its `--max-namespaces` bound (SIMULATOR-POLICY) | `SERVER_ERROR` / `SERVER_ERROR`, the remedy as the message |
