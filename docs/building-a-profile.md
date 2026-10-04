@@ -295,6 +295,10 @@ func Profile() provider.Profile {
   (Perplexity's `background: true`) and whose retrieve route serves that job's snapshots from the scenario's
   `background:` block. The framework rejects a `background:` block on every other entry. See
   [Async jobs](#async-jobs).
+- `BackgroundCancellable` is absent from Acme as well. It is the third opt-in, for a `cancel:` nested *inside* an
+  entry's `background:` block: naming an entry in `Backgroundable` accepts its `background:` block and nothing nested
+  in it, and the framework rejects the nested `cancel:` on every entry this field does not name. It is independent of
+  `Cancellable`, and a name in it must also be in `Backgroundable`. See [Async jobs](#async-jobs).
 - `ErrorBody` is **required**. House rule 3: an unmatched path, method, provider or scenario answers in the
   vendor's own error shape, never with an empty body. `provider.NewSet` refuses a `Profile` without it.
 - `DefaultAuth` is the mode an entry with no `auth:` block of its own gets — a *default your handler reads*, not
@@ -977,7 +981,8 @@ the same default and through the same `Set.Validators` plumbing as `Cancellable`
 an entry is a promise: the create route calls `provider.MintJob` only when the request asks for the lifecycle, and
 should fail closed when the scenario declares no block rather than invent a script (Perplexity's does); the retrieve
 route calls `provider.ResolveJob` and then `provider.SelectPollTurn` with `providers.<entry>.background` as `base`,
-the block's turns as `turns` and nil for `cancel`. Six things are yours. The framework checks none of them, and most
+the block's turns as `turns` and nil for `cancel` — unless the profile also serves a cancel of a background job
+(below). Six things are yours. The framework checks none of them, and most
 fail silently when missed: the scenario loads clean and a retrieve serves the wrong thing.
 
 - **Give the retrieve its own fault plan.** Its `Route.Fault` returns the first `background.turns[i].Fault` that
@@ -997,22 +1002,43 @@ fail silently when missed: the scenario loads clean and a retrieve serves the wr
   Register a validator before you opt in: a profile with no `Validators` gets the framework's no-op validator for its
   own kind, and then nothing checks `background.turns` at all.
 - **Judge the script.** Call `provider.TerminalRegressions` on `background.turns` as on any poll script, and decide
-  which of your vendor's statuses are terminal.
+  which of your vendor's statuses are terminal. If you serve a background cancel, judge `background.cancel.turns` in a
+  pass of its own.
 - **Decide what a `HEAD` does.** Go's mux delivers `HEAD` to a `GET` pattern, so a retrieve route that does not look
   at the method lets an existence check claim a snapshot and advance the job. `profiles/exa` registers an explicit
   `HEAD` route; `profiles/perplexity` refuses `HEAD` with a `405` because its specification declares none.
 
 `profiles/perplexity`'s `background.go` is the worked example.
 
-**Your validator enforces what `CancelJob` relies on: a terminal snapshot is absorbing in the order polls are
-served.** A cancel judges the job by its next poll, so a script that can serve a pending snapshot after a terminal
-one lets a client watch a run finish and then have it cancelled. Call `provider.TerminalRegressions` on each script
-an async entry declares — its `turns`, and its `cancel.turns` when it is cancellable — passing the poll route's
-`FaultKey` and whether each turn's snapshot is terminal in your vendor's vocabulary. It evaluates the turns
-`provider.SelectTurn` would actually serve, which is not declaration order
-([the schema](scenario-schema.md#terminal-is-judged-in-serve-order)), and returns one `provider.TerminalRegression`
-per offending turn; report each as an error under your own code at that turn's path. Exa's `agentrun.go` and
-Tavily's `research.go` are the worked examples, reporting `exa.agent_run.terminal_then_pending` and
+**A cancel of a background job opts in a third time, with `Profile.BackgroundCancellable`.** `Backgroundable` accepts
+an entry's `background:` block and nothing nested in it, so `provider.ValidateScenario` rejects a `cancel:` written
+inside the block, with `provider.CodeBackgroundCancelUnsupported` (`scenario.provider.background_cancel_unsupported`,
+at `providers.<entry>.background.cancel`), on every entry the profile does not name in `BackgroundCancellable`. Like
+the other two it is rejected by default: a profile whose background lifecycle has no cancel sets nothing and fails
+closed. A `background:` block that is itself rejected takes its `cancel:` with it and raises
+`provider.CodeBackgroundUnsupported` alone, never a second finding. `NewSet` refuses a name that is not one of the
+profile's own entry kinds, and one that `Backgroundable` does not also name: the nested block lives inside a
+`background:` block that such an entry rejects, so the name would opt in nothing. The opt-in is independent of
+`Cancellable`, which governs an entry's own `cancel:` — Perplexity's Agent entry is in `Backgroundable` and
+`BackgroundCancellable` and not in `Cancellable`, so an entry-level `cancel:` on it is still rejected — and it reaches
+validation through `Set.Validators` like the others.
+
+Naming an entry is a promise, kept in Go: a cancel route of its own, with a `FaultKey` and a per-job `LaneFrom` of its
+own and a `Route.Fault` that returns `background.cancel.fault`, decides each cancel with `provider.CancelJob` over
+`background.turns` and `background.cancel`, the retrieve's `FaultKey` as `pollRoute`; and the retrieve passes
+`background.cancel` as the `cancel` argument of `provider.SelectPollTurn`. What [Polls and cancels](#polls-and-cancels)
+says of a cancel route applies unchanged. Your validator checks the `when.route:` of `background.cancel.turns` against
+the retrieve route alone, as it does for `background.turns`.
+
+**Your validator enforces what `CancelJob` relies on: a terminal snapshot is absorbing in the order polls are served.**
+A cancel judges the job by its next poll, so a script that can serve a pending snapshot after a terminal one lets a
+client watch a run finish and then have it cancelled. Call `provider.TerminalRegressions` on each script an async entry
+declares — its `turns`, and its `cancel.turns` when it is cancellable, or `background.turns` and
+`background.cancel.turns` for a background lifecycle — passing the poll route's `FaultKey` and whether each turn's
+snapshot is terminal in your vendor's vocabulary. It evaluates the turns `provider.SelectTurn` would actually serve,
+which is not declaration order ([the schema](scenario-schema.md#terminal-is-judged-in-serve-order)), and returns one
+`provider.TerminalRegression` per offending turn; report each as an error under your own code at that turn's path. Exa's
+`agentrun.go` and Tavily's `research.go` are the worked examples, reporting `exa.agent_run.terminal_then_pending` and
 `tavily.research.terminal_then_pending`.
 
 ## Step 3 — scenarios

@@ -31,6 +31,16 @@ const CodeCancelUnsupported = "scenario.provider.cancel_unsupported"
 // lifecycle fails closed without writing a line for it.
 const CodeBackgroundUnsupported = "scenario.provider.background_unsupported"
 
+// CodeBackgroundCancelUnsupported is the finding raised for a `cancel:` block
+// nested in an accepted `background:` block, on an entry whose profile serves
+// no cancel of a background job for it — an entry kind its profile does not
+// name in [Profile.BackgroundCancellable]. It is an ERROR for the reason
+// [CodeCancelUnsupported] is. Rejection is the default, so a profile whose
+// background lifecycle has no cancel fails closed without writing a line for
+// it. A `background:` block that is itself rejected takes its `cancel:` with
+// it, under [CodeBackgroundUnsupported] alone.
+const CodeBackgroundCancelUnsupported = "scenario.provider.background_cancel_unsupported"
+
 // CodeTurnRouteUnknown is the finding raised for a `when.route:` naming a route
 // the provider kind does not serve. It is an ERROR, not a warning: a turn whose
 // route name matches nothing never fires, so the scenario quietly serves some
@@ -109,9 +119,12 @@ type Validator interface {
 // which only [Set.Validators] attaches, so a hand-built map rejects them all.
 // A `background:` block is rejected the same way, with
 // [CodeBackgroundUnsupported], unless the entry carries its profile's
-// [Profile.Backgroundable] opt-in. An opted-in entry's background.turns are not
-// route-checked here; its profile's own validator checks them (see
-// Profile.Backgroundable).
+// [Profile.Backgroundable] opt-in, and a `cancel:` nested in it is rejected
+// with it. A nested `cancel:` in an accepted background block is rejected with
+// [CodeBackgroundCancelUnsupported] unless the entry also carries its
+// profile's [Profile.BackgroundCancellable] opt-in. An opted-in entry's
+// background.turns and background.cancel.turns are not route-checked here; its
+// profile's own validator checks them (see Profile.Backgroundable).
 //
 // handlers is keyed on ProviderEntry.Kind, which defaults to the block's name, so
 // a scenario declaring an "openai" and an "openai_fallback" against one
@@ -139,7 +152,7 @@ func ValidateScenario(s *scenario.Scenario, handlers map[string]Validator) []sce
 			kind = e.Name
 		}
 		v, ok := handlers[kind]
-		v, canCancel, canBackground := unmark(v)
+		v, canCancel, canBackground, canBackgroundCancel := unmark(v)
 		if !ok || v == nil {
 			e.Implemented = false
 			findings = append(findings, scenario.Finding{
@@ -162,7 +175,9 @@ func ValidateScenario(s *scenario.Scenario, handlers map[string]Validator) []sce
 					"whose profile serves a cancel (provider.Profile.Cancellable)", name, kind),
 			})
 		}
-		if e.Background != nil && !canBackground {
+		switch {
+		case e.Background != nil && !canBackground:
+			// The cancel nested in it goes with it: one error is the whole story.
 			findings = append(findings, scenario.Finding{
 				Severity: scenario.SeverityError,
 				Code:     CodeBackgroundUnsupported,
@@ -171,9 +186,20 @@ func ValidateScenario(s *scenario.Scenario, handlers map[string]Validator) []sce
 					"lifecycle for it, so the block could never take effect; remove it, or move it to an entry "+
 					"whose profile serves one (provider.Profile.Backgroundable)", name, kind),
 			})
+		case e.Background != nil && e.Background.Cancel != nil && !canBackgroundCancel:
+			findings = append(findings, scenario.Finding{
+				Severity: scenario.SeverityError,
+				Code:     CodeBackgroundCancelUnsupported,
+				Path:     "providers." + name + ".background.cancel",
+				Message: fmt.Sprintf("entry %q declares a cancel: block under background:, but provider kind %q "+
+					"serves no cancel of a background job for it, so the block could never take effect; remove it, "+
+					"or move it to an entry whose profile serves one (provider.Profile.BackgroundCancellable)",
+					name, kind),
+			})
 		}
-		// background.turns is deliberately not route-checked here: see
-		// Profile.Backgroundable for why the opted-in profile's validator owns it.
+		// background.turns and background.cancel.turns are deliberately not
+		// route-checked here: see Profile.Backgroundable for why the opted-in
+		// profile's validator owns them.
 		if lister, ok := v.(RouteLister); ok {
 			routes := lister.Routes()
 			findings = append(findings, validateTurnRoutes("providers."+name+".turns", kind, e.Turns, routes)...)
@@ -191,15 +217,17 @@ func ValidateScenario(s *scenario.Scenario, handlers map[string]Validator) []sce
 // whichever order they nest, and reports which were present. What it returns
 // is the profile's own validator, so an optional interface it implements — a
 // RouteLister — is visible again.
-func unmark(v Validator) (inner Validator, canCancel, canBackground bool) {
+func unmark(v Validator) (inner Validator, canCancel, canBackground, canBackgroundCancel bool) {
 	for {
 		switch m := v.(type) {
 		case cancellable:
 			v, canCancel = m.Validator, true
 		case backgroundable:
 			v, canBackground = m.Validator, true
+		case backgroundCancellable:
+			v, canBackgroundCancel = m.Validator, true
 		default:
-			return v, canCancel, canBackground
+			return v, canCancel, canBackground, canBackgroundCancel
 		}
 	}
 }

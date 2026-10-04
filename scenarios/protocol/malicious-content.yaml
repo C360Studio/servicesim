@@ -7,7 +7,8 @@
 # path by ONE scenario. The exception: an Exa agent run the consumer cancels
 # renders the empty output placeholder, so it carries no marker. A Perplexity
 # `background: true` run carries the pack on its completed retrieve (its queued
-# and in-progress retrieves, and the create's fixed queued stub, carry none).
+# and in-progress retrieves, the retrieves after a cancel, and the create's fixed
+# queued stub, carry none).
 #
 # Charter (scenarios/doc.go): this is PROTOCOL behaviour, identical for every
 # consumer — the same generic bait, on the same wire shapes, regardless of what
@@ -157,7 +158,8 @@ description: >-
   through every provider block, so a consumer's guardrail is exercised on
   every dispatch path by one scenario (an Exa agent run the consumer cancels
   renders the empty output placeholder, so it carries no marker; a Perplexity
-  `background: true` run carries the pack on its completed retrieve).
+  `background: true` run carries the pack on its completed retrieve, and none
+  after a cancel).
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -522,10 +524,11 @@ providers:
     # completed for good, with the usage and cost the shared block bills. The completed
     # snapshot's answer is the marker text the synchronous answer above carries, and its
     # search_results are the same 18 sources (*all-source-refs). The queued and
-    # in-progress snapshots carry neither, and the create answers the fixed queued stub:
-    # this block scripts only the retrieves. It carries no fault on purpose: this
-    # entry's own `fault:` or `turns:` shape the CREATE, and the retrieve's budget is
-    # its own.
+    # in-progress snapshots carry neither, nor do those of the shared cancel block
+    # below (a cancelled run answered nothing), and the create answers the fixed
+    # queued stub: this block scripts only the retrieves and the cancel. It carries
+    # no fault on purpose: this entry's own `fault:` or `turns:` shape the CREATE,
+    # and the retrieve's budget is its own.
     background:
       turns:
         - when: {call_index: 0}
@@ -546,6 +549,29 @@ providers:
               cost:
                 input_cost: 0.0001
                 output_cost: 0.0004
+      # A cancel is answered `cancelling`, and the retrieves after it read in progress,
+      # since an acknowledgement is not proof the run stopped, and then cancelled,
+      # billing the usage the run accrued before it stopped: its 24 input tokens and
+      # 12 output tokens, at the per-token rates of the corpus's completed run.
+      # Nineteen built-ins share this cancel block (extra-fields scripts its own). A
+      # cancel made once the run has ended, when its next retrieve would be terminal,
+      # is the vendor's 400 and records nothing. It carries no fault on purpose: the
+      # cancel's budget is its own. The total_cost is scripted rather than left to the
+      # renderer, whose float sum of the two costs would print 0.00015000000000000001.
+      cancel:
+        turns:
+          - when: {call_index: 0}
+            respond:
+              status: in_progress
+          - respond:
+              status: cancelled
+              usage:
+                input_tokens: 24
+                output_tokens: 12
+                cost:
+                  input_cost: 0.0001
+                  output_cost: 0.00005
+                  total_cost: 0.00015
 
   # Exa's Agent API. Two pending polls then a terminal snapshot — the same
   # shape every other built-in uses, so a fault or turn_key test elsewhere

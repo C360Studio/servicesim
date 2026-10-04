@@ -22,7 +22,11 @@ was, and the `spec:` block in `provenance.yaml`, the provider-level `verified:` 
 [`contracts/README.md`](../../../contracts/README.md) all stay at 2026-10-01 on purpose. What was read, what moved, and
 why the dates did not move are under "Lifecycle: background runs and retrieve" below.
 
-Source of truth: <https://docs.perplexity.ai/openapi.json> (OpenAPI 3.1.0, 208,564 bytes as of 2026-10-01, `servers: [https://api.perplexity.ai]`). Every table below is generated from that document (except "Lifecycle: background runs and retrieve", read from the 2026-10-03 fetch), not from prose documentation pages and not from memory.
+**The cancel operation read again 2026-10-04** (issue #31) against a fresh fetch whose bytes are identical to the
+2026-10-03 one, and it agrees with everything recorded about it. The same three places stay at 2026-10-01 for the same
+reason; see "Dated note, 2026-10-04" in the same section.
+
+Source of truth: <https://docs.perplexity.ai/openapi.json> (OpenAPI 3.1.0, 208,564 bytes as of 2026-10-01, `servers: [https://api.perplexity.ai]`). Every table below is generated from that document (except "Lifecycle: background runs and retrieve", read from the 2026-10-03 fetch, which the 2026-10-04 fetch matched byte for byte), not from prose documentation pages and not from memory.
 
 > **Why this matters.** An earlier pass built this contract by reading Mintlify documentation pages and
 > produced fields borrowed from OpenAI's Responses API by analogy, plus one quotation that does not exist in
@@ -125,7 +129,8 @@ was used (`path` and `route` on every entry), so an adapter test can assert its 
 Servicesim serves all six paths. *(Note added 2026-08-15: the two `/v1/chat/completions` and `/responses`
 spellings were missing before that date and returned 404.)* Since 2026-10-03 it serves a seventh route, which is not
 an alias of any of them and **is** in the specification: `GET /v1/agent/{id}`, `retrieveAgent` (see "Lifecycle:
-background runs and retrieve" below).
+background runs and retrieve" below). Since 2026-10-04 it serves an eighth, also in the specification:
+`POST /v1/agent/{id}/cancel`, `cancelAgentResponse` (the same section).
 
 ## Surface 1 — Sonar (`POST /v1/sonar`)
 
@@ -703,8 +708,11 @@ block scripts. The run is scripted by retrieve count, not by elapsed time, so a 
 without a clock and the same scenario gives the same ids and bodies every time. The scenario side is in
 [`docs/scenario-schema.md`](../../../docs/scenario-schema.md#background-runs-background).
 
-Not part of it, and not simulated: `POST /v1/agent/{id}/cancel` (a `cancel:` key under `background:` is a load error),
-the files endpoints, and streaming a background run.
+Since **2026-10-04** (issue #31, unit U6) a client can also stop a run: `POST /v1/agent/{id}/cancel` acknowledges the
+cancel, and the retrieves after it serve the snapshots the scenario's `background.cancel` block scripts ("The cancel"
+below). A `cancel:` key directly under `perplexity_agent`, as opposed to under its `background:`, is still a load error.
+
+Not part of it, and not simulated: the files endpoints, and streaming a background run.
 
 ### What the specification documents
 
@@ -714,6 +722,7 @@ it differs from the one recorded in `provenance.yaml`.
 | Item | Pointer | What it says |
 |---|---|---|
 | `retrieveAgent` | `#/paths/~1v1~1agent~1{id}/get` | Security `HTTPBearer`. `200` is `ResponsesResponse`. `404` is `{error: ErrorInfo}`: "Unknown id, or the response belongs to a different account, or the response was created with `store: false`." The description adds: "Only responses created with `store` omitted or `true` can be retrieved." |
+| `cancelAgentResponse` | `#/paths/~1v1~1agent~1{id}~1cancel/post` | Security `HTTPBearer`; one path parameter `id` ("Response id (`resp_<...>`)"); **no `requestBody`**. `200` is an object whose required keys `response_id` and `status` are its only properties, `status` an enum with one member, `cancelling` ("Always `cancelling` - the cancel was accepted and the run stops asynchronously. An already-terminal run returns `400` instead, so no terminal status appears here."). `400` is `{error: ErrorInfo}`: "The response is already terminal, or the request is invalid." `404` is `{error: ErrorInfo}`: "Unknown id, or the response belongs to a different account." The description: "Cancellation is asynchronous: a `200` acknowledges the request (`status: cancelling`) and the run stops shortly after - poll `GET /v1/agent/{id}` for its terminal status. Cancelling a run that is already terminal returns `400`. Ownership is enforced server side; a cross-tenant or unknown id surfaces as `404`." |
 | `background` | `#/components/schemas/ResponsesRequest/properties/background` | "Run the response asynchronously. With `stream: false`, the request returns immediately with `status: "queued"`; poll `GET /v1/responses/{id}` until the response reaches a terminal status. Background runs are durable, so you can also stream them and reconnect after a drop." |
 | `store` | `#/components/schemas/ResponsesRequest/properties/store` | "When false, the response is hidden from later retrieve calls, and the echoed response reports `store: false`. It can still be used as a `previous_response_id` continuation source." |
 | `ResponsesResponse` | `#/components/schemas/ResponsesResponse` | Required: `id`, `object`, `created_at`, `status`, `model`, `output`. `usage` is optional. |
@@ -782,12 +791,15 @@ credentials are accepted and the id resolves, so a refused or unknown retrieve s
 | a scripted fault attempt | the fault's status and body | the handler's label, as for every route |
 
 - **The snapshot.** `id` is always the job's: a snapshot cannot script `response_id`, nor an `id` or a `status` in
-  its `extra_fields` or in a fault attempt's, which are merged last and would win (each a load error). `object` is `response`. `created_at` is the snapshot's, else the scenario's base time. `status` is the snapshot's; an absent
-  status is `completed`. `model` is the snapshot's, else the fixed placeholder `servicesim/unscripted`
-  (`SIMULATOR-POLICY`): the specification requires `model`, a retrieve carries no request to echo one from, and the
-  job record holds none. `output` is rendered as the synchronous path renders it, except that a `queued` or
-  `in_progress` snapshot with no `answer` renders `[]` — the run has not answered yet. Its message item's id, when the
-  snapshot scripts none, derives from the job id, so it is stable across one job's retrieves and distinct between jobs.
+  its `extra_fields` or in a fault attempt's, which are merged last and would win (each a load error, and each key is
+  matched the way a Go JSON decoder matches it, case-insensitively under Unicode simple folding, so `Status` and
+  `ſtatus` are refused as `status`). `object` is `response`. `created_at` is the snapshot's, else the scenario's base
+  time. `status` is the snapshot's; an absent status is `completed`. `model` is the snapshot's, else the fixed
+  placeholder `servicesim/unscripted` (`SIMULATOR-POLICY`): the specification requires `model`, a retrieve carries no
+  request to echo one from, and the job record holds none. `output` is rendered as the synchronous path renders it,
+  except that a `queued` or `in_progress` snapshot with no `answer` renders `[]` — the run has not answered yet. Its
+  message item's id, when the snapshot scripts none, derives from the job id, so it is stable across one job's
+  retrieves and distinct between jobs.
 - **`usage` renders only when the snapshot scripts it, and its `cost` only when that is scripted too.** The
   specification makes both optional, and the acceptance rule for this work is that no response invents a zero cost: a
   zero the scenario did not script is a placeholder, never a billing fact. The synchronous path still always renders
@@ -814,6 +826,84 @@ credentials are accepted and the id resolves, so a refused or unknown retrieve s
   resolves to none also raises the warning `job.foreign_id` on its `404`; in a namespace that has minted none the
   `404` carries no finding.
 
+### The cancel
+
+Added **2026-10-04** (issue #31, unit U6 of #6). `POST /v1/agent/{id}/cancel` (`cancelAgentResponse`) asks for a
+background run to stop. What the run does afterwards is the scenario's `background.cancel` block: its `turns` are the
+snapshots a retrieve is served once a cancel is recorded, and its `fault` is the cancel route's own attempt plan. The
+scenario side is in [`docs/scenario-schema.md`](../../../docs/scenario-schema.md#background-runs-background).
+
+The handler's order is credentials, resolve the job, decide. A refused or unknown cancel claims nothing and records
+nothing. Every cancel that resolves a job claims exactly one attempt from the cancel route's lane, first, whatever it
+then decides (`SIMULATOR-POLICY`), so the attempt a client's retry draws depends on how many cancels it sent and never
+on the run's state. Every answer after that claim is a served, fault-eligible response, the `400` and the `404` of a
+vanished job included, except the `500` of a cancel the scenario cannot answer (`job.cancel_unscripted`,
+`job.cancel_contended`): that one is a rejection, so the claimed attempt stays spent, its fault is not applied, and the
+framework adds the warning `fault.attempt_on_rejection`.
+
+| Request | Answer | Journal label |
+|---|---|---|
+| the run's next retrieve is pending (`queued`, `in_progress`) and the cancel is recorded | `200` `{"response_id": "<id>", "status": "cancelling"}` | `perplexity.agent.cancel.accepted` |
+| the same, but a scripted fault attempt replaces the reply and is not `accepted` | the fault's status and body; **nothing is recorded** | `perplexity.agent.cancel.unrecorded` |
+| the same, but the fault attempt is `accepted` | the fault's status and body, or a dropped connection; the cancel **is** recorded | `perplexity.agent.cancel.accepted` |
+| a repeat while the cancel script's next snapshot is pending | `200` cancelling again; nothing new is recorded | `perplexity.agent.cancel.repeated` |
+| the run's next retrieve is already terminal, or a repeat whose next cancel-script snapshot is terminal | `400` `ErrorInfo`; nothing is recorded and the retrieves are unchanged | `perplexity.agent.cancel.terminal` |
+| no credential, or one the entry's `auth:` refuses | `401` `ErrorInfo` (`SIMULATOR-POLICY`: no Agent operation documents `401`); claims nothing | `perplexity.agent.error.401` |
+| an id this namespace never minted, one minted in another namespace, or a malformed id | `404` `ErrorInfo`; claims nothing | `perplexity.agent.error.404` |
+| a reset removed the job after its id resolved | the same `404`, but the attempt was claimed, so it is served and fault-eligible | `perplexity.agent.error.404` |
+| the scenario cannot answer the cancel: `background.turns` has no turn for the job's next retrieve, so whether it is terminal cannot be judged; or that retrieve is pending and `background.cancel.turns` (or the whole `cancel:` block) has no snapshot for the retrieve after the cancel; or, for a repeat, the next `cancel.turns` snapshot matches nothing | the vendor-shape `500`, never the finding's message; nothing is recorded and the claimed attempt stays spent; error finding `job.cancel_unscripted`, with the framework's `fault.attempt_on_rejection` warning | `perplexity.agent.error.500` |
+| the job's poll position moved on every try to record the cancel | the same `500`; nothing is recorded; error finding `job.cancel_contended` | `perplexity.agent.error.500` |
+| any other method on the path, `HEAD` included | the framework's `405`, `Allow: POST`, in the flat Sonar-shaped refusal body; claims nothing | `route.method_not_allowed` |
+
+The `200` and `400` bodies are `perplexity-agent-cancel-200.json` and `perplexity-agent-cancel-400.json`; the `404` is
+`perplexity-agent-retrieve-404.json` too, and the `401` and the `500` are the Agent bodies of
+`perplexity-agent-401.json` and `perplexity-agent-500.json`. The goldens are stored pretty-printed and the wire is
+compact, so a test compares each body with its golden after `json.Compact`. A scripted fault attempt replaces the
+response as it does on every route, and the journal entry then carries the label of what the cancel did beside the
+entry's `fault_kind`.
+
+- **What the specification gives, and what it does not.** Both keys of the `200` and its single `status` value are the
+  specification's, and so are the `400` for a terminal run and the `404`. It says nothing about when a run is
+  terminal, about a second cancel, about what a retrieve returns while the run stops, about the text of any error, or
+  about what a request body would mean; every choice below is `SIMULATOR-POLICY`.
+- **A cancel is judged by the run's next retrieve** (`SIMULATOR-POLICY`). Servicesim scripts a run by retrieve count
+  and has no clock, so "already terminal" is the snapshot the job's *next* retrieve would serve, selected without
+  claiming anything and judged by "Terminal statuses" below. Terminal: the `400` ("completion wins"), nothing
+  recorded, every later retrieve unchanged. Pending: the cancel is recorded at the job's current position. So a cancel
+  sent when the next retrieve would be terminal loses to completion whether or not the client has seen that retrieve,
+  and one sent while it is pending wins even if the client's last poll was the final pending one.
+- **The first cancel always answers `200`** (`SIMULATOR-POLICY`), even when `background.cancel.turns[0]` is itself
+  terminal: the specification's `200` is always `cancelling`, and the run's stop is what the retrieves show. An
+  immediate repeat of such a cancel is then the `400`, because the run's next retrieve is now that terminal snapshot.
+- **A repeat cancel** (`SIMULATOR-POLICY`) records nothing new, and the marker stays where the first cancel put it. It
+  is judged as the first was, but by the cancel script: `200` cancelling while the snapshot the run's next retrieve
+  would serve is pending, `400` once it is terminal.
+- **A retrieve after a cancel is never `cancelling`** (`SIMULATOR-POLICY`). `cancelling` is not a `Status` member and
+  appears only in the cancel's own `200`; a snapshot scripted with `status: cancelling` is refused at load. From the
+  cancel on, retrieves serve `background.cancel.turns`, whose `when.call_index` counts the job's retrieves **since the
+  cancel** (the first one is call 0) while the journal's `attempt_index` for the retrieve lane stays absolute.
+  `completed` is allowed in that script, for a cancel that was acknowledged and a run that completed anyway. `usage`
+  and `cost` render only when a snapshot scripts them, as for any retrieve.
+- **The `400`'s message** (`SIMULATOR-POLICY`) is `The response is already terminal and cannot be cancelled.` with code
+  `invalid_request` and type `invalid_request_error`, the pair `perplexity-agent-400.json` uses. The specification
+  supplies no example body.
+- **The request** (`SIMULATOR-POLICY`). The operation declares no request body, so none is required: a bare `POST` with
+  no `Content-Type`, which is what `curl -X POST` sends, is the cancel, and a JSON object body is accepted and ignored.
+  A body that is not a JSON object is refused with the Agent validation `400` before anything is claimed, as on every
+  route. The `400`'s other documented cause, "the request is invalid", is that refusal and nothing else.
+- **`Allow: POST`** (`SIMULATOR-POLICY`). The specification declares only `post` on the path, and Servicesim serves
+  declared routes only, so every other method is the `405`. Unlike the retrieve, nothing needs a branch for `HEAD`: the
+  mux does not deliver it to a `POST` pattern, so it cannot claim or record anything.
+- **The cancel has a budget of its own.** Fault key `perplexity:agent.cancel`, per job, so one run's failed cancel never
+  spends another's retry, and a cancel retry spends neither a create's attempt nor a retrieve's. Its plan is
+  `background.cancel.fault`, a third location beside the entry's turns and `background.turns`; a cancel snapshot itself
+  carries no `fault:`, which is a load error. A fault attempt marked `accepted` records the cancel although its reply
+  is lost, as an accepted create keeps its job. The plan's attempts are checked at load (see "Findings this profile
+  raises on the lifecycle" below).
+- **Namespaces stand in for accounts** exactly as for the retrieve (see there): the id of a job minted in another
+  namespace resolves here only if the two ids coincide. A synchronous response's id and a `store: false` create's id
+  resolve no job, because none was kept.
+
 ### The named divergence: a synchronous response is not retrievable
 
 On the real API a synchronous response with `store` omitted is retrievable ("Only responses created with `store`
@@ -832,9 +922,10 @@ needs the namespace to have minted a job. This paragraph is the signal.
 
 The `Status` enum has no terminal/non-terminal split, so which statuses end a run is Servicesim's reading:
 `completed`, `failed`, `incomplete` and `cancelled` are terminal, `queued` and `in_progress` are not, and an absent
-status is `completed`. The only thing that depends on it is the load-time check that a script never serves a
-non-terminal snapshot after a terminal one (`perplexity.agent.background.terminal_then_pending`). Whether the real
-service can leave `incomplete` or `failed` is not documented. The 2026-10-01 audit recorded the same plausible reading.
+status is `completed`. Two things depend on it: the load-time check that a script never serves a non-terminal snapshot
+after a terminal one (`perplexity.agent.background.terminal_then_pending`), and the cancel's choice between `200` and
+`400` ("The cancel" above). Whether the real service can leave `incomplete` or `failed` is not documented. The
+2026-10-01 audit recorded the same plausible reading.
 
 ### Findings this profile raises on the lifecycle
 
@@ -843,13 +934,32 @@ service can leave `incomplete` or `failed` is not documented. The 2026-10-01 aud
 | `perplexity.agent.background.unscripted` | error, per request | `background: true` and no `background:` block |
 | `perplexity.agent.background.stream` | error, per request | `background: true` with `stream: true` |
 | `perplexity.agent.background.unstored` | warning, per request | `background: true` with `store: false` |
-| `perplexity.agent.background.field` | error, at load | a `response_id` or `stream` key in a background snapshot, or an `id` or `status` key in its `extra_fields` or in the `extra_fields` of one of the turn's fault attempts |
+| `perplexity.agent.background.field` | error, at load | a `response_id` or `stream` key in a background snapshot, or an `id` or `status` key in its `extra_fields` or in the `extra_fields` of one of the turn's fault attempts; in `background.cancel.fault`, a `response_id` or `status` key in an attempt's `extra_fields`, addressed `providers.<entry>.background.cancel.fault.attempts[j].extra_fields.<key>`. An `extra_fields` key is matched case-insensitively under Unicode simple folding (`Status`, `ſtatus`), once per key as written |
 | `perplexity.agent.background.terminal_then_pending` | error, at load | a non-terminal snapshot served after a terminal one, judged in serve order |
-| `perplexity.agent.background.script_exhausted` | warning, at load | the last background turn has a condition a retrieve can fail (any condition but a `route` naming the retrieve, in either spelling), so the retrieve after it is a `404` for a job that exists |
+| `perplexity.agent.background.script_exhausted` | warning, at load | the last turn of `background.turns` or of `background.cancel.turns` has a condition a retrieve can fail (any condition but a `route` naming the retrieve, in either spelling), so the retrieve after it is a `404` for a job that exists, and a cancel sent there is a `500` (the first cancel, for `background.turns`; a repeated one, for `background.cancel.turns`) |
 | `perplexity.agent.background.body_predicate` | warning, at load | `body_contains` or `body_json` on a background turn: a retrieve carries no body, so it can never match |
 
 The framework's own load findings for a `background:` block are in
 [`docs/scenario-schema.md`](../../../docs/scenario-schema.md#background-runs-background).
+
+The cancel adds no code of its own. The four at-load `perplexity.agent.background.*` codes above (`field`,
+`terminal_then_pending`, `script_exhausted`, `body_predicate`), and the per-snapshot checks a retrieve script gets,
+apply to `background.cancel.turns` too, addressed `providers.perplexity_agent.background.cancel.turns[i]`. The two
+scripts are judged each on its own: a terminal `background.turns` followed by a pending `background.cancel.turns` is no
+regression, because a cancel of a run whose next retrieve is terminal records nothing. A `when.route` in either script
+is checked against the retrieve route alone, since a cancel selects no snapshot of its own.
+
+The cancel's fault plan is checked at load too, each attempt addressed
+`providers.perplexity_agent.background.cancel.fault.attempts[j]`. A `response_id` or `status` key in an attempt's
+`extra_fields` is `perplexity.agent.background.field` (at `….extra_fields.<key>`): extra fields are merged into the
+body last and win, the acknowledgement's `response_id` is always its job's id, and its `status` is always `cancelling`,
+the one value the specification gives it. The keys are matched as in a snapshot's `extra_fields`, so `Status` and
+`ſtatus` are refused too. A `stream_disconnect`, `stream_truncate_chunk` or `stream_stall` kind is the
+framework's `scenario.fault.stream_mismatch` (at `….kind`), because the cancel never streams. Other `extra_fields`
+keys, `id` included, still load, and so does an attempt that sets only a `body`: a replacement body is not inspected.
+
+The two findings a cancel raises while it is served are the framework's, `job.cancel_unscripted` and
+`job.cancel_contended`, in the table under "The cancel".
 
 ### Unresolved: the poll path in the `background` text
 
@@ -869,14 +979,26 @@ route only, so `GET /v1/responses/{id}` answers `404` here. The inconsistency st
 - `UNVERIFIED`: what a real `queued` or `in_progress` retrieve carries in `output` and `usage`, whether `created_at`
   is the creation time, and whether a run can be reconnected to as the `background` text promises. The snapshots are
   the scenario's.
+- `UNVERIFIED`: what a real retrieve returns while a cancelled run is stopping (the specification says only to "poll
+  `GET /v1/agent/{id}` for its terminal status"), whether a cancel can lose a race to a completion, and whether a
+  second cancel is `200` or `400`. The scenario's `background.cancel.turns` and the rules under "The cancel" answer
+  all three for the simulator, and none of them is a vendor statement.
 
 ### Goldens
 
 `perplexity-agent-background-queued.json` is `simulator-chosen` as a whole: the envelope and the `queued` status come
 from the specification, but what a queued run's body carries — the empty `output` and the omitted `usage` — is
 `UNVERIFIED` and Servicesim's, and an entry carries one `kind`. `perplexity-agent-background-completed.json` and `perplexity-agent-retrieve-404.json` are
-`vendor-documented` for the status and the envelope, with the values and the `ErrorInfo` strings Servicesim's. All
-three are dated 2026-10-01 in `provenance.yaml`, with a comment saying why.
+`vendor-documented` for the status and the envelope, with the values and the `ErrorInfo` strings Servicesim's.
+
+The cancel adds two. `perplexity-agent-cancel-200.json` is `vendor-documented`: the whole body is the specification's
+(both required keys, in its order, and the one enum value), with only the id, the job's own, Servicesim's.
+`perplexity-agent-cancel-400.json` is `vendor-documented` for the status and the envelope, and every value in it is
+Servicesim's, because the specification supplies no example. The cancel's `404` has no golden of its own: it is the
+body of `perplexity-agent-retrieve-404.json`, whose provenance entry names both endpoints, and a test compares them.
+Each golden is tied to the handler by a test that compares the handler's bytes with the file's after `json.Compact`
+(the file is pretty-printed, the wire is compact), so a drift in either fails a test. All five entries are dated
+2026-10-01 in `provenance.yaml`, with a comment saying why.
 
 ### Dated note, 2026-10-03: what was re-read, and what moved
 
@@ -904,6 +1026,23 @@ re-audit, tracked in #27.
 `verified:` and `spec:` forward, and it starts with re-reading every consumed field. Moving them now would record bytes
 the bundle was not audited against and erase the drift signal. So the `spec:` block, the provider-level `verified:` and
 the Perplexity cell of the index table stay at 2026-10-01, and the three new golden entries carry that date too.
+
+### Dated note, 2026-10-04: the cancel, read again
+
+`cancelAgentResponse` was read again against a fresh fetch of <https://docs.perplexity.ai/openapi.json> on 2026-10-04:
+215,432 bytes, sha256 `1a269d5596e506d3189e57c3ae84874a21c3532afe8c95de6f21e55f17001f15`, the same bytes as the
+2026-10-03 fetch, so nothing in the note above moved again. The operation carries `description`, `operationId`,
+`parameters`, `responses`, `security` and `summary` and no `requestBody`; its `200`, `400` and `404` are as the table
+under "What the specification documents" records them, and the pointers `perplexity-agent-cancel-200.json` and
+`perplexity-agent-cancel-400.json` cite under `#/paths/~1v1~1agent~1{id}~1cancel/post/responses` resolve in it. That
+agrees with the 2026-10-01 audit's reading of the operation. Those bytes are gone, as the 2026-10-03 note says, so
+the audit's recorded reading is all there is to compare with.
+
+The `spec:` block, the provider-level `verified:` and the Perplexity cell of the index table stay at 2026-10-01 on
+purpose, and the two cancel golden entries are dated 2026-10-01 too (#27). `contracts.Conform` refuses an entry newer
+than the provider-level date and a `spec.retrieved` older than it, so dating the entries 2026-10-04 would have forced
+both forward onto a document whose other entries have not been re-read, and erased the drift signal the whole-bundle
+re-audit needs. This reading is recorded here instead, and the entries' notes say what each value rests on.
 
 ## What Servicesim simulates
 
@@ -965,6 +1104,9 @@ subset a C360 research adapter parses:
   and answers a `queued` snapshot, and `GET /v1/agent/{id}` serves the snapshots the scenario's `background:` block
   scripts, on a fault budget of its own. A synchronous response is deliberately not retrievable. See "Lifecycle:
   background runs and retrieve".
+- Cancelling a background run, since **2026-10-04** (issue #31): `POST /v1/agent/{id}/cancel` answers `200`
+  `{"response_id": ..., "status": "cancelling"}` and records the cancel, or `400` for a run already terminal, and the
+  retrieves after it serve the scenario's `background.cancel.turns`, on a fault budget of its own. See "The cancel".
 
 Deliberately **not** simulated, because no consumer parses them yet:
 
@@ -984,9 +1126,9 @@ Deliberately **not** simulated, because no consumer parses them yet:
   hang an added/done pair off of yet.
 - The `sandbox_results`, `mcp_list_tools`, `mcp_call`, `function_call`, `finance_results`,
   `people_search_results`, `fetch_url_results` and `tool_search_output` output-item types.
-- The files endpoints (`GET /v1/agent/{id}/files` and the file content download), `POST /v1/agent/{id}/cancel`, and
-  streaming a background run (`background: true` with `stream: true` fails closed; see "Lifecycle: background runs and
-  retrieve"). Background mode itself and the `GET /v1/agent/{id}` retrieve are simulated since 2026-10-03.
+- The files endpoints (`GET /v1/agent/{id}/files` and the file content download), and streaming a background run
+  (`background: true` with `stream: true` fails closed; see "Lifecycle: background runs and retrieve"). Background
+  mode itself and the `GET /v1/agent/{id}` retrieve are simulated since 2026-10-03, and the cancel since 2026-10-04.
 - `POST /search`, `/v1/embeddings`, `/v1/contextualizedembeddings`, the async Sonar endpoints, and the
   analytics endpoints.
 

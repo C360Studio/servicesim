@@ -11,16 +11,16 @@
 // that must be rotated to a specific value before any call succeeds,
 // deliberate cross-provider source overlap, a scripted multi-turn
 // conversation, an async run that reaches a terminal failed status, an async
-// run that never reaches a terminal status on its own (an Exa run the consumer
-// cancels reports cancelled), two concurrent callers on one
-// route kept in separate turn lanes, Server-Sent Events on the
-// streaming-capable surfaces (a clean stream, a mid-stream disconnect, a
-// truncated frame, and a transient blip a same-lane retry recovers from), a
-// generic hostile-content pack (prompt injection, credential-shaped bait,
-// active markup, exfiltration instructions and long content) exercising a
-// consumer's guardrail on every dispatch path (an Exa run the consumer cancels
-// renders no output, so it carries no marker), and a provider this build has
-// no handler for.
+// run that never reaches a terminal status on its own (an Exa run or a
+// Perplexity background run the consumer cancels reports cancelled), two
+// concurrent callers on one route kept in separate turn lanes, Server-Sent
+// Events on the streaming-capable surfaces (a clean stream, a mid-stream
+// disconnect, a truncated frame, and a transient blip a same-lane retry
+// recovers from), a generic hostile-content pack (prompt injection,
+// credential-shaped bait, active markup, exfiltration instructions and long
+// content) exercising a consumer's guardrail on every dispatch path (an Exa run
+// or a Perplexity background run the consumer cancels renders no output, so it
+// carries no marker), and a provider this build has no handler for.
 //
 // Every built-in also scripts the background run a Perplexity Agent request
 // with background: true starts. Sixteen share one block: GET /v1/agent/{id}
@@ -28,17 +28,26 @@
 // and the usage and cost the run billed. The other four script their own, because
 // each name promises a behaviour that block would drop on the route a background
 // poll uses: async-failed's run ends failed, with an error and the usage and cost
-// it billed; async-stuck's answers queued and then in progress for good;
-// malicious-content's completed snapshot carries the hostile answer and every
-// hostile source; and every extra-fields snapshot carries the synchronous
-// response's unknown fields. A block scripts only the retrieves: the create
-// answers a fixed queued stub in every built-in. No block carries a fault, so a
-// scenario that faults the Agent create (rate-limited, server-error,
-// malformed-json, brownout, timeout, oversized-body, hang-then-abort) faults a
-// background create the same way, because it shares the create's budget, while the
-// retrieve has a budget of its own and is never faulted. A create that fails mints
-// no job, so there is nothing to retrieve; a create whose body is delayed or padded
-// still does.
+// it billed; async-stuck's answers queued and then in progress for good, so only
+// a cancel ends it; malicious-content's completed snapshot carries the hostile
+// answer and every hostile source; and every extra-fields snapshot carries the
+// synchronous response's unknown fields.
+//
+// Each block also scripts the cancel of its run: POST /v1/agent/{id}/cancel
+// answers cancelling, and the retrieves after it read in progress and then
+// cancelled, with the usage and cost the run accrued before it stopped. Nineteen
+// share one cancel script; extra-fields carries its unknown fields on the
+// snapshots after a cancel too. A cancel made once the run's next retrieve would
+// be terminal is the vendor's 400 and records nothing.
+//
+// A block scripts no create: the create answers a fixed queued stub in every
+// built-in. No block carries a fault, so a scenario that faults the Agent create
+// (rate-limited, server-error, malformed-json, brownout, timeout, oversized-body,
+// hang-then-abort) faults a background create the same way, because it shares the
+// create's budget, while the retrieve and the cancel each have a budget of their
+// own and are never faulted. A create that fails mints no job, so there is
+// nothing to retrieve or cancel; a create whose body is delayed or padded still
+// does.
 //
 // A product-specific corpus — including a specific adopter's own
 // guardrail-classifier vectors — belongs in the consuming repository and is

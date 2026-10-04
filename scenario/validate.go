@@ -237,6 +237,14 @@ func validateProvider(r *Report, e *ProviderEntry) {
 		validateTurns(r, e.Background.Turns, func(i int) string {
 			return fmt.Sprintf("%s.background.turns[%d]", base, i)
 		})
+		// A background cancel is checked as an entry-level cancel is, and may
+		// be empty for the same reason.
+		if c := e.Background.Cancel; c != nil {
+			validateFault(r, base+".background.cancel.fault", c.Fault)
+			validateTurns(r, c.Turns, func(i int) string {
+				return fmt.Sprintf("%s.background.cancel.turns[%d]", base, i)
+			})
+		}
 	}
 
 	if len(e.Turns) == 0 {

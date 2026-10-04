@@ -36,8 +36,8 @@
 #     providers.perplexity_agent's top-level `fault:`, its own independent
 #     budget from Sonar's. A `background: true` create is the same route, so
 #     it draws the same plan (its first queued snapshot is padded, and the job
-#     is kept); the retrieve, `GET /v1/agent/{id}`, has a budget of its own
-#     and no fault.
+#     is kept); the retrieve, `GET /v1/agent/{id}`, and the cancel,
+#     `POST /v1/agent/{id}/cancel`, each have a budget of their own and no fault.
 #
 # The two ASYNC surfaces — `exa_agent_runs` and `tavily_research` — carry
 # plain happy-shaped turns (borrowed verbatim from the `happy` built-in) and
@@ -54,7 +54,7 @@ description: >-
   response padded past a 1 MiB size-limit ingress gate, then a clean retry,
   so a consumer proves both fail-closed admission and recovery from one
   scenario (a Perplexity `background: true` create is the Agent route's, so
-  its first queued snapshot is padded too; the retrieve is not).
+  its first queued snapshot is padded too; the retrieve and the cancel are not).
 
 time:
   base: 2026-01-01T00:00:00Z
@@ -158,6 +158,29 @@ providers:
               cost:
                 input_cost: 0.0001
                 output_cost: 0.0004
+      # A cancel is answered `cancelling`, and the retrieves after it read in progress,
+      # since an acknowledgement is not proof the run stopped, and then cancelled,
+      # billing the usage the run accrued before it stopped: its 24 input tokens and
+      # 12 output tokens, at the per-token rates of the corpus's completed run.
+      # Nineteen built-ins share this cancel block (extra-fields scripts its own). A
+      # cancel made once the run has ended, when its next retrieve would be terminal,
+      # is the vendor's 400 and records nothing. It carries no fault on purpose: the
+      # cancel's budget is its own. The total_cost is scripted rather than left to the
+      # renderer, whose float sum of the two costs would print 0.00015000000000000001.
+      cancel:
+        turns:
+          - when: {call_index: 0}
+            respond:
+              status: in_progress
+          - respond:
+              status: cancelled
+              usage:
+                input_tokens: 24
+                output_tokens: 12
+                cost:
+                  input_cost: 0.0001
+                  output_cost: 0.00005
+                  total_cost: 0.00015
 
   # Async surfaces: plain happy-shaped turns, no fault attempt — see the
   # header comment for why.

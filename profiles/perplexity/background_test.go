@@ -182,7 +182,20 @@ func TestRetrieveRouteIsSeparateFromTheCreateSpellings(t *testing.T) {
 		assert.NotEqual(t, retrieve.FaultKey, r.FaultKey, "the retrieve key must not be a create turn's route")
 	}
 	assert.Equal(t, []string{NameAgent}, Profile().Backgroundable)
+	assert.Equal(t, []string{NameAgent}, Profile().BackgroundCancellable, "the Agent entry serves background.cancel")
 	assert.NotContains(t, Profile().Cancellable, NameAgent, "Perplexity's cancel is not an entry-level cancel:")
+}
+
+// TestBackgroundCancelLoadsOnTheAgentEntry: the framework rejects a cancel:
+// under background: unless the profile opts the entry in, and Perplexity's
+// Agent entry is opted in, so a scenario scripting one loads through the real
+// Set with no finding at all.
+func TestBackgroundCancelLoadsOnTheAgentEntry(t *testing.T) {
+	t.Parallel()
+	findings := bgValidate(t, bgEntry("        - respond: {status: in_progress}\n")+
+		"      cancel:\n        fault: {attempts: [{status: 500}, {}]}\n"+
+		"        turns:\n          - respond: {status: cancelled}\n")
+	assert.Empty(t, findings)
 }
 
 // TestBackgroundCreateAnswersTheQueuedStub: a create that asks for the
@@ -1189,6 +1202,17 @@ func TestBackgroundValidator(t *testing.T) {
 		}
 	})
 
+	// A cancel judges the run by its next retrieve, so where the run's script
+	// runs out, a cancel fails as the retrieve does (job.cancel_unscripted).
+	t.Run("the exhaustion warning says a cancel there fails too", func(t *testing.T) {
+		t.Parallel()
+		findings := bgValidate(t, bgEntry("        - when: {call_index: 0}\n          respond: {status: queued}\n"))
+		require.Len(t, findings, 1, "%+v", findings)
+		assert.Equal(t, codeAgentBackgroundScriptExhausted, findings[0].Code)
+		assert.Contains(t, findings[0].Message, "the last background turn has a condition a retrieve can fail, so the "+
+			"retrieve after it matches no turn and answers 404 for a job that exists, and a cancel there answers 500")
+	})
+
 	t.Run("a synchronous turn may not name the retrieve route", func(t *testing.T) {
 		t.Parallel()
 		findings := bgValidate(t, `
@@ -1238,5 +1262,222 @@ func TestBackgroundFindingCodesAreTheDocumentedStrings(t *testing.T) {
 		{codeAgentBackgroundField, "perplexity.agent.background.field"},
 	} {
 		assert.Equal(t, tc.want, tc.got)
+	}
+}
+
+// longS is U+017F LATIN SMALL LETTER LONG S, written as an escape so the source
+// shows which character it is. Unicode simple folding, which Go's encoding/json
+// uses to match an object key to a struct field, folds it to s.
+const longS = "\u017f"
+
+// TestBackgroundExtraFieldsAreRefusedInEverySpellingADecoderReads: a refused
+// extra_fields key is refused in every spelling a JSON decoder reads as that
+// key. Go's encoding/json matches an object key to a field case-insensitively
+// under Unicode simple folding, the last match winning, and a merged body's keys
+// come out sorted, so "ſtatus" sorts after "status", is read after it, and
+// replaces it: a retrieve the journal labels in_progress decodes as completed,
+// and a cancel acknowledgement as another id, completed. An ASCII case variant
+// sorts before the real key and loses, but it is the same key to the decoder
+// and is refused alike. Each finding is addressed at the key as written, in an
+// order Go's map iteration does not decide, and is an error, which stops
+// readiness, so the forged body is never served.
+func TestBackgroundExtraFieldsAreRefusedInEverySpellingADecoderReads(t *testing.T) {
+	t.Parallel()
+
+	const (
+		retrieveRespond = "providers.perplexity_agent.background.turns[0].respond.extra_fields."
+		retrieveFault   = "providers.perplexity_agent.background.turns[0].fault.attempts[0].extra_fields."
+		cancelRespond   = "providers.perplexity_agent.background.cancel.turns[0].respond.extra_fields."
+		cancelFault     = "providers.perplexity_agent.background.cancel.fault.attempts[0].extra_fields."
+	)
+	status, responseID := longS+"tatus", "re"+longS+"ponse_id"
+
+	// Each places one extra_fields mapping where a background route reads it.
+	inRetrieveRespond := func(extra string) string {
+		return bgEntry("        - respond: {status: in_progress, extra_fields: " + extra + "}\n")
+	}
+	inRetrieveFault := func(extra string) string {
+		return bgEntry("        - respond: {status: completed}\n          fault: {attempts: [{extra_fields: " +
+			extra + "}]}\n")
+	}
+	inCancelRespond := func(extra string) string {
+		return bgCancelEntry("        - respond: {status: queued}\n",
+			"        turns:\n          - respond: {status: cancelled, extra_fields: "+extra+"}\n")
+	}
+	inCancelFault := func(extra string) string { return withCancelFault("{extra_fields: " + extra + "}") }
+
+	type finding struct {
+		code, path string
+		severity   scenario.Severity
+	}
+	refused := func(paths ...string) []finding {
+		out := make([]finding, 0, len(paths))
+		for _, p := range paths {
+			out = append(out, finding{codeAgentBackgroundField, p, scenario.SeverityError})
+		}
+		return out
+	}
+
+	tests := []struct {
+		name string
+		src  string
+		want []finding // in order
+	}{
+		{"cancel fault: the long-s spellings forge the acknowledgement",
+			inCancelFault(`{"` + responseID + `": resp_forged, "` + status + `": completed}`),
+			refused(cancelFault+responseID, cancelFault+status)},
+		{"cancel fault: an ASCII case variant of status",
+			inCancelFault(`{Status: completed}`), refused(cancelFault + "Status")},
+		{"cancel fault: an ASCII case variant of response_id",
+			inCancelFault(`{RESPONSE_ID: resp_forged}`), refused(cancelFault + "RESPONSE_ID")},
+		{"cancel fault: the exact keys are still refused",
+			inCancelFault(`{response_id: resp_forged, status: completed}`),
+			refused(cancelFault+"response_id", cancelFault+"status")},
+		{"cancel fault: every spelling at once, by refused key and then by key",
+			inCancelFault(`{"` + status + `": a, STATUS: b, status: c, Status: d, "` + responseID + `": e, ` +
+				`RESPONSE_ID: f, response_id: g}`),
+			refused(cancelFault+"RESPONSE_ID", cancelFault+"response_id", cancelFault+responseID,
+				cancelFault+"STATUS", cancelFault+"Status", cancelFault+"status", cancelFault+status)},
+		{"cancel fault: keys the acknowledgement does not carry load clean",
+			inCancelFault(`{note: x, trace_id: t, id: resp_x}`), nil},
+
+		{"retrieve fault: the long-s status",
+			inRetrieveFault(`{"` + status + `": completed}`), refused(retrieveFault + status)},
+		{"retrieve fault: ASCII case variants",
+			inRetrieveFault(`{Status: completed, ID: resp_forged}`),
+			refused(retrieveFault+"ID", retrieveFault+"Status")},
+		{"retrieve fault: the exact keys are still refused",
+			inRetrieveFault(`{id: resp_forged, status: completed}`),
+			refused(retrieveFault+"id", retrieveFault+"status")},
+		{"retrieve fault: other keys load clean",
+			inRetrieveFault(`{note: x, trace_id: t}`), nil},
+
+		{"retrieve respond: the long-s status",
+			inRetrieveRespond(`{"` + status + `": completed}`), refused(retrieveRespond + status)},
+		{"retrieve respond: ASCII case variants",
+			inRetrieveRespond(`{Status: completed, Id: resp_forged}`),
+			refused(retrieveRespond+"Id", retrieveRespond+"Status")},
+		{"retrieve respond: the exact keys are still refused",
+			inRetrieveRespond(`{id: resp_forged, status: completed}`),
+			refused(retrieveRespond+"id", retrieveRespond+"status")},
+		{"retrieve respond: every spelling at once, by refused key and then by key",
+			inRetrieveRespond(`{"` + status + `": a, Status: b, status: c, ID: d, id: e}`),
+			refused(retrieveRespond+"ID", retrieveRespond+"id",
+				retrieveRespond+"Status", retrieveRespond+"status", retrieveRespond+status)},
+		{"retrieve respond: other keys load clean",
+			inRetrieveRespond(`{note: x, trace_id: t}`), nil},
+
+		{"cancel script respond: the long-s status",
+			inCancelRespond(`{"` + status + `": in_progress}`), refused(cancelRespond + status)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			findings := bgValidate(t, tc.src)
+			var got []finding // nil when the scenario loads clean, as want is
+			for _, f := range findings {
+				got = append(got, finding{f.Code, f.Path, f.Severity})
+			}
+			assert.Equal(t, tc.want, got, "%+v", findings)
+			assert.Equal(t, len(tc.want) == 0, scenario.Report{Findings: findings}.OK(),
+				"an error stops readiness, so the forged body is never served")
+
+			// The order is the validator's, not Go's map iteration: every load of
+			// the same scenario gives the same findings, messages included.
+			for range 4 {
+				assert.Equal(t, findings, bgValidate(t, tc.src))
+			}
+		})
+	}
+}
+
+// TestBackgroundFieldFindingsSayWhatTheRouteServes pins the whole message of
+// each finding a background route's body raises, at the route that raises it.
+// The retrieve's text is the text it carried before the cancel route came to
+// share its checks (4ef15ac), so rewording what the retrieve serves, or where
+// its extra_fields are written, is a change a reader of the documented messages
+// sees, not a refactor's side effect. The cancel's is pinned whole for the same
+// reason; and the text for a key a decoder folds to a refused one is what the
+// documentation quotes.
+func TestBackgroundFieldFindingsSayWhatTheRouteServes(t *testing.T) {
+	t.Parallel()
+
+	const (
+		retrieveTurn = "providers.perplexity_agent.background.turns[0]"
+		cancelFault  = "providers.perplexity_agent.background.cancel.fault.attempts[0]"
+	)
+	status, responseID := longS+"tatus", "re"+longS+"ponse_id"
+	tests := []struct {
+		name, src, code, path, message string
+	}{
+		{"a retrieve snapshot's extra_fields.id",
+			bgEntry("        - respond: {status: completed, extra_fields: {id: resp_forged}}\n"),
+			codeAgentBackgroundField, retrieveTurn + ".respond.extra_fields.id",
+			"extra_fields.id is not allowed on a background turn: extra fields are merged into the body last and " +
+				"win, and a snapshot's id is always its job's; remove extra_fields.id"},
+		{"a retrieve snapshot's extra_fields.status",
+			bgEntry("        - respond: {status: queued, extra_fields: {status: completed}}\n"),
+			codeAgentBackgroundField, retrieveTurn + ".respond.extra_fields.status",
+			"extra_fields.status is not allowed on a background turn: extra fields are merged into the body last " +
+				"and win, and a snapshot's status is its respond.status, which the journal label reports and the " +
+				"terminal check judged; remove extra_fields.status"},
+		{"a retrieve fault attempt's extra_fields.id",
+			bgEntry("        - respond: {status: completed}\n          fault: {attempts: [{extra_fields: {id: resp_forged}}]}\n"),
+			codeAgentBackgroundField, retrieveTurn + ".fault.attempts[0].extra_fields.id",
+			"extra_fields.id is not allowed on a background turn: extra fields are merged into the body last and " +
+				"win, and a snapshot's id is always its job's; remove extra_fields.id"},
+		{"a retrieve fault attempt's extra_fields.status",
+			bgEntry("        - respond: {status: completed}\n          fault: {attempts: [{extra_fields: {status: failed}}]}\n"),
+			codeAgentBackgroundField, retrieveTurn + ".fault.attempts[0].extra_fields.status",
+			"extra_fields.status is not allowed on a background turn: extra fields are merged into the body last " +
+				"and win, and a snapshot's status is its respond.status, which the journal label reports and the " +
+				"terminal check judged; remove extra_fields.status"},
+		{"a stream kind on a retrieve fault",
+			bgEntry("        - respond: {status: completed}\n          fault: {attempts: [{kind: stream_disconnect}]}\n"),
+			scenario.CodeStreamFaultMismatch, retrieveTurn + ".fault.attempts[0].kind",
+			`kind "stream_disconnect" assumes a chunked SSE transport, but GET /v1/agent/{id} never streams: a ` +
+				"background snapshot is always an ordinary JSON body"},
+		{"a cancel fault attempt's extra_fields.response_id",
+			withCancelFault(`{extra_fields: {response_id: resp_forged}}`),
+			codeAgentBackgroundField, cancelFault + ".extra_fields.response_id",
+			"extra_fields.response_id is not allowed in background.cancel.fault: extra fields are merged into the " +
+				"body last and win, and the acknowledgement's response_id is always its job's id; remove " +
+				"extra_fields.response_id"},
+		{"a cancel fault attempt's extra_fields.status",
+			withCancelFault(`{extra_fields: {status: completed}}`),
+			codeAgentBackgroundField, cancelFault + ".extra_fields.status",
+			"extra_fields.status is not allowed in background.cancel.fault: extra fields are merged into the body " +
+				"last and win, and the acknowledgement's status is always cancelling, the one value the " +
+				"specification gives it; remove extra_fields.status"},
+		{"a stream kind on a cancel fault",
+			withCancelFault(`{kind: stream_disconnect}`),
+			scenario.CodeStreamFaultMismatch, cancelFault + ".kind",
+			`kind "stream_disconnect" assumes a chunked SSE transport, but POST /v1/agent/{id}/cancel never ` +
+				"streams: its acknowledgement and its errors are always ordinary JSON bodies"},
+		{"a retrieve snapshot's long-s status",
+			bgEntry("        - respond: {status: in_progress, extra_fields: {\"" + status + "\": completed}}\n"),
+			codeAgentBackgroundField, retrieveTurn + ".respond.extra_fields." + status,
+			"extra_fields." + status + " is not allowed on a background turn: keys are compared the way a JSON " +
+				"decoder compares them, case-insensitively, so " + status + " is read as status; extra fields are " +
+				"merged into the body last and win, and a snapshot's status is its respond.status, which the " +
+				"journal label reports and the terminal check judged; remove extra_fields." + status},
+		{"a cancel fault attempt's long-s response_id",
+			withCancelFault(`{extra_fields: {"` + responseID + `": resp_forged}}`),
+			codeAgentBackgroundField, cancelFault + ".extra_fields." + responseID,
+			"extra_fields." + responseID + " is not allowed in background.cancel.fault: keys are compared the way " +
+				"a JSON decoder compares them, case-insensitively, so " + responseID + " is read as response_id; " +
+				"extra fields are merged into the body last and win, and the acknowledgement's response_id is " +
+				"always its job's id; remove extra_fields." + responseID},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			findings := bgValidate(t, tc.src)
+			require.Len(t, findings, 1, "%+v", findings)
+			assert.Equal(t, tc.code, findings[0].Code)
+			assert.Equal(t, tc.path, findings[0].Path)
+			assert.Equal(t, scenario.SeverityError, findings[0].Severity)
+			assert.Equal(t, tc.message, findings[0].Message)
+		})
 	}
 }

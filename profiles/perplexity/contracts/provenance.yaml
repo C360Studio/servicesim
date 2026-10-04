@@ -318,13 +318,16 @@ goldens:
       only through a scripted fault attempt; ErrorInfo body by extrapolation,
       code and type values are Servicesim's.
 
-  # The three entries below (the background lifecycle, issue #6) carry the date of the
-  # 2026-10-01 audit, which read retrieveAgent, the Status enum, ResponsesResponse and the
-  # background description. The lifecycle operations were read again on 2026-10-03 and
-  # agree with everything that audit recorded about them, but the document's hash had moved
-  # (the spec: block above keeps the 2026-10-01 hash; the 2026-10-03 fetch hashed
-  # 1a269d55…, see README.md "Dated note, 2026-10-03"), and dating an entry
-  # 2026-10-03 would force this file's provider-level verified: and spec: forward to a
+  # The entries below (the background lifecycle: issue #6's create, retrieve and 404, and
+  # issue #31's cancel 200 and 400) carry the date of the 2026-10-01 audit, which read
+  # retrieveAgent, cancelAgentResponse, the Status enum, ResponsesResponse and the
+  # background description. The lifecycle operations were read again on 2026-10-03, and
+  # cancelAgentResponse once more on 2026-10-04 against a fetch whose bytes are identical
+  # to the 2026-10-03 copy. Every reading agrees with everything that audit recorded about
+  # them, but the document's hash had moved (the spec: block above keeps the 2026-10-01
+  # hash; the 2026-10-03 and 2026-10-04 fetches hashed 1a269d55…, see README.md "Dated note,
+  # 2026-10-03" and "Dated note, 2026-10-04"), and dating an entry 2026-10-03 or
+  # 2026-10-04 would force this file's provider-level verified: and spec: forward to a
   # document whose other entries have not been re-read. The sanctioned refresh procedure
   # (contracts/README.md) does that move after a whole-bundle re-read, not before it.
   - golden: perplexity-agent-background-queued.json
@@ -371,7 +374,7 @@ goldens:
       Status enum has no terminal/non-terminal split.
 
   - golden: perplexity-agent-retrieve-404.json
-    endpoint: GET /v1/agent/{id}
+    endpoint: GET /v1/agent/{id} (also POST /v1/agent/{id}/cancel)
     status: 404
     kind: vendor-documented
     documentation_url: https://docs.perplexity.ai/openapi.json
@@ -389,6 +392,66 @@ goldens:
       response's id — the last is a deliberate divergence, since the real API
       retrieves a response stored by default and this simulator makes only
       background runs retrievable.
+      The cancel's 404 is these same bytes, so it has no golden of its own.
+      cancelAgentResponse documents 404 with the same {"error": ErrorInfo}
+      (#/paths/~1v1~1agent~1{id}~1cancel/post/responses/404): "Unknown id, or
+      the response belongs to a different account." (no store: false clause).
+      The profile serves it, claiming nothing, for the same three ids, and a
+      test compares the cancel's 404 with this file after json.Compact (the
+      file is pretty-printed, the wire is compact).
+
+  - golden: perplexity-agent-cancel-200.json
+    endpoint: POST /v1/agent/{id}/cancel
+    status: 200
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
+    verified: 2026-10-01
+    note: >-
+      The acknowledgement of a cancel. cancelAgentResponse documents 200 as an
+      object whose required keys are response_id and status
+      (#/paths/~1v1~1agent~1{id}~1cancel/post/responses/200), whose only
+      properties they are, and whose status is a string with exactly one enum
+      member, cancelling: "Always `cancelling` - the cancel was accepted and
+      the run stops asynchronously. An already-terminal run returns `400`
+      instead, so no terminal status appears here." The keys, the status value
+      and the absence of anything else (no snapshot, unlike Exa's cancel) are
+      the specification's. Simulator-chosen: response_id is the job's own id,
+      "resp_" plus 32 hex characters, which the specification describes only
+      as "The response id (`resp_<...>`)"; this file carries the id that
+      perplexity-agent-background-queued.json is the create of. The operation
+      declares no request body, so the profile reads none. When this body is
+      served is SIMULATOR-POLICY, since the specification says only that a
+      200 acknowledges a request and a terminal run is a 400: the first
+      cancel of a run whose next retrieve is pending always answers it, even
+      when the scenario's first cancel snapshot is itself terminal, and so
+      does a repeat while the cancel script's next snapshot is pending. See
+      README.md "The cancel".
+
+  - golden: perplexity-agent-cancel-400.json
+    endpoint: POST /v1/agent/{id}/cancel
+    status: 400
+    kind: vendor-documented
+    documentation_url: https://docs.perplexity.ai/openapi.json
+    api_version: "1.0.0"
+    verified: 2026-10-01
+    note: >-
+      A cancel of a run that is already terminal. cancelAgentResponse
+      documents 400 with {"error": ErrorInfo}
+      (#/paths/~1v1~1agent~1{id}~1cancel/post/responses/400): "The response is
+      already terminal, or the request is invalid.", and the operation's
+      description says "Cancelling a run that is already terminal returns
+      `400`." The status and the envelope are the specification's;
+      ErrorInfo requires only message, and the envelope itself marks nothing
+      required. The specification supplies no example body, so every value
+      here is Servicesim's: code invalid_request and type invalid_request_error
+      are the pair perplexity-agent-400.json uses, and the message is a plain
+      sentence of the simulator's. Which cancels get it is SIMULATOR-POLICY:
+      a cancel of a run whose next retrieve is already terminal (completion
+      wins, and nothing is recorded), and a repeat once the cancel script's
+      next snapshot is terminal. The 400's other documented cause, "the
+      request is invalid", is not this body: a request body that is not a JSON
+      object is refused with the Agent validation 400, as on every route.
 
   - golden: perplexity-sonar-stream.sse
     endpoint: POST /v1/sonar (aliases POST /chat/completions, POST /v1/chat/completions), stream_mode full

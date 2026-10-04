@@ -1,22 +1,24 @@
 // Package perplexity simulates Perplexity's two research surfaces: the Sonar
 // chat-completions API and its announced successor, the Agent API.
 //
-// One listener serves seven routes across those two surfaces:
+// One listener serves eight routes across those two surfaces:
 //
-//	POST /v1/sonar             Sonar, canonical
-//	POST /chat/completions     Sonar, OpenAI SDK alias
-//	POST /v1/chat/completions  Sonar, OpenAI SDK alias
-//	POST /v1/agent             Agent API, canonical
-//	POST /v1/responses         Agent API, OpenAI SDK alias
-//	POST /responses            Agent API, OpenAI SDK alias
-//	GET  /v1/agent/{id}        Agent API, retrieve a background run
+//	POST /v1/sonar               Sonar, canonical
+//	POST /chat/completions       Sonar, OpenAI SDK alias
+//	POST /v1/chat/completions    Sonar, OpenAI SDK alias
+//	POST /v1/agent               Agent API, canonical
+//	POST /v1/responses           Agent API, OpenAI SDK alias
+//	POST /responses              Agent API, OpenAI SDK alias
+//	GET  /v1/agent/{id}          Agent API, retrieve a background run
+//	POST /v1/agent/{id}/cancel   Agent API, cancel a background run
 //
 // The aliases are aliases in the strict sense — same handler, same request and
 // response shapes, same fault budget — because the OpenAI SDK appends those
 // paths to its configured base URL and consumers really do arrive on them. The
 // journal records which path was used, so an adapter test can still assert its
-// intended route. The retrieve is not an alias of anything: it serves the
-// snapshots a scenario's `background:` block scripts, on a budget of its own.
+// intended route. The retrieve and the cancel are not aliases of anything: they
+// serve the lifecycle a scenario's `background:` block scripts, each on a budget
+// of its own.
 //
 // The two surfaces share nothing on the wire. Sonar answers with a
 // [completionResponse]: an OpenAI-shaped envelope carrying choices[], a usage

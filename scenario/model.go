@@ -446,7 +446,8 @@ type CreatePolicy struct {
 // A terminal snapshot is allowed in Turns, `completed` included, to script "the
 // cancel was acknowledged and the run completed anyway". A turn here carries no
 // `fault:` — the cancel route's plan is Fault and the poll route's is on the
-// entry's own turns — so one is a load error rather than a plan nothing reads.
+// turns beside the block, the entry's own or, for [BackgroundPolicy.Cancel],
+// background.turns — so one is a load error rather than a plan nothing reads.
 type CancelPolicy struct {
 	// Fault is the cancel route's attempt budget, independent of the create's
 	// and the poll's. Each job has its own cancel lane, so the plan restarts per
@@ -490,11 +491,32 @@ type CancelPolicy struct {
 // one turn is required, so a block that could answer no retrieve stops the
 // process at load rather than failing every retrieve at runtime.
 //
-// A `cancel:` key, for a cancel of a background job, joins Turns in a later
-// release; until then it is a load error here, like any other unknown key.
+// Cancel scripts a cancel of a background job, as an entry's own `cancel:`
+// scripts a cancel of a polled one:
+//
+//	perplexity_agent:
+//	  background:
+//	    turns: [...]
+//	    cancel:
+//	      fault: {attempts: [{status: 500}, {}]}  # each job's first cancel fails; nothing is recorded
+//	      turns:                                   # call_index counts retrieves since the cancel
+//	        - when: {call_index: 0}
+//	          respond: {status: in_progress}
+//	        - respond: {status: cancelled}
 type BackgroundPolicy struct {
 	// Turns are the snapshots the retrieve route serves, one per retrieve.
 	Turns []Turn `yaml:"turns,omitempty"`
+
+	// Cancel is the cancel route's fault plan and the retrieve snapshots served
+	// once a cancel of a background job is recorded, with every rule
+	// [CancelPolicy] states: the retrieve at position i >= p, p being the
+	// position the cancel was recorded at, is answered from Cancel.Turns at
+	// index i-p, and a turn there carries no `fault:`. Nil means the block
+	// declares no `cancel:`. It decodes on any background block, for the
+	// reason ProviderEntry.Cancel decodes on any entry; a profile that serves
+	// no cancel of the entry's background jobs rejects it at load
+	// (provider.Profile.BackgroundCancellable).
+	Cancel *CancelPolicy `yaml:"cancel,omitempty"`
 }
 
 // ValidationPolicy tunes how validation findings map onto HTTP outcomes.
@@ -626,6 +648,9 @@ func (s *Scenario) HasFaults() bool {
 			return true
 		}
 		if e.Background != nil && turnsHaveFaults(e.Background.Turns) {
+			return true
+		}
+		if e.Background != nil && e.Background.Cancel != nil && e.Background.Cancel.Fault.HasAttempts() {
 			return true
 		}
 		if turnsHaveFaults(e.Turns) {
@@ -832,9 +857,12 @@ func decodeCancel(path string, node *yaml.Node) (*CancelPolicy, error) {
 			}
 			for j := range turns {
 				if turns[j].Fault != nil {
+					// The poll's plan is on the turns beside this block: the entry's
+					// own for an entry-level cancel, background.turns for a
+					// background one.
 					return nil, fmt.Errorf("%s.turns[%d].fault: a cancel turn is a poll snapshot and carries no fault "+
-						"plan; the cancel route's plan is %s.fault and the poll route's is on the entry's own turns",
-						path, j, path)
+						"plan; the cancel route's plan is %s.fault and the poll route's is on the turns beside %s",
+						path, j, path, path)
 				}
 			}
 			cancel.Turns = turns
@@ -849,9 +877,9 @@ func decodeCancel(path string, node *yaml.Node) (*CancelPolicy, error) {
 // decodeBackground decodes a `background:` block the way decodeCancel decodes a
 // `cancel:` one — a mapping only, its turns through decodeTurns — except that a
 // background turn keeps its `fault:`, because the retrieve route reads its plan
-// from these turns. Every other key is an error, `cancel` included: nothing
-// serves a cancel of a background job yet, and a block that decoded it would be
-// a script that silently never runs.
+// from these turns. Its `cancel:` goes through decodeCancel itself, so a cancel
+// turn there is normalised and refuses a `fault:` exactly as an entry-level
+// one does. Every other key is an error.
 func decodeBackground(path string, node *yaml.Node) (*BackgroundPolicy, error) {
 	background := &BackgroundPolicy{}
 	if node == nil || node.Kind == 0 || (node.Kind == yaml.ScalarNode && node.Tag == "!!null") {
@@ -862,15 +890,23 @@ func decodeBackground(path string, node *yaml.Node) (*BackgroundPolicy, error) {
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		key, val := node.Content[i], node.Content[i+1]
-		if key.Value != keyTurns {
+		switch key.Value {
+		case keyTurns:
+			turns, err := decodeTurns(path, val)
+			if err != nil {
+				return nil, err
+			}
+			background.Turns = turns
+		case keyCancel:
+			cancel, err := decodeCancel(path+".cancel", val)
+			if err != nil {
+				return nil, err
+			}
+			background.Cancel = cancel
+		default:
 			return nil, fmt.Errorf("%s: line %d: field %s not found in type scenario.BackgroundPolicy",
 				path, key.Line, key.Value)
 		}
-		turns, err := decodeTurns(path, val)
-		if err != nil {
-			return nil, err
-		}
-		background.Turns = turns
 	}
 	return background, nil
 }
