@@ -113,8 +113,13 @@ type Job struct {
 	Entry string
 
 	// LaneKey is the turn lane the create was served in, without its namespace
-	// prefix. It is what the identifier was derived from, and it is retained so
-	// a poll can be answered from the same lane the create used.
+	// prefix: the create route's fault key plus the entry's turn_key extractors.
+	// It is one input of the identifier's derivation (with the scenario's seed,
+	// the profile's entry name and CreateIndex), and it is retained to make the
+	// record self-describing. It is NOT the lane the job's polls are served in: a
+	// poll, a background retrieve, a HEAD and a cancel are each laned by the job
+	// alone, under their own route's fault key, so the create and the polls never
+	// share a cursor or an attempt budget (provider/lane.go turnLaneKey).
 	LaneKey string
 
 	// CreateIndex is the call index the create claimed. It is part of the

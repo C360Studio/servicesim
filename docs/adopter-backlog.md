@@ -1741,6 +1741,10 @@ goldens and a 1,148-line contract README — expect roughly 3,500–4,500 non-te
 Every item below was checked against the code with file:line evidence or a live probe. `contradicts-current-design`
 means the gap cannot be closed without changing a stated design property.
 
+This table is the audit of 2026-08-15 and its Status column has not been maintained: many `not-started` rows have
+since shipped, and the phase sections above are the record of what did (`servicesim --print-routes` lists every route
+served). One row, Perplexity's own async surface, was brought up to date on 2026-10-04 for issue #6.
+
 |  Status | Retrofit | Effort | Gap  |
 |---|---|---|---|
 |  contradicts-current-design | expensive-later | small | TAVILY: a body-placed api_key is rejected with 401 — the simulator would reject the adopter's real client  |
@@ -1770,7 +1774,6 @@ means the gap cannot be closed without changing a stated design property.
 |  not-started | cheap-later | medium | A contract-grade spec of the Perplexity SSE wire format to implement against  |
 |  not-started | cheap-later | medium | Journal can record a stream (chunk count, per-chunk timing) so tests can assert pacing  |
 |  not-started | cheap-later | medium | Golden-file support for an SSE transcript  |
-|  not-started | cheap-later | medium | Perplexity's own async surface: GET /v1/agent/{id}, background:true, files, cancel  |
 |  not-started | cheap-later | medium | EXA: POST /contents is not simulated  |
 |  not-started | cheap-later | medium | EXA: POST /findSimilar is not simulated and is not documented anywhere, not even as a non-goal  |
 |  not-started | cheap-later | medium | TAVILY: POST /extract is not simulated  |
@@ -1788,6 +1791,7 @@ means the gap cannot be closed without changing a stated design property.
 |  partial | cheap-later | small | usage + cost in the TERMINAL chunk  |
 |  partial | cheap-later | small | `stream_mode` (full\|concise) request validation, while the contract claims 'full request validation'  |
 |  partial | cheap-later | small | OpenAI-SDK alias paths are asymmetric: /responses and /v1/chat/completions are 404  |
+|  partial | cheap-later | medium | Perplexity's own async surface: GET /v1/agent/{id}, background:true, files, cancel — background create, retrieve and cancel shipped (PRs #26 and #32, units U5 and U6 of #6); the files endpoints are not simulated  |
 |  already-done | expensive-later | small | EXA: is POST /answer reachable/used, and what does dropping vs keeping cost?  |
 |  already-done | cheap-later | small | Delays exceeding an activity timeout (Temporal activity timeout / heartbeat)  |
 |  already-done | cheap-later | small | Credential rotation: 401 on call N, success with a DIFFERENT key on N+1  |

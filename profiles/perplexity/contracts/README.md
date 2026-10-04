@@ -754,10 +754,11 @@ carry the finding's message: it names the fix.
   be streamed, which is not simulated, and serving a synchronous stream in its place would be the same invention. An
   entry whose `stream:` policy is `reject` still answers a `stream: true` request first, with
   `perplexity.stream.agent_unsupported`.
-- **The queued snapshot.** `id` is the job's: `resp_` plus 32 hex characters derived from the scenario and the create's
-  call index (`SIMULATOR-POLICY`: the specification says only `resp_<...>`). `object` is `response`; `created_at` is
-  the scenario's base time; `status` is `queued`, the value the `background` text names; `model` echoes the request's
-  selection as a synchronous response does; `output` is `[]`. There is no `usage`: it is optional, and nothing has run.
+- **The queued snapshot.** `id` is the job's: `resp_` plus 32 hex characters derived from the scenario, the create's
+  lane and its call index (`SIMULATOR-POLICY`: the specification says only `resp_<...>`). `object` is `response`;
+  `created_at` is the scenario's base time; `status` is `queued`, the value the `background` text names; `model` echoes
+  the request's selection as a synchronous response does; `output` is `[]`. There is no `usage`: it is optional, and
+  nothing has run.
 - **`store: false`.** The specification hides such a response from retrieve, so every later `GET /v1/agent/{id}` of it
   is `404`. What its create answers is not documented: queued, under the synchronous id, with no job, is
   `SIMULATOR-POLICY`. Where `validation.strict` promotes the warning the request is a `400` and claims nothing.

@@ -317,16 +317,24 @@ type Match struct {
 	// one the fault engine already maintains.
 	//
 	// Note the interaction with Route: the default TurnKey is ["route"], so the
-	// cursor is ALREADY per route. `{route: poll, call_index: 2}` means the third
-	// call to the poll route, not the third call to the provider.
+	// cursor is ALREADY per route. `{route: search, call_index: 2}` means the
+	// third call to the search route, not the third call to the provider.
+	//
+	// The routes that serve one JOB — a poll, a HEAD, a cancel, a background
+	// retrieve — are laned by the job alone instead, and TurnKey does not apply to
+	// them. `{route: agent_runs.poll, call_index: 2}` in an exa_agent_runs
+	// entry's turns means the third poll of THAT job, never the third poll of any
+	// job on the route; a background run's turns count that run's retrieves the
+	// same way.
 	//
 	// ONE place counts differently: inside a `cancel.turns` script
-	// ([CancelPolicy]), call_index counts the job's polls SINCE the cancel was
-	// recorded — call_index 0 is the first poll served after it, whatever its
-	// position in the lane. The journal's attempt_index for that same poll stays
-	// absolute (the count of prior requests in the lane), so a poll that is
-	// call_index 0 of the cancel script can carry attempt_index 2. That is the
-	// only place the two numbers differ for one request.
+	// ([CancelPolicy]), call_index counts the job's polls (a background run's
+	// retrieves) SINCE the cancel was recorded — call_index 0 is the first poll
+	// served after it, whatever its position in the lane. The journal's
+	// attempt_index for that same poll stays absolute (the count of prior
+	// requests in the lane), so a poll that is call_index 0 of the cancel script
+	// can carry attempt_index 2. That is the only place the two numbers differ for
+	// one request.
 	CallIndex *int `yaml:"call_index,omitempty"`
 
 	// BodyContains matches when the raw request body contains this substring.
@@ -360,6 +368,11 @@ type Match struct {
 // warning. It does NOT silently share the default lane: silently merging lanes
 // is precisely the bug this field exists to prevent, so it must be visible in
 // the journal.
+//
+// A route that serves one job — an async poll, HEAD or cancel, a background
+// retrieve or cancel — is laned by the job alone and does not read TurnKey; the
+// entry's TurnKey keys the create that minted the job (provider/lane.go
+// turnLaneKey).
 type TurnKey []string
 
 // Turn-key extractor names and prefixes.

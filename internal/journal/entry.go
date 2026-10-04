@@ -372,9 +372,12 @@ func ResetIn(j Journal, namespace string) bool {
 // costs nothing.
 //
 // Outcome.FaultKey is the turn lane a request was served in — Route.FaultKey
-// plus one "<extractor>=<value>" part per turn_key extractor that resolved
-// (provider/lane.go turnLaneKey). turnLaneKey itself now closes both the
-// credential-NAMED case (a header or body_json extractor whose NAME looks
+// plus one "<extractor>=<value>" part per extractor that resolved: the entry's
+// turn_key extractors, or, on a route that serves one job (a poll, a HEAD, a
+// cancel, a background retrieve), that route's own path extractor alone — the
+// job's identifier — with the turn_key not read (provider/lane.go
+// turnLaneKey). For a turn_key extractor, turnLaneKey itself now closes both
+// the credential-NAMED case (a header or body_json extractor whose NAME looks
 // like a credential — turn_key: [header:authorization] and friends, a
 // legitimate credential-rotation shape scenario.Validate accepts) and the
 // credential-SHAPED case (a value that looks like a credential — vendor key,
@@ -387,7 +390,9 @@ func ResetIn(j Journal, namespace string) bool {
 // never reached. This call is therefore belt-and-braces for whatever
 // hand-built FaultDecision.Key does not go through turnLaneKey's own checks,
 // not the primary defence — that lives in provider/lane.go, which is where a
-// gap in this class of leak must be fixed.
+// gap in this class of leak must be fixed. A job route's path value is the
+// exception: turnLaneKey does not fingerprint it, ValidJobID confines it to
+// [A-Za-z0-9_-], and this pass is what masks one that is credential-shaped.
 //
 // It is idempotent, which is what allows provider.Handle to call it before
 // logging and Append to call it again at the storage boundary. Every text field

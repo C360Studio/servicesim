@@ -2322,7 +2322,10 @@ vendor API version it mirrors.
   these deltas" is in scope; "tokenise an arbitrary answer plausibly" is a fake LLM.
 - **It does not stream Exa or Tavily.** The mechanism is provider-neutral and both could adopt it in a later release;
   neither has a consumer that parses SSE today.
-- **It does not add background/polling mode.** `background: true` remains a warning. The adopter's async-job needs —
+- **It does not add background/polling mode.** `background: true` remains a warning. *(Updated 2026-10-03, issue #6
+  unit U5: no longer a warning. `background: true` mints a job and answers a `queued` snapshot, and its retrieves are
+  scripted by a `background:` block; see `extended-surfaces.md`, "Updated 2026-10-03". Streaming a background run is
+  still not added: that request fails closed.)* The adopter's async-job needs —
   Exa `/agent/runs`, Tavily `/research` — are a separate state machine and a separate design; they share nothing with
   this one but the fault catalogue.
 - **It does not serve HTTP/2.** `Hijacker` does not exist there, and the container serves cleartext HTTP/1.1 only.

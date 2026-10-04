@@ -870,11 +870,11 @@ type projectionBody struct {
 }
 ```
 
-The reserved envelope keys — `kind`, `auth`, `validation`, `fault`, `turns`, `turn_key` — are stripped by the
-scenario loader before your struct sees the node, so it holds only your vendor's vocabulary. The wire types
-(`AnswerResponse`, `StatusResponse` in the same file) are separate and carry `json:` tags: one struct describes
-what a scenario author writes, the other what a consumer parses, and collapsing them couples your YAML schema to
-your wire contract forever.
+The reserved envelope keys — `kind`, `auth`, `validation`, `fault`, `turns`, `turn_key`, and the job keys `create`,
+`cancel` and `background`, which Acme's scenarios never write — are stripped by the scenario loader before your struct
+sees the node, so it holds only your vendor's vocabulary. The wire types (`AnswerResponse`, `StatusResponse` in the
+same file) are separate and carry `json:` tags: one struct describes what a scenario author writes, the other what a
+consumer parses, and collapsing them couples your YAML schema to your wire contract forever.
 
 Nothing in `ValidateProfile` covers any of this, so a Validator arrives untested unless you test it. Acme's
 `TestAcmeValidatorReportsBadProjections` is the shape: a wrong-typed field, a key no field claims, a value
